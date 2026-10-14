@@ -312,7 +312,8 @@ unresolved row stored first. While that sent proof has no result,
 another row is not sent. That sent proof is retried with its own
 idempotency key until Orchestra returns a definitive result. Only after that result is `refused` is the
 oldest stored proof that has not been sent asked, with its own
-idempotency key. A `refused` row does not keep a later different proof
+idempotency key. The response stays the result of the proof the request
+named. A repeat of a `refused` proof stays **400**. A `refused` row does not keep a later different proof
 from being stored or sent. An unresolved row delays that send. It does
 not discard the other row, and the clock does not record it `refused`.
 When one proof of this payment becomes `accepted`, a stored proof that
@@ -391,6 +392,12 @@ response is still a pay request for those sats. Every `available` value
 is false. It does not mint a new quote. It is not the Lightning pay
 request with a minimum and a maximum. `method` and `asset` on that call
 are **400** `{ "error": "That payment is not offered" }`.
+
+While the charge is `pending` and the shop payment is `ended`, the
+response is the Lightning pay request that route already serves, with
+both bounds at that sat count. `method` and `asset` do not select a
+stablecoin. The call does not mint a quote, does not replace the ended
+payment, and does not clear `pos_charge_id`.
 
 When the charge is `paid`, `expired`, or `cancelled`, the pay link is
 free. The next fetch, with no new pending charge, is the Lightning pay
@@ -853,10 +860,14 @@ of that unsent proof while the sent proof still has no result, is
 sent proof is retried with its own idempotency key until a definitive
 result. Only after that result is `refused` does a later
 `GET /lnurlp/tx/:username` for this payment ask the oldest stored proof
-that has not been sent, with that proof's own idempotency key, before
-it answers. A repeat of the refused proof is that later request when
-it arrives, and it does not ask the refused row again. When no unsent
-proof remains, that repeat stays **400**. A proof already stored for another quote of this payment stays
+that has not been sent, with that proof's own idempotency key. A repeat
+of the refused proof does not ask the refused row again. That repeat
+stays **400** `{ "error": "Payment was not accepted" }`. Asking the
+unsent proof in that same step does not change this response. The
+**200**, **400**, or **503** of the proof that was asked is the response
+only when the request's proof parameter is that proof. When no unsent
+proof remains, the repeat of the refused proof stays **400** and asks
+nothing. A proof already stored for another quote of this payment stays
 that row. A repeat of the same quote, method, asset, and proof
 parameter reads the stored row and does not insert another. Once this
 payment has an `accepted` proof, a different proof is not stored and
@@ -891,8 +902,12 @@ payment was still `open`, or stored under a submission claim that had
 not expired. A stored proof of this payment that was not sent is
 recorded `refused` in that same step, stores no `txId`, and is not sent.
 The response is **200** `{ "txId": "<id>" }` in each of those cases,
-including when the quote has lapsed since the proof was stored. That includes when the separate Spark invoice has
-already marked the charge `paid`. The charge stays `paid`. From that
+including when the quote has lapsed since the proof was stored, and
+including when the separate Spark invoice has already marked the charge
+`paid`. That **200** answers the request whose proof parameter is the
+proof Orchestra just accepted. A request whose own stored proof is
+`refused` stays **400**, including when this step accepted a different
+proof. The charge stays `paid`. From that
 accept, a payment that is `accepted` is watched on the BOLT11 stored
 on that proof's quote, not on a later quote's invoice. That is
 the same accepted-payment watch stated for the till, including when this
@@ -1102,7 +1117,10 @@ committed quote, the pay link keeps today's Lightning request.
 
 A deposit Orchestra settles for fewer sats than this count does not pay
 this payment. A refund or a failed order moves the payment from
-`accepted` to `ended` and records nothing paid. Silence after acceptance
+`accepted` to `ended` and records nothing paid. While that charge is
+still `pending`, the next fetch of the shared pay link is the Lightning
+pay request that route already serves, and the call does not mint a
+quote. Silence after acceptance
 does not free the pay link and does not record paid. A deposit against
 a quote whose invoice is already paid is not a second sale. This service
 does not take it back.
