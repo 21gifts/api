@@ -392,8 +392,8 @@ and `method` and `asset` do not select a stablecoin.
 
 While the charge is `pending` and the shop payment is `open`, a fetch
 returns its current quote. A quote that has not lapsed is not replaced.
-A lapsed quote is replaced for the same sats, except while a stored
-proof has no result. The URL does not change.
+A lapsed quote is replaced for the same sats, except while a stored proof has no result or while any offer of that quote has a submission claim that has not expired.
+The URL does not change.
 
 While the charge is `pending` and the shop payment is `accepted`, the
 response is still a pay request for those sats. Every `available` value
@@ -1185,7 +1185,7 @@ a quote whose invoice is already paid is not a second sale. This service
 does not take it back.
 
 A quote that lapses before acceptance is replaced by a quote for the
-same sats, and only while the payment is still `open`, except while a stored proof has no result. No replacement
+same sats, and only while the payment is still `open`, except while a stored proof has no result or while any offer of that quote has a submission claim that has not expired. No replacement
 is made after the payment has ended. An unexpired quote is returned as
 stored. A later fetch does not mint a second one. A quote for an open till charge also ends when
 the charge ends, if that is sooner, unless a stored proof has no result. That proof keeps that quote for the payment. It does not keep the sticker pinned. Once the charge is not `pending`, the next fetch of the shared pay link is the Lightning pay request. The old payment continues only through its stored quote, its callback, and its proof. After the charge has ended, the sticker takes
@@ -1272,7 +1272,7 @@ charge, as A known amount states. This section does not create a second
 one. If no pair commits, no shop row is written.
 
 A lapsed quote is replaced only while the charge is open and only for the
-same sats. It is not replaced while a stored proof has no result.
+same sats. It is not replaced while a stored proof has no result, or while any offer of that quote has a submission claim that has not expired.
 
 The existing watcher pays the charge once, when the Spark invoice or a
 BOLT11 the api handed out for those sats settles. Orchestra paying that
