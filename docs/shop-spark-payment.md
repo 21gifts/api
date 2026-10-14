@@ -304,7 +304,8 @@ and does not move `detail_issued_at`. A fetch after the payment is
 `shop_proof` stores one proof attempt. `offer_id` references the
 `shop_offer` the quote selected for that method. The row holds that
 offer, the method, the asset, the proof parameter, and the idempotency
-key of that attempt. The same quote, method, asset, and proof parameter
+key of that attempt. A completed `hex` broadcast also stores the derived
+identifier on that row. The same quote, method, asset, and proof parameter
 are one row. A different proof parameter of the same quote is another
 row only when Proof accepts it and the payment is under its cap. It is stored before it is asked. At most one stored proof of a
 payment has been sent and still has no result. That one is the
@@ -377,10 +378,14 @@ makes the next fetch the Lightning pay request, even when the shop
 payment for that charge is still `open` or `accepted`. The longer
 BOLT11 watch does not pin the sticker. Not **404**.
 
-While the charge is `pending` and no shop payment exists, the response
-is the Lightning pay request that route already serves, with both
-bounds at that sat count. `method` and `asset` do not select a
-stablecoin.
+While the charge is `pending` and no shop payment exists, the first
+fetch creates that payment, its BOLT11, and its offers, as A known
+amount states. A `method` and `asset` on that fetch are answered from
+the offer that step stored, the same detail as the callback. Only when
+the Orchestra key is missing, the mint fails, or no pair commits does
+the response stay the Lightning pay request that route already serves,
+with both bounds at that sat count. That failure stores no shop row,
+and `method` and `asset` do not select a stablecoin.
 
 While the charge is `pending` and the shop payment is `open`, a fetch
 returns its current quote. A quote that has not lapsed is not replaced.
@@ -644,7 +649,10 @@ pending, records the new payment hash against the charge as that route
 already does (`SPEC.md:673`, `src/routes/pay.ts:182`). The existing
 watcher can then mark the charge paid when this invoice settles. This
 fetch does not mint a second invoice for this payment while that one is
-unpaid and unexpired. The insert is
+unpaid and unexpired. When that step stores an offer, a `method` and
+`asset` on this same fetch return that offer's detail, the same detail
+as the callback. With no `method` and no `asset`, the response is the
+pay request below. The insert is
 one row for that `pos_charge_id`. A concurrent fetch that loses the insert
 reads the row that won. It does not create a second payment and does not
 mint another invoice. If the Orchestra key is missing, the mint fails, or
@@ -1023,12 +1031,29 @@ stored value. For Bitcoin and Firo the request is JSON-RPC
 attempt sends `POST` to that chain's origin with
 `Content-Type: application/json` and the body
 `{"jsonrpc":"2.0","id":1,"method":"<method>","params":["<parameter>"]}`.
-It sends at most one repeat of that same body when the first response
-is a JSON-RPC error or a transport error. The broadcast is complete
-only when a `result` equals the derived identifier below, with hex
-letters compared case-insensitively. A missing endpoint, two failures,
-or a result that does not match does not complete it. The proof stays
-unresolved, it is not recorded `refused`, and the response is **503**
+It sends at most one repeat of that same body. The broadcast is complete
+when a `result` equals the derived identifier below, with hex letters
+compared case-insensitively, and that identifier is then stored on the
+proof. A later ask of that proof does not send the raw transaction
+again. It submits the stored identifier. A transport error, or a
+JSON-RPC error whose message contains `already known`, `already in
+mempool`, `already in chain`, or `already in block chain`, without
+regard to case, is not final. That attempt then reads the derived
+identifier from the same endpoint. For an EVM `hex` the read is
+JSON-RPC `eth_getTransactionByHash` and the parameter is the derived
+`txHash`. A `result` that is an object completes the broadcast. A
+`result` of null does not. For Bitcoin and Firo the read is JSON-RPC
+`getrawtransaction` and the parameter is the derived transaction id.
+A `result` that is a string completes the broadcast. A JSON-RPC error
+does not. The read is sent at most twice, and the second send is only
+for a transport error. When the read finds the transaction, the
+broadcast is complete and the submit follows. When the first send was
+a transport error or that duplicate error and the read does not find
+the transaction, the original body is sent once more and judged the
+same way. A missing endpoint, a result that does not match, any other
+JSON-RPC error after that one repeat, or a read that does not find the
+transaction does not complete it. The proof stays unresolved, it is
+not recorded `refused`, and the response is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The submit body
 then sends the derived identifier, not the raw bytes. For an EVM `hex`,
 `txHash` is `0x` plus the 64 lowercase hexadecimal characters of the
