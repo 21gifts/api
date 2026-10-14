@@ -23,7 +23,7 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * `/members` — signed-in member profile cards (live identity + profile note + About me),
- * given/received activity, and on-demand latest-200 post/reply feeds.
+ * given/received activity, and on-demand latest-200 post/shop/reply feeds.
  */
 
 /** Collaborators the `/members` routes need. */
@@ -153,13 +153,14 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * Build the `/members` route group.
  *
  * Mounted at `/members` so the public paths are `GET /members/:accountId`,
- * `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and
- * `GET /members/:accountId/replies`. More-specific paths register before
- * `/:accountId`.
+ * `GET /members/:accountId/activity`, `GET /members/:accountId/posts`,
+ * `GET /members/:accountId/shops`, `GET /members/:accountId/credits`, and
+ * `GET /members/:accountId/replies`.
+ * More-specific paths register before `/:accountId`.
  *
  * @param deps - Auth store, message store, trust store, clock, optional
  *   funding/gift/rate/fiat stores, and optional LNURL server.
- * @returns A Hono app with activity, posts, replies, and member GET.
+ * @returns A Hono app with activity, posts, shops, credits, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -248,6 +249,126 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         );
       } catch {
         logEvent('members.posts.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:accountId/shops', async (c) => {
+      const auth = await requireForumRead(deps, c);
+      if (!auth.ok) {
+        return auth.response;
+      }
+      try {
+        const member = await loadMember(deps, c);
+        if (!member.ok) {
+          return member.response;
+        }
+        const viewerAccountId = auth.account.id;
+        const account = member.account;
+        const rows = await deps.messageStore.listShopsByAccount(account.id, MESSAGE_LIST_LIMIT);
+        const messages = [];
+        for (const row of rows) {
+          const kept = await dropMissingVideoRow(deps.messageStore, row);
+          if (kept === null) {
+            continue;
+          }
+          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
+          let dropped = 0;
+          for (const child of children) {
+            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
+            if (keptChild === null) {
+              dropped += 1;
+            }
+          }
+          const author =
+            kept.accountId === null ? undefined : await deps.authStore.getAccount(kept.accountId);
+          const payable =
+            kept.eventId !== null &&
+            kept.eventId !== '' &&
+            author !== undefined &&
+            receivingAddress(author, deps.lnurlServer) !== null;
+          const role = kept.accountId === null ? undefined : (author?.role ?? 'basis');
+          messages.push(
+            serializeMessage(
+              kept,
+              payable,
+              role,
+              Math.max(0, row.replyCount - dropped),
+              true,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          );
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('members.shops.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:accountId/credits', async (c) => {
+      const auth = await requireForumRead(deps, c);
+      if (!auth.ok) {
+        return auth.response;
+      }
+      try {
+        const member = await loadMember(deps, c);
+        if (!member.ok) {
+          return member.response;
+        }
+        const viewerAccountId = auth.account.id;
+        const account = member.account;
+        const rows = await deps.messageStore.listCreditsByAccount(account.id, MESSAGE_LIST_LIMIT);
+        const messages = [];
+        for (const row of rows) {
+          const kept = await dropMissingVideoRow(deps.messageStore, row);
+          if (kept === null) {
+            continue;
+          }
+          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
+          let dropped = 0;
+          for (const child of children) {
+            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
+            if (keptChild === null) {
+              dropped += 1;
+            }
+          }
+          const payable =
+            kept.eventId !== null &&
+            kept.eventId !== '' &&
+            receivingAddress(account, deps.lnurlServer) !== null;
+          messages.push(
+            serializeMessage(
+              kept,
+              payable,
+              account.role,
+              Math.max(0, row.replyCount - dropped),
+              true,
+              undefined,
+              staffTagOf(account.staffTag),
+            ),
+          );
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              viewerAccountId,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('members.credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
@@ -356,6 +477,8 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           profileMessage = body;
         }
         const counts = await deps.messageStore.countByAccount(account.id);
+        const shopCount = await deps.messageStore.countShopsByAccount(account.id);
+        const creditCount = await deps.messageStore.countCreditsByAccount(account.id);
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
         const grant = await fundingStore.getByAccountId(account.id);
@@ -374,6 +497,8 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             aboutMeHasPhoto,
             postCount: counts.postCount,
             replyCount: counts.replyCount,
+            shopCount,
+            creditCount,
             trust: accountTrust(account.id, accounts, edges),
             fundingReviewedAt: fundingReviewedAt(grant, deps.now()),
             fundingReviewedByName: await fundingReviewedByName(grant, deps.now(), (accountId) =>

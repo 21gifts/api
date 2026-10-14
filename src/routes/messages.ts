@@ -68,9 +68,11 @@ import {
 } from '@/lib/translate-note';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import {
+  publicExternalAuthorCredits,
   publicExternalAuthorPosts,
   publicExternalAuthorProfile,
   publicExternalAuthorReplies,
+  publicExternalAuthorShops,
 } from '@/lib/nostr/external-profile';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
@@ -1504,7 +1506,7 @@ const translateBody = z.object({
  * value 400), `POST /messages/:id/invoice`, and
  * `POST /:id/translate` / `POST /messages/:id/translate`.
  * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, `GET /places`,
- * `GET /:id/external-posts`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
+ * `GET /:id/external-posts`, `GET /:id/external-shops`, `GET /:id/external-credits`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
  * GET the hidden permalink, its replies (including hidden children), and
  * photo/video bytes. `getById` still returns hidden rows for workers. Public
@@ -2171,6 +2173,80 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
       } catch {
         logEvent('messages.external_posts.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/external-shops', async (c) => {
+      const result = await publicExternalAuthorShops(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('messages.external_shops.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/external-credits', async (c) => {
+      const result = await publicExternalAuthorCredits(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('messages.external_credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })

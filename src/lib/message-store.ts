@@ -226,6 +226,56 @@ export function textHasHashtagToken(text: string, name: string): boolean {
   return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, 'i').test(text);
 }
 
+const SHOP_HASHTAG = '21GiftsShop';
+
+function assignedShopAccountId(row: MessageRow): string | null {
+  return row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id;
+}
+
+function isLiveShopNote(row: MessageRow): boolean {
+  return (
+    row.parentId === null && row.deletedAt === null && textHasHashtagToken(row.text, SHOP_HASHTAG)
+  );
+}
+
+function isAccountShop(row: MessageRow, accountId: string): boolean {
+  if (!isLiveShopNote(row)) {
+    return false;
+  }
+  const assigned = assignedShopAccountId(row);
+  if (assigned !== null) {
+    return assigned === accountId;
+  }
+  return row.accountId === accountId;
+}
+
+function isPubkeyShop(row: MessageRow, key: string): boolean {
+  return (
+    isLiveShopNote(row) &&
+    row.accountId === null &&
+    assignedShopAccountId(row) === null &&
+    row.authorPubkey !== null &&
+    row.authorPubkey.toLowerCase() === key
+  );
+}
+
+function isLiveCreditNote(row: MessageRow): boolean {
+  return row.parentId === null && row.deletedAt === null && row.goalRepayable === true;
+}
+
+function isAccountCredit(row: MessageRow, accountId: string): boolean {
+  return isLiveCreditNote(row) && row.accountId === accountId;
+}
+
+function isPubkeyCredit(row: MessageRow, key: string): boolean {
+  return (
+    isLiveCreditNote(row) &&
+    row.accountId === null &&
+    row.authorPubkey !== null &&
+    row.authorPubkey.toLowerCase() === key
+  );
+}
+
 function extraHashtagBindings(
   extraHashtagsByAccountId: ReadonlyMap<string, readonly string[]> | undefined,
 ): { accountIds: string[]; patterns: string[] } | null {
@@ -671,6 +721,110 @@ export interface MessageStore {
    * @returns Message list rows (caller-owned copies).
    */
   listPostsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level shop notes for one 21.gifts account.
+   *
+   * A shop is `parentId` null, `deletedAt` null, and
+   * {@link textHasHashtagToken}(`text`, `'21GiftsShop'`). It belongs to the
+   * assigned shop account when one is set; otherwise to the author. A shop
+   * assigned to someone else does not belong to the author. Not derived
+   * from a capped list.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByAccount(accountId: string): Promise<number>;
+
+  /**
+   * Newest live top-level shop notes for one 21.gifts account, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countShopsByAccount}.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level shop notes for one external Nostr
+   * author.
+   *
+   * A shop is `parentId` null, `deletedAt` null, `accountId` null, shop
+   * account unset, `authorPubkey` matching `pubkey` case-insensitively,
+   * and {@link textHasHashtagToken}(`text`, `'21GiftsShop'`). A note
+   * assigned to a member is not counted here. Not derived from a capped
+   * list.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByPubkey(pubkey: string): Promise<number>;
+
+  /**
+   * Newest live top-level shop notes for an external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countShopsByPubkey}.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level credit notes for one 21.gifts account.
+   *
+   * A credit is `parentId` null, `deletedAt` null, and `goalRepayable`
+   * exactly `true`. It belongs to the author (`accountId`), not the shop
+   * account. Funded, unfunded, and still-live repaid notes all count. Not
+   * derived from a capped list.
+   *
+   * @param accountId - Author account id.
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByAccount(accountId: string): Promise<number>;
+
+  /**
+   * Newest live top-level credit notes for one 21.gifts account, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countCreditsByAccount}.
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level credit notes for one external Nostr
+   * author.
+   *
+   * A credit is `parentId` null, `deletedAt` null, `accountId` null,
+   * `authorPubkey` matching `pubkey` case-insensitively, and
+   * `goalRepayable` exactly `true`. Funded, unfunded, and still-live
+   * repaid notes all count. Not derived from a capped list.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByPubkey(pubkey: string): Promise<number>;
+
+  /**
+   * Newest live top-level credit notes for an external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countCreditsByPubkey}.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
 
   /**
    * Newest live replies for `accountId` (`parentId` not null, `deletedAt`
@@ -2354,6 +2508,28 @@ export class InMemoryMessageStore implements MessageStore {
     return copy;
   }
 
+  #listShops(match: (row: MessageRow) => boolean, limit: number): MessageListRow[] {
+    const shops = this.#rows.filter(match);
+    const sorted = [...shops].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return sorted.slice(0, limit).map((row) => {
+      const copy = this.#withListedMedia(row);
+      const replyCount = this.#rows.filter(
+        (child) =>
+          child.parentId === row.id &&
+          child.deletedAt === null &&
+          (child.accountId !== null ||
+            (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+      ).length;
+      return { ...copy, replyCount };
+    });
+  }
+
   /**
    * Newest-first top-level notes only, capped at `limit`, with `replyCount`
    * of live attributed children (`deletedAt` null and either an account or a
@@ -3162,6 +3338,126 @@ export class InMemoryMessageStore implements MessageStore {
         return { ...copy, replyCount };
       }),
     );
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one 21.gifts account.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByAccount(accountId: string): Promise<number> {
+    let shopCount = 0;
+    for (const row of this.#rows) {
+      if (isAccountShop(row, accountId)) {
+        shopCount += 1;
+      }
+    }
+    return Promise.resolve(shopCount);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one 21.gifts
+   * account, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    return Promise.resolve(this.#listShops((row) => isAccountShop(row, accountId), limit));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one external pubkey.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    let shopCount = 0;
+    for (const row of this.#rows) {
+      if (isPubkeyShop(row, key)) {
+        shopCount += 1;
+      }
+    }
+    return Promise.resolve(shopCount);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    return Promise.resolve(this.#listShops((row) => isPubkeyShop(row, key), limit));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one 21.gifts account.
+   *
+   * @param accountId - Author account id.
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByAccount(accountId: string): Promise<number> {
+    let creditCount = 0;
+    for (const row of this.#rows) {
+      if (isAccountCredit(row, accountId)) {
+        creditCount += 1;
+      }
+    }
+    return Promise.resolve(creditCount);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one 21.gifts
+   * account, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    return Promise.resolve(this.#listShops((row) => isAccountCredit(row, accountId), limit));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one external pubkey.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    let creditCount = 0;
+    for (const row of this.#rows) {
+      if (isPubkeyCredit(row, key)) {
+        creditCount += 1;
+      }
+    }
+    return Promise.resolve(creditCount);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    return Promise.resolve(this.#listShops((row) => isPubkeyCredit(row, key), limit));
   }
 
   /**
@@ -5520,6 +5816,248 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE parent_id IS NULL
          AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [key, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one 21.gifts account
+   * (`parent_id IS NULL`, `deleted_at IS NULL`, `text ~* $2`, assigned
+   * `shop_account_id = $1` or else unassigned `account_id = $1`). Empty
+   * is 0.
+   *
+   * @param accountId - Shop account id (`$1`).
+   * @returns Count of matching shops, mapped via `Number`.
+   */
+  async countShopsByAccount(accountId: string): Promise<number> {
+    const rows = await this.#sql.query<{ shop_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS shop_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND text ~* $2
+         AND (shop_account_id = $1 OR (shop_account_id IS NULL AND account_id = $1))`,
+      [accountId, posixHashtagTokenPattern(SHOP_HASHTAG)],
+    );
+    const row = rows[0];
+    return Number(row?.shop_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one account,
+   * capped at `limit`, with `replyCount` of live attributed children —
+   * a 21.gifts author or an external zapper row with `author_pubkey`
+   * (same subquery as {@link listPostsByAccount}).
+   *
+   * @param accountId - Shop account id (`$1`).
+   * @param limit - Maximum rows (`$3`).
+   * @returns Mapped list rows.
+   */
+  async listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND text ~* $2
+         AND (shop_account_id = $1 OR (shop_account_id IS NULL AND account_id = $1))
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [accountId, posixHashtagTokenPattern(SHOP_HASHTAG), limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one external pubkey
+   * (`account_id IS NULL`, `shop_account_id IS NULL`, `deleted_at IS NULL`,
+   * `author_pubkey` present, `lower(author_pubkey) = $1`, `text ~* $2`).
+   * Empty is 0.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @returns Count of matching shops, mapped via `Number`.
+   */
+  async countShopsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<{ shop_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS shop_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND shop_account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+         AND text ~* $2`,
+      [key, posixHashtagTokenPattern(SHOP_HASHTAG)],
+    );
+    const row = rows[0];
+    return Number(row?.shop_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (same subquery as {@link listPostsByAccount}).
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$3`).
+   * @returns Mapped list rows.
+   */
+  async listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND shop_account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+         AND text ~* $2
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [key, posixHashtagTokenPattern(SHOP_HASHTAG), limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one 21.gifts account
+   * (`parent_id IS NULL`, `deleted_at IS NULL`, `goal_repayable IS TRUE`,
+   * `account_id = $1`). Empty is 0.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns Count of matching credits, mapped via `Number`.
+   */
+  async countCreditsByAccount(accountId: string): Promise<number> {
+    const rows = await this.#sql.query<{ credit_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS credit_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id = $1`,
+      [accountId],
+    );
+    const row = rows[0];
+    return Number(row?.credit_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one account,
+   * capped at `limit`, with `replyCount` of live attributed children —
+   * a 21.gifts author or an external zapper row with `author_pubkey`
+   * (same subquery as {@link listPostsByAccount}).
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [accountId, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one external pubkey
+   * (`account_id IS NULL`, `deleted_at IS NULL`, `author_pubkey` present,
+   * `lower(author_pubkey) = $1`, `goal_repayable IS TRUE`). Empty is 0.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @returns Count of matching credits, mapped via `Number`.
+   */
+  async countCreditsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<{ credit_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS credit_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1`,
+      [key],
+    );
+    const row = rows[0];
+    return Number(row?.credit_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (same subquery as {@link listPostsByAccount}).
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
          AND account_id IS NULL
          AND author_pubkey IS NOT NULL
          AND lower(author_pubkey) = $1
