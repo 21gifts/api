@@ -49,6 +49,7 @@ import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { walletReportRoutes } from '@/routes/wallet-report';
+import { walletHeartRoutes } from '@/routes/wallet-hearts';
 import { memberEventRoutes } from '@/routes/member-events';
 import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
@@ -615,6 +616,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
     }),
   );
+  app.route('/', walletHeartRoutes({ authStore: store, messages: messageStore, now }));
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
   app.route(
     '/',
