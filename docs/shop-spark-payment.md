@@ -56,11 +56,16 @@ not an amount. `quote.expiration` is UTC, millisecond precision, with a
 `Z` suffix, the same form `GET /pay/:username` uses for `expiresAt`. It
 is the earliest of three instants: the earliest `expiresAt` stored on
 that quote's offers, the expiry of the BOLT11 that quote names, and the
-payment deadline. The payment deadline is the end of the open-amount
-window: when the payment has a charge, the instant that charge ends;
-when it has no charge, five minutes after the payment was created,
-unless a stored proof has no result. That unresolved proof does not end the
-quote and does not replace it. That earliest instant ends the quote.
+payment deadline. The open-amount window is five minutes, the
+pending-charge window. It starts when the amount is fixed. A till charge
+fixes the amount when the charge is created. A payment with no charge
+fixes the amount when that payment is created. The window ends when
+those five minutes have passed. A charge that is paid, expired, or
+cancelled ends it at that instant. Creating the shop payment row does
+not start the window again. The payment deadline is the end of that
+window, unless a stored proof has no result. That unresolved proof does
+not end the quote and does not replace it. That earliest instant ends
+the quote.
 It does not by itself move the payment out of `open`. The payment
 leaves `open` when Orchestra accepts a stored proof, or when its
 open-amount window ends while the payment is still `open`, as those
@@ -104,8 +109,7 @@ request `GET /.well-known/lnurlp/:username` returns. A missing, blank, or
 non-absolute `PUBLIC_BASE_URL` leaves that route **404**. The LNURL
 server is not configured, and this document does not turn that **404**
 into a pay request. On the shared pay link an amount is known when the one shop payment is
-the open amount: a till charge is pending, or a payment with no charge
-is still inside its five minutes. The capability is another URL for that
+the open amount: the open-amount window has not passed. The capability is another URL for that
 same payment. When both values resolve and an amount is known, but
 the Orchestra key is missing or no offered pair commits, no stablecoin
 row is added and the shared pay link stays the pay request it already returns.
@@ -208,16 +212,14 @@ amount is that same **409**. While the call is not that **409**, in the
 same transaction, before the new row is inserted, every open shop payment
 of this account whose window has passed is marked `ended` when no stored
 proof is unresolved and no submission claim is unexpired. A payment that
-is still the open amount already returned **409** and is not ended. The
-window has passed when its charge is no longer `pending`, or when it has
-no charge and five minutes have passed since it was created. After that
+is still the open amount already returned **409** and is not ended. After that
 write the account has no open shop payment. The call then creates one
 payment and one token.
 
-A shop payment that is still `open` five minutes after it was created is
+A shop payment that is still `open` when the open-amount window ends is
 marked `ended` on the next read of that payment, before that read
-continues, unless a stored proof has no result. Those five minutes are
-the pending-charge window, whether or not the payment has a charge.
+continues, unless a stored proof has no result. That is the one window
+above. It is not five minutes counted again from the shop payment row.
 Replacing the quote does not move that time. An `accepted` payment is
 not ended by this clock. A stored proof that has no result is not ended
 by this clock. An unexpired submission claim does not keep the payment
@@ -252,7 +254,7 @@ payment.
 references `account`. `amount_sats` is a whole sat count of at least 1.
 `status` is `open`, `accepted`, `paid`, or `ended`. `pos_charge_id` is
 nullable, unique, and references `pos_charge` when set. More than one
-null is allowed. At most one `shop_payment` with status `open` exists per account. The table rejects a second such row, whether or not `pos_charge_id` is set. That row is the open shop payment. While it is the open amount, the pay link returns that row. It is the open amount while its charge is `pending`, or, when it has no charge, while five minutes have not passed since it was created. When the window has passed, the next read of that payment, `POST /pos`, and `POST /pay/:username/payment`, before the next payment, end that row when no stored proof is unresolved and no submission claim is unexpired. A fetch or a create that would insert a second open shop payment stores no shop row and is **409** `{ "error": "A payment is already open" }`. `pos_charge_id` is set only when a till charge fixed the sats. `pay_token` is set only when the payer entered the sats.
+null is allowed. At most one `shop_payment` with status `open` exists per account. The table rejects a second such row, whether or not `pos_charge_id` is set. That row is the open shop payment. While it is the open amount, the pay link returns that row. It is the open amount while the open-amount window has not passed. When the window has passed, the next read of that payment, `POST /pos`, and `POST /pay/:username/payment`, before the next payment, end that row when no stored proof is unresolved and no submission claim is unexpired. A fetch or a create that would insert a second open shop payment stores no shop row and is **409** `{ "error": "A payment is already open" }`. `pos_charge_id` is set only when a till charge fixed the sats. `pay_token` is set only when the payer entered the sats.
 `pay_token` stores only the SHA-256 hash of a 32-byte cryptographic random token, as hex, 64 characters. The raw token is base64url with no padding: 43 characters from `A-Z`, `a-z`, `0-9`, `-`,
 and `_`. The row does not store that raw token. The hash is unique. It is null when a till charge fixed the sats. It is not the
 payment UUID. Guessing that UUID does not select this payment. A token
@@ -357,9 +359,7 @@ proof of the quote it replaced stays on that quote and stays **400**
 for that same proof. The payment id does
 not change. A shop payment stays `open` across those refreshes until it
 is accepted, or until its open-amount window ends, whichever is
-first. Replacing the quote does not extend that window. The window ends
-five minutes after the payment was created, and, when it has a charge,
-when that charge expires unpaid. When the window ends while it is still
+first. Replacing the quote does not extend that window. When the window ends while it is still
 `open`, the next read marks it `ended` before the read continues, unless
 a stored proof has no result. That proof does not end the payment and
 does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, whose stored proof has no result, or whose submission claim has not expired, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof, or by an unexpired claim, is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 stored on a quote of this payment is settled, the payment is `paid`. A later quote does not erase that invoice. The charge becoming `paid` from the Spark invoice, or from a BOLT11 handed out for that charge that is not stored on this payment, does not. While the payment is still `open` and a stored proof has no result, that payment of the charge marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that payment of the charge marks only the charge `paid` and does not move the payment to `ended` in that step. A later Orchestra accept moves that `ended` payment to `accepted` when the BOLT11 stored on that proof's quote is not settled, as the proof section states. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. A refused proof does not move the payment to `ended`. A different proof of the same quote can be stored while the payment is still `open`, and it is sent only when no sent proof of this payment is still unresolved. The read that ends an `open` payment whose window has passed, including a charge that has expired or is already `paid` by the Spark invoice or by a BOLT11 handed out for that charge that is not stored on this payment, still does so when no stored proof is unresolved. `POST /pos` and `POST /pay/:username/payment` end that same open shop payment before the next one, when the payment is not blocking.
@@ -393,16 +393,14 @@ payment's offer.
 
 The link returns a fixed amount only while that payment is the open
 amount. A pending till charge is that amount. A shop payment with no
-charge is that amount for the same five minutes. That is `SPEC.md:329`
+charge is that amount for the same open-amount window. That is `SPEC.md:329`
 and `SPEC.md:549` for a charge. `shop_payment.status` does not by itself
-keep the link pinned after the window has passed. A charge that is
-`paid`, `expired`, or `cancelled`, and a payment with no charge whose
-five minutes have passed, makes the next fetch the Lightning pay
+keep the link pinned after the window has passed. When the open-amount
+window has passed, the next fetch is the Lightning pay
 request, even when the shop payment is still `open` or `accepted`. The
 longer BOLT11 watch does not pin the sticker. Not **404**. A shop
 payment with no charge uses the open, accepted, and ended paragraphs
-below for those five minutes. Its window plays the role of the pending
-charge. The first fetch does not create that payment.
+below for that same window. The first fetch does not create that payment.
 `POST /pay/:username/payment` already did.
 
 While the charge is `pending` and no shop payment exists, the first
@@ -652,8 +650,7 @@ the sticker fetches this same URL.
 ### A known amount
 
 One open amount on the shared pay link is a known amount. It is the one
-open shop payment: a pending till charge, or a payment with no charge
-still inside its five minutes. An amount entered on the page is that
+open shop payment while the open-amount window has not passed. An amount entered on the page is that
 same amount. The capability below is another URL for it. When stablecoin
 rows are served, the response is the pay request below.
 The shared URL is unchanged. Otherwise the pay link keeps today's pinned
@@ -1215,12 +1212,12 @@ The sats of the replacement do not change. The Tether Wallet check fails
 if it reports `OPEN_CRYPTO_PAY_AMOUNT_CHANGED` for that replacement.
 
 An amount entered on the page is that one shop payment. It is the open
-amount of the shared pay link for the same five minutes. A later fetch
+amount of the shared pay link for the open-amount window. A later fetch
 of the capability returns it until the payment is accepted or ended, and
 so does the shared link while it is the open amount. While it is still
-`open`, it ends five minutes after it was created, unless a stored proof
-has no result. An unexpired claim does not keep it `open`. A pending
-till charge is that same open amount and that same window. The page does
+`open`, the next read marks it `ended` when that window ends, unless a
+stored proof has no result. An unexpired claim does not keep it `open`.
+A pending till charge is that same window, not a second one. The page does
 not replace that charge, and a new amount does not replace the open
 payment.
 
@@ -1327,16 +1324,21 @@ charge `paid` again and it does not reopen a cancelled charge. That
 watch does not pin the pay link. Once the charge is `paid`, `expired`,
 or `cancelled`, the next fetch of the shared link is the Lightning pay
 request, even while this payment is `open` or `accepted`. A shop payment
-with no charge frees that link when its five minutes have passed, and it
-is paid when the invoice it named is settled. It is not left open after
-that. The same watcher records that paid state. No zap, gift, or message
-is written for a shop payment.
+with no charge frees that link when the open-amount window has passed,
+and it is paid when the invoice it named is settled. It is not left open
+after that. The same watcher records that paid state, for the same span
+it already uses for a charge: while the window holds, and for ten
+minutes after the window ends. It stops once the payment is paid. While
+the payment is `accepted`, that same tick keeps watching the BOLT11
+stored on the accepted proof past those ten minutes. No zap, gift, or
+message is written for a shop payment.
 
 Sats that arrive after the five minutes still pay that charge when it is
 not yet `paid` and the existing watcher still includes it. That watcher
 is every BOLT11 the api handed out for those sats while the charge was
 pending, and the Spark invoice. A Lightning payment with no Orchestra
-proof is one of those. This document does not add an acceptance check
+proof is one of those. The same late arrival pays a shop payment with no
+charge while that same ten minutes still includes it. This document does not add an acceptance check
 to that watcher. If the Spark invoice has already marked the charge
 `paid`, a later BOLT11 does not change the charge. When that BOLT11 is
 the one stored on the quote of the accepted proof, and Orchestra has
@@ -1344,8 +1346,8 @@ accepted that transfer, it marks the shop payment `paid`. That later
 arrival is the settlement of an invoice already handed out. It is not
 a new proof. The watch past ten minutes applies only while the shop
 payment is `accepted`, and only to the BOLT11 stored on that proof's
-quote. A later quote's invoice is not that invoice. A transfer sent after the charge has
-ended, with no invoice handed out while the charge was pending, does
+quote, whether or not the payment has a charge. A later quote's invoice is not that invoice. A transfer sent after the window has
+ended, with no invoice handed out while the window held, does
 not pay the charge. The sticker then takes a new amount from the next
 payer.
 
