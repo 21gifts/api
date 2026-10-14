@@ -122,7 +122,7 @@ forward. A query with `quote` or `method` is not read as this callback
 or this proof. Those paths never return a shop BOLT11. Username
 `invoice` is not served this payment, so no pay request names them.
 `normalizeUsername` still allows `invoice`, `cb`, and `tx`
-(`src/lib/username.ts:18`). This document does not change that
+(`src/lib/username.ts:28`). This document does not change that
 function. An existing account named `invoice` keeps
 `GET /lnurlp/invoice/invoice`. Usernames `cb` and `tx` are served.
 Their paths are `GET /lnurlp/cb/cb`, `GET /lnurlp/tx/cb`,
@@ -307,12 +307,11 @@ and does not move `detail_issued_at`. A fetch after the payment is
 `shop_proof` stores one proof attempt. `offer_id` references the
 `shop_offer` the quote selected for that method. The row holds that
 offer, the method, the asset, the proof parameter, and the idempotency
-key of that attempt. A completed `hex` broadcast also stores the derived
-identifier on that row. The same quote, method, asset, and proof parameter
+key of that attempt. `sent_at` is null until the step that first calls Orchestra or the chain. That step sets `sent_at` on the stored row before the call returns, and it is not cleared. `created_at` is not that marker. A completed `hex` broadcast also stores the derived
+identifier on that row. `broadcast_started_at` is null until the step that first sends the raw transaction. That step sets it before the response, and it is not cleared. The ten minutes run from `broadcast_started_at`. The same quote, method, asset, and proof parameter
 are one row. A different proof parameter of the same quote is another
-row only when Proof accepts it and the payment is under its cap. It is stored before it is asked. At most one stored proof of a
-payment has been sent and still has no result. That one is the
-unresolved row stored first. While that sent proof has no result,
+row only when Proof accepts it and the payment is under its cap. It is stored before it is asked. A row with `sent_at` null was never sent. A row with `sent_at` set and no result was sent and is unanswered. At most one stored proof of a
+payment has been sent and still has no result. Sent means `sent_at` is set, and a restart still sees it. While that sent proof has no result,
 another row is not sent. That sent proof is retried with its own
 idempotency key until Orchestra returns a definitive result. Only after that result is `refused` is the
 oldest stored proof that has not been sent asked, with its own
@@ -1082,7 +1081,7 @@ transaction after a transport error or a duplicate error, leaves the
 proof unresolved and the response is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The next ask of
 that proof reads the derived identifier again and does not send the raw
-transaction again. Ten minutes after the first send, a read that still
+transaction again. Ten minutes after the stored `broadcast_started_at`, a read that still
 does not find the transaction records the proof `refused`, stores no
 `txId`, does not call Orchestra, and the response is **400**. A refused
 broadcast does not keep a later different proof from being stored or
