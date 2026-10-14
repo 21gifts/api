@@ -95,7 +95,11 @@ export class NoopSpendPing implements SpendPing {
  * `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped`
  * and do not POST.
  *
- * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
+ * For `ping`, 2xx (including 200 skipped and 202 accepted) logs
+ * `spend.ping.ok`. For `pingOnDay`, 202 and 200 `accepted` log
+ * `spend.ping.ok`, 200 `skipped` with a non-empty `reason` logs
+ * `spend.ping.skipped`, and any other status or body logs
+ * `spend.ping.failed`.
  * Network, abort, non-2xx, a store read throw, a live GET failure, and a
  * gift-ledger throw log `spend.ping.failed` and resolve. Never throws.
  * Never logs the token. Optional `grantStatus` is passed to
