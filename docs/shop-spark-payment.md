@@ -113,7 +113,7 @@ path segment and not a query on the pay link. A refreshed quote keeps
 the same callback. The till callback has no query string. A page
 payment's callback adds `pay`, as Page capability states. A wallet
 appends its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
-The mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:514`,
+The mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:468`,
 `src/routes/lnurl-server.ts:331`). The only same strings are
 `GET /lnurlp/cb/invoice` and `GET /lnurlp/tx/invoice`. The shop routes
 do not handle those two paths. They stay that forward, for usernames
@@ -157,7 +157,7 @@ There, the LNURL server is configured only when `LNURL_SERVER_URL` and
 
 `POST /pay/:username/payment` counts its own 120 requests per minute
 per client address, the same window as
-`GET /.well-known/lnurlp/:username` (`SPEC.md:323`). Over that limit
+`GET /.well-known/lnurlp/:username` (`SPEC.md:327`). Over that limit
 the response is **429** `{ "error": "Too many requests" }`, nothing is
 written, no invoice is fetched, and Orchestra is not called. That
 answer is given after the **404** checks and before a quote is
@@ -202,8 +202,8 @@ does not move that time. An `accepted` payment is not ended by this
 clock. A stored proof that has no result is not ended by this clock. An
 unexpired submission claim does not keep the payment `open`. The claim
 stays until the earlier of that offer's `expires_at` and the expiry of
-the BOLT11 stored on that quote, and a proof that matches it is
-still stored as Proof states only while that BOLT11 has not expired. A missing answer does not record that
+the BOLT11 stored on that quote. A matching proof is stored. While that BOLT11 has not expired the stored row can be sent. An expired BOLT11 stores it `refused` with no `txId` and does not send it.
+A missing answer for a proof that was already sent does not record that
 proof `refused` and does not move the payment to `ended`. The proof
 stays unresolved until Orchestra answers, including after the BOLT11 stored on that quote has expired. A retry asks Orchestra again
 for that same stored proof with the same idempotency key.
@@ -375,7 +375,7 @@ return a quote, and `method` and `asset` on this link do not select a
 page offer.
 
 The link returns a fixed amount only while the till charge is
-`pending`. That is `SPEC.md:325` and `SPEC.md:545`. `shop_payment.status`
+`pending`. That is `SPEC.md:329` and `SPEC.md:549`. `shop_payment.status`
 does not pin it. A charge that is `paid`, `expired`, or `cancelled`
 makes the next fetch the Lightning pay request, even when the shop
 payment for that charge is still `open` or `accepted`. The longer
@@ -649,7 +649,7 @@ and this fetch does not read one from that table. Hashes already
 recorded for the charge keep paying the charge. They are not this
 payment's invoice. Minting through that same mint, while the charge is
 pending, records the new payment hash against the charge as that route
-already does (`SPEC.md:673`, `src/routes/pay.ts:182`). The existing
+already does (`SPEC.md:677`, `src/routes/pay.ts:182`). The existing
 watcher can then mark the charge paid when this invoice settles. This
 fetch does not mint a second invoice for this payment while that one is
 unpaid and unexpired. When that step stores an offer, a `method` and
@@ -845,7 +845,7 @@ repeated key, or a value outside that form is **400**
 `{ "error": "Payment was not accepted" }`, stores nothing, and is not
 sent. `GET /lnurlp/tx/:username` counts its own 120 requests per minute
 per client address, the same window as
-`GET /.well-known/lnurlp/:username` (`SPEC.md:323`). Over that limit
+`GET /.well-known/lnurlp/:username` (`SPEC.md:327`). Over that limit
 the response is **429** `{ "error": "Too many requests" }`, nothing is
 stored, and Orchestra is not called. That answer is given before a
 repeat is read. A payment stores at most 8 `shop_proof` rows. A new
@@ -857,9 +857,9 @@ For a proof that is not yet stored, the api stores it when the transfer
 matches the quote and either the payment is still `open` and the quote
 was still valid, or this offer's submission claim has not expired. The
 match is the offered chain, the offered asset, and the quoted amount.
-The BOLT11 stored on that quote must not have expired. An expired
-BOLT11 does not store the proof and does not send it. The response is
-**400** `{ "error": "Payment was not accepted" }`.
+When the BOLT11 stored on that quote has expired, that proof is stored as one `shop_proof` row, recorded `refused`, with no `txId`. It is not sent and Orchestra is not asked. The response is
+**400** `{ "error": "Payment was not accepted" }`. A repeat of that stored parameter reads the row and stays **400**.
+A BOLT11 that has not expired is stored before the Orchestra ask below.
 The claim is set only while the payment is still `open`, in the step
 that returns that offer's detail. When the payment is already `paid` or
 `ended` and this offer has no claim, or that claim has expired, the
@@ -908,7 +908,7 @@ proof. An unexpired claim stores that proof and still does not move the
 payment. Only the accept answer below moves it. While a stored proof has
 no result, that sent proof is not refused because the quote lapsed or because the BOLT11 stored on that quote has since expired.
 A retry of that sent proof asks Orchestra again with the same idempotency key until Orchestra answers `accepted` or `refused`, including after that BOLT11 has expired, and does not send a different proof of this payment.
-An expired BOLT11 records `refused`, stores no `txId`, does not ask Orchestra, and the response is **400** `{ "error": "Payment was not accepted" }` only for a proof that was never sent.
+An expired BOLT11 stores that never-sent proof as one `refused` row with no `txId`, does not ask Orchestra, and the response is **400** `{ "error": "Payment was not accepted" }`.
 The local expiry refusal does not apply to a proof that was already sent.
 That sent proof stays unresolved until Orchestra answers it.
 A later different proof is not sent while that result is absent. Orchestra unreachable is **503**
@@ -1111,7 +1111,7 @@ the order id, with the server key. `order.status` `refunded` or
 `failed` moves that payment from `accepted` to `ended`. Any other
 status does not. A timeout or an HTTP 5xx leaves it `accepted`. The
 status check runs on the existing paid watcher, `startPosPaidWorker`,
-every 2 s (`SPEC.md:502`). This service does not add a second clock
+every 2 s (`SPEC.md:506`). This service does not add a second clock
 and does not register a webhook.
 
 ## Quote
@@ -1288,12 +1288,12 @@ paid watcher already marks the charge `paid` once the Spark invoice or a
 BOLT11 the api handed out settles, and `charge` stays that paid row for
 60 seconds when no pending charge is open. It watches a charge that is
 `pending`, or `expired` less than ten minutes ago, and it stops once
-the charge is paid or cancelled. `SPEC.md:504`. `history` stays the
+the charge is paid or cancelled. `SPEC.md:508`. `history` stays the
 newest 20 rows. This document does not change that response. While a
 `shop_payment` for that charge is `accepted`, this specification keeps
 that same worker watching the BOLT11 stored on the quote of the accepted proof until it settles or
 Orchestra reports the order refunded or failed. The Orchestra status
-read is that same tick, every 2 s (`SPEC.md:502`), not a second clock.
+read is that same tick, every 2 s (`SPEC.md:506`), not a second clock.
 A Spark invoice, or a BOLT11 handed out for that charge that is not
 stored on this payment, that has already marked the charge `paid` does
 not stop that watch and does not mark the shop payment `paid`. It does not stop at ten minutes.
