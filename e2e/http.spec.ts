@@ -141,6 +141,23 @@ test('POST /me/wallet/report without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet/hearts without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/hearts');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet/hearts with a session and an unknown hash returns no hearts', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/hearts', {
+    headers: auth,
+    data: { hashes: ['ab'.repeat(32)] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ hearts: [] });
+});
+
 test('POST /me/wallet/report with a session acknowledges p1', async ({ request }) => {
   const auth = await memberSession(request);
   const res = await request.post('/me/wallet/report', {
