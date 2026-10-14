@@ -61,7 +61,8 @@ pending-charge window. It starts when the amount is fixed. A till charge
 fixes the amount when the charge is created. A payment with no charge
 fixes the amount when that payment is created. The window ends when
 those five minutes have passed. A charge that is paid, expired, or
-cancelled ends it at that instant. Creating the shop payment row does
+cancelled ends it at that instant. The shop payment becoming `paid` or
+`ended` ends it at that instant. Creating the shop payment row does
 not start the window again. The payment deadline is the end of that
 window, unless a stored proof has no result. That unresolved proof does
 not end the quote and does not replace it. That earliest instant ends
@@ -119,8 +120,9 @@ When an amount is known and those rows are served,
 with `/tx` in that callback. The username stays. It is the
 path id of the pay link. `quote.payment` stays in the JSON. It is not a
 path segment and not a query on the pay link. A refreshed quote keeps
-the same callback. The till callback has no query string. A page
-payment's callback adds `pay`, as Page capability states. A wallet
+the same callback. A callback issued for the capability URL adds `pay`,
+as Page capability states. A callback issued for the shared pay link has
+no query string. A wallet
 appends its query itself. Neither URL is `…/lnurlp/<username>/invoice`.
 The mounted forward is `GET /lnurlp/:username/invoice` (`SPEC.md:468`,
 `src/routes/lnurl-server.ts:331`). The only same strings are
@@ -207,7 +209,7 @@ is `open` with a stored proof whose result is absent, or has a submission
 claim that has not expired, or is still the open amount, the call is
 **409** `{ "error": "A payment is already open" }` and writes nothing.
 A null `pos_charge_id` does not exempt it. A `paid` or `ended` payment
-does not. The same amount does not return an existing id. A different
+does not make this call **409**. The same amount does not return an existing id. A different
 amount is that same **409**. While the call is not that **409**, in the
 same transaction, before the new row is inserted, every open shop payment
 of this account whose window has passed is marked `ended` when no stored
@@ -218,12 +220,13 @@ payment and one token.
 
 A shop payment that is still `open` when the open-amount window ends is
 marked `ended` on the next read of that payment, before that read
-continues, unless a stored proof has no result. That is the one window
+continues, unless a stored proof has no result or a submission claim has
+not expired. That is the one window
 above. It is not five minutes counted again from the shop payment row.
 Replacing the quote does not move that time. An `accepted` payment is
 not ended by this clock. A stored proof that has no result is not ended
-by this clock. An unexpired submission claim does not keep the payment
-`open`. The claim stays until the earlier of that offer's `expires_at`
+by this clock. An unexpired submission claim keeps the payment from
+being marked `ended`. The claim stays until the earlier of that offer's `expires_at`
 and the expiry of the BOLT11 stored on that quote. A matching proof is
 stored. While that BOLT11 has not expired the stored row can be sent. An expired BOLT11 stores it by the expired-BOLT11 exception, `refused`, with no `txId`, and does not send it.
 A missing answer for a proof whose `sent_at` is set does not record that
@@ -399,8 +402,9 @@ keep the link pinned after the window has passed. When the open-amount
 window has passed, the next fetch is the Lightning pay
 request, even when the shop payment is still `open` or `accepted`. The
 longer BOLT11 watch does not pin the sticker. Not **404**. A shop
-payment with no charge uses the open, accepted, and ended paragraphs
-below for that same window. The first fetch does not create that payment.
+payment with no charge uses the open and accepted paragraphs below for
+that same window. A `paid` or `ended` payment has already ended the
+window. The first fetch does not create that payment.
 `POST /pay/:username/payment` already did.
 
 While the charge is `pending` and no shop payment exists, the first
@@ -423,11 +427,8 @@ is false. It does not mint a new quote. It is not the Lightning pay
 request with a minimum and a maximum. `method` and `asset` on that call
 are **400** `{ "error": "That payment is not offered" }`.
 
-While the payment is the open amount and the shop payment is `ended`, the
-response is the Lightning pay request that route already serves, with
-both bounds at that sat count. `method` and `asset` do not select a
-stablecoin. The call does not mint a quote, does not replace the ended
-payment, and does not clear `pos_charge_id`.
+A `paid` or `ended` shop payment is not the open amount. That fetch is
+the one after the window, below. It does not clear `pos_charge_id`.
 
 When the open-amount window has passed, the pay link is
 free. The next fetch, with no new open amount, is the Lightning pay
@@ -1324,8 +1325,9 @@ charge `paid` again and it does not reopen a cancelled charge. That
 watch does not pin the pay link. Once the charge is `paid`, `expired`,
 or `cancelled`, the next fetch of the shared link is the Lightning pay
 request, even while this payment is `open` or `accepted`. A shop payment
-with no charge frees that link when the open-amount window has passed,
-and it is paid when the invoice it named is settled. It is not left open
+with no charge frees that link at those same instants: when that payment
+is `paid` or `ended`, and when the five minutes have passed.
+It is paid when the invoice it named is settled. It is not left open
 after that. The same watcher records that paid state, for the same span
 it already uses for a charge: while the window holds, and for ten
 minutes after the window ends. It stops once the payment is paid. While
