@@ -298,7 +298,7 @@ and this offer's `expires_at` are the submission claim. The claim lasts
 until the earlier of `expires_at` and the expiry of the BOLT11 stored
 on that quote. It does not last past that BOLT11. It is not cleared
 when the payment leaves `open`. It does not move when
-`shop_quote.expires_at` moves. One offer has one
+`shop_quote.expires_at` moves, and that quote is not replaced while this claim has not expired. One offer has one
 claim. Returning the same detail again does not write a second claim
 and does not move `detail_issued_at`. A fetch after the payment is
 `paid` or `ended` does not set a claim that was not set while it was
@@ -333,9 +333,9 @@ unresolved. Storing a row does not move the payment from `open` to
 insert another. `created_at` is set.
 
 `open` serves the current quote. A fetch while that quote has not lapsed
-returns it unchanged and does not mint another. A lapsed quote is
-replaced by a new `shop_quote` for the same sats, except while a stored
-proof has no result. The new quote can store its own proof. A refused
+returns it unchanged and does not mint another. A lapsed quote is not replaced while a stored proof has no result, or while any offer of that quote has a submission claim that has not expired.
+Otherwise it is replaced by a new `shop_quote` for the same sats. No second quote is minted while either exception holds, so two quotes of this payment do not accept a transfer at the same time.
+The new quote can store its own proof. A refused
 proof of the quote it replaced stays on that quote and stays **400**
 for that same proof. The payment id does
 not change. A page payment stays `open` across those refreshes until it
@@ -1238,17 +1238,17 @@ verified wallet's minimum and maximum, for an account with a username
 and a verified wallet. No verified wallet is **400**
 `{ "error": "Set up your wallet first", "code": "wallet_required" }`.
 One unexpired pending charge. Five minutes. While a `shop_payment` for
-that account is `accepted`, or `open` with a stored proof whose result
+that account has a non-null `pos_charge_id` and is `accepted`, or is `open` with a stored proof whose result
 is absent, or has a submission claim that has not expired, the call is
 **409** `{ "error": "A payment is already open" }` and writes nothing.
 The claim has not expired when `detail_issued_at` is set and the current
 time is before that offer's `expires_at` and before the expiry of the
-BOLT11 stored on that quote. This includes a page payment
-that is already `paid` or `ended` while that claim has not expired. An
-unanswered proof, and an unexpired claim, do not let this call record a
-proof `refused` or move that payment to `ended`. While no payment of
-that account is in that state, each open page payment whose stored
-proofs are absent or all `refused` is marked `ended`, and the call then
+BOLT11 stored on that quote. A page payment has no `pos_charge_id` and does not make this call **409**.
+That includes a page payment that is `paid` or `ended`, one whose claim has not expired, and one whose sent proof has no result.
+That unanswered proof stays unresolved until Orchestra answers. This call does not record it `refused` or move the page payment to `ended`.
+A page payment keeps running on its own URL. While no till payment with a non-null `pos_charge_id` is in the blocking state,
+this call does not mark an open page payment `ended`.
+While that till payment is not blocking, the call then
 creates the charge. A refused proof is a result, not an in-flight
 payment. A refused proof on an earlier quote does not keep a proof of
 the quote that replaced it from being stored or sent. `DELETE /pos` is
