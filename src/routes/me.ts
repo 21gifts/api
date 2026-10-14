@@ -176,7 +176,7 @@ const ABOUT_EMPTY_ERROR = 'Write something about yourself';
 
 /** Body schema for setting the owner notification level. */
 const notificationLevelBody = z.object({
-  level: z.enum(['all', 'active', 'mentions']),
+  level: z.enum(['all', 'active', 'mentions', 'none']),
 });
 
 /** Body schema for setting heart-tip notifications. */
@@ -828,7 +828,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const parsed = notificationLevelBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
-          { error: 'Expected a JSON body with a level of all, active, or mentions' },
+          { error: 'Expected a JSON body with a level of all, active, mentions, or none' },
           400,
         );
       }

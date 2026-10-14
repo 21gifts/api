@@ -2335,6 +2335,8 @@ describe('parseNotificationLevel', () => {
     expect(parseNotificationLevel('all')).toBe('all');
     expect(parseNotificationLevel('active')).toBe('active');
     expect(parseNotificationLevel('mentions')).toBe('mentions');
+    expect(parseNotificationLevel('messages')).toBe('all');
+    expect(parseNotificationLevel('none')).toBe('none');
     expect(parseNotificationLevel('unknown')).toBe('all');
     expect(parseNotificationLevel(1)).toBe('all');
     expect(parseNotificationLevel(null)).toBe('all');
@@ -2424,6 +2426,19 @@ describe('wantsNotification', () => {
       }
     });
   }
+
+  it('is false at none for every living-room case', () => {
+    for (const row of cases) {
+      expect(
+        wantsNotification({
+          level: 'none',
+          isActive: row.isActive,
+          mentionedAccountId: row.mentionedAccountId,
+          recipientAccountId,
+        }),
+      ).toBe(false);
+    }
+  });
 });
 
 describe('notificationsMatchingLevel', () => {
@@ -2898,6 +2913,48 @@ describe('notificationsMatchingLevel', () => {
         parentById,
       }).map((row) => row.id),
     ).toEqual([]);
+  });
+
+  it('drops stream and mention rows at none and still keeps a heart', () => {
+    const rows: NotificationRow[] = [
+      notification({
+        id: 'n-post',
+        recipientAccountId: 'me',
+        type: 'forum_post',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+      notification({
+        id: 'n-mark',
+        recipientAccountId: 'me',
+        type: 'forum_mention',
+        parentId: 'post-1',
+        replyId: 'post-1',
+      }),
+      notification({
+        id: 'n-heart',
+        recipientAccountId: 'me',
+        type: 'heart',
+        parentId: 'note-1',
+        replyId: ZAP_REPLY_ID,
+        text: '1',
+      }),
+    ];
+    const parentById = new Map<string, MessageRow>([
+      [
+        'post-1',
+        message({ id: 'post-1', accountId: 'actor', parentId: null, sats: 0, text: 'hello' }),
+      ],
+    ]);
+    expect(
+      notificationsMatchingLevel({
+        rows,
+        level: 'none',
+        recipientAccountId: 'me',
+        accounts: [{ id: 'actor', role: 'basis' }],
+        parentById,
+      }).map((row) => row.id),
+    ).toEqual(['n-heart']);
   });
 });
 

@@ -183,7 +183,7 @@ describe('GET /me', () => {
       setup: 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
-      notificationLevel: 'all' | 'active' | 'mentions';
+      notificationLevel: 'all' | 'active' | 'mentions' | 'none';
       notifyHearts: boolean;
       amountUnit: 'btc' | 'fiat';
       locale: 'en' | 'de' | 'es' | 'fil' | null;
@@ -1061,7 +1061,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, or mentions',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1073,7 +1073,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, or mentions',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1121,6 +1121,31 @@ describe('POST /me/notification-level', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
     expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
+  });
+
+  it('rejects messages', async () => {
+    const res = await mount(await seededStore()).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'messages' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
+    });
+  });
+
+  it('sets notificationLevel none and reads it back from the store', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'none' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notificationLevel: string };
+    expect(body.notificationLevel).toBe('none');
+    expect((await store.getAccount('acc'))?.notificationLevel).toBe('none');
   });
 });
 
