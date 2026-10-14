@@ -119,7 +119,7 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   aboutMessageId: string | null;
   /**
-   * Owner fan-out filter (`all` \| `active` \| `mentions`). Default `all`.
+   * Owner fan-out filter (`all` \| `active` \| `mentions` \| `none`). Default `all`.
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notificationLevel: NotificationLevel;
@@ -321,7 +321,7 @@ export interface DebugAccountResponse extends AccountResponse {
   lightningAddressSkippedAt: number | null;
   /** Id of the single top-level profile forum message, or `null`. */
   profileMessageId: string | null;
-  /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
+  /** Owner fan-out filter (`all` \| `active` \| `mentions` \| `none`). */
   notificationLevel: NotificationLevel;
   /** Owner preference for heart-tip notifications. Default `true`. */
   notifyHearts: boolean;

@@ -1127,7 +1127,7 @@ stays `null`)).
 | `aboutMe`                    | string \| null | Profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio, including after a display-name rename when the note text still equals the stored profile-note `name` (Ada→Grace with text `Ada` stays `null`))                                                                                                                       |
 | `aboutMeHasPhoto`            | boolean        | True when the live profile note has a stored JPEG/PNG/WebP. Independent of `aboutMe` (photo-only and name-copy notes can still have a photo). Bytes are `GET /me/about/photo`. Does not expose `profileMessageId`.                                                                                                                                                                                |
 | `aboutMessageId`             | string \| null | Id of the stored About me note when `aboutMe` is non-null. `null` when `aboutMe` is `null` (including a name-copy note). Not a display name.                                                                                                                                                                                                                                                      |
-| `notificationLevel`          | string         | Owner fan-out filter: `all`, `active`, or `mentions`. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                                                                                                                       |
+| `notificationLevel`          | string         | Owner fan-out filter: `all`, `active`, `mentions`, or `none`. `none` is none of the living-room stream, including the dedicated `@username` channel. Default `all`. Owner-only; omitted from public `GET /view/:viewKey` and member cards.                                                                                                                                                        |
 | `amountUnit`                 | string         | Owner amount-entry unit: `btc` or `fiat`. Default `btc`. Owner-only; omitted from public `GET /view/:viewKey` and member cards. The last unit the member chose on any amount field.                                                                                                                                                                                                               |
 | `locale`                     | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                        |
 | `fiat`                       | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                   |
@@ -2252,15 +2252,15 @@ Set the owner fan-out filter. Bearer session required (same as
 { "level": "active" }
 ```
 
-`level` must be `all`, `active`, or `mentions`.
+`level` must be `all`, `active`, `mentions`, or `none`.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
-Body is missing, not JSON, or `level` is not one of those three strings
+Body is missing, not JSON, or `level` is not one of those strings
 → **Response** `400`:
 
 ```json
-{ "error": "Expected a JSON body with a level of all, active, or mentions" }
+{ "error": "Expected a JSON body with a level of all, active, mentions, or none" }
 ```
 
 Success → **Response** `200` with the updated account (same owner JSON as
@@ -4837,7 +4837,7 @@ an author receiving address). `role` is the posting session account's live `acco
 **reply** (`notifyForumReply`, kind `forum_reply`, `url` `/messages/<replyId>`,
 `tag` `forum_reply:<replyId>`) fan out in-app to every account except the
 actor and except each account marked on the created row (no-op when the actor is the official platform account), then filter recipients by each account's `notificationLevel`
-(`all` / `active` / `mentions`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
+(`all` / `active` / `mentions` / `none`). The excluded ids are the created row's mention account ids other than the author, deduped; an empty list omits `excludeAccountIds`. Web Push still goes only to bell subscribers
 and uses the same level filter. Damus-only parents still
 fan out. A self-reply skips only the actor. The same mark exclusion applies to the reply fan-out. `GET /notifications` applies the
 same `notificationLevel` filter to stored rows.

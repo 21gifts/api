@@ -133,10 +133,10 @@ function exceptSkip(ids: readonly string[], skip: string | null): string[] {
  * Parse a stored or request value into a {@link NotificationLevel}.
  *
  * @param raw - Unknown input (DB text, JSON, omitted).
- * @returns `all`, `active`, or `mentions`; anything else → `all`.
+ * @returns `all`, `active`, `mentions`, or `none`; anything else → `all`.
  */
 export function parseNotificationLevel(raw: unknown): NotificationLevel {
-  if (raw === 'all' || raw === 'active' || raw === 'mentions') {
+  if (raw === 'all' || raw === 'active' || raw === 'mentions' || raw === 'none') {
     return raw;
   }
   return 'all';
@@ -161,11 +161,12 @@ export function isStaffAccount(account: { role: string; isPlatform?: boolean }):
 /**
  * Whether a recipient at `level` should receive this living-room event.
  *
- * `all` is always true. `active` is `isActive`. `mentions` is only
+ * `none` is always false. `all` is always true. `active` is `isActive`.
+ * `mentions` is only
  * `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`.
  * A staff or platform actor does not satisfy `mentions`.
  *
- * @param args - Recipient level, active flag, mention target, recipient id.
+ * @param args - Recipient level, active flag, mention target, and recipient id.
  * @returns True when this recipient should get an in-app row and/or Web Push.
  */
 export function wantsNotification(args: {
@@ -174,6 +175,9 @@ export function wantsNotification(args: {
   mentionedAccountId: string | null;
   recipientAccountId: string;
 }): boolean {
+  if (args.level === 'none') {
+    return false;
+  }
   if (args.level === 'all') {
     return true;
   }
@@ -189,7 +193,8 @@ export function wantsNotification(args: {
  * always stay (not living-room fan-out). `all` returns `rows` unchanged. Parent lookup uses
  * `parentById` (`forum_post` / `forum_reply` / `zap` `parentId`); a missing
  * parent is unpaid and not personal. `forum_mention` uses the recipient as `mentionedAccountId` and is active only when the parent exists and `parent.sats > 0`. Zap `text` is the amount string.
- * A staff or platform actor does not satisfy `mentions`.
+ * A staff or platform actor does not satisfy `mentions`. Level `none` drops
+ * stream rows and `forum_mention` and still keeps heart and moderator rows.
  *
  * @param args - Stored rows, owner level, recipient id, accounts, parent notes.
  * @returns Matching rows in the same order.
@@ -599,8 +604,8 @@ export async function notifyForumReply(args: {
  *
  * Level `all` always. Level `active` only when `isActive` (the same flag the
  * sibling post or reply notifier uses). Level `mentions` because
- * `mentionedAccountId` is that recipient. One fan-out per person so the push
- * body can use that account's locale.
+ * `mentionedAccountId` is that recipient. Level `none` does not.
+ * One fan-out per person so the push body can use that account's locale.
  *
  * @param args - Mentioned ids, author, note, active flag, optional stores.
  * @returns Resolves after each targeted fan-out.
