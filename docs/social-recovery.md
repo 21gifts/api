@@ -40,7 +40,7 @@ shares and never leaves the authenticator. On the new device the recovered
 bytes authorize one new passkey for this account, and they are shown as the
 same 12 words. Those words are the phrase the phone already derives.
 The shop payment in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
 these words and does not deliver to a Spark address. Recovery does not
 move bitcoin.
 
@@ -90,7 +90,7 @@ That derivation already exists. This document does not change it. The bytes
 are the backup phrase. They are not uploaded. Recovery uses them to open
 this account on a new device and to show the same 12 words. It does not
 move a balance. The shop payment in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
 these words and does not deliver to a Spark address. It is not
 implemented. Recovery does not move bitcoin.
 
@@ -102,7 +102,7 @@ not, it stops.
 
 Opening the account on a new device and restoring those words is what it
 does. The shop payment in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
 these words and does not deliver to a Spark address. This recovery does
 not send or receive bitcoin. The passkey private key is not split.
 A new passkey is a new door onto the same account. Deleting the old credential on the server stops the
@@ -404,7 +404,7 @@ that still works is the cancel path during the 48 hours.
   bytes is the original 12 words. One share does not.
 - Those bytes authorize a new passkey on the same account and are the
   same 12 words. The shop payment in
-  [`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+  [`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
   these words and does not deliver to a Spark address. Recovery does
   not send or receive bitcoin.
 - **Mein Konto absichern** is optional. The account works with no
