@@ -340,7 +340,7 @@ first. Replacing the quote does not extend those five minutes. When
 they pass while it is still `open`, the next read marks it `ended`
 before the read continues, unless a stored proof has no result. That
 proof does not end the payment and does not replace the quote. A till payment moves to `ended` when its charge expires
-unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, whose stored proof has no result, or whose submission claim has not expired, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof, or by an unexpired claim, is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 stored on a quote of this payment is settled, the payment is `paid`. A later quote does not erase that invoice. The charge becoming `paid` from its separate Spark invoice does not. While the payment is still `open` and a stored proof has no result, that Spark payment marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that Spark payment moves it to `ended`. A later Orchestra accept moves that `ended` payment to `accepted` when the BOLT11 stored on that proof's quote is not settled, as the proof section states. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. A refused proof does not move the payment to `ended`. A different proof of the same quote can be stored while the payment is still `open`, and it is sent only when no sent proof of this payment is still unresolved. The read that ends an `open` payment whose charge has expired, or whose charge is already `paid` from that separate Spark invoice, still does so when no stored proof is unresolved.
+unpaid while the payment is still `open`, unless a stored proof has no result. That proof does not end the payment and does not replace the quote. `DELETE /pos`, while the pending charge it would cancel belongs to a payment that is `accepted`, whose stored proof has no result, or whose submission claim has not expired, is **409** `{ "error": "A payment is already open" }` and cancels nothing. The charge status stays with the existing watcher. The Spark invoice or a BOLT11 the api handed out can already mark that charge `paid`, and this document does not change that. A charge held only by an unanswered proof, or by an unexpired claim, is not cancelled by this call. This call does not record that proof `refused` and does not move the payment to `ended`. The proof stays unresolved until Orchestra answers. Otherwise, when it cancels that pending charge, an `open` payment moves to `ended`. When the BOLT11 stored on a quote of this payment is settled, the payment is `paid`. A later quote does not erase that invoice. The charge becoming `paid` from the Spark invoice, or from a BOLT11 handed out for that charge that is not stored on this payment, does not. While the payment is still `open` and a stored proof has no result, that payment of the charge marks only the charge `paid`. It does not move the payment to `ended` and does not record the proof `refused`. The proof stays unresolved until Orchestra answers. Otherwise, while the payment is still `open`, that payment of the charge moves it to `ended`. A later Orchestra accept moves that `ended` payment to `accepted` when the BOLT11 stored on that proof's quote is not settled, as the proof section states. While it is `accepted`, it stays `accepted` until that BOLT11 settles or Orchestra reports the order refunded or failed. A refused proof does not move the payment to `ended`. A different proof of the same quote can be stored while the payment is still `open`, and it is sent only when no sent proof of this payment is still unresolved. The read that ends an `open` payment whose charge has expired, or whose charge is already `paid` by the Spark invoice or by a BOLT11 handed out for that charge that is not stored on this payment, still does so when no stored proof is unresolved.
 
 The implementing change adds these tables. This document does not migrate
 them.
@@ -903,7 +903,8 @@ not expired. A stored proof of this payment that was not sent is
 recorded `refused` in that same step, stores no `txId`, and is not sent.
 The response is **200** `{ "txId": "<id>" }` in each of those cases,
 including when the quote has lapsed since the proof was stored, and
-including when the separate Spark invoice has already marked the charge
+including when the Spark invoice, or a BOLT11 handed out for that charge
+that is not stored on this payment, has already marked the charge
 `paid`. That **200** answers the request whose proof parameter is the
 proof Orchestra just accepted. A request whose own stored proof is
 `refused` stays **400**, including when this step accepted a different
@@ -922,8 +923,9 @@ that offer's claim has not expired, and it is sent only when no sent
 proof of this payment is still unresolved. Storing that different proof
 does not move a `paid` or `ended` payment.
 While the payment is still `open` and no stored proof is unresolved,
-the read that sees the charge already `paid` from that separate Spark
-invoice moves the payment to `ended`. Otherwise, while the payment is
+the read that sees the charge already `paid` by the Spark invoice, or by
+a BOLT11 handed out for that charge that is not stored on this payment,
+moves the payment to `ended`. Otherwise, while the payment is
 still `open` and no stored proof is unresolved, the five-minute read
 may end it again. An unexpired claim does not keep it `open`. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
@@ -1234,9 +1236,9 @@ newest 20 rows. This document does not change that response. While a
 that same worker watching the BOLT11 stored on the quote of the accepted proof until it settles or
 Orchestra reports the order refunded or failed. The Orchestra status
 read is that same tick, every 2 s (`SPEC.md:502`), not a second clock.
-A Spark invoice that
-has already marked the charge `paid` does not stop that watch and does
-not mark the shop payment `paid`. It does not stop at ten minutes.
+A Spark invoice, or a BOLT11 handed out for that charge that is not
+stored on this payment, that has already marked the charge `paid` does
+not stop that watch and does not mark the shop payment `paid`. It does not stop at ten minutes.
 That longer watch is not mounted. The same tick also includes a shop
 payment that became `accepted` after the charge was already `paid`.
 The worker does not stay stopped for that BOLT11. It does not mark the
