@@ -1072,7 +1072,9 @@ describe('HttpSpendPing', () => {
     );
     expect(String(seenInit?.body)).not.toContain('2026-09-20');
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -1101,7 +1103,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
@@ -1125,7 +1127,9 @@ describe('HttpSpendPing', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'spend.ping.skipped' && e['address'] === ADDRESS && e['reason'] === 'paid',
+          e['event'] === 'spend.ping.skipped' &&
+          e['addressRef'] === ADDRESS_REF &&
+          e['reason'] === 'paid',
       ),
     ).toBe(true);
   });
@@ -1143,7 +1147,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1162,7 +1168,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1181,7 +1189,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1201,7 +1209,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1356,7 +1364,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1383,7 +1391,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
