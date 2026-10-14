@@ -205,8 +205,8 @@ stays until the earlier of that offer's `expires_at` and the expiry of
 the BOLT11 stored on that quote, and a proof that matches it is
 still stored as Proof states only while that BOLT11 has not expired. A missing answer does not record that
 proof `refused` and does not move the payment to `ended`. The proof
-stays unresolved until Orchestra answers. A retry asks Orchestra again
-for that same stored proof.
+stays unresolved until Orchestra answers, including after the BOLT11 stored on that quote has expired. A retry asks Orchestra again
+for that same stored proof with the same idempotency key.
 
 This call does not answer **409**. The page does not treat a later fetch
 of the shared pay link as the amount this payer just entered.
@@ -326,7 +326,7 @@ was not sent is not asked. That row is recorded `refused`, it stores no
 payment gets its own rows and does not overwrite an earlier proof. A
 quote has at most one `accepted` proof. A payment has at most one
 `accepted` proof. A sent row stays unresolved until Orchestra answers
-it, then `refused` or `accepted`. An `accepted` result stores the
+it, including after the BOLT11 stored on its quote has expired, then `refused` or `accepted`. An `accepted` result stores the
 `txId` Orchestra returned. A `refused` result stores none. Absent is
 unresolved. Storing a row does not move the payment from `open` to
 `accepted`. A repeat of that same row answers from it and does not
@@ -906,12 +906,12 @@ and submits that offer's `provider_ref`. If it lists both and no
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended` is not moved to `accepted` by storing a later
 proof. An unexpired claim stores that proof and still does not move the
 payment. Only the accept answer below moves it. While a stored proof has
-no result, that sent proof is not refused for quote expiry while the
-BOLT11 stored on that quote has not expired. An expired BOLT11 records
-it `refused`, stores no `txId`, does not ask Orchestra, and the
-response is **400** `{ "error": "Payment was not accepted" }`. A retry
-of a proof whose BOLT11 has not expired asks Orchestra again for that
-same sent proof and does not send a different proof of this payment. Orchestra unreachable is **503**
+no result, that sent proof is not refused because the quote lapsed or because the BOLT11 stored on that quote has since expired.
+A retry of that sent proof asks Orchestra again with the same idempotency key until Orchestra answers `accepted` or `refused`, including after that BOLT11 has expired, and does not send a different proof of this payment.
+An expired BOLT11 records `refused`, stores no `txId`, does not ask Orchestra, and the response is **400** `{ "error": "Payment was not accepted" }` only for a proof that was never sent.
+The local expiry refusal does not apply to a proof that was already sent.
+That sent proof stays unresolved until Orchestra answers it.
+A later different proof is not sent while that result is absent. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
 stays unresolved. An `open` payment stays `open`. A `paid` payment
 stays `paid`. A missing answer does
@@ -959,7 +959,7 @@ moves the payment to `ended`. Otherwise, while the payment is
 still `open` and no stored proof is unresolved, the five-minute read
 may end it again. An unexpired claim does not keep it `open`. A repeat answers from that stored result, not from the
 payment status. Only `accepted` with its stored `txId` is **200**. A
-proof that was sent and has no result is asked of Orchestra again for that same stored proof, even when the BOLT11
+proof that was sent and has no result is asked of Orchestra again for that same stored proof, with that proof's own idempotency key, including after the BOLT11 stored on that quote has expired, and even when the BOLT11
 has been paid directly and the payment is already `paid`. When that answer carries `orderId`, the stored proof is `accepted` and the response is **200** `{ "txId": "<id>" }`. A `paid` payment stays `paid`. A different proof that has not been sent is not asked while that result is absent. A missing answer, an HTTP 409 `idempotency_in_progress`, or an HTTP 200 without `orderId` does not record it `refused`. The response is **503** `{ "error": "Stablecoin payment is unavailable" }`, not **400**. A `refused` proof stays **400**, including
 when that BOLT11 has since been paid. That direct payment does not
 invent a `txId`. From the moment Orchestra has accepted, the sats stay
