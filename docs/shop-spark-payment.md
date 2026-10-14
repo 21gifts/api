@@ -433,15 +433,18 @@ The callback does not return a new transaction detail after the quote
 has lapsed. A repeat of the stored detail, while that offer's claim has
 not expired, is the exception above.
 
-A callback with no `method` is the Lightning path below. It does not
+A callback with no `method` is the LNURL amount path below. It does not
 mint an invoice. A `pay` query selects that one page payment. With no
 `pay` query the call is the one open till payment and does not return
 a page payment. It does not choose among page payments by amount.
+`method=Lightning` is not this path.
 `GET /lnurlp/cb/invoice` is not that path. It is the
 invoice forward for username `cb` on every query, including `amount`
 with no `method`, and it does not return a shop BOLT11.
 
-A `method` and `asset` pair the quote does not offer is **400**
+`method=Lightning` with `asset=BTC` is offered. The response is the
+OpenCryptoPay Lightning detail below, not this error. Any other
+`method` and `asset` pair the quote does not offer is **400**
 `{ "error": "That payment is not offered" }`.
 
 A proof the quote does not accept, or a transfer Orchestra has not
@@ -465,8 +468,8 @@ The call does not wait for bitcoin to arrive. A repeat of that stored
 `refused` proof and a proof with no result are not that repeat. The
 check treats that success as a payment only when the body carries `txId`.
 
-A Lightning call on `GET /lnurlp/cb/:username` has no `method`, and
-the username is not `invoice`. Username `invoice` is not served this
+The LNURL amount call on `GET /lnurlp/cb/:username` has no `method` and
+no `asset`, and the username is not `invoice`. Username `invoice` is not served this
 payment, so this call is never `GET /lnurlp/cb/invoice`. That path is
 the invoice forward for username `cb` on every query, including
 `amount` alone, and it does not return a shop BOLT11. This call sends
@@ -483,8 +486,10 @@ When `amount` is that charge's sat count times 1000, the response is
 `{ "pr": "<bolt11>" }` for the BOLT11 stored on that till row. It does
 not return a page payment. No open till payment, or a different amount,
 is that same **400** and returns no invoice. `quote` is not read on
-this path. Variable invoices stay on the invoice callback that pay
-request already names,
+this path. This call is not the OpenCryptoPay Lightning detail. That
+detail sends `method=Lightning`, `asset=BTC`, and `quote`, and it
+returns the BOLT11 stored on that quote. Variable invoices stay on the
+invoice callback that pay request already names,
 `<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`.
 
 ## Standard and settlement
@@ -672,7 +677,10 @@ A `transferAmounts` entry has `method`, `minFee`, `assets`, and
 is the bitcoin quantity named above. A stablecoin amount is the decimal
 string named above. Lightning's method is `Lightning`, its asset is
 `BTC`, its `minFee` is the number 0, and `available` is true while the payment is `open`. Each other
-method is one chain Orchestra quoted. Its assets are `USDT`, `USDC`, or
+method is one chain Orchestra quoted. A chain whose proof is `hex` is
+listed only when `SHOP_CHAIN_BROADCAST` has an endpoint for it. A `tx`
+chain needs no endpoint. A hex chain with no endpoint is absent, is not
+offered, and is not a 503. Its assets are `USDT`, `USDC`, or
 both. No other asset is listed. `minFee` is the number Orchestra named
 for that chain, when the quote names one. The api does not invent a gas
 price and does not change the unit of a fee the quote names. The standard
@@ -720,16 +728,27 @@ response that returns the detail, and only while the payment is still
 stored detail while the claim has not expired, including when the
 payment is already `paid` or `ended`. After the claim has expired, the
 detail is not returned. A fetch that does not return the detail does
-not set a claim.
+not set a claim. `method=Lightning` with `asset=BTC` is not an offer.
+It returns the BOLT11 named in Transaction and sets no claim.
 
 ### Transaction
 
 The wallet calls `callback` with a GET and the query parameters `quote`,
 `method`, and `asset`. The method name is the name in `transferAmounts`.
 The response is the transaction detail the standard defines for that
-method, and it expires with the quote. Lightning returns the BOLT11
-invoice in `pr`. A `pr` that is not an invoice is not a Lightning
-detail. A stablecoin returns a `uri` whose destination is Orchestra's.
+method, and it expires with the quote. The OpenCryptoPay Lightning
+detail is exactly `method=Lightning` and `asset=BTC`. A `pay` query
+selects that page payment, as on the LNURL amount path. With no `pay`,
+the payment is the one open till payment and not a page payment.
+`quote` is that payment's current quote. The body is
+`{ "pr": "<bolt11>" }` for the BOLT11 stored on that quote. It does not
+mint, it does not insert `shop_selection`, and it sets no submission
+claim. There is no stablecoin offer for Lightning. A `pr` that is not
+an invoice is not that detail. `method=Lightning` with any other asset,
+a missing open payment, or a `quote` that is not that current quote, is
+**400** `{ "error": "That payment is not offered" }`. When the payment
+is not `open`, that query is the same 400. A stablecoin method is every listed
+method other than `Lightning`. A stablecoin returns a `uri` whose destination is Orchestra's.
 21.gifts does not hold it. Orchestra's quote does not contain that URI.
 The quote sets `includeCalldata` so an EVM source can return an unsigned
 transaction: chain id, destination, data, and value. For an exact-out
@@ -741,11 +760,13 @@ that returns only a deposit address. An EVM `uri` Tether Wallet for
 Android 1.11.0 (134) cannot route as EIP-681 fails the check in Tether
 Wallet.
 
-The same detail is returned by one GET that sets `method` and `asset` on
-the pay request URL. On the shared link that payment is the till
-payment, and only while it is still `open`. On the capability it is that
-page payment, including a repeat while the claim has not expired. The
-detail belongs to the current quote. The first response that returns an
+The same stablecoin detail is returned by one GET that sets `method` and
+`asset` on the pay request URL. On the shared link that payment is the
+till payment, and only while it is still `open`. On the capability it is
+that page payment, including a repeat while the claim has not expired.
+The detail belongs to the current quote. Lightning on either URL is the
+OpenCryptoPay Lightning detail, returned only while the payment is
+`open`, and it sets no claim. The first response that returns an
 offer's detail sets that offer's submission claim in the same step, and
 only while the payment is still `open`. When the method lists both
 assets, the first callback selects the named asset and returns that
@@ -773,8 +794,8 @@ and the username is not `invoice`. They are not
 and `tx`, on every query. They are not this callback and not this
 proof, and they do not return a shop BOLT11. Lightning sends no proof.
 A Lightning wallet that calls a callback this document issued, with
-the fixed amount, receives the BOLT11 stored on the one payment that
-callback names. A page callback names its payment with `pay`. A till
+the fixed amount and no `method`, receives the BOLT11 stored on the one
+payment that callback names. A page callback names its payment with `pay`. A till
 callback names the one open till payment and does not name a page
 payment. That call does not choose by amount among page payments and
 does not mint. That callback is never `/lnurlp/cb/invoice`. That call
@@ -911,6 +932,17 @@ configured only when the key is non-blank and the origin is absolute.
 Otherwise the Orchestra key is missing. The key is not logged and not
 returned.
 
+`SHOP_CHAIN_BROADCAST` is the transport for a `hex` proof. It is a JSON
+object. These routes are not mounted, so the current process does not
+read it. A later build that mounts them treats a missing or blank value
+as `{}` and still boots. Each value is an absolute `http` or `https`
+origin with no path and no query. When that origin has userinfo, the
+broadcast request uses HTTP Basic with it, and the userinfo is not
+logged. An EVM chain's key is `evm:` plus the decimal `chainId` on that
+offer's transaction, such as `evm:1`. Bitcoin's key is `bitcoin`. Firo's
+key is `firo`. Any other key is ignored. A hex chain whose key is
+absent, or whose value is not such an origin, is not offered.
+
 Every call that sends a body uses `Content-Type: application/json`,
 `Authorization: Bearer` plus the server key, and `X-Idempotency-Key` of
 1 to 255 printable ASCII characters. A retry of the same unfinished
@@ -962,26 +994,33 @@ Asking Orchestra about a stored proof is
 offer. The quote sent is that offer's `provider_ref`, the Orchestra
 `quoteId`. The call uses that proof's idempotency key. Orchestra's submit body has no field for a raw transaction. An unknown
 field is ignored, so the stored `hex` is not sent. This service
-broadcasts only a stored `hex`. That value is the raw signed
-transaction, with an optional leading `0x` removed before the bytes are
-published. EVM, Bitcoin, and Firo are the only chains this service
-broadcasts. A `tx` proof is not broadcast. It is the identifier of a
-transaction the wallet already published, and this service does not
-rebuild a transaction from it. For `hex`, before the submit call, this
-service publishes those stored bytes on the chain the offer named. This
-document does not add a chain RPC URL. A missing transport, a transport
-error, or a result that is not the derived identifier below does not
-complete the broadcast. The proof stays unresolved, it is not recorded
-`refused`, and the response is **503**
-`{ "error": "Stablecoin payment is unavailable" }`. The body then sends
-the derived identifier, not the raw bytes. For an EVM `hex`, `txHash`
-is `0x` plus the 64 lowercase hexadecimal characters of the Keccak-256
-hash of the signed transaction bytes. For Bitcoin, `bitcoinTxid` is the
-64 lowercase hexadecimal characters of the transaction id, the double
-SHA-256 of those bytes reversed, and the body does not send `txHash`
-or `bitcoinVout`. For Firo, `txHash` is that same Bitcoin-style
-transaction id. For `tx`, `txHash` is the stored parameter unchanged,
-and no broadcast is attempted.
+broadcasts a stored `hex` only through `SHOP_CHAIN_BROADCAST`, and only
+before the submit call. EVM, Bitcoin, and Firo are the only chains this
+service broadcasts. A `tx` proof is not broadcast. It is the identifier
+of a transaction the wallet already published, and this service does not
+rebuild a transaction from it. The stored `hex` is the raw signed
+transaction with no leading `0x`. For an EVM offer the request is
+JSON-RPC `eth_sendRawTransaction` and the parameter is `0x` plus that
+stored value. For Bitcoin and Firo the request is JSON-RPC
+`sendrawtransaction` and the parameter is the stored value. One proof
+attempt sends `POST` to that chain's origin with
+`Content-Type: application/json` and the body
+`{"jsonrpc":"2.0","id":1,"method":"<method>","params":["<parameter>"]}`.
+It sends at most one repeat of that same body when the first response
+is a JSON-RPC error or a transport error. The broadcast is complete
+only when a `result` equals the derived identifier below, with hex
+letters compared case-insensitively. A missing endpoint, two failures,
+or a result that does not match does not complete it. The proof stays
+unresolved, it is not recorded `refused`, and the response is **503**
+`{ "error": "Stablecoin payment is unavailable" }`. The submit body
+then sends the derived identifier, not the raw bytes. For an EVM `hex`,
+`txHash` is `0x` plus the 64 lowercase hexadecimal characters of the
+Keccak-256 hash of the signed transaction bytes. For Bitcoin,
+`bitcoinTxid` is the 64 lowercase hexadecimal characters of the
+transaction id, the double SHA-256 of those bytes reversed, and the
+body does not send `txHash` or `bitcoinVout`. For Firo, `txHash` is
+that same Bitcoin-style transaction id. For `tx`, `txHash` is the
+stored parameter unchanged, and no broadcast is attempted.
 The body sends no source address. HTTP 200 with `orderId` is accepted.
 The stored `txId` is that `orderId`. It is not the payer's transaction
 hash and it is not the raw `hex`. HTTP 409 whose `error.code` is
@@ -1216,8 +1255,9 @@ and broadcasts it. It is not the OpenCryptoPay client. That broadcast
 is not this proof. An OpenCryptoPay `hex` proof is the raw signed
 transaction, and that client does not broadcast it. An OpenCryptoPay
 `tx` proof is sent only after that client has published the transaction.
-This service broadcasts only the stored `hex`, as the submit call
-states. The client is
+This service broadcasts a stored `hex` only through
+`SHOP_CHAIN_BROADCAST`, as the submit call states. A chain with no
+endpoint there is not offered. The client is
 the app module `services/opencryptopay/`. That module has a route and a
 pending-proof store. An EVM payment instruction is an EIP-681 URI.
 
@@ -1296,9 +1336,12 @@ the settled sale, are not the result of the check.
 
 The check is one test in the existing HTTP end-to-end suite. That suite
 boots the service and sends HTTP. It does not open a browser and it
-does not broadcast a stablecoin transfer. Orchestra is a stand-in that
-returns one quote and accepts one proof. The test is not in the suite
-today. It cannot pass until the routes in this document exist.
+does not publish a transaction on a public chain. For each `hex` chain
+the fixture offers, `SHOP_CHAIN_BROADCAST` names the stand-in, and the
+stand-in returns the derived identifier. A hex chain with no endpoint
+is absent. Orchestra is a stand-in that returns one quote and accepts
+one proof. The test is not in the suite today. It cannot pass until the
+routes in this document exist.
 
 The driver is the OpenCryptoPay routine from Tether Wallet for Android
 1.11.0 (134). For a pending till charge, the input is the sticker
@@ -1309,8 +1352,14 @@ and requests `/.well-known/lnurlp/pay/<token>`. The sticker is not that
 input. With no pending till charge, a request to the sticker is the
 no-amount case below, including while a page payment is open.
 
-For one open amount, the routine reaches settled for each stablecoin method the pay link offers, and only for the asset stored on the quote for that method. Lightning is offered and is not in that loop. A second asset on the same method does not have to reach settled. `requestedAmount` is asset `BTC`. That does
-not remove the stablecoin rows. The proof request for a till payment is
+For one open amount, the routine reaches settled for each stablecoin method the pay link offers, and only for the asset stored on the quote for that method. Lightning is offered and is not in the settled loop. A second asset on the same method does not have to reach settled. `requestedAmount` is asset `BTC`. That does
+not remove the stablecoin rows. The Lightning request in this check is
+one GET of `callback` with `method=Lightning`, `asset=BTC`, and `quote`
+set to that payment's current quote. A page callback keeps its `pay`
+query. A till callback has none. The body is `{ "pr": "<bolt11>" }` for
+the BOLT11 stored on that quote. A different Lightning query is not this
+check. The LNURL amount call, which sends no `method`, is not this
+request. The proof request for a till payment is
 `GET /lnurlp/tx/:username` with no `pay` query. For a page payment it
 is that same path with the `pay` query the callback carried. A
 different path fails the check. A repeat of
