@@ -666,10 +666,10 @@ export interface MessageStore {
 
   /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
-   * and on-disk videos.
+   * and on-disk videos. A credit note that has received sats is never removed.
    *
    * @param id - Message id.
-   * @returns True when a row was removed.
+   * @returns True when a row was removed. False when it is missing or a credit with sats.
    */
   deleteById(id: string): Promise<boolean>;
 
@@ -680,11 +680,15 @@ export interface MessageStore {
    * @param id - Message id.
    * @param at - Hide timestamp (cloned onto newly tagged rows).
    * @param byAccountId - Staff account id recorded as `deletedBy`.
+   * @param expectedSats - When set, hide only a live target whose `sats` still
+   *   equals this value, and its replies only then, in one atomic step.
    * @returns `false` when no row has that id; `true` when the id exists
    *   (already tagged or newly tagged). An already-tagged target keeps its
    *   original stamps; untagged direct replies get this call's `at`/`by`.
+   *   With `expectedSats`, `false` also means nothing changed because the
+   *   target is already tagged or its `sats` moved.
    */
-  markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean>;
+  markDeleted(id: string, at: Date, byAccountId: string, expectedSats?: number): Promise<boolean>;
 
   /**
    * Unhide a note by clearing `deletedAt` / `deletedBy`. Inverse of
@@ -4028,18 +4032,19 @@ export class InMemoryMessageStore implements MessageStore {
 
   async deleteById(id: string): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined) {
+    if (row === undefined || (row.goalRepayable === true && row.sats > 0)) {
       return false;
     }
     const childIds = this.#rows.filter((item) => item.parentId === id).map((item) => item.id);
     const ids = new Set([id, ...childIds]);
+    const videos: { id: string; mime: ForumVideoContentType }[] = [];
     for (const item of this.#rows) {
       if (!ids.has(item.id)) {
         continue;
       }
       const mime = item.videoContentType;
       if (item.hasVideo === true && mime !== undefined && mime !== null) {
-        await removeForumVideo(item.id, mime);
+        videos.push({ id: item.id, mime });
       }
       this.#photos.delete(item.id);
       this.#extraPhotos.delete(item.id);
@@ -4056,12 +4061,18 @@ export class InMemoryMessageStore implements MessageStore {
         this.#receipts.delete(receiptEventId);
       }
     }
+    for (const video of videos) {
+      await removeForumVideo(video.id, video.mime);
+    }
     return true;
   }
 
-  markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean> {
+  markDeleted(id: string, at: Date, byAccountId: string, expectedSats?: number): Promise<boolean> {
     const target = this.#rows.find((item) => item.id === id);
     if (target === undefined) {
+      return Promise.resolve(false);
+    }
+    if (expectedSats !== undefined && (target.deletedAt !== null || target.sats !== expectedSats)) {
       return Promise.resolve(false);
     }
     if (target.deletedAt === null) {
@@ -5425,10 +5436,16 @@ export class PostgresMessageStore implements MessageStore {
   async deleteById(id: string): Promise<boolean> {
     const targets = await this.#sql.query<{ id: string; video_content_type: string | null }>(
       `WITH
+         root AS (
+           SELECT id
+           FROM message
+           WHERE id = $1 AND NOT (goal_repayable IS TRUE AND sats > 0)
+           FOR UPDATE
+         ),
          targets AS (
            SELECT id, video_content_type
            FROM message
-           WHERE id = $1 OR parent_id = $1
+           WHERE id IN (SELECT id FROM root) OR parent_id IN (SELECT id FROM root)
          ),
          del_receipts AS (
            DELETE FROM nostr_zap_receipt
@@ -5458,7 +5475,28 @@ export class PostgresMessageStore implements MessageStore {
     return true;
   }
 
-  async markDeleted(id: string, at: Date, byAccountId: string): Promise<boolean> {
+  async markDeleted(
+    id: string,
+    at: Date,
+    byAccountId: string,
+    expectedSats?: number,
+  ): Promise<boolean> {
+    if (expectedSats !== undefined) {
+      const held = await this.#sql.query<{ id: string }>(
+        `WITH held AS (
+           UPDATE message SET deleted_at = $2, deleted_by = $3
+           WHERE id = $1 AND deleted_at IS NULL AND sats = $4
+           RETURNING id
+         ), replies AS (
+           UPDATE message SET deleted_at = $2, deleted_by = $3
+           WHERE parent_id = $1 AND deleted_at IS NULL AND EXISTS (SELECT 1 FROM held)
+           RETURNING id
+         )
+         SELECT id FROM held`,
+        [id, at, byAccountId, expectedSats],
+      );
+      return held[0] !== undefined;
+    }
     const rows = await this.#sql.query<{ id: string }>(
       `WITH target AS (
          SELECT id FROM message WHERE id = $1

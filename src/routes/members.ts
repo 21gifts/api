@@ -64,7 +64,9 @@ type MemberLoad = { ok: true; account: Account } | { ok: false; response: Respon
  *
  * @param store - Message store.
  * @param row - Store row.
- * @returns The row, or `null` when it was deleted.
+ * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
+ *   credit with sats, is read again and returned while it is live; `null` when
+ *   it is gone or hidden.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -81,7 +83,10 @@ async function dropMissingVideoRow(
   if (present) {
     return row;
   }
-  await store.deleteById(row.id);
+  if (!(await store.deleteById(row.id))) {
+    const kept = await store.getById(row.id);
+    return kept !== undefined && kept.deletedAt === null ? kept : null;
+  }
   logEvent('messages.video.dropped');
   return null;
 }

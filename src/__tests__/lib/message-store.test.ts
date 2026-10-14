@@ -1043,6 +1043,33 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listLatest(10)).map((row) => row.id)).toEqual(['b']);
   });
 
+  it('markDeleted with expectedSats hides only a live target whose sats still match', async () => {
+    const at = new Date('2026-10-01T00:00:00.000Z');
+    const store = new InMemoryMessageStore([
+      { ...EARLY, sats: 5 },
+      { ...LATE, id: 'r', parentId: 'a', text: 'reply' },
+    ]);
+    expect(await store.markDeleted('a', at, 'staff', 4)).toBe(false);
+    expect((await store.getById('a'))?.deletedAt).toBeNull();
+    expect((await store.getById('r'))?.deletedAt).toBeNull();
+    expect(await store.markDeleted('a', at, 'staff', 5)).toBe(true);
+    expect((await store.getById('a'))?.deletedAt?.getTime()).toBe(at.getTime());
+    expect((await store.getById('r'))?.deletedAt?.getTime()).toBe(at.getTime());
+    expect(await store.markDeleted('a', new Date(1), 'other', 5)).toBe(false);
+    expect((await store.getById('a'))?.deletedBy).toBe('staff');
+  });
+
+  it('deleteById keeps a credit with sats and removes one without sats', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, sats: 5, goalSats: 10, goalRepayable: true },
+      { ...LATE, sats: 0, goalSats: 10, goalRepayable: true },
+    ]);
+    expect(await store.deleteById('a')).toBe(false);
+    expect(await store.getById('a')).toBeDefined();
+    expect(await store.deleteById('b')).toBe(true);
+    expect(await store.getById('b')).toBeUndefined();
+  });
+
   it('markDeleted returns false when missing and tags the row plus direct replies', async () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, id: 'p-hide', text: 'parent' }, JPEG);
@@ -6686,7 +6713,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/WITH/);
     expect(sql.queries[0]?.text).toMatch(/targets AS/);
     expect(sql.queries[0]?.text).toMatch(/DELETE FROM message/);
-    expect(sql.queries[0]?.text).toMatch(/id = \$1 OR parent_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/OR parent_id IN \(SELECT id FROM root\)/);
   });
 
   it('getPhoto maps a bytea row', async () => {
@@ -7198,8 +7225,24 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(/DELETE FROM message_invoice/);
     expect(text).toMatch(/DELETE FROM message/);
     expect(text).not.toMatch(/nostr_zap_payment/);
-    expect(text).toMatch(/parent_id = \$1/);
+    expect(text).toMatch(/OR parent_id IN \(SELECT id FROM root\)/);
+    expect(text).toMatch(/goal_repayable IS TRUE AND sats > 0/);
+    expect(text).toMatch(/FOR UPDATE/);
     expect(sql.queries[0]?.params).toEqual(['m1']);
+  });
+
+  it('markDeleted with expectedSats compares sats in the same statement', async () => {
+    const sql = new MockSql();
+    const at = new Date('2026-10-01T00:00:00.000Z');
+    sql.nextRows = [{ id: 'm1' }];
+    expect(await new PostgresMessageStore(sql).markDeleted('m1', at, 'staff', 5)).toBe(true);
+    const text = sql.queries[0]?.text ?? '';
+    expect(text).toMatch(/sats = \$4/);
+    expect(text).toMatch(/EXISTS \(SELECT 1 FROM held\)/);
+    expect(sql.queries[0]?.params).toEqual(['m1', at, 'staff', 5]);
+    const moved = new MockSql();
+    moved.nextRows = [];
+    expect(await new PostgresMessageStore(moved).markDeleted('m1', at, 'staff', 5)).toBe(false);
   });
 
   it('deleteById returns false when the CTE finds no rows', async () => {
