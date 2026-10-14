@@ -113,8 +113,10 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  *   the shared post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed), zap-ingest list, and `POST /spend-ping` (replay
- *   today's daily ping for one qualifying top-level post; 202 `{ messageId }`;
- *   never returns the Lightning address).
+ *   one qualifying top-level post onto that post's UTC day; 202
+ *   `{ messageId, status: 'accepted' }` or 200
+ *   `{ messageId, status: 'skipped', reason }`; never returns the Lightning
+ *   address).
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -251,9 +253,6 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (account.profileMessageId === message.id) {
         return c.json({ error: 'Profile notes are not paid' }, 409);
       }
-      if (utcDayKey(message.createdAt.getTime()) !== utcDayKey(deps.now())) {
-        return c.json({ error: 'Message is not from today' }, 409);
-      }
       const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
       if (address === null) {
         return c.json({ error: 'No Lightning address' }, 409);
@@ -277,14 +276,35 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         logEvent('debug.spend_ping.skipped', { messageId, reason: 'no_media' });
         return c.json({ error: 'Message has no media' }, 409);
       }
+      const day = utcDayKey(message.createdAt.getTime());
+      if (day > utcDayKey(deps.now())) {
+        return c.json({ error: 'Message is not from today' }, 409);
+      }
+      const pingOnDay = deps.spendPing.pingOnDay;
+      if (pingOnDay === undefined) {
+        return c.json({ error: 'Spend ping is not configured' }, 503);
+      }
       try {
-        await deps.spendPing.ping(address, message.id, 'daily', effectiveStatus(grant, deps.now()));
+        const outcome = await pingOnDay.call(
+          deps.spendPing,
+          address,
+          message.id,
+          day,
+          effectiveStatus(grant, deps.now()),
+        );
+        if (outcome.status === 'accepted') {
+          logEvent('debug.spend_ping.sent', { messageId });
+          return c.json({ messageId, status: 'accepted' }, 202);
+        }
+        if (outcome.status === 'skipped') {
+          return c.json({ messageId, status: 'skipped', reason: outcome.reason }, 200);
+        }
+        logEvent('debug.spend_ping.failed', { messageId });
+        return c.json({ error: 'Messages are unavailable' }, 503);
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      logEvent('debug.spend_ping.sent', { messageId });
-      return c.json({ messageId }, 202);
     })
     .get('/zap-ingests', async (c) => {
       const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));

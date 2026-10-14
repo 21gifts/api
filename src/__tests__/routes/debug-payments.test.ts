@@ -30,7 +30,16 @@ function mount(
         address: string,
         messageId: string,
         kind?: 'daily' | 'moderator' | 'welcome',
+        grantStatus?: 'none' | 'pending' | 'trial' | 'admitted' | 'rejected',
       ) => Promise<void>;
+      pingOnDay?: (
+        address: string,
+        messageId: string,
+        day: string,
+        grantStatus?: 'none' | 'pending' | 'trial' | 'admitted' | 'rejected',
+      ) => Promise<
+        { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' }
+      >;
     };
     fundingStore?: InMemoryFundingStore;
     auth?: InMemoryAuthStore;
@@ -87,8 +96,14 @@ const SPEND_HEADERS = {
   'content-type': 'application/json',
 };
 
-function spendPingMock(): { ping: ReturnType<typeof vi.fn> } {
-  return { ping: vi.fn(async () => undefined) };
+function spendPingMock(): {
+  ping: ReturnType<typeof vi.fn>;
+  pingOnDay: ReturnType<typeof vi.fn>;
+} {
+  return {
+    ping: vi.fn(async () => undefined),
+    pingOnDay: vi.fn(async () => ({ status: 'accepted' as const })),
+  };
 }
 
 async function seedSettleInvoice(
@@ -541,10 +556,16 @@ describe('debugPaymentsRoutes', () => {
     });
     expect(res.status).toBe(202);
     const json: unknown = await res.json();
-    expect(json).toEqual({ messageId });
+    expect(json).toEqual({ messageId, status: 'accepted' });
     expect(JSON.stringify(json)).not.toContain('ada@example.test');
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.test', messageId, 'daily', 'none']);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+      'ada@example.test',
+      messageId,
+      '2026-09-30',
+      'none',
+    ]);
     const sent = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.sent');
     expect(sent?.['messageId']).toBe(messageId);
     expect(sent).not.toHaveProperty('address');
@@ -558,6 +579,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 503 for spend-ping when the token is blank', async () => {
@@ -570,6 +592,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Debug is not configured' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 401 for spend-ping without a bearer', async () => {
@@ -579,6 +602,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 503 when spend ping is not configured', async () => {
@@ -605,6 +629,7 @@ describe('debugPaymentsRoutes', () => {
       expect(await res.json()).toEqual({ error: 'Invalid body' });
     }
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the spend-ping message is missing', async () => {
@@ -618,6 +643,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 409 when the spend-ping message is hidden', async () => {
@@ -646,6 +672,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Message is hidden' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 409 when the spend-ping target is a reply', async () => {
@@ -684,6 +711,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Replies are not paid' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the spend-ping row has a null accountId', async () => {
@@ -717,6 +745,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Account not found' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 404 when the spend-ping account was never inserted', async () => {
@@ -744,6 +773,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Account not found' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 503 when spend-ping getById throws', async () => {
@@ -764,6 +794,7 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.failed')).toBe(true);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 503 when spend-ping getAccount throws', async () => {
@@ -802,6 +833,7 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.failed')).toBe(true);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 409 when the spend-ping target is the profile note', async () => {
@@ -837,9 +869,10 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Profile notes are not paid' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
-  it('returns 409 when the spend-ping message is not from today', async () => {
+  it('replays spend ping when the message is from an earlier UTC day', async () => {
     const messageId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
     const accountId = 'e1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
@@ -868,9 +901,16 @@ describe('debugPaymentsRoutes', () => {
       headers: SPEND_HEADERS,
       body: JSON.stringify({ messageId }),
     });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Message is not from today' });
+    expect(res.status).toBe(202);
+    expect(await res.json()).toEqual({ messageId, status: 'accepted' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+      'ada@example.test',
+      messageId,
+      '2026-09-29',
+      'none',
+    ]);
   });
 
   it('returns 409 when the spend-ping account has no verified wallet', async () => {
@@ -901,6 +941,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'No Lightning address' });
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 403 when the spend-ping account is not eligible', async () => {
@@ -941,6 +982,7 @@ describe('debugPaymentsRoutes', () => {
     expect(skipped?.['messageId']).toBe(messageId);
     expect(skipped).not.toHaveProperty('address');
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 409 when the spend-ping message has no media', async () => {
@@ -975,6 +1017,7 @@ describe('debugPaymentsRoutes', () => {
     expect(skipped?.['reason']).toBe('no_media');
     expect(skipped?.['messageId']).toBe(messageId);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('replays spend ping when getById reports video without a photo', async () => {
@@ -1012,9 +1055,15 @@ describe('debugPaymentsRoutes', () => {
       body: JSON.stringify({ messageId }),
     });
     expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ messageId });
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
-    expect(spendPing.ping.mock.calls[0]).toEqual(['ada@example.test', messageId, 'daily', 'none']);
+    expect(await res.json()).toEqual({ messageId, status: 'accepted' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+      'ada@example.test',
+      messageId,
+      '2026-09-30',
+      'none',
+    ]);
   });
 
   it('replays spend ping when getById reports photoCount without hasPhoto', async () => {
@@ -1052,8 +1101,15 @@ describe('debugPaymentsRoutes', () => {
       body: JSON.stringify({ messageId }),
     });
     expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ messageId });
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(await res.json()).toEqual({ messageId, status: 'accepted' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+      'ada@example.test',
+      messageId,
+      '2026-09-30',
+      'none',
+    ]);
   });
 
   it('replays spend ping when fundingStore has no grant', async () => {
@@ -1091,8 +1147,15 @@ describe('debugPaymentsRoutes', () => {
       body: JSON.stringify({ messageId }),
     });
     expect(res.status).toBe(202);
-    expect(await res.json()).toEqual({ messageId });
-    expect(spendPing.ping).toHaveBeenCalledTimes(1);
+    expect(await res.json()).toEqual({ messageId, status: 'accepted' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+      'ada@example.test',
+      messageId,
+      '2026-09-30',
+      'none',
+    ]);
   });
 
   it('returns 503 when fundingStore getByAccountId throws', async () => {
@@ -1138,6 +1201,7 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.failed')).toBe(true);
     expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
   it('returns 503 when spend ping rejects', async () => {
@@ -1162,7 +1226,10 @@ describe('debugPaymentsRoutes', () => {
       },
       SPEND_PHOTO,
     );
-    const spendPing = { ping: vi.fn(async () => Promise.reject(new Error('ping boom'))) };
+    const spendPing = {
+      ping: vi.fn(async () => undefined),
+      pingOnDay: vi.fn(async () => Promise.reject(new Error('ping boom'))),
+    };
     const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
     const res = await app.request('/debug/spend-ping', {
       method: 'POST',
@@ -1174,5 +1241,153 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.failed')).toBe(true);
     expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.sent')).toBe(false);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 200 skipped when pingOnDay skips the post day', async () => {
+    const messageId = '18181818-1818-4181-8181-181818181818';
+    const accountId = 'c3333333-3333-4333-8333-333333333333';
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: SPEND_CREATED_AT,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    const spendPing = {
+      ping: vi.fn(async () => undefined),
+      pingOnDay: vi.fn(async () => ({ status: 'skipped' as const, reason: 'paid' })),
+    };
+    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const res = await app.request('/debug/spend-ping', {
+      method: 'POST',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(200);
+    const json: unknown = await res.json();
+    expect(json).toEqual({ messageId, status: 'skipped', reason: 'paid' });
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when pingOnDay fails', async () => {
+    const messageId = '19191919-1919-4191-8191-191919191919';
+    const accountId = 'd3333333-3333-4333-8333-333333333333';
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: SPEND_CREATED_AT,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    const spendPing = {
+      ping: vi.fn(async () => undefined),
+      pingOnDay: vi.fn(async () => ({ status: 'failed' as const })),
+    };
+    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const res = await app.request('/debug/spend-ping', {
+      method: 'POST',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.sent')).toBe(false);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when pingOnDay is missing', async () => {
+    const messageId = '1a1a1a1a-1a1a-41a1-81a1-1a1a1a1a1a1a';
+    const accountId = 'e3333333-3333-4333-8333-333333333333';
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: SPEND_CREATED_AT,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const res = await app.request('/debug/spend-ping', {
+      method: 'POST',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Spend ping is not configured' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when the spend-ping message day is in the future', async () => {
+    const messageId = '1b1b1b1b-1b1b-41b1-81b1-1b1b1b1b1b1b';
+    const accountId = 'f3333333-3333-4333-8333-333333333333';
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: new Date('2026-10-01T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    const spendPing = spendPingMock();
+    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
+    const res = await app.request('/debug/spend-ping', {
+      method: 'POST',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ messageId }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Message is not from today' });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 });

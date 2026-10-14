@@ -17,6 +17,10 @@ import {
 /** Default HTTP timeout for {@link HttpSpendPing}. */
 const DEFAULT_TIMEOUT_MS = 5_000;
 
+/** Result of {@link SpendPing.pingOnDay}; never includes the Lightning address. */
+export type SpendPingOutcome =
+  { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' };
+
 /**
  * Outbound ping so the spend worker can pay a listed recipient.
  */
@@ -41,6 +45,21 @@ export interface SpendPing {
     kind?: 'daily' | 'moderator' | 'welcome',
     grantStatus?: SpendGrantStatus,
   ): Promise<void>;
+
+  /**
+   * Daily ping booked on `day` (`YYYY-MM-DD`) instead of the clock UTC day.
+   *
+   * @param address - Recipient Lightning Address.
+   * @param messageId - Forum post id.
+   * @param day - UTC day key `YYYY-MM-DD`.
+   * @param grantStatus - Effective grant status; daily only.
+   */
+  pingOnDay?(
+    address: string,
+    messageId: string,
+    day: string,
+    grantStatus?: SpendGrantStatus,
+  ): Promise<SpendPingOutcome>;
 }
 
 /**
@@ -136,65 +155,28 @@ export class HttpSpendPing implements SpendPing {
     grantStatus?: SpendGrantStatus,
   ): Promise<void> {
     const resolvedKind = kind === 'moderator' || kind === 'welcome' ? kind : 'daily';
-    let written: boolean;
-    try {
-      written = await this.#rosterStore.hasBeenWritten();
-    } catch {
-      logEvent('spend.ping.failed', { address });
+    const roster = await this.#loadRoster(address);
+    if (roster === undefined) {
       return;
     }
-    let roster: unknown;
-    if (!written) {
-      try {
-        const response = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
-          method: 'GET',
-          headers: {
-            Authorization: `Bearer ${this.#token}`,
-          },
-          signal: AbortSignal.timeout(this.#timeoutMs),
-        });
-        if (!response.ok) {
-          logEvent('spend.ping.failed', { address });
-          return;
-        }
-        const parsed: unknown = await response.json();
-        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-          logEvent('spend.ping.failed', { address });
-          return;
-        }
-        roster = parsed;
-      } catch {
-        logEvent('spend.ping.failed', { address });
-        return;
-      }
-    } else {
-      try {
-        roster = await this.#rosterStore.get();
-      } catch {
-        logEvent('spend.ping.failed', { address });
-        return;
-      }
-    }
     let welcomePaidOnUtcDay: boolean | undefined;
-    if (resolvedKind === 'daily' && this.#gifts !== undefined) {
-      try {
-        welcomePaidOnUtcDay = welcomeGiftPaidOnUtcDay(
-          await this.#gifts.listOutbound(),
-          address,
-          new Date(this.#now()).toISOString().slice(0, 10),
-        );
-      } catch {
-        logEvent('spend.ping.failed', { address });
+    if (resolvedKind === 'daily') {
+      const welcomePaid = await this.#welcomePaid(
+        address,
+        new Date(this.#now()).toISOString().slice(0, 10),
+      );
+      if (welcomePaid === 'failed') {
         return;
       }
+      welcomePaidOnUtcDay = welcomePaid;
     }
-    const decision = decideSpendInstruction({
+    const decision = this.#instructionFor(
       address,
-      kind: resolvedKind,
+      resolvedKind,
       roster,
-      ...(resolvedKind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
-      ...(welcomePaidOnUtcDay === undefined ? {} : { welcomePaidOnUtcDay }),
-    });
+      grantStatus,
+      welcomePaidOnUtcDay,
+    );
     if ('skip' in decision) {
       logEvent('spend.ping.skipped', { address, reason: decision.skip });
       return;
@@ -223,6 +205,157 @@ export class HttpSpendPing implements SpendPing {
               comment: decision.comment,
             };
     await this.#postPing(address, body);
+  }
+
+  /**
+   * Daily ping booked on `day` (`YYYY-MM-DD`) instead of the clock UTC day.
+   * Kind is always daily. The POST body is
+   * `{ address, messageId, amountUsd, comment, day }`. Never throws.
+   *
+   * @param address - Recipient Lightning Address (JSON body).
+   * @param messageId - Forum post id (JSON `messageId`).
+   * @param day - UTC day key `YYYY-MM-DD`.
+   * @param grantStatus - Effective grant status; forwarded for daily.
+   */
+  async pingOnDay(
+    address: string,
+    messageId: string,
+    day: string,
+    grantStatus?: SpendGrantStatus,
+  ): Promise<SpendPingOutcome> {
+    const roster = await this.#loadRoster(address);
+    if (roster === undefined) {
+      return { status: 'failed' };
+    }
+    const welcomePaid = await this.#welcomePaid(address, day);
+    if (welcomePaid === 'failed') {
+      return { status: 'failed' };
+    }
+    const decision = this.#instructionFor(address, 'daily', roster, grantStatus, welcomePaid);
+    if ('skip' in decision) {
+      logEvent('spend.ping.skipped', { address, reason: decision.skip });
+      return { status: 'skipped', reason: decision.skip };
+    }
+    try {
+      const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.#token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          address,
+          messageId,
+          amountUsd: decision.amountUsd,
+          comment: decision.comment,
+          day,
+        }),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      if (response.status === 202) {
+        logEvent('spend.ping.ok', { address });
+        return { status: 'accepted' };
+      }
+      if (response.status !== 200) {
+        logEvent('spend.ping.failed', { address });
+        return { status: 'failed' };
+      }
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return { status: 'failed' };
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        logEvent('spend.ping.failed', { address });
+        return { status: 'failed' };
+      }
+      const rec = parsed as Record<string, unknown>;
+      const status = rec['status'];
+      if (status === 'accepted') {
+        logEvent('spend.ping.ok', { address });
+        return { status: 'accepted' };
+      }
+      const reason = rec['reason'];
+      if (status === 'skipped' && typeof reason === 'string' && reason !== '') {
+        logEvent('spend.ping.skipped', { address, reason });
+        return { status: 'skipped', reason };
+      }
+      logEvent('spend.ping.failed', { address });
+      return { status: 'failed' };
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return { status: 'failed' };
+    }
+  }
+
+  async #loadRoster(address: string): Promise<unknown> {
+    let written: boolean;
+    try {
+      written = await this.#rosterStore.hasBeenWritten();
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return undefined;
+    }
+    if (!written) {
+      try {
+        const response = await this.#fetchImpl(`${this.#spendUrl}/daily-roster`, {
+          method: 'GET',
+          headers: {
+            Authorization: `Bearer ${this.#token}`,
+          },
+          signal: AbortSignal.timeout(this.#timeoutMs),
+        });
+        if (!response.ok) {
+          logEvent('spend.ping.failed', { address });
+          return undefined;
+        }
+        const parsed: unknown = await response.json();
+        if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+          logEvent('spend.ping.failed', { address });
+          return undefined;
+        }
+        return parsed;
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return undefined;
+      }
+    }
+    try {
+      return await this.#rosterStore.get();
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return undefined;
+    }
+  }
+
+  async #welcomePaid(address: string, utcDay: string): Promise<boolean | undefined | 'failed'> {
+    if (this.#gifts === undefined) {
+      return undefined;
+    }
+    try {
+      return welcomeGiftPaidOnUtcDay(await this.#gifts.listOutbound(), address, utcDay);
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return 'failed';
+    }
+  }
+
+  #instructionFor(
+    address: string,
+    kind: 'daily' | 'moderator' | 'welcome',
+    roster: unknown,
+    grantStatus: SpendGrantStatus | undefined,
+    welcomePaidOnUtcDay: boolean | undefined,
+  ): ReturnType<typeof decideSpendInstruction> {
+    return decideSpendInstruction({
+      address,
+      kind,
+      roster,
+      ...(kind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
+      ...(welcomePaidOnUtcDay === undefined ? {} : { welcomePaidOnUtcDay }),
+    });
   }
 
   async #postPing(address: string, body: Record<string, string | number>): Promise<void> {
