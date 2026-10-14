@@ -201,8 +201,9 @@ Those five minutes are the pending-charge window. Replacing the quote
 does not move that time. An `accepted` payment is not ended by this
 clock. A stored proof that has no result is not ended by this clock. An
 unexpired submission claim does not keep the payment `open`. The claim
-stays until that offer's `expires_at`, and a proof that matches it is
-still stored as Proof states. A missing answer does not record that
+stays until the earlier of that offer's `expires_at` and the expiry of
+the BOLT11 stored on that quote, and a proof that matches it is
+still stored as Proof states only while that BOLT11 has not expired. A missing answer does not record that
 proof `refused` and does not move the payment to `ended`. The proof
 stays unresolved until Orchestra answers. A retry asks Orchestra again
 for that same stored proof.
@@ -286,16 +287,18 @@ method, and asset are one row. `method` is the chain. `asset` is
 as text, it is not parsed, and it is not shown to the wallet.
 `expires_at` is that call's `expiresAt`. `amount` is that call's
 `requiredAmountIn`. The detail is the EVM `transaction` (`chainId`,
-`to`, `data`, and `value`). The `uri` is the one this service builds
-from those fields. A source that returns no instruction this service
+`to`, `data`, and `value`). The `uri` is the ERC-20 `transfer` URI
+Transaction states. A source that returns no instruction this service
 can express as that `uri` is absent and is not stored. A pair that does
 not commit is not stored, and that pair is absent. The row stores the
 idempotency key of that quote call. `detail_issued_at` is set in the
 same step that first returns this offer's transaction detail, and only
 while the payment is still `open`. It is null until then. That timestamp
 and this offer's `expires_at` are the submission claim. The claim lasts
-until `expires_at`. It is not cleared when the payment leaves `open`.
-It does not move when `shop_quote.expires_at` moves. One offer has one
+until the earlier of `expires_at` and the expiry of the BOLT11 stored
+on that quote. It does not last past that BOLT11. It is not cleared
+when the payment leaves `open`. It does not move when
+`shop_quote.expires_at` moves. One offer has one
 claim. Returning the same detail again does not write a second claim
 and does not move `detail_issued_at`. A fetch after the payment is
 `paid` or `ended` does not set a claim that was not set while it was
@@ -768,10 +771,17 @@ method other than `Lightning`. A stablecoin returns a `uri` whose destination is
 The quote sets `includeCalldata` so an EVM source can return an unsigned
 transaction: chain id, destination, data, and value. For an exact-out
 quote that transaction encodes the source amount, not the sat count. The
-`uri` is the EIP-681 URI built from those fields. An EVM `uri` is
-EIP-681. A source that returns no instruction this service can express
-as that `uri` is absent. This service does not invent a URI for a chain
-that returns only a deposit address. An EVM `uri` Tether Wallet for
+`uri` is one EIP-681 ERC-20 `transfer` and nothing else. `data` must be
+68 bytes: `a9059cbb`, then 12 zero bytes, then the 20-byte recipient,
+then the 32-byte uint256 amount. `value` must be zero. The URI is
+`ethereum:` + the lowercase `0x` address in `to` + `@` + the decimal
+`chainId` + `/transfer?address=0x` + the 40 lowercase hex characters of
+that recipient + `&uint256=` + that amount in decimal, with no leading
+zero except for zero itself. Any other `data`, or a non-zero `value`,
+is not that URI. An EVM `uri` is EIP-681. A source that returns no
+instruction this service can express as that `uri` is absent. This
+service does not invent a URI for a chain that returns only a deposit
+address. An EVM `uri` Tether Wallet for
 Android 1.11.0 (134) cannot route as EIP-681 fails the check in Tether
 Wallet.
 
@@ -847,13 +857,19 @@ For a proof that is not yet stored, the api stores it when the transfer
 matches the quote and either the payment is still `open` and the quote
 was still valid, or this offer's submission claim has not expired. The
 match is the offered chain, the offered asset, and the quoted amount.
+The BOLT11 stored on that quote must not have expired. An expired
+BOLT11 does not store the proof and does not send it. The response is
+**400** `{ "error": "Payment was not accepted" }`.
 The claim is set only while the payment is still `open`, in the step
 that returns that offer's detail. When the payment is already `paid` or
 `ended` and this offer has no claim, or that claim has expired, the
 proof is not stored and is not sent. The response is **400**
 `{ "error": "Payment was not accepted" }`. Before it asks Orchestra, it
 stores that proof as one `shop_proof` row for that offer, method, asset,
-and proof parameter. A `paid` payment stays `paid`. An `ended` payment
+and proof parameter. It does not ask Orchestra when the BOLT11 stored
+on that proof's quote has expired. That proof is recorded `refused`,
+stores no `txId`, and the response is **400**
+`{ "error": "Payment was not accepted" }`. A `paid` payment stays `paid`. An `ended` payment
 stays `ended` when the proof is stored. The claim does not move either
 one to `open` or `accepted`. The accept answer below is the step that
 can move `ended` to `accepted`. Success is still Orchestra accepting
@@ -890,9 +906,12 @@ and submits that offer's `provider_ref`. If it lists both and no
 `{ "error": "That payment is not offered" }` and nothing is stored. A payment that is `ended` is not moved to `accepted` by storing a later
 proof. An unexpired claim stores that proof and still does not move the
 payment. Only the accept answer below moves it. While a stored proof has
-no result, that sent proof is not refused for quote expiry. A retry
-asks Orchestra again for that same sent proof and does not send a
-different proof of this payment. Orchestra unreachable is **503**
+no result, that sent proof is not refused for quote expiry while the
+BOLT11 stored on that quote has not expired. An expired BOLT11 records
+it `refused`, stores no `txId`, does not ask Orchestra, and the
+response is **400** `{ "error": "Payment was not accepted" }`. A retry
+of a proof whose BOLT11 has not expired asks Orchestra again for that
+same sent proof and does not send a different proof of this payment. Orchestra unreachable is **503**
 `{ "error": "Stablecoin payment is unavailable" }`. The stored proof
 stays unresolved. An `open` payment stays `open`. A `paid` payment
 stays `paid`. A missing answer does
@@ -910,11 +929,14 @@ payment was still `open`, or stored under a submission claim that had
 not expired. A stored proof of this payment that was not sent is
 recorded `refused` in that same step, stores no `txId`, and is not sent.
 The response is **200** `{ "txId": "<id>" }` in each of those cases,
-including when the quote has lapsed since the proof was stored, and
+including when the quote has lapsed since the proof was stored while
+that quote's BOLT11 has not expired, and
 including when the Spark invoice, or a BOLT11 handed out for that charge
 that is not stored on this payment, has already marked the charge
-`paid`. That **200** answers the request whose proof parameter is the
-proof Orchestra just accepted. A request whose own stored proof is
+`paid`. That **200** answers a submit sent while that BOLT11 had not
+expired. A submit that has not been sent after the BOLT11 expired is
+the refusal above, not this **200**. That **200** answers the request
+whose proof parameter is the proof Orchestra just accepted. A request whose own stored proof is
 `refused` stays **400**, including when this step accepted a different
 proof. The charge stays `paid`. From that
 accept, a payment that is `accepted` is watched on the BOLT11 stored
@@ -1050,11 +1072,21 @@ for a transport error. When the read finds the transaction, the
 broadcast is complete and the submit follows. When the first send was
 a transport error or that duplicate error and the read does not find
 the transaction, the original body is sent once more and judged the
-same way. A missing endpoint, a result that does not match, any other
-JSON-RPC error after that one repeat, or a read that does not find the
-transaction does not complete it. The proof stays unresolved, it is
-not recorded `refused`, and the response is **503**
-`{ "error": "Stablecoin payment is unavailable" }`. The submit body
+same way. A missing endpoint does not complete it. The proof is recorded
+`refused`, stores no `txId`, Orchestra is not called, and the response
+is **400** `{ "error": "Payment was not accepted" }`. A result that does
+not match, or any JSON-RPC error that is not a transport error and is
+not one of those duplicate messages, after that one repeat, is that
+same `refused`. A transport error, or a read that does not find the
+transaction after a transport error or a duplicate error, leaves the
+proof unresolved and the response is **503**
+`{ "error": "Stablecoin payment is unavailable" }`. The next ask of
+that proof reads the derived identifier again and does not send the raw
+transaction again. Ten minutes after the first send, a read that still
+does not find the transaction records the proof `refused`, stores no
+`txId`, does not call Orchestra, and the response is **400**. A refused
+broadcast does not keep a later different proof from being stored or
+sent. The submit body
 then sends the derived identifier, not the raw bytes. For an EVM `hex`,
 `txHash` is `0x` plus the 64 lowercase hexadecimal characters of the
 Keccak-256 hash of the signed transaction bytes. For Bitcoin,
@@ -1210,7 +1242,8 @@ that account is `accepted`, or `open` with a stored proof whose result
 is absent, or has a submission claim that has not expired, the call is
 **409** `{ "error": "A payment is already open" }` and writes nothing.
 The claim has not expired when `detail_issued_at` is set and the current
-time is before that offer's `expires_at`. This includes a page payment
+time is before that offer's `expires_at` and before the expiry of the
+BOLT11 stored on that quote. This includes a page payment
 that is already `paid` or `ended` while that claim has not expired. An
 unanswered proof, and an unexpired claim, do not let this call record a
 proof `refused` or move that payment to `ended`. While no payment of
