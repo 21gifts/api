@@ -10,8 +10,9 @@ A payer settles a shop payment in USDT or USDC. Orchestra (Flashnet)
 takes the stablecoin and pays one BOLT11 for the shop's sats. That
 invoice is minted by the mint `POST /pay/:username/invoice` already uses,
 on the shop's verified in-app wallet. The shop receives an ordinary
-bitcoin payment. The shop never holds USDT or USDC, and 21.gifts never
-holds either coin. Gifts, the till, and loans stay in satoshis.
+bitcoin payment. The shop never holds USDT or USDC. 21.gifts holds
+either coin only when Orchestra refunds a deposit to the 21.gifts refund
+address. Gifts, the till, and loans stay in satoshis.
 
 ## Requirements
 
@@ -58,26 +59,13 @@ These Orchestra facts shape the design:
 
 ### Refund address
 
-The Orchestra sources disagree, and this design depends on the answer:
-
-- The documentation says: "`/quote` requires `refundAddress` for
-  exact-out and Lightning destinations" (Pricing), and names deposits
-  from BNB as well (Quotes). Without a valid refund target, recovery "may
-  need manual review" (Order status), and an order that must refund
-  without one fails with `refund_address_missing`: "operator recovery
-  required" (Errors).
-- The OpenAPI document requires `refundAddress` only "when sourceAsset is
-  an unlisted token" and otherwise "where required by the route".
-
-The payer's address is unknown when the quote is created: the
-OpenCryptoPay pay request carries none. Without a refund address,
-Orchestra refunds to the detected source address when that is safe, and
-never to an exchange's shared sender address. This design sends no
-`refundAddress`. Release check 2 confirms that Orchestra commits such
-quotes; a pair for which it refuses them stays off. How Orchestra
-refunds a deposit is not a gate for this payment: release check 4 only
-records it. A refund address that 21.gifts controls would make 21.gifts
-hold coins and is not part of this document.
+Orchestra's documentation says: "`/quote` requires `refundAddress` for
+exact-out and Lightning destinations" (Pricing). The payer's address is
+unknown when the quote is created, because the OpenCryptoPay pay request
+carries none. Every quote therefore sends `SHOP_REFUND_ADDRESS`, one EVM
+address that 21.gifts controls. The same address is valid on every chain
+of the method table. A deposit that Orchestra cannot fill comes back to
+it. What 21.gifts does with such a refund is outside this document.
 
 ## Flow
 
@@ -297,15 +285,15 @@ completes or, for an unknown amount, once the amount is known and within
 the bounds. A dust transfer to a public deposit address therefore cannot
 take acceptance away from the payer.
 
-The first order of a payment within the bounds
-is `accepted`, because which order pays the BOLT11 is known only when it
-completes. When another order completes instead, acceptance moves to it,
-and the earlier order fails with `duplicate_lightning_invoice`. A wallet
-that already got **200** for that earlier proof keeps its screen, and the
-till shows the truth. An order that pays the BOLT11 is `accepted` even
-when Orchestra detected the deposit and paid before the wallet's proof
-arrived. What Orchestra does with a deposit whose order cannot pay is its
-refund process ([Refund address](#refund-address)).
+The first order of a payment within the bounds is `accepted`, because
+which order pays the BOLT11 is known only when it completes. When
+another order completes instead, acceptance moves to it, and the earlier
+order fails with `duplicate_lightning_invoice`. A wallet that already
+got **200** for that earlier proof keeps its screen, and the till shows
+the truth. An order that pays the BOLT11 is `accepted` even when
+Orchestra detected the deposit and paid before the wallet's proof
+arrived. Orchestra refunds a deposit whose order cannot pay to the
+refund address ([Refund address](#refund-address)).
 
 A shop payment never makes `POST /pos` or `DELETE /pos` answer 409. No
 unresolved proof and no `accepted` payment holds the sticker, the till,
@@ -473,17 +461,17 @@ entered on the payment page. No session. The body is
 `{ "amountSats": <integer> }`. CORS is the page's origin list, the same
 as for `POST /pay/:username/invoice`. The checks run in this order:
 
-| Order | Condition                                                                                                                                  | Response                                                                                     |
-| ----- | ------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
-| 1     | Invalid username, unknown account, no verified wallet, or no LNURL server config.                                                          | **404** `{ "error": "Not found" }`                                                           |
-| 2     | The wallet's pay request cannot be resolved.                                                                                               | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 3     | The body is not a positive whole number of sats.                                                                                           | **400** `{ "error": "Enter a whole number of sats" }`                                        |
-| 4     | A till charge is pending.                                                                                                                  | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
-| 5     | The amount is outside that pay request's minimum and maximum.                                                                              | **400** `{ "error": "Enter a whole number of sats" }`                                        |
-| 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, or `SHOP_EVM_RPC` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 7     | This account started 10 creations in the last 5 min, or the api started 60 in the last minute.                                             | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 8     | The mint fails, or the BOLT11 amount differs.                                                                                              | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | No pair commits.                                                                                                                           | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| Order | Condition                                                                                                                                                         | Response                                                                                     |
+| ----- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
+| 1     | Invalid username, unknown account, no verified wallet, or no LNURL server config.                                                                                 | **404** `{ "error": "Not found" }`                                                           |
+| 2     | The wallet's pay request cannot be resolved.                                                                                                                      | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 3     | The body is not a positive whole number of sats.                                                                                                                  | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 4     | A till charge is pending.                                                                                                                                         | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
+| 5     | The amount is outside that pay request's minimum and maximum.                                                                                                     | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 7     | This account started 10 creations in the last 5 min, or the api started 60 in the last minute.                                                                    | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 9     | No pair commits.                                                                                                                                                  | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
 Orders 1, 2, 3, 5, and 8 are the checks and texts of `POST
 /pay/:username/invoice`. Order 4 comes before the range check, because a
@@ -865,11 +853,12 @@ body above. `POST /pay/:username/payment` uses the repository's
 
 ### Configuration
 
-| Variable             | Kind   | Rule                                                                                                                                                 |
-| -------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `ORCHESTRA_BASE_URL` | config | Absolute `https` origin without a path. The documented origin is `https://orchestration.flashnet.xyz`.                                               |
-| `ORCHESTRA_API_KEY`  | secret | The server key (`fn_…`). A client key (`fnp_…`) is refused. Never logged.                                                                            |
-| `SHOP_EVM_RPC`       | secret | A JSON object from decimal `chainId` to an absolute `https` JSON-RPC URL. A URL may hold a provider key, so the whole value is secret. Never logged. |
+| Variable              | Kind   | Rule                                                                                                                                                 |
+| --------------------- | ------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `ORCHESTRA_BASE_URL`  | config | Absolute `https` origin without a path. The documented origin is `https://orchestration.flashnet.xyz`.                                               |
+| `ORCHESTRA_API_KEY`   | secret | The server key (`fn_…`). A client key (`fnp_…`) is refused. Never logged.                                                                            |
+| `SHOP_EVM_RPC`        | secret | A JSON object from decimal `chainId` to an absolute `https` JSON-RPC URL. A URL may hold a provider key, so the whole value is secret. Never logged. |
+| `SHOP_REFUND_ADDRESS` | config | One EVM address, `0x` and 40 hexadecimal characters, that 21.gifts controls. It is sent as `refundAddress` on every quote.                           |
 
 `resolveShopPaymentConfig` in `config.ts` reads them, following
 `resolveLnurlServerConfig`: an invalid value turns the feature off, and
@@ -917,7 +906,7 @@ absolute time in milliseconds.
   payment's BOLT11), `tag` (the shop payment id), and `includeCalldata`
   true. The body sends no `slippageBps`, so the route's default applies;
   the sat count is fixed by `exact_out` and checked through
-  `targetAmountOut`. The body sends no `refundAddress`
+  `targetAmountOut`. `refundAddress` is `SHOP_REFUND_ADDRESS`
   ([Refund address](#refund-address)). A transport timeout, HTTP 429,
   HTTP 503, or another 5xx is retried once with the same key inside the
   step's budget. Any other answer means the pair is not offered.
@@ -1196,8 +1185,7 @@ page.
 - The Wallet of Satoshi button and the desktop invoice QR stay as they
   are today and use the BOLT11 the page shows.
 - It tells the payer to scan the sticker with Tether Wallet or another
-  OpenCryptoPay wallet, and to pay from a wallet they control, because
-  Orchestra does not refund to an exchange's shared address. Tether
+  OpenCryptoPay wallet. Tether
   1.11.0 opens only `https://…?lightning=` links, so the page shows no
   `lightning:` stablecoin deeplink.
 - It polls `GET /lnurlp/wait/:payment` with its payment id and follows
@@ -1379,7 +1367,7 @@ The implementing change adds:
   `POST /debug/shop-proofs/:id/retry`, plus the new cases of
   `GET /.well-known/lnurlp/:username`, `POST /pos`, `DELETE /pos`, and
   `GET /pos`;
-- `resolveShopPaymentConfig`, and the three variables in CONTRIBUTING's
+- `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
 - a timeout parameter on `requestGiftInvoice`;
 - the transactional port with the account row lock, used by `POST /pos`
@@ -1406,7 +1394,7 @@ limits, `resolveLnurlServerConfig`, `startPosPaidWorker`, the LUD-21
   server covers every row of every table in this document at 100 %, as
   CONTRIBUTING requires.
 - The default end-to-end suite boots without these services. Its
-  `webServer.env` leaves the three new variables empty, and each new
+  `webServer.env` leaves the four new variables empty, and each new
   route answers its default 404 there, as the other LNURL routes do.
 - A second Playwright project, `shop-payment`, has its own `webServer`
   that boots the api with stand-ins for Orchestra, one EVM RPC endpoint
@@ -1440,17 +1428,14 @@ records each result in the pull request that turns the feature on.
    run has the api's submit switched off, to prove that Orchestra detects
    a deposit from an ERC-4337 account by itself. One run has it on, to
    prove that Orchestra accepts the submit of a bundle hash.
-2. A quote request without `refundAddress` and without `slippageBps` for
-   `exact_out` into a BOLT11 commits on each offered pair, and the
+2. A quote request with `SHOP_REFUND_ADDRESS` and without `slippageBps`
+   for `exact_out` into a BOLT11 commits on each offered pair, and the
    returned `amountIn` equals the amount in `transaction.data`. A pair
-   that Orchestra refuses stays off ([Refund address](#refund-address)).
+   that Orchestra refuses stays off.
 3. The BOLT11 that the staging mint returns lives at least 1020 s.
-4. For every pair that will be offered, a deliberately underpaid
-   deposit is refunded to its sender, from the Tether Wallet account on
-   the Tether rails and from an ordinary account on the others. A deposit
-   made just after `expiresAt` is filled or refunded, and a submit after
-   the BOLT11 expired answers `409 quote_expired`. Each answer is
-   recorded for support. It does not switch a pair off.
+4. A deposit made just after `expiresAt` is filled or refunded to
+   `SHOP_REFUND_ADDRESS`, and a submit after the BOLT11 expired answers
+   `409 quote_expired`. Each answer is recorded.
 5. Orchestra accepts parallel quotes for different pairs, and later
    replacement quotes, that name the same BOLT11, and gives each quote
    its own deposit address.
