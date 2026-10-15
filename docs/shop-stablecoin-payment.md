@@ -538,11 +538,17 @@ One procedure creates a shop payment, for a charge or for a payer:
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
-   `account-merge.ts`. The row lock serialises the creation with
-   `POST /pos`, also across the two containers of a deploy. The partial
-   unique index on open payments is the backstop: a lost insert (`23505`)
-   runs this step again under the lock, and never answers with another
-   payer's amount.
+   `account-merge.ts`. The row lock serialises the creation with `POST
+   /pos`, also across the two containers of a deploy. The unique indexes
+   are the backstop. A lost insert (`23505`) does not insert again
+   blindly: under the same locks the api reads the row that won. When
+   that row is the shop payment of this charge, or of this payer
+   request, the api uses it, the fetch answers as for an open amount,
+   and the background creation from `POST /pos` ends. When it is another
+   `open` payment of the account, the rules above apply: a payer request
+   ends it with `replaced`, or answers order 4 when a charge is pending,
+   and a charge ends it with `superseded`; then the insert runs once
+   more. No answer ever carries another payer's amount.
 
 The procedure stays within 8 s: 1 s for the route list, 4 s for the
 mint, and 3 s for the quotes. Every external call runs outside the
