@@ -174,7 +174,7 @@ A pair is offered on one quote only when all of these hold:
 
 A pair whose route-list values differ from the table is not offered, and
 the api logs `shop.route.mismatch`. The route list is fetched with the
-server key, because Orchestra filters it per partner, with a 2 s timeout.
+server key, because Orchestra filters it per partner, with a 1 s timeout.
 It is reused only for its `validForMs`. When a fetch fails, no
 stablecoin is offered until a fetch succeeds.
 
@@ -318,9 +318,11 @@ shop payment is `accepted` or `paid` is not pinned, so the response is
 today's unpinned request. Any LNURL wallet can still pay the sticker.
 
 A pending charge with no shop payment first starts or joins the
-[Creation procedure](#creation-procedure) and waits for it at most 4 s.
-When the payment exists by then, the fetch answers as for an open
-amount. Otherwise it answers today's pinned Lightning request.
+[Creation procedure](#creation-procedure) and waits for it until the
+procedure's 8 s budget is used up. That stays below the 10 s a plain
+LNURL wallet waits and the 20 s Tether 1.11.0 waits. When the payment
+exists by then, the fetch answers as for an open amount. Otherwise it
+answers today's pinned Lightning request.
 
 When the request carries `timeout`, the api follows the standard's
 waiting rule, which DFX implements. `timeout` is a whole number of
@@ -507,18 +509,17 @@ One procedure creates a shop payment, for a charge or for a payer:
    `translate-note.ts` keeps in-flight work in a map the same way.
 2. Re-check the state under the lock: end a lapsed `open` payment of the
    account with `end_reason` `window`, stop when the payment to create
-   already exists, and for a payer stop with order 4 when a charge is
-   now pending.
+   already exists, stop for a charge that is no longer pending, and for a
+   payer stop with order 4 when a charge is now pending.
 3. Read the route list and select the candidate pairs ([Methods](#methods)).
 4. Mint one BOLT11 with `requestGiftInvoice`, as
-   `POST /pay/:username/invoice` does, with a 5 s timeout that the
-   implementing change adds as a parameter. While a charge is pending,
+   `POST /pay/:username/invoice` does, with a 4 s timeout that the implementing change adds as a parameter. While a charge is pending,
    record its payment hash against the charge with
    `posStore.recordInvoice`, as that route does. Check the amount and read
    the BOLT11 expiry.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
-   one Orchestra quote per candidate pair, with 3 s per attempt and 4 s
-   for the whole step. Pairs beyond what the quote share of the Orchestra
+   one Orchestra quote per candidate pair, within 3 s for the whole step;
+   a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
    budget allows are skipped, in the order of [Methods](#methods).
 6. Keep each quote that commits and passes [Offer checks](#offer-checks).
 7. When none is kept, write nothing, and the account's next creation waits
@@ -526,16 +527,25 @@ One procedure creates a shop payment, for a charge or for a payer:
    `POST /pay/:username/payment` answers order 9.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first locks the account row, as
-   `POST /pos` does. For a payer, that transaction checks that no charge
-   is pending and writes nothing when one is. The implementing change
-   adds this transactional port to the shop payment store, the way
-   `MergeDb.begin` wraps `sql.begin` for `account-merge.ts`. The row lock
-   serialises the creation with `POST /pos`, also across the two
-   containers of a deploy. The partial unique index on open payments is
-   the backstop: a lost insert (`23505`) re-reads the winning row.
+   `POST /pos` does. In that transaction:
+   - For a charge, the api locks the `pos_charge` row too
+     (`SELECT … FOR UPDATE`) and inserts only while the charge is still
+     `pending`. A charge that was cancelled, expired, or paid meanwhile
+     gets no shop payment, and the sticker keeps today's behaviour.
+   - For a payer, a pending charge means nothing is written, and the
+     answer is order 4 (**409** `payment_open`). An `open` payer-opened
+     payment is ended with `end_reason` `replaced` before the insert.
 
-The procedure stays within 11 s: 2 s for the route list, 5 s for the
-mint, and 4 s for the quotes. Every external call runs outside the
+   The implementing change adds this transactional port to the shop
+   payment store, the way `MergeDb.begin` wraps `sql.begin` for
+   `account-merge.ts`. The row lock serialises the creation with
+   `POST /pos`, also across the two containers of a deploy. The partial
+   unique index on open payments is the backstop: a lost insert (`23505`)
+   runs this step again under the lock, and never answers with another
+   payer's amount.
+
+The procedure stays within 8 s: 1 s for the route list, 4 s for the
+mint, and 3 s for the quotes. Every external call runs outside the
 database transaction. A losing caller's BOLT11 stays recorded against the
 charge and can still pay the charge. Its Orchestra quotes are never shown
 and expire unused.
@@ -544,10 +554,10 @@ and expire unused.
 
 A replacement quote is created under the creation lock. A second fetch
 waits for it and returns it. The replacement runs steps 3, 5, and 6 of
-the creation procedure for the same sats and the same BOLT11, within
-6 s, inserts one `shop_quote` with the offers that pass, and keeps the
-payment id. A payment never gets a second BOLT11, so the shop can only be
-paid once through it.
+the creation procedure for the same sats and the same BOLT11, within 4
+s, inserts one `shop_quote` with the offers that pass, and keeps the
+payment id. A payment never gets a second BOLT11, so the shop can only
+be paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
 a Lightning-only quote: its `transferAmounts` has only the Lightning
@@ -1296,7 +1306,7 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 | Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before verification, fills in a missing log, and resubmits an unresolved one.   |
 | 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                                               |
 | A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                                           |
-| 20 s request timeout                              | A fetch waits at most 4 s for a creation and 6 s for a replacement; a proof request stays within 18 s.                        |
+| 20 s request timeout                              | A fetch waits at most 8 s for a creation and 4 s for a replacement; a proof request stays within 18 s.                        |
 | Refuses to send close to the deadline             | A fetch replaces a quote with less than 45 s left, except in the window's last 45 s, and the previous quote keeps its detail. |
 | Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                                   |
 | Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.                        |
