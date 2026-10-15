@@ -240,7 +240,8 @@ status. `db_change` keeps every earlier value.
 
 The step that moves a charge-backed payment to `paid` also runs
 `markPaid` for its charge, so the till sees the charge paid even after
-the charge's own 15-minute watch has ended.
+the charge's own watch has ended. That watch ends 10 minutes after the
+charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
