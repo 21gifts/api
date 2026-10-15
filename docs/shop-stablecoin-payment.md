@@ -24,11 +24,11 @@ met.
 | Consistent with the DFX reference | DFX.swiss, whose API answers every example in that README. Where this document differs, [Deviations](#deviations) gives the reason.                                                                                              |
 | Tether Wallet for Android 1.11.0  | Build 134, read from its compiled OpenCryptoPay client (`services/opencryptopay/api`, `route`, and `pending-proof`) and its wallet worklet. [Tether Wallet 1.11.0](#tether-wallet-1110) lists what that build does.              |
 
-Orchestra facts come from its documentation (`docs.flashnet.xyz`, the
-pages Quotes and Order status), its OpenAPI document
-(`https://orchestration.flashnet.xyz/openapi.json`), and its public route
-list (`/v2/orchestration/routes`), all read on 2026-10-14. Facts that
-only a live run can prove are listed in [Release checks](#release-checks).
+Orchestra facts come from its documentation (`docs.flashnet.xyz`: Quotes,
+Pricing, Order status, API overview, Rate limits), its OpenAPI document
+(`https://orchestration.flashnet.xyz/openapi.json`), and its route list
+(`/v2/orchestration/routes`), all read on 2026-10-14. Facts that only a
+live run can prove are listed in [Release checks](#release-checks).
 
 These Orchestra facts shape the design:
 
@@ -36,14 +36,37 @@ These Orchestra facts shape the design:
   creation.
 - The payer sends `amountIn` to the quote's deposit address before
   `expiresAt`. With `includeCalldata`, the quote returns the unsigned
-  ERC-20 `transaction`, whose `data` encodes `transfer(depositAddress,
-amountIn)`.
+  ERC-20 `transaction`, whose `data` encodes
+  `transfer(depositAddress, amountIn)`.
 - Orchestra detects the deposit itself and creates the order. Submitting
   the transaction hash is the documented fallback, and repeating the same
   deposit returns the existing order.
-- `refundAddress` is optional in the API for listed tokens. Without it,
-  Orchestra refunds to the detected source address when that is safe,
-  and never to an exchange's shared sender address.
+- Handler 4xx answers are cached under their idempotency key. A new
+  attempt after such an answer needs a new key. A timeout or a 5xx is
+  retried with the same key.
+- Order lookups are limited to 120 requests per minute per IP, and one
+  order should be polled no faster than every 3 s.
+
+### Refund address
+
+The two Orchestra sources disagree, and this design depends on the
+answer:
+
+- The documentation says: "`/quote` requires `refundAddress` for
+  exact-out and Lightning destinations" (Pricing), and recovery without
+  a valid refund target "may need manual review" (Order status).
+- The OpenAPI document requires `refundAddress` only "when sourceAsset is
+  an unlisted token" and otherwise "where required by the route".
+
+The payer's address is unknown when the quote is created: the
+OpenCryptoPay pay request carries none. Without a refund address,
+Orchestra refunds to the detected source address when that is safe, and
+never to an exchange's shared sender address. This design sends no
+`refundAddress`. [Release checks](#release-checks) items 2 and 4 decide
+whether that holds. When Orchestra refuses such quotes or does not
+refund to the source, the stablecoin rows stay off. A refund address that
+21.gifts controls would make 21.gifts hold coins, so it needs a new
+decision and is not part of this document.
 
 ## Flow
 
@@ -92,7 +115,7 @@ Each term has exactly one meaning in this document.
   `accepted`, or `paid` is not a waiting charge.
 - **Quote**: one row of `shop_quote`. It names one set of offers.
   `quote.id` is its id. The **current quote** of a payment is its newest
-  quote.
+  quote. The quote before it is the **previous quote**.
 - **Offer**: one row of `shop_offer`. It is one committed Orchestra quote
   for one method and one asset of a quote.
 - **Detail**: the transaction detail of one offer, the response to a
@@ -102,8 +125,8 @@ Each term has exactly one meaning in this document.
   creates it when Orchestra reports an order the api did not submit.
 - **Order**: the Orchestra order of one proof, stored as
   `shop_proof.provider_order` with its last `order_status`.
-- **Accepted**: a proof has an order whose status is not `refunded` or
-  `failed`.
+- **Accepted**: a proof has an order that is not refunded, failed, or
+  expired.
 - **Paid**: the payment's BOLT11 has settled.
 - **Unresolved**: a proof without an order and without a definitive
   refusal.
@@ -145,9 +168,10 @@ A pair is offered on one quote only when all of these hold:
   [Offer checks](#offer-checks).
 
 A pair whose route-list values differ from the table is not offered, and
-the api logs `shop.route.mismatch`. The route list is fetched with a 2 s
-timeout and cached for its `validForMs`. When a fetch fails, the last
-list stays in use for up to 10 minutes.
+the api logs `shop.route.mismatch`. The route list is fetched with the
+server key, because Orchestra filters it per partner, with a 2 s timeout.
+It is reused only for its `validForMs`. When a fetch fails, no
+stablecoin is offered until a fetch succeeds.
 
 Not offered, by decision:
 
@@ -166,18 +190,18 @@ method is a change to the table and to its tests.
 
 ## Lifetimes
 
-| Name               | Value                                                                                                                                                   |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.           |
-| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                               |
-| Funding margin     | 30 s. A transfer the wallet sends at `quote.expiration` still reaches the chain before Orchestra's `expiresAt`.                                         |
-| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`. |
-| Minimum quote life | An offer whose `expiresAt` minus the funding margin is less than 45 s away is not offered.                                                              |
-| BOLT11 expiry      | The invoice timestamp plus its `expiry` tag, or plus 3600 s when the tag is absent, as BOLT11 defines.                                                  |
-| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`.                                                  |
-| Settlement watch   | The payment's BOLT11 is watched until 10 min after its expiry.                                                                                          |
-| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                    |
-| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                      |
+| Name               | Value                                                                                                                                                          |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                  |
+| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                      |
+| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding. |
+| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.        |
+| Fresh quote        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration` and the window has not ended.                                      |
+| BOLT11 expiry      | The invoice timestamp plus its `expiry` tag, or plus 3600 s when the tag is absent, as BOLT11 defines.                                                         |
+| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.       |
+| Settlement watch   | The payment's BOLT11 is watched until 10 min after its expiry.                                                                                                 |
+| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                           |
+| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                             |
 
 A wallet can take longer than the funding margin, for example when the
 chain is slow. Orchestra then decides about the late deposit. The api
@@ -195,13 +219,14 @@ pattern.
 | --------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
 | (none)                      | `open`     | A charge-backed creation, or `POST /pay/:username/payment`.                                                                                | sets `created_at`, `window_ends_at`                 |
 | `open`                      | `ended`    | The window ends; `POST /pos`; a new payer amount; the charge is cancelled; or the charge is paid by an invoice that is not this payment's. | sets `ended_at`, `end_reason`                       |
-| `open`, `ended`             | `accepted` | A proof of the payment becomes `accepted` while the BOLT11 has not settled.                                                                | sets `accepted_at`; clears `ended_at`, `end_reason` |
+| `open`, `ended`             | `accepted` | A proof of the payment becomes `accepted`.                                                                                                 | sets `accepted_at`; clears `ended_at`, `end_reason` |
 | `open`, `ended`, `accepted` | `paid`     | The BOLT11 settles.                                                                                                                        | sets `paid_at`; clears `ended_at`, `end_reason`     |
-| `accepted`                  | `ended`    | The accepted proof becomes `refunded`, or the BOLT11 is past its expiry and has not settled.                                               | sets `ended_at`, `end_reason`                       |
+| `accepted`                  | `ended`    | The accepted proof becomes `refunded` or `failed`, or the BOLT11 is past its expiry and has not settled.                                   | sets `ended_at`, `end_reason`                       |
 
-`paid` is final. `ended` can still move to `accepted` or `paid`, because
-a transfer made in time can be confirmed after the window. Nothing else
-changes a status. `db_change` keeps every earlier value.
+`paid` is final. `ended` can still move to `accepted` or `paid` while the
+BOLT11 has not expired, because a transfer made in time can be confirmed
+after the window. Once the BOLT11 has expired unpaid, `ended` is final.
+Nothing else changes a status. `db_change` keeps every earlier value.
 
 The step that moves a charge-backed payment to `paid` also runs
 `markPaid` for its charge, so the till sees the charge paid even after
@@ -209,26 +234,35 @@ the charge's own 15-minute watch has ended.
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
-`orchestra_refunded`, or `expired_unpaid`.
+`orchestra_refunded`, `orchestra_failed`, or `expired_unpaid`.
 
-`shop_proof.result` is null (unresolved), `accepted`, `refunded`,
-`refused`, `superseded`, or `stuck`. Each change is a conditional update
-on the expected result, in the same database transaction as the payment
-change it causes.
+`shop_proof.result` is null (unresolved), `accepted`, `superseded`,
+`late`, `refunded`, `failed`, `refused`, or `stuck`. Each change is a
+conditional update on the expected result, in the same database
+transaction as the payment change it causes.
 
-| From       | To           | Trigger                                                                                                                           |
-| ---------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
-| null       | `accepted`   | The proof gets an order, no other proof of the payment is `accepted`, and the BOLT11 had not settled before the proof was stored. |
-| null       | `superseded` | The proof gets an order, but another proof of the payment is `accepted`, or the BOLT11 had settled before the proof was stored.   |
-| null       | `refused`    | Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts ([Proof](#proof)). |
-| null       | `stuck`      | `give_up_at` has passed.                                                                                                          |
-| `accepted` | `refunded`   | The order's status becomes `refunded` or `failed`.                                                                                |
-| `stuck`    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                         |
+| From                             | To           | Trigger                                                                                                                                 |
+| -------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| null, `refused`, `stuck`         | `accepted`   | The proof gets an order, the BOLT11 has not expired, and no other proof of the payment is `accepted`.                                   |
+| null, `refused`, `stuck`         | `superseded` | The proof gets an order, and another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.    |
+| null, `refused`, `stuck`         | `late`       | The proof gets an order after the BOLT11 expired.                                                                                       |
+| `accepted`, `superseded`, `late` | `refunded`   | The order's status becomes `refunded`.                                                                                                  |
+| `accepted`, `superseded`, `late` | `failed`     | The order's status becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                    |
+| null                             | `refused`    | Orchestra refuses the submit with `400 xchain_deposit_mismatch`, its order is `expired`, or a `hex` transaction is rejected or reverts. |
+| null                             | `stuck`      | `give_up_at` has passed.                                                                                                                |
+| `stuck`                          | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                               |
 
-A `superseded` proof's order cannot pay the BOLT11 a second time.
-Orchestra then refunds it. A shop payment never makes `POST /pos` or
-`DELETE /pos` answer 409. No unresolved proof and no `accepted` payment
-holds the sticker, the till, or a new payer amount.
+Orchestra is the authority on deposits: an order for a `refused` or
+`stuck` proof moves it as the first three rows state. An order that pays
+the BOLT11 is always `accepted`, even when Orchestra detected the deposit
+and paid before the wallet's proof arrived. The order of a `superseded`
+or `late` proof cannot pay the BOLT11, which is already paid or expired.
+What Orchestra does with that deposit is its refund process
+([Refund address](#refund-address)).
+
+A shop payment never makes `POST /pos` or `DELETE /pos` answer 409. No
+unresolved proof and no `accepted` payment holds the sticker, the till,
+or a new payer amount.
 
 ## Pay link
 
@@ -259,7 +293,8 @@ counts as 0. The api checks once per second until it finds an open amount
 or a waiting charge, or the time is up. With an open amount it answers
 the pay request below. With a waiting charge it answers today's pinned
 Lightning request. With neither it answers **404** with the body of the
-standard's example:
+standard's example. At most 50 requests per process wait at the same
+time; a further request is answered at once.
 
 ```json
 {
@@ -323,11 +358,11 @@ trailing zero after the decimal point, and no point when it is a whole
 number (`0.00001`, `1.5`, `12`). `requestedAmount.amount` is a JSON
 number written in that same plain notation, never `1e-8`.
 
-A fetch while the current quote has not lapsed returns it unchanged.
-When `quote.expiration` has passed and the window has not, the fetch
-replaces the quote ([Quotes](#quotes)). No response ever carries a
-`quote.expiration` in the past. `quote.payment` never changes for a
-payment.
+A fetch returns the current quote unchanged while it is fresh. When less
+than 45 s remain before its `quote.expiration` and the window has not
+ended, the fetch replaces it ([Quotes](#quotes)). No response ever
+carries a `quote.expiration` in the past. `quote.payment` never changes
+for a payment.
 
 ### Simplified flow
 
@@ -342,7 +377,7 @@ Without one it is the **404** above.
 - `<PUBLIC_BASE_URL>/lnurlp/*` must reach the api. On 2026-10-14,
   `https://staging.21.gifts/lnurlp/cb/<name>` was answered by the api's
   router. On production, `https://21.gifts/lnurlp/…` was still answered
-  by the web app. [Release checks](#release-checks) item 7 covers this.
+  by the web app. [Release checks](#release-checks) item 8 covers this.
 - The web app proxies `/.well-known/lnurlp/:username` to the api and
   forwards the query string, so `timeout` arrives. The proxy forwards no
   client address. How the api counts those requests depends on how the
@@ -365,10 +400,12 @@ Without one it is the **404** above.
 ### By a till charge
 
 `POST /pos` keeps its body, its checks, its 409 for a second pending
-charge, and its response. It does not wait for the creation lock. Right
-after it inserts the charge, it ends the account's `open` shop payment,
-if there is one: with `end_reason` `superseded`, or `window` when that
-payment's window has already passed.
+charge, and its response. It does not wait for the in-process creation
+lock. It inserts the charge and ends the account's `open` shop payment,
+if there is one, in one database transaction that first locks the
+account row (`SELECT … FROM account WHERE id = $1 FOR UPDATE`, as
+`account-merge.ts` does). The payment ends with `end_reason`
+`superseded`, or `window` when its window has already passed.
 
 After `POST /pos` answers, the api starts the creation procedure for the
 charge in the background, so that the first scan finds the payment
@@ -446,13 +483,14 @@ One procedure creates a shop payment, for a charge or for a payer:
    60 s. Until then a fetch answers today's pinned Lightning request, and
    `POST /pay/:username/payment` answers order 9.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
-   one database transaction. For a payer, the same transaction checks
-   that no charge is pending and writes nothing when one is. The
-   implementing change adds a transactional port to the shop payment
-   store, the way `MergeDb.begin` wraps `sql.begin` for
-   `account-merge.ts`. The partial unique index on open payments is the
-   backstop while a deploy briefly runs two containers: a lost insert
-   (`23505`) re-reads the winning row.
+   one database transaction that first locks the account row, as
+   `POST /pos` does. For a payer, that transaction checks that no charge
+   is pending and writes nothing when one is. The implementing change
+   adds this transactional port to the shop payment store, the way
+   `MergeDb.begin` wraps `sql.begin` for `account-merge.ts`. The row lock
+   serialises the creation with `POST /pos`, also across the two
+   containers of a deploy. The partial unique index on open payments is
+   the backstop: a lost insert (`23505`) re-reads the winning row.
 
 The procedure stays within 11 s: 2 s for the route list, 5 s for the
 mint, and 4 s for the quotes. Every external call runs outside the
@@ -462,19 +500,21 @@ and expire unused.
 
 ## Quotes
 
-A fetch of the open amount after `quote.expiration` creates a
-replacement quote under the creation lock. A second fetch waits for it
-and returns it. The replacement runs steps 3, 5, and 6 of the creation
-procedure for the same sats and the same BOLT11, inserts one `shop_quote`
-with the offers that pass, and keeps the payment id. A payment never
-gets a second BOLT11, so the shop can only be paid once through it.
+A replacement quote is created under the creation lock. A second fetch
+waits for it and returns it. The replacement runs steps 3, 5, and 6 of
+the creation procedure for the same sats and the same BOLT11, within
+6 s, inserts one `shop_quote` with the offers that pass, and keeps the
+payment id. A payment never gets a second BOLT11, so the shop can only be
+paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
 a Lightning-only quote: its `transferAmounts` has only the Lightning
 entry, and its `quote.expiration` is `window_ends_at`.
 
-Orchestra quotes last 2 minutes, so a five-minute window can need up to
-three replacements.
+The previous quote stays valid for a callback until its own
+`quote.expiration`, so a wallet that fetched it just before the
+replacement can still get its detail. Orchestra quotes last 2 minutes, so
+a five-minute window can need up to four replacements.
 
 ## Offer checks
 
@@ -518,13 +558,13 @@ for the payment's BOLT11. Otherwise the response is **400**, reason
 
 A request with `method` is checked in this order:
 
-| Order | Condition                                                                                          | Response                                      |
-| ----- | -------------------------------------------------------------------------------------------------- | --------------------------------------------- |
-| 1     | `quote` or `asset` is missing, or a key is repeated.                                               | **400**, reason `That payment is not offered` |
-| 2     | `quote` is not the current quote of this username's open amount, or `quote.expiration` has passed. | **404**, reason `Quote expired`               |
-| 3     | `method=Lightning` and `asset=BTC`.                                                                | **200** `{ "pr": "<bolt11>" }`                |
-| 4     | A stablecoin method and asset that the quote offers with `available` true.                         | **200** with the stablecoin detail below      |
-| 5     | Anything else.                                                                                     | **400**, reason `That payment is not offered` |
+| Order | Condition                                                                                                                   | Response                                      |
+| ----- | --------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------- |
+| 1     | `quote` or `asset` is missing, or a key is repeated.                                                                        | **400**, reason `That payment is not offered` |
+| 2     | `quote` is neither the current nor the previous quote of this username's open amount, or its `quote.expiration` has passed. | **404**, reason `Quote expired`               |
+| 3     | `method=Lightning` and `asset=BTC`.                                                                                         | **200** `{ "pr": "<bolt11>" }`                |
+| 4     | A stablecoin method and asset that the quote offers with `available` true.                                                  | **200** with the stablecoin detail below      |
+| 5     | Anything else.                                                                                                              | **400**, reason `That payment is not offered` |
 
 Tether 1.11.0 reads the 404 as `QUOTE_EXPIRED` and the 400 as
 `RAIL_UNAVAILABLE`.
@@ -587,11 +627,13 @@ well, and Tether 1.11.0 sends only `tx`. The api accepts both.
 
 Before any chain read, the api looks for a stored proof of this quote's
 offers whose `tx_hash` or `user_op_hash` equals the normalised `tx`, or
-whose `tx_hash` equals the hash of `hex`. When one exists, the request
-is a repeat and answers from that row (table in
-[Storing and submitting](#storing-and-submitting)). A stored proof of
-another quote with that hash answers **400**, reason
-`Transaction already used`.
+whose `tx_hash` equals the hash of `hex`. When one exists, the request is
+a repeat and answers from that row (table in
+[Storing and submitting](#storing-and-submitting)). When that row is
+unresolved, the request first resubmits it within its budget, under the
+rules of [Calls](#calls). A hash that only proofs of other quotes hold is
+not a repeat: one ERC-4337 bundle can carry the transfers of several
+payers, so the request goes on to verification.
 
 ### Verification of `tx`
 
@@ -610,18 +652,18 @@ another quote with that hash answers **400**, reason
 4. Find the ERC-20 `Transfer` logs (topic
    `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef`)
    whose emitting address is an offer contract of this quote and method,
-   whose `to` topic is that offer's deposit address, and that no stored
-   proof claims yet. A log whose value equals the offer's `amountIn`
-   comes first; otherwise the first such log is used. It selects the
-   offer. When `asset` is present, it must equal that offer's asset.
+   and whose `to` topic is that offer's deposit address. A log whose
+   value equals the offer's `amountIn` comes first; otherwise the first
+   such log is used. It selects the offer. When `asset` is present, it
+   must equal that offer's asset.
 5. No such log: **400**, reason `Payment was not accepted`. Nothing is
-   stored, because no coin reached Orchestra for this offer.
+   stored, because no coin reached Orchestra for this offer. When every
+   such log is already claimed by a proof of another quote, the reason is
+   `Transaction already used`.
 
 One proof is one log, identified by `(chain_id, tx_hash, log_index)`.
-One ERC-4337 bundle can carry the transfers of several payers. The
-transferred value and the log's `from` address are stored. A transfer of
-a different amount is still submitted, because only Orchestra can fill or
-refund it.
+The transferred value is stored. A transfer of a different amount is
+still submitted, because only Orchestra can fill or refund it.
 
 ### Verification of `hex`
 
@@ -633,7 +675,8 @@ refund it.
    present, it must equal the offer's asset. Its fee must reach the
    offer's `minFee` the way DFX checks it: the gas price of a legacy or
    EIP-2930 transaction, or for EIP-1559 the lower of `maxFeePerGas` and
-   the current `eth_gasPrice` plus `maxPriorityFeePerGas`.
+   the current recommended gas price (the `minFee` formula applied to the
+   current `eth_gasPrice`) plus `maxPriorityFeePerGas`.
 3. A failed check: **400**, reason `Payment was not accepted`. Nothing is
    stored and nothing is broadcast.
 4. The api stores the proof with `raw_hex`, then sends
@@ -645,35 +688,46 @@ refund it.
    transport error answer **503**, and the watcher sends the transaction
    again.
 5. The proof is submitted once the transaction is sent. When its receipt
-   arrives, the watcher stores the log index and the `from` address. A
-   receipt with a status other than `0x1` records the proof `refused`.
-   A transaction still unknown 10 minutes after the first send is
-   recorded `refused`.
+   arrives, the watcher stores the log index and the transferred value. A
+   receipt with a status other than `0x1` records the proof `refused`. A
+   transaction still unknown 10 minutes after the first send is recorded
+   `refused`. An Orchestra order found later still moves it, as
+   [States](#states) states.
 
 The api broadcasts only transactions that passed step 2, so its
 endpoints are not an open relay.
 
 ### Storing and submitting
 
-1. Insert the `shop_proof` row with its own idempotency key and
-   `give_up_at` 24 h ahead. A lost insert (`23505`) re-reads the winning
-   row and answers from it.
-2. Submit it to Orchestra ([Orchestra](#orchestra)). `sent_at` is set
-   before the call. When the request's budget is used up before the
-   submit, the watcher submits it.
+Every path that stores a proof uses the same step: the route, the lookup
+duty, and the order duty.
+
+1. Look for a stored proof of the same offer and transaction. A row
+   without `log_index` (a `detected` or `hex` proof) takes the log index
+   and value; a row with that log index is a repeat. Otherwise insert the
+   `shop_proof` row with `give_up_at` 24 h ahead. A lost insert (`23505`)
+   re-reads the winning row and answers from it.
+2. Submit it to Orchestra ([Calls](#calls)). When the request's budget is
+   used up before the submit, the watcher submits it.
+3. When the submit returns an `orderId` that another row of the same
+   offer already holds, the two rows are one deposit. The newer row is
+   deleted in the same transaction, and the request answers from the
+   older row.
 
 Every verified proof is submitted, including when the payment is
 `ended`, `paid`, or already `accepted`, and after its quote expired.
 Orchestra holds the coin, and the submit lets it fill or refund the
 deposit when its own detection missed it.
 
-| Stored result         | Response                                                                       |
-| --------------------- | ------------------------------------------------------------------------------ |
-| `accepted`            | **200** `{ "txId": "<tx_hash>" }`                                              |
-| `superseded`          | **400**, reason `This payment was already paid; the transfer will be refunded` |
-| `refunded`            | **400**, reason `The transfer was refunded`                                    |
-| `refused`             | **400**, reason `Payment was not accepted`                                     |
-| unresolved or `stuck` | **503**, reason `Payment is being confirmed`                                   |
+| Stored result         | Response                                                            |
+| --------------------- | ------------------------------------------------------------------- |
+| `accepted`            | **200** `{ "txId": "<tx_hash>" }`                                   |
+| `superseded`          | **400**, reason `This payment was already paid by another transfer` |
+| `late`                | **400**, reason `The invoice expired before the transfer arrived`   |
+| `refunded`            | **400**, reason `The transfer was refunded`                         |
+| `failed`              | **400**, reason `The transfer was not completed`                    |
+| `refused`             | **400**, reason `Payment was not accepted`                          |
+| unresolved or `stuck` | **503**, reason `Payment is being confirmed`                        |
 
 `txId` is the transaction hash, as DFX returns it. Orchestra's `orderId`
 is stored as `provider_order` and is not sent to the wallet. A repeat of
@@ -704,10 +758,9 @@ on hand.
 | `paid`          | `Completed`                                                                                                                                  |
 | `ended`         | `Pending` while the BOLT11 can still be paid; after its expiry `Cancelled` for `superseded`, `replaced`, or `cancelled`, otherwise `Expired` |
 
-As at DFX, every status except `Pending` is final. A payment that is
-`accepted`, or `ended` with an unexpired BOLT11, can still change, so it
-maps to `Pending`. A client that shows "on its way" reads
-`paymentStatus`.
+As at DFX, every status except `Pending` is final: after the BOLT11 has
+expired, no proof can make the payment `accepted` or `paid`. A client
+that shows "on its way" reads `paymentStatus`.
 
 ## Error bodies
 
@@ -755,45 +808,57 @@ and `eth_getUserOperationReceipt`.
 
 Every call with a body sends `Content-Type: application/json`,
 `Authorization: Bearer <ORCHESTRA_API_KEY>`, and `X-Idempotency-Key`
-(1 to 255 printable ASCII characters). A retry of one call after a
-timeout or a 5xx reuses its key and its body. The error body is
+(1 to 255 printable ASCII characters). The error body is
 `{ "error": { "code", "message" } }`. The wallet never sees `message`.
 
-- **Routes**: `GET {base}/v2/orchestration/routes`, without a key.
+Key rule, from Orchestra's idempotency rules: a timeout, a 5xx, HTTP 429,
+and HTTP 409 `idempotency_in_progress` are retried with the same key and
+body. After any other answer a new attempt uses a new key. The api never
+changes the body under a key.
+
+Every Orchestra call counts against one in-process budget of 100 calls
+per minute. A 429 pauses calls to that endpoint until its `Retry-After`,
+or else until its `X-RateLimit-Reset`.
+
+- **Routes**: `GET {base}/v2/orchestration/routes` with the server key.
 - **Quote**: `POST {base}/v1/orchestration/quote` with `sourceChain`
   (table), `sourceAsset` (`USDT` or `USDC`), `destinationChain`
   `lightning`, `destinationAsset` `BTC`, `amount` (the sat count as an
   integer string), `amountMode` `exact_out`, `recipientAddress` (the
   payment's BOLT11), `tag` (the shop payment id), and `includeCalldata`
-  true. The body sends no `slippageBps`, because Orchestra applies a
-  route minimum, and the sat count is fixed by `exact_out` and checked
-  through `targetAmountOut`. The body sends no `refundAddress`, because
-  the payer's address is unknown when the quote is created. A transport
-  timeout, HTTP 429, HTTP 503, or another 5xx is retried once with the
-  same key inside the step's budget. Any other answer means the pair is
-  not offered.
+  true. The body sends no `slippageBps`, so the route's default applies;
+  the sat count is fixed by `exact_out` and checked through
+  `targetAmountOut`. The body sends no `refundAddress`
+  ([Refund address](#refund-address)). A transport timeout, HTTP 429,
+  HTTP 503, or another 5xx is retried once with the same key inside the
+  step's budget. Any other answer means the pair is not offered.
 - **Submit**: `POST {base}/v1/orchestration/submit` with
-  `{ "quoteId": <provider_ref>, "txHash": <tx_hash>, "sourceAddress": <from> }`
-  and the proof's idempotency key. `sourceAddress` is the `from` of the
-  transfer log, and it is left out while that is not known yet.
+  `{ "quoteId": <provider_ref>, "txHash": <tx_hash> }`. The body sends no
+  `sourceAddress`: it is optional for a deposit address of one quote, and
+  for an ERC-4337 payer the transfer's `from` is not the transaction's
+  sender, which Orchestra may treat as a mismatch.
   - HTTP 200 with `orderId`: the proof gets that order.
   - HTTP 400 with `error.code` `xchain_deposit_mismatch` (a transaction
     without a positive matching deposit): refused.
-  - Anything else leaves the proof unresolved: a timeout, HTTP 503
+  - HTTP 409 with `error.code` `quote_expired`: the api stops
+    submitting that proof. The order duty keeps watching, because
+    Orchestra may still take the late deposit.
+  - Everything else leaves the proof unresolved: a timeout, HTTP 503
     `xchain_deposit_pending` or `xchain_deposit_verification_unavailable`,
-    HTTP 409, HTTP 429, HTTP 200 without `orderId`, any other 4xx or 5xx.
-    HTTP 401, 403, and any other 400 also log `shop.alert.orchestra_request`,
-    because they point at a key or request problem, not at the deposit.
-  - A resubmit more than 24 h after the first one uses a new key. A
-    repeated deposit returns the existing order.
+    another HTTP 409, HTTP 429, HTTP 200 without `orderId`, any other 4xx
+    or 5xx. HTTP 401, 403, and any other 400 also log
+    `shop.alert.orchestra_request`, because they point at a key or request
+    problem, not at the deposit.
 - **Status**: `GET {base}/v1/orchestration/status` with `id=<orderId>`
   for a known order, or `quoteId=<provider_ref>` to find an order Orchestra
   created without a submit. HTTP 404 `not_found` means no order yet. The
-  api stores `order.status` as `order_status`. `refunded` and `failed`
-  move the proof to `refunded`. When `supersededByOperationId` is set,
-  the api follows that order instead. Every other status, a timeout, and
-  every other HTTP error change nothing. An unknown status is logged once
-  per order.
+  api stores `order.status` as `order_status`. Final statuses are
+  `completed`, `refunded`, `failed`, `fallback_delivered`, and `expired`;
+  [States](#states) states what each does to the proof. `unfulfilled` can
+  resume and is watched like a status in progress. When
+  `supersededByOperationId` is set, the api follows that order instead.
+  Every other status, a timeout, and every other HTTP error change
+  nothing. An unknown status is logged once per order.
 
 The api registers no webhook and does not call
 `/v1/orchestration/estimate`.
@@ -803,21 +868,26 @@ The api registers no webhook and does not call
 The existing `startPosPaidWorker` tick (every 2 s, without overlap)
 gains these duties, in this order. Each duty has its own budget of
 external calls per tick, separate from the charge watch, and each call
-times out after 5 s. Each duty takes its rows in order of `next_try_at`,
-oldest first, and what is left waits for the next tick. A cadence below
-is the earliest next try, not a promise.
+times out after 5 s. Each duty takes its rows in order of its own
+next-try column, oldest first, and what is left waits for the next tick.
+A cadence below is the earliest next try, not a promise. Orchestra calls
+also count against the budget in [Calls](#calls).
 
-| Order | Duty                      | Calls | Rows                                                                 | Cadence                                                                                                                                                                                                                              |
-| ----- | ------------------------- | ----- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1     | End lapsed windows        | 0     | `open` payments whose `window_ends_at` has passed                    | Every tick, one conditional update.                                                                                                                                                                                                  |
-| 2     | Settlement                | 8     | Payments that are not `paid`, inside their BOLT11's settlement watch | Every 5 s for 15 min after creation, then every 30 s. The LUD-21 `/verify` read the charge watch uses.                                                                                                                               |
-| 3     | Orders                    | 6     | Offers with an issued detail, inside their order watch               | Status by `quoteId` every 10 s. A found order whose `sourceTxHash` has no proof becomes a proof with that hash and order.                                                                                                            |
-| 4     | Lookups                   | 4     | `shop_proof_lookup` rows that are not done                           | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores and submits the proof. After one hour it logs `shop.alert.lookup_expired`; Orchestra's own detection still applies. |
-| 5     | Broadcasts                | 4     | `hex` proofs whose transaction is not found or has no receipt yet    | Read the receipt, or send again, after 30 s, then every 2 min, as [Verification of `hex`](#verification-of-hex) states.                                                                                                              |
-| 6     | Submits                   | 4     | Proofs that are unresolved, including those never submitted          | Submit after 10 s, 30 s, and 60 s, then every 5 min.                                                                                                                                                                                 |
-| 7     | Stuck proofs              | 0     | Unresolved proofs past `give_up_at`                                  | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                       |
-| 8     | Order status              | 4     | Proofs with an order whose `order_status` is not final               | Status by `id` every 10 s for 10 min, then every 60 s, until `completed`, `refunded`, or `failed`.                                                                                                                                   |
-| 9     | Expired, accepted, unpaid | 0     | `accepted` payments whose BOLT11 is past its expiry                  | End with `expired_unpaid` and log `shop.alert.accepted_unpaid`.                                                                                                                                                                      |
+| Order | Duty                      | Calls | Rows                                                                 | Cadence                                                                                                                                                                                                                                        |
+| ----- | ------------------------- | ----- | -------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | End lapsed windows        | 0     | `open` payments whose `window_ends_at` has passed                    | Every tick, one conditional update.                                                                                                                                                                                                            |
+| 2     | Settlement                | 8     | Payments that are not `paid`, inside their BOLT11's settlement watch | Every 5 s for 15 min after creation, then every 30 s. The LUD-21 `/verify` read the charge watch uses.                                                                                                                                         |
+| 3     | Orders                    | 2     | Offers with an issued detail, inside their order watch               | Status by `quoteId` every 10 s. A found order is stored through [Storing and submitting](#storing-and-submitting) with its `sourceTxHash` as a `detected` proof.                                                                               |
+| 4     | Lookups                   | 4     | `shop_proof_lookup` rows that are not done                           | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores the proof through the same step. After one hour it logs `shop.proof.lookup_expired`; Orchestra's own detection still applies. |
+| 5     | Broadcasts                | 4     | `hex` proofs whose transaction is not found or has no receipt yet    | Read the receipt, or send again, after 30 s, then every 2 min, as [Verification of `hex`](#verification-of-hex) states.                                                                                                                        |
+| 6     | Submits                   | 4     | Unresolved proofs that may still be submitted                        | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule in [Calls](#calls).                                                                                                                                                    |
+| 7     | Stuck proofs              | 0     | Unresolved proofs past `give_up_at`                                  | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                                 |
+| 8     | Order status              | 2     | Proofs with an order whose `order_status` is not final               | Status by `id` every 10 s for 10 min, then every 60 s.                                                                                                                                                                                         |
+| 9     | Expired, accepted, unpaid | 0     | `accepted` payments whose BOLT11 is past its expiry                  | End with `expired_unpaid` and log `shop.alert.accepted_unpaid`.                                                                                                                                                                                |
+
+Duties 3 and 8 together make at most 2 Orchestra status reads per tick,
+which is at most 60 per minute, and poll one order no faster than every
+10 s. Both stay below Orchestra's limits.
 
 The BOLT11 settling marks the payment `paid` and runs `markPaid` for its
 charge. When the payment's BOLT11 settles after its charge was already
@@ -847,9 +917,9 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   bolt11_expires_at  timestamptz NOT NULL,
   status             text NOT NULL CHECK (status IN ('open', 'accepted', 'paid', 'ended')),
   end_reason         text CHECK (end_reason IN ('window', 'superseded', 'replaced', 'cancelled',
-                       'charge_paid', 'orchestra_refunded', 'expired_unpaid')),
+                       'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
-  next_try_at        timestamptz,
+  next_settle_at     timestamptz,
   created_at         timestamptz NOT NULL,
   accepted_at        timestamptz,
   paid_at            timestamptz,
@@ -861,8 +931,8 @@ CREATE TABLE IF NOT EXISTS shop_payment (
 );
 CREATE UNIQUE INDEX IF NOT EXISTS shop_payment_account_open_idx
   ON shop_payment (account_id) WHERE status = 'open';
-CREATE INDEX IF NOT EXISTS shop_payment_watch_idx
-  ON shop_payment (next_try_at) WHERE status <> 'paid';
+CREATE INDEX IF NOT EXISTS shop_payment_settle_idx
+  ON shop_payment (next_settle_at) WHERE status <> 'paid';
 
 CREATE TABLE IF NOT EXISTS shop_quote (
   id                uuid PRIMARY KEY,
@@ -888,38 +958,41 @@ CREATE TABLE IF NOT EXISTS shop_offer (
   idempotency_key   text NOT NULL,
   expires_at        timestamptz NOT NULL,
   detail_issued_at  timestamptz,
-  next_try_at       timestamptz,
+  next_order_at     timestamptz,
   created_at        timestamptz NOT NULL,
   UNIQUE (quote_id, method, asset)
 );
 CREATE INDEX IF NOT EXISTS shop_offer_deposit_idx ON shop_offer (deposit_address, created_at);
 
 CREATE TABLE IF NOT EXISTS shop_proof (
-  id               uuid PRIMARY KEY,
-  offer_id         uuid NOT NULL REFERENCES shop_offer (id),
-  payment_id       uuid NOT NULL REFERENCES shop_payment (id),
-  source           text NOT NULL CHECK (source IN ('tx', 'hex', 'detected')),
-  chain_id         integer NOT NULL,
-  tx_hash          text NOT NULL,
-  log_index        integer,
-  user_op_hash     text,
-  raw_hex          text,
-  from_address     text,
-  transfer_amount  numeric(78, 0),
-  idempotency_key  text NOT NULL,
-  result           text CHECK (result IN ('accepted', 'refunded', 'refused', 'superseded', 'stuck')),
-  provider_order   text,
-  order_status     text,
-  sent_at          timestamptz,
-  first_sent_at    timestamptz,
-  give_up_at       timestamptz NOT NULL,
-  next_try_at      timestamptz,
-  tries            integer NOT NULL DEFAULT 0,
-  resolved_at      timestamptz,
-  created_at       timestamptz NOT NULL,
+  id                uuid PRIMARY KEY,
+  offer_id          uuid NOT NULL REFERENCES shop_offer (id),
+  payment_id        uuid NOT NULL REFERENCES shop_payment (id),
+  source            text NOT NULL CHECK (source IN ('tx', 'hex', 'detected')),
+  chain_id          integer NOT NULL,
+  tx_hash           text NOT NULL,
+  log_index         integer,
+  user_op_hash      text,
+  raw_hex           text,
+  transfer_amount   numeric(78, 0),
+  idempotency_key   text NOT NULL,
+  result            text CHECK (result IN ('accepted', 'superseded', 'late', 'refunded', 'failed',
+                      'refused', 'stuck')),
+  provider_order    text,
+  order_status      text,
+  submit_stopped    boolean NOT NULL DEFAULT false,
+  sent_at           timestamptz,
+  give_up_at        timestamptz NOT NULL,
+  next_submit_at    timestamptz,
+  next_broadcast_at timestamptz,
+  next_status_at    timestamptz,
+  tries             integer NOT NULL DEFAULT 0,
+  resolved_at       timestamptz,
+  created_at        timestamptz NOT NULL,
   CHECK (source <> 'tx' OR (log_index IS NOT NULL AND transfer_amount IS NOT NULL)),
   CHECK (source <> 'hex' OR raw_hex IS NOT NULL),
-  CHECK (result NOT IN ('accepted', 'refunded', 'superseded') OR provider_order IS NOT NULL)
+  CHECK (result NOT IN ('accepted', 'superseded', 'late', 'refunded', 'failed')
+         OR provider_order IS NOT NULL)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS shop_proof_log_idx
   ON shop_proof (chain_id, tx_hash, log_index) WHERE log_index IS NOT NULL;
@@ -929,7 +1002,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS shop_proof_order_idx
   ON shop_proof (provider_order) WHERE provider_order IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS shop_proof_payment_accepted_idx
   ON shop_proof (payment_id) WHERE result = 'accepted';
-CREATE INDEX IF NOT EXISTS shop_proof_retry_idx ON shop_proof (next_try_at);
+CREATE INDEX IF NOT EXISTS shop_proof_submit_idx ON shop_proof (next_submit_at);
+CREATE INDEX IF NOT EXISTS shop_proof_broadcast_idx ON shop_proof (next_broadcast_at);
+CREATE INDEX IF NOT EXISTS shop_proof_status_idx ON shop_proof (next_status_at);
 
 CREATE TABLE IF NOT EXISTS shop_proof_lookup (
   id           uuid PRIMARY KEY,
@@ -947,8 +1022,9 @@ CREATE TABLE IF NOT EXISTS shop_proof_lookup (
 ```
 
 A `detected` proof stores the order's `sourceTxHash` with `log_index`
-null until a wallet's `tx` for that hash, or the watcher, reads the
-receipt and fills it in. Its `give_up_at` is set like any other proof's.
+null. A wallet's `tx` for the same deposit, or the lookup duty, fills in
+the log index and value through [Storing and submitting](#storing-and-submitting).
+A lost insert on `shop_proof_lookup` re-reads the winning row.
 
 Ids come from `crypto.randomUUID()`, the same form as `pos_charge.id`:
 lowercase, eight-four-four-four-twelve. A `quote` or `:payment` value
@@ -983,29 +1059,34 @@ page.
 
 - It keeps today's flow: a charge's amount is locked, and otherwise the
   payer enters sats or fiat with the page's existing conversion rule.
+- With a charge, it fetches the pay link. When the response is an
+  OpenCryptoPay pay request, the page uses its `quote.payment` as the
+  payment id and shows that payment's BOLT11 from the callback's
+  Lightning detail instead of minting one. When the response has no
+  stablecoin, the page keeps today's flow and mints with
+  `POST /pay/:username/invoice`.
 - With an entered amount it calls `POST /pay/:username/payment` instead
   of `POST /pay/:username/invoice`. On **409** `payment_open` it reloads
   and shows the till charge. On **503** `stablecoin_unavailable`, and on
   any other failure of that call, it falls back to
   `POST /pay/:username/invoice`, which is today's Lightning-only path.
-- It fetches the pay link on its own origin, without `timeout`, and
-  checks that `quote.payment` is the payment it opened. When it is not,
-  another payer replaced the amount, and the page says so and offers to
-  enter the amount again. It shows one line per method and asset from
-  `transferAmounts`, with the quote's expiry, and fetches again after
-  `quote.expiration`. When the response has no stablecoin, the page looks
-  as it does today.
-- It shows the Lightning invoice from the callback's Lightning detail.
-  The Wallet of Satoshi button and the desktop invoice QR stay as they
-  are today.
+  After a success it fetches the pay link and checks that `quote.payment`
+  is the payment it opened. When it is not, another payer replaced the
+  amount, and the page says so and offers to enter the amount again.
+- It fetches the pay link on its own origin, without `timeout`. It shows
+  one line per method and asset from `transferAmounts`, with the quote's
+  expiry, and fetches again when the quote expires.
+- The Wallet of Satoshi button and the desktop invoice QR stay as they
+  are today and use the BOLT11 the page shows.
 - It tells the payer to scan the sticker with Tether Wallet or another
   OpenCryptoPay wallet, and to pay from a wallet they control, because
   Orchestra does not refund to an exchange's shared address. Tether
   1.11.0 opens only `https://…?lightning=` links, so the page shows no
   `lightning:` stablecoin deeplink.
-- It polls `GET /lnurlp/wait/:payment` and shows "waiting" (`open`, or
-  `ended` before `invoiceExpiresAt`, because the invoice can still be
-  paid), "on its way" (`accepted`), "paid", or "ended".
+- It polls `GET /lnurlp/wait/:payment` with its payment id and shows
+  "waiting" (`open`, or `ended` before `invoiceExpiresAt`, because the
+  invoice can still be paid), "on its way" (`accepted`), "paid", or
+  "ended".
 - The app adds a proxy route for `POST /pay/[username]/payment`, like the
   existing `POST /pay/[username]/invoice` route. `/lnurlp/*` reaches the
   api without an app route.
@@ -1061,10 +1142,11 @@ the earlier of `quote.expiration` and `expiryDate`; a value that
 
 **Send.** Before sending, the wallet checks locally that the amount
 still matches the URI (`AMOUNT_CHANGED`) and that the deadline has not
-passed (`QUOTE_EXPIRED`). It pays from an ERC-4337 account through a
-bundler, then waits up to 180 s for the on-chain hash. The hash it sends
-is the hash of the bundle transaction. It sends the user-operation hash
-only when the receipt has neither `hash` nor `transactionHash`.
+passed (`QUOTE_EXPIRED`). It does not fetch a new quote then; the payer
+scans again. It pays from an ERC-4337 account through a bundler, then
+waits up to 180 s for the on-chain hash. The hash it sends is the hash of
+the bundle transaction. It sends the user-operation hash only when the
+receipt has neither `hash` nor `transactionHash`.
 
 **Proof.** A `hint` that holds an `http` or `https` URL on the same host
 with a path segment `tx` gives the proof URL; trailing punctuation is cut
@@ -1098,21 +1180,22 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 
 ### How this document meets it
 
-| Wallet behaviour                                  | Rule here                                                                                              |
-| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                         |
-| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`.                                |
-| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                  |
-| Pays from an ERC-4337 bundle                      | A proof is one transfer log; a user-operation hash is also accepted.                                   |
-| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before any chain read.                                   |
-| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                        |
-| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                    |
-| 20 s request timeout                              | A fetch waits at most 4 s for a creation in progress, and a proof request stays within 18 s.           |
-| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                            |
-| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded. |
-| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                     |
-| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                              |
-| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                               |
+| Wallet behaviour                                  | Rule here                                                                                                    |
+| ------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                               |
+| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`.                                      |
+| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                        |
+| Pays from an ERC-4337 bundle                      | A proof is one transfer log, a hash held only by other quotes is no repeat, and a user-operation hash works. |
+| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before any chain read, and resubmits an unresolved one.        |
+| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                              |
+| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                          |
+| 20 s request timeout                              | A fetch waits at most 4 s for a creation and 6 s for a replacement; a proof request stays within 18 s.       |
+| Refuses to send close to the deadline             | A fetch replaces a quote with less than 45 s left, and the previous quote keeps its detail until it expires. |
+| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                  |
+| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.       |
+| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                           |
+| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                                    |
+| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                                     |
 
 ## Deviations
 
@@ -1133,7 +1216,7 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 | URL tweaking (path B) | DFX serves `GET /pl` on its API.                                                                              | Not served.                                                                           | The site has no `app` host to swap for `api`. The standard recommends path A.                                      |
 | Sticker path          | DFX: `/pl?lightning=`.                                                                                        | `/pl/?lightning=`.                                                                    | Printed stickers carry this form. The web app redirects `/pl/` to `/pl` and keeps the query.                       |
 | Error body            | DFX: `{ statusCode, message, error }` with the HTTP reason phrase in `error`.                                 | Those fields plus `status` and `reason`, with the text in `error`.                    | One body for LUD-06, DFX-built wallets, Tether 1.11.0, and this repository's clients.                              |
-| Quote per fetch       | DFX creates a quote on every fetch.                                                                           | One quote until it lapses.                                                            | Each quote costs one Orchestra call per pair, and reuse keeps the amounts stable for a wallet that fetches twice.  |
+| Quote per fetch       | DFX creates a quote on every fetch.                                                                           | One quote until less than 45 s remain.                                                | Each quote costs one Orchestra call per pair, and reuse keeps the amounts stable for a wallet that fetches twice.  |
 | `displayQr`           | Controls DFX's link QR.                                                                                       | Always `false`.                                                                       | The page shows the BOLT11 QR, not a link QR.                                                                       |
 | Extra fields          | `externalId`, `mode`, `route`, and in the 404 also `transferAmounts` and `currency`.                          | Omitted.                                                                              | They have no meaning for a shop payment, and the standard does not require them.                                   |
 
@@ -1146,10 +1229,11 @@ api never logs a key, an RPC URL, raw `hex`, or a BOLT11.
 - `shop.payment.opened`, `.accepted`, `.paid`, `.ended`
 - `shop.offer.rejected`, `shop.route.mismatch`
 - `shop.proof.stored`, `.detected`, `.submitted`, `.accepted`,
-  `.refused`, `.superseded`, `.refunded`, `.unresolved`, `.retried`
-- `shop.orchestra.error`
-- `shop.alert.orchestra_request`, `shop.alert.proof_stuck`,
-  `shop.alert.lookup_expired`, `shop.alert.accepted_unpaid`,
+  `.superseded`, `.late`, `.refunded`, `.failed`, `.refused`,
+  `.unresolved`, `.lookup_expired`, `.retried`
+- `shop.orchestra.error`, `shop.orchestra.rate_limited`
+- `shop.alert.orchestra_request`, `shop.alert.order_failed`,
+  `shop.alert.proof_stuck`, `shop.alert.accepted_unpaid`,
   `shop.alert.double_settled`, `shop.alert.shared_deposit_address`, and
   `shop.alert.accepted_long` (a payment `accepted` for more than one
   hour)
@@ -1173,10 +1257,13 @@ The implementing change adds:
   `GET /.well-known/lnurlp/:username`, `POST /pos`, `DELETE /pos`, and
   `GET /pos`;
 - `resolveShopPaymentConfig`, and the three variables in CONTRIBUTING's
-  environment table;
+  environment table and in its `webServer.env` pin list;
 - a timeout parameter on `requestGiftInvoice`;
-- the in-process counters of order 7, which `IpRateLimiter` cannot
-  express because they count accounts and creations over 5 min;
+- the transactional port with the account row lock, used by `POST /pos`
+  and by the creation procedure;
+- the in-process counters of order 7 and the Orchestra call budget, which
+  `IpRateLimiter` cannot express because they count accounts, creations,
+  and calls;
 - the dependency `viem` at an exact version, for transaction decoding,
   Keccak-256, and ABI encoding. Nothing in this repository decodes EVM
   transactions today;
@@ -1205,11 +1292,14 @@ limits, `resolveLnurlServerConfig`, `startPosPaidWorker`, the LUD-21
   [Tether Wallet 1.11.0](#tether-wallet-1110), including the status-code
   rules, the hint and `cb` rewrite, the bundle hash, the user-operation
   hash, the proof retries, and the settlement poll. With `USDT` on each
-  of `Ethereum`, `Polygon`, and `Arbitrum` it must reach settled, both
-  when the proof is accepted at once and when the first attempt gets 503. It must also reach the plain LNURL path with no open amount,
-  `QUOTE_EXPIRED` on an expired quote, and `RAIL_UNAVAILABLE` on a pair
-  that is not offered. A stand-in order that Orchestra creates without a
-  submit must make the payment `accepted` through the watcher.
+  of `Ethereum`, `Polygon`, and `Arbitrum` it must reach settled: when the
+  first attempt is accepted, when the first attempt gets 503 and the
+  stand-in accepts the resubmit of a later attempt, and when the stand-in
+  detected the deposit and paid before the proof arrived. It must also
+  reach the plain LNURL path with no open amount, `QUOTE_EXPIRED` on an
+  expired quote, and `RAIL_UNAVAILABLE` on a pair that is not offered. A
+  stand-in order that Orchestra creates without a submit must make the
+  payment `accepted` through the watcher.
 
 ## Release checks
 
@@ -1225,17 +1315,22 @@ records each result in the pull request that turns the feature on.
    account.
 2. A quote request without `refundAddress` and without `slippageBps` for
    `exact_out` into a BOLT11 commits on each offered pair, and the
-   returned `amountIn` equals the amount in `transaction.data`.
-3. The BOLT11 that the staging mint returns meets the BOLT11 margin.
-4. A deliberately underpaid deposit from the Tether Wallet account is
-   refunded to that account. A deposit made just after `expiresAt` is
-   filled or refunded. Each answer is recorded.
+   returned `amountIn` equals the amount in `transaction.data`. If
+   Orchestra refuses it, see [Refund address](#refund-address).
+3. The BOLT11 that the staging mint returns lives at least 1020 s.
+4. A deliberately underpaid deposit is refunded to its sender: from the
+   Tether Wallet account on one Tether rail, and from an ordinary account
+   on one of `Optimism`, `Base`, or `BinanceSmartChain`, with USDC. A
+   deposit made just after `expiresAt` is filled or refunded. Each answer
+   is recorded.
 5. Orchestra accepts parallel quotes for different pairs, and later
    replacement quotes, that name the same BOLT11, and gives each quote
    its own deposit address.
 6. Two submits of the same deposit, the second with a new idempotency
    key, return the same order, as the documentation states.
-7. Production routes `<PUBLIC_BASE_URL>/lnurlp/*` to the api, as staging
+7. With the staging key, the route list and the quote, submit, and status
+   calls stay within the observed rate limits at the watcher's budgets.
+8. Production routes `<PUBLIC_BASE_URL>/lnurlp/*` to the api, as staging
    does.
 
 ## Unchanged
