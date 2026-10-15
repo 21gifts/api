@@ -824,7 +824,8 @@ pay-link poll with `timeout` is therefore the 404 above.
 `GET /lnurlp/wait/:payment` serves the payment page. No session. CORS
 `*`, `Cache-Control: no-store`, 120 requests per minute per client
 address. `:payment` must be a shop payment id. Otherwise the response is
-**404**.
+**404**, reason `Not found`, the text `POST /pay/:username/invoice` uses
+for an id this service does not have.
 
 The response is `{ "status": <DFX status>, "paymentStatus": <status>,
 "invoiceExpiresAt": <BOLT11 expiry> }`. It answers at once when `status`
