@@ -450,12 +450,15 @@ account row (`SELECT … FROM account WHERE id = $1 FOR UPDATE`, as
 
 After `POST /pos` answers, the api starts the creation procedure for the
 charge in the background, so that the first scan finds the payment
-ready. `DELETE /pos` keeps its behaviour, and the charge's `open` shop
-payment ends with `end_reason` `cancelled`.
+ready. `DELETE /pos` keeps its behaviour. It cancels the charge and
+ends the charge's `open` shop payment with `end_reason` `cancelled` in
+one database transaction with the same account row lock.
 
 When the watcher marks the charge `paid` from the Spark invoice or from
-a BOLT11 that is not the shop payment's, an `open` shop payment ends
-with `end_reason` `charge_paid`.
+a BOLT11 that is not the shop payment's, it ends an `open` shop payment
+with `end_reason` `charge_paid` in the same transaction, again under the
+account row lock. No moment exists in which the charge is cancelled or
+paid while its shop payment is still `open`.
 
 ### By the payer
 
@@ -476,8 +479,8 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 | 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
 | 9     | No pair commits.                                                                                                                                                  | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
-Orders 1, 2, 3, 5, and 8 are the checks and texts of `POST
-/pay/:username/invoice`. Order 4 comes before the range check, because a
+Orders 1, 2, 3, 5, and 8 are the checks and texts of
+`POST /pay/:username/invoice`. Order 4 comes before the range check, because a
 pending charge pins that range to the charge amount. Orders 4, 6, and 7
 run again under the creation lock. The counters in order 7 count started
 creations, in process. They do not depend on the client address, because
@@ -514,10 +517,12 @@ One procedure creates a shop payment, for a charge or for a payer:
    payer stop with order 4 when a charge is now pending.
 3. Read the route list and select the candidate pairs ([Methods](#methods)).
 4. Mint one BOLT11 with `requestGiftInvoice`, as
-   `POST /pay/:username/invoice` does, with a 4 s timeout that the implementing change adds as a parameter. While a charge is pending,
-   record its payment hash against the charge with
-   `posStore.recordInvoice`, as that route does. Check the amount and read
-   the BOLT11 expiry.
+   `POST /pay/:username/invoice` does, with a 4 s timeout that the
+   implementing change adds as a parameter. Decode it with
+   `decodeBolt11`, check the amount, and read the BOLT11 expiry first. A
+   wrong amount stops the procedure, and nothing is recorded. Only then,
+   while a charge is pending, record its payment hash against the charge
+   with `posStore.recordInvoice`, in the order that route uses.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
    one Orchestra quote per candidate pair, within 3 s for the whole step;
    a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
@@ -828,8 +833,9 @@ address. `:payment` must be a shop payment id. Otherwise the response is
 **404**, reason `Not found`, the text `POST /pay/:username/invoice` uses
 for an id this service does not have.
 
-The response is `{ "status": <DFX status>, "paymentStatus": <status>,
-"invoiceExpiresAt": <BOLT11 expiry> }`. It answers at once when `status`
+The response is
+`{ "status": <DFX status>, "paymentStatus": <status>, "invoiceExpiresAt": <BOLT11 expiry> }`.
+It answers at once when `status`
 is not `Pending`. Otherwise it waits up to 25 s for a change of
 `paymentStatus` and then answers with the state on hand.
 
