@@ -253,8 +253,8 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (account.profileMessageId === message.id) {
         return c.json({ error: 'Profile notes are not paid' }, 409);
       }
-      const address = account.lightningAddress?.trim() ?? '';
-      if (address === '') {
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
         return c.json({ error: 'No Lightning address' }, 409);
       }
       let grant;

@@ -1096,8 +1096,8 @@ describe('LNURL server wiring', () => {
     token: string;
     noteIds: [string, string];
   }> {
-    const now = (): number => Date.UTC(2026, 8, 28, 12);
-    const fundedAt = new Date(Date.UTC(2026, 8, 26, 12));
+    const now = (): number => Date.UTC(2027, 2, 1, 12);
+    const fundedAt = new Date(Date.UTC(2027, 1, 27, 12));
     const kek = parseNostrKek('11'.repeat(32));
     const token = invoiceRateCaps === null ? 'repay-cap-default' : 'repay-cap-raised';
     const noteIds: [string, string] =

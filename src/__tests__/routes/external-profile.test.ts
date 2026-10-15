@@ -1382,6 +1382,7 @@ describe('GET /messages/:id/external-posts', () => {
       getById: (id: string) => Promise.resolve(id === clipId ? clip : good),
       listPostsByPubkey: () => Promise.resolve([clip, good]),
       deleteById: () => Promise.resolve(false),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
@@ -1410,6 +1411,7 @@ describe('GET /messages/:id/external-posts', () => {
         ),
       listPostsByPubkey: () => Promise.resolve([clip(goneId), clip(hiddenId), good]),
       deleteById: () => Promise.resolve(false),
+      heartStats: () => Promise.resolve(new Map()),
     } as unknown as MessageStore;
     const res = await mount(store).request(`/messages/${NOTE}/external-posts`);
     expect(res.status).toBe(200);
