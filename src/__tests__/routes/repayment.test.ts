@@ -8,7 +8,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 
-const now = (): number => Date.UTC(2026, 8, 28, 12);
+const now = (): number => Date.UTC(2026, 10, 4, 12);
 const CREDIT = '55555555-5555-4555-8555-555555555555';
 const GIVER = '11111111-1111-4111-8111-111111111111';
 
@@ -90,7 +90,7 @@ async function readyCredit(options?: {
     goalRepayable: true,
     goalTermDays: options?.termDays === undefined ? 1 : options.termDays,
     goalFundedAt:
-      options?.fundedAt === undefined ? new Date(Date.UTC(2026, 8, 26, 12)) : options.fundedAt,
+      options?.fundedAt === undefined ? new Date(Date.UTC(2026, 10, 2, 12)) : options.fundedAt,
     ...(options?.goalCurrency === undefined
       ? {}
       : {
@@ -152,17 +152,19 @@ describe('credit repayment', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       currency: string;
+      startsOn: string | null;
       unassignedSats: number;
       givers: { name: string; givenSats: number }[];
       repayments: { dueOn: string; sats: number; status: string; via: string }[];
     };
     expect(body.currency).toBe('BTC');
+    expect(body.startsOn).toBe('2026-11-03');
     expect(body.unassignedSats).toBe(5);
     expect(body.givers).toEqual([
       { accountId: GIVER, name: 'Bea', username: 'bea', givenSats: 21, givenAmount: null },
     ]);
     expect(body.repayments[0]).toMatchObject({
-      dueOn: '2026-09-27',
+      dueOn: '2026-11-03',
       sats: 21,
       status: 'due',
       via: 'lightning',
@@ -181,6 +183,18 @@ describe('credit repayment', () => {
       headers: { authorization: 'Bearer acc' },
     });
     expect(badId.status).toBe(404);
+  });
+
+  it('starts a credit filled before November 2026 on 2026-11-01', async () => {
+    const { app } = await readyCredit({ fundedAt: new Date(Date.UTC(2026, 9, 9, 6)) });
+    const res = await app.request(`/messages/${CREDIT}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      startsOn: string | null;
+      repayments: { dueOn: string | null }[];
+    };
+    expect(body.startsOn).toBe('2026-11-01');
+    expect(body.repayments[0]?.dueOn).toBe('2026-11-01');
   });
 
   it('shows the due share and invoices the giver Wallet of Satoshi address', async () => {
@@ -603,6 +617,7 @@ describe('credit repayment', () => {
     expect(open.status).toBe(200);
     expect((await open.json()) as { fundedAt: null; next: null }).toMatchObject({
       fundedAt: null,
+      startsOn: null,
       next: null,
       repayments: [{ dueOn: null, status: 'scheduled', sats: 21 }],
     });
@@ -737,5 +752,208 @@ describe('credit repayment', () => {
     } finally {
       nip57.mockRestore();
     }
+  });
+});
+
+describe('DELETE /messages/:id on a credit', () => {
+  const OTHER = '66666666-6666-4666-8666-666666666666';
+
+  async function staffCredit(
+    options?: Parameters<typeof readyCredit>[0],
+  ): Promise<Awaited<ReturnType<typeof readyCredit>>> {
+    const ready = await readyCredit(options);
+    const account = await ready.auth.getAccount('acc');
+    if (account === undefined) {
+      throw new Error('expected account');
+    }
+    await ready.auth.updateAccount({ ...account, role: 'founder' });
+    return ready;
+  }
+
+  async function del(app: Hono, id: string): Promise<Response> {
+    return app.request(`/messages/${id}`, {
+      method: 'DELETE',
+      headers: { authorization: 'Bearer acc' },
+    });
+  }
+
+  it('refuses a funded credit with an unpaid share, even for the founder', async () => {
+    const { app, messages } = await staffCredit();
+    const res = await del(app, CREDIT);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'An open credit cannot be deleted' });
+    expect((await messages.getById(CREDIT))?.deletedAt).toBeNull();
+  });
+
+  it('refuses a repaid credit that still holds sats without a giver account', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    await messages.recordZapReceipt('r-later', CREDIT, 5, null);
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a repaid credit when a receipt is assigned to a giver between the reads', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    await messages.recordZapReceipt('r-late', CREDIT, 5, null);
+    let assigned = false;
+    const assignAfterFirstRead = async <T>(read: Promise<T>): Promise<T> => {
+      const value = await read;
+      if (!assigned) {
+        assigned = true;
+        await messages.updateZapReceiptGift('r-late', { payerAccountId: 'acc' });
+      }
+      return value;
+    };
+    const listCreditPayers = messages.listCreditPayers.bind(messages);
+    const sumUnassignedCreditSats = messages.sumUnassignedCreditSats.bind(messages);
+    messages.listCreditPayers = (id) => assignAfterFirstRead(listCreditPayers(id));
+    messages.sumUnassignedCreditSats = (id) => assignAfterFirstRead(sumUnassignedCreditSats(id));
+    expect((await del(app, CREDIT)).status).toBe(409);
+    expect(assigned).toBe(true);
+  });
+
+  it('refuses a funded credit whose plan has no payable share', async () => {
+    const { app } = await staffCredit({ goalCurrency: 'USD', goalAmount: '0.00' });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('hides a credit once every share is repaid', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.markRepaymentPaid({
+      messageId: CREDIT,
+      dayIndex: 0,
+      recipientAccountId: GIVER,
+      dueSats: 21,
+      paidAt: new Date(now()),
+    });
+    expect((await del(app, CREDIT)).status).toBe(204);
+    expect((await messages.getById(CREDIT))?.deletedAt).toBeInstanceOf(Date);
+  });
+
+  it('keeps returning 204 for an open credit that is already hidden', async () => {
+    const { app, messages } = await staffCredit();
+    const at = new Date(Date.UTC(2026, 8, 27));
+    expect(await messages.markDeleted(CREDIT, at, 'acc')).toBe(true);
+    expect((await del(app, CREDIT)).status).toBe(204);
+    expect((await messages.getById(CREDIT))?.deletedAt?.getTime()).toBe(at.getTime());
+  });
+
+  it('refuses a credit that received sats but never filled', async () => {
+    const { app } = await staffCredit({ fundedAt: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit without a term', async () => {
+    const { app } = await staffCredit({ termDays: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit whose debt cannot be priced', async () => {
+    const { app } = await staffCredit({ goalCurrency: 'USD', goalAmount: null });
+    expect((await del(app, CREDIT)).status).toBe(409);
+  });
+
+  it('refuses a funded credit paid only by zaps without an account', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'external only',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 21,
+      goalSats: 21,
+      goalRepayable: true,
+      goalTermDays: 1,
+      goalFundedAt: new Date(Date.UTC(2026, 8, 26, 12)),
+    });
+    await messages.recordZapReceipt('r-ext', OTHER, 21, null);
+    expect((await del(app, OTHER)).status).toBe(409);
+  });
+
+  async function emptyCredit(messages: InMemoryMessageStore): Promise<void> {
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'empty ask',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+    });
+  }
+
+  it('refuses when sats arrive between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await messages.addSats(id, 5, null);
+      return markDeleted(id, at, by, expectedSats);
+    };
+    const res = await del(app, OTHER);
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'An open credit cannot be deleted' });
+    expect((await messages.getById(OTHER))?.deletedAt).toBeNull();
+  });
+
+  it('returns 204 when another hide lands between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await markDeleted(id, new Date(1), 'other');
+      return markDeleted(id, at, by, expectedSats);
+    };
+    expect((await del(app, OTHER)).status).toBe(204);
+    expect((await messages.getById(OTHER))?.deletedBy).toBe('other');
+  });
+
+  it('returns 404 when the credit disappears between the check and the hide', async () => {
+    const { app, messages } = await staffCredit();
+    await emptyCredit(messages);
+    const markDeleted = messages.markDeleted.bind(messages);
+    messages.markDeleted = async (id, at, by, expectedSats) => {
+      await messages.deleteById(id);
+      return markDeleted(id, at, by, expectedSats);
+    };
+    expect((await del(app, OTHER)).status).toBe(404);
+  });
+
+  it('hides a credit that never received sats', async () => {
+    const { app, messages } = await staffCredit();
+    await messages.create({
+      id: OTHER,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'empty ask',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      sats: 0,
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 10,
+    });
+    expect((await del(app, OTHER)).status).toBe(204);
   });
 });

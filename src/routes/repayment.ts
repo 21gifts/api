@@ -8,6 +8,7 @@ import {
   formatCents,
   payerDebtUnits,
   repaymentDescription,
+  repaymentDueDate,
   repaymentLedger,
   repaymentSchedule,
 } from '@/lib/credit-repayment';
@@ -141,6 +142,7 @@ export async function repaymentStatus(deps: RepaymentDeps, c: Context): Promise<
     {
       currency: fiat ? row.goalCurrency : 'BTC',
       fundedAt: fundedAt === null ? null : fundedAt.toISOString(),
+      startsOn: fundedAt === null ? null : repaymentDueDate(fundedAt.getTime(), 0),
       termDays: row.goalTermDays,
       daysDue,
       daysPaid,

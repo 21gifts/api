@@ -16,14 +16,27 @@ import {
 
 describe('credit repayment', () => {
   it('starts at the next UTC midnight', () => {
-    const funded = Date.UTC(2026, 8, 26, 15, 30);
-    expect(repaymentStartMs(funded)).toBe(Date.UTC(2026, 8, 27));
-    expect(repaymentDueDate(funded, 0)).toBe('2026-09-27');
+    const funded = Date.UTC(2026, 11, 26, 15, 30);
+    expect(repaymentStartMs(funded)).toBe(Date.UTC(2026, 11, 27));
+    expect(repaymentDueDate(funded, 0)).toBe('2026-12-27');
     expect(dueDayCount(funded, funded + 1000, 30)).toBe(0);
-    expect(dueDayCount(funded, Date.UTC(2026, 8, 27, 1), 30)).toBe(1);
-    expect(dueDayCount(funded, Date.UTC(2026, 8, 28, 1), 2)).toBe(2);
-    expect(dueDayCount(funded, Date.UTC(2026, 8, 27), 0)).toBe(0);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 27, 1), 30)).toBe(1);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 28, 1), 2)).toBe(2);
+    expect(dueDayCount(funded, Date.UTC(2026, 11, 27), 0)).toBe(0);
     expect(dueDayCount(funded, funded, 1.5)).toBe(0);
+  });
+
+  it('never starts before 2026-11-01', () => {
+    const early = Date.UTC(2026, 9, 9, 6, 23);
+    expect(repaymentStartMs(early)).toBe(Date.UTC(2026, 10, 1));
+    expect(repaymentDueDate(early, 0)).toBe('2026-11-01');
+    expect(repaymentDueDate(early, 1)).toBe('2026-11-02');
+    expect(dueDayCount(early, Date.UTC(2026, 9, 31, 23, 59), 90)).toBe(0);
+    expect(dueDayCount(early, Date.UTC(2026, 10, 1), 90)).toBe(1);
+    const eve = Date.UTC(2026, 9, 31, 23, 59);
+    expect(repaymentStartMs(eve)).toBe(Date.UTC(2026, 10, 1));
+    const first = Date.UTC(2026, 10, 1, 0, 1);
+    expect(repaymentStartMs(first)).toBe(Date.UTC(2026, 10, 2));
   });
 
   it('puts the remainder on the last day', () => {
@@ -118,11 +131,11 @@ describe('credit repayment', () => {
       ],
       [],
       null,
-      Date.UTC(2026, 8, 28),
+      Date.UTC(2026, 11, 28),
     );
     expect(open.every((line) => line.dueOn === null && line.status === 'scheduled')).toBe(true);
-    const funded = Date.UTC(2026, 8, 26, 12);
-    const now = Date.UTC(2026, 8, 28, 12);
+    const funded = Date.UTC(2026, 11, 26, 12);
+    const now = Date.UTC(2026, 11, 28, 12);
     const plan = repaymentLedger(
       2,
       [{ accountId: 'a', units: 2n }],
@@ -131,15 +144,15 @@ describe('credit repayment', () => {
       now,
     );
     expect(plan).toEqual([
-      { dayIndex: 0, dueOn: '2026-09-27', accountId: 'a', units: 1n, status: 'paid' },
-      { dayIndex: 1, dueOn: '2026-09-28', accountId: 'a', units: 1n, status: 'due' },
+      { dayIndex: 0, dueOn: '2026-12-27', accountId: 'a', units: 1n, status: 'paid' },
+      { dayIndex: 1, dueOn: '2026-12-28', accountId: 'a', units: 1n, status: 'due' },
     ]);
     const later = repaymentLedger(
       2,
       [{ accountId: 'a', units: 2n }],
       [],
       funded,
-      Date.UTC(2026, 8, 27, 1),
+      Date.UTC(2026, 11, 27, 1),
     );
     expect(later[1]?.status).toBe('scheduled');
   });

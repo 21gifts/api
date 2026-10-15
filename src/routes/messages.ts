@@ -7,6 +7,7 @@ import { roleAtLeast } from '@/lib/auth/roles';
 import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/lib/auth/store';
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
 import {
   canonicalGoalAmount,
   fiatToSats,
@@ -100,7 +101,9 @@ import { stat } from 'node:fs/promises';
  *
  * @param store - Message store.
  * @param row - Store row.
- * @returns The row, or `null` when it was deleted.
+ * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
+ *   credit with sats, is read again and returned while it is live; `null` when
+ *   it is gone or hidden.
  */
 async function dropMissingVideoRow(
   store: MessageStore,
@@ -117,7 +120,10 @@ async function dropMissingVideoRow(
   if (present) {
     return row;
   }
-  await store.deleteById(row.id);
+  if (!(await store.deleteById(row.id))) {
+    const kept = await store.getById(row.id);
+    return kept !== undefined && kept.deletedAt === null ? kept : null;
+  }
   logEvent('messages.video.dropped');
   return null;
 }
@@ -328,6 +334,45 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+
+/**
+ * Whether a credit note still has money out. Once any sats arrived, the note
+ * stays open until every share of its repayment plan is paid. A credit that
+ * never filled, whose debt cannot be priced, or that holds sats not yet
+ * assigned to a giver account is open, so a later assignment cannot reopen a
+ * credit that was already hidden.
+ *
+ * @param store - Message store.
+ * @param row - Store row.
+ * @returns True when the note must not be hidden.
+ */
+async function creditStillOpen(store: MessageStore, row: MessageRow): Promise<boolean> {
+  if (row.goalRepayable !== true || row.sats <= 0) {
+    return false;
+  }
+  if (!(row.goalFundedAt instanceof Date) || typeof row.goalTermDays !== 'number') {
+    return true;
+  }
+  // Unassigned sats first: a receipt assigned to a giver after this read is
+  // then either still counted here or already listed as a payer below.
+  if ((await store.sumUnassignedCreditSats(row.id)) > 0) {
+    return true;
+  }
+  const payers = await store.listCreditPayers(row.id);
+  const owed = payerDebtUnits(row.goalCurrency, row.goalAmount, payers);
+  if (owed === 'unavailable') {
+    return true;
+  }
+  const slices = repaymentSchedule(row.goalTermDays, owed);
+  const paid = new Set(
+    (await store.listRepayments(row.id)).map(
+      (item) => `${item.dayIndex}:${item.recipientAccountId}`,
+    ),
+  );
+  return (
+    slices.length === 0 || slices.some((slice) => !paid.has(`${slice.dayIndex}:${slice.accountId}`))
+  );
+}
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -2026,10 +2071,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (target === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
+        const liveCredit = target.deletedAt === null && target.goalRepayable === true;
+        if (liveCredit && (await creditStillOpen(deps.store, target))) {
+          logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
+          return c.json({ error: 'An open credit cannot be deleted' }, 409);
+        }
         const at = new Date(deps.now());
-        const tagged = await deps.store.markDeleted(id, at, account.id);
+        const tagged = await deps.store.markDeleted(
+          id,
+          at,
+          account.id,
+          liveCredit ? target.sats : undefined,
+        );
         if (!tagged) {
-          return c.json({ error: 'Not found' }, 404);
+          const now = liveCredit ? await deps.store.getById(id) : undefined;
+          if (now === undefined) {
+            return c.json({ error: 'Not found' }, 404);
+          }
+          if (now.deletedAt === null) {
+            logEvent('messages.delete.open_credit', { messageId: id, accountId: account.id });
+            return c.json({ error: 'An open credit cannot be deleted' }, 409);
+          }
         }
         if (
           target.parentId === null &&
