@@ -626,6 +626,88 @@ describe('openBootStores', () => {
     );
   });
 
+  it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
+    const executes: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text.includes('FROM daily_roster_entry e')) {
+          return [
+            { id: 1, address: 'ada@walletofsatoshi.com', bucket: 'daily', username: 'ada' },
+            { id: 2, address: 'gone@walletofsatoshi.com', bucket: 'daily', username: null },
+          ] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string, params?: readonly unknown[]) => {
+        executes.push({ text, params });
+      },
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: {
+        baseUrl: 'http://lnurl.internal',
+        publicBaseUrl: 'https://21.gifts',
+        host: '21.gifts',
+      },
+    });
+
+    const rosterIdx = executes.findIndex((e) =>
+      /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(e.text),
+    );
+    const deleteIdx = executes.findIndex(
+      (e) => e.text === 'DELETE FROM daily_roster_entry WHERE id = $1',
+    );
+    const updateIdx = executes.findIndex(
+      (e) => e.text === 'UPDATE daily_roster_entry SET address = $2 WHERE id = $1',
+    );
+    const apiLogIdx = executes.findIndex((e) => /CREATE TABLE IF NOT EXISTS api_log/i.test(e.text));
+    expect(rosterIdx).toBeGreaterThanOrEqual(0);
+    expect(deleteIdx).toBeGreaterThan(rosterIdx);
+    expect(updateIdx).toBeGreaterThan(deleteIdx);
+    expect(apiLogIdx).toBeGreaterThan(updateIdx);
+    expect(executes[deleteIdx]?.params).toEqual([2]);
+    expect(executes[updateIdx]?.params).toEqual([1, 'ada@21.gifts']);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move', moved: 1, removed: 1 }),
+    );
+  });
+
+  it('skips the roster wallet move when the LNURL server is off', async () => {
+    const queries: string[] = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        queries.push(text);
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async () => undefined,
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: null,
+    });
+
+    expect(queries.some((q) => q.includes('FROM daily_roster_entry e'))).toBe(false);
+    expect(parsedEvents(warn)).not.toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move' }),
+    );
+  });
+
   it('uses default fetch and candles URL when fx options are omitted', async () => {
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {

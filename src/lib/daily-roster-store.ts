@@ -175,6 +175,85 @@ export async function migrateDailyRosterSchema(sql: SqlClient): Promise<void> {
   }
 }
 
+/** Counts from {@link moveDailyRosterToWalletAddresses}. */
+export interface DailyRosterWalletMove {
+  /** Rows rewritten to `<username>@<host>`. */
+  moved: number;
+  /** Rows deleted: no member behind the address, or a repeat in its bucket. */
+  removed: number;
+}
+
+/**
+ * Point every listed row at the member's in-app wallet address.
+ *
+ * A row whose address is already on `host` stays. A row whose address equals
+ * an account's legacy `lightning_address` (trimmed, case-insensitive) becomes
+ * `<username>@<host>` (username trimmed and lower-cased), the address
+ * `receivingAddress` gives that member. Every other row (no account, or an
+ * account without a username) is deleted, and so is a row that would repeat
+ * an address already kept in the same bucket (case-insensitive). Rows on
+ * `host` keep their address first, then the rest in `id` order. Deletes run
+ * before updates, so `UNIQUE (address, bucket)` never trips. A second run
+ * changes nothing. Needs `account` and `daily_roster_entry`.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`).
+ * @returns How many rows were rewritten and how many were deleted.
+ */
+export async function moveDailyRosterToWalletAddresses(
+  sql: SqlClient,
+  host: string,
+): Promise<DailyRosterWalletMove> {
+  const suffix = `@${host.toLowerCase()}`;
+  const rows = await sql.query<{
+    id: number;
+    address: string;
+    bucket: string;
+    username: string | null;
+  }>(
+    `SELECT e.id, e.address, e.bucket, a.username
+       FROM daily_roster_entry e
+       LEFT JOIN account a
+         ON lower(btrim(a.lightning_address)) = lower(btrim(e.address))
+      ORDER BY e.id`,
+  );
+  const onHost = (address: string): boolean => address.trim().toLowerCase().endsWith(suffix);
+  const ordered = [
+    ...rows.filter((row) => onHost(row.address)),
+    ...rows.filter((row) => !onHost(row.address)),
+  ];
+  const kept = new Set<string>();
+  const deletes: number[] = [];
+  const updates: Array<{ id: number; address: string }> = [];
+  for (const row of ordered) {
+    const username = row.username?.trim().toLowerCase() ?? '';
+    const target = onHost(row.address)
+      ? row.address
+      : username === ''
+        ? null
+        : `${username}${suffix}`;
+    const key = `${row.bucket}\n${(target ?? '').trim().toLowerCase()}`;
+    if (target === null || kept.has(key)) {
+      deletes.push(row.id);
+      continue;
+    }
+    kept.add(key);
+    if (target !== row.address) {
+      updates.push({ id: row.id, address: target });
+    }
+  }
+  for (const id of deletes) {
+    await sql.execute('DELETE FROM daily_roster_entry WHERE id = $1', [id]);
+  }
+  for (const update of updates) {
+    await sql.execute('UPDATE daily_roster_entry SET address = $2 WHERE id = $1', [
+      update.id,
+      update.address,
+    ]);
+  }
+  return { moved: updates.length, removed: deletes.length };
+}
+
 /**
  * Process-local {@link DailyRosterStore}. Used in tests and when no database
  * URL is configured — the process still boots.

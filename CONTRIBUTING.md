@@ -508,7 +508,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresMemberEventStore`, `migrateMemberEventSchema`,
 `PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresFundingStore`, `migrateFundingSchema`,
-`PostgresDailyRosterStore`, `migrateDailyRosterSchema`,
+`PostgresDailyRosterStore`, `migrateDailyRosterSchema`, `moveDailyRosterToWalletAddresses`,
 `PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,

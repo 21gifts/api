@@ -2,7 +2,11 @@ import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
 import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
-import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
+import {
+  migrateDailyRosterSchema,
+  moveDailyRosterToWalletAddresses,
+  PostgresDailyRosterStore,
+} from '@/lib/daily-roster-store';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
@@ -336,6 +340,53 @@ describe('PostgresDailyRosterStore importDocument', () => {
     } finally {
       await client.execute('DELETE FROM daily_roster_entry');
       await client.execute('DELETE FROM daily_roster');
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('moveDailyRosterToWalletAddresses', () => {
+  test('moves legacy rows to the member wallet address on real Postgres', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const accountId = crypto.randomUUID();
+    const username = `roster_${stamp}`;
+    const legacy = `Roster_${stamp}@WalletOfSatoshi.com`;
+    const viewKey = `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute(
+        `INSERT INTO account (id, role, name, username, lightning_address, lightning_address_verified,
+           forum_laws_dismissed, created_at, view_key)
+         VALUES ($1, 'verified', 'Roster', $2, $3, true, false, now(), $4)`,
+        [accountId, username, legacy.toLowerCase(), viewKey],
+      );
+      await client.execute(
+        `INSERT INTO daily_roster_entry (address, amount_usd, bucket) VALUES
+           ($1, 3, 'daily'), ($1, 5, 'moderator'), ($2, 2, 'daily')`,
+        [` ${legacy} `, `nobody_${stamp}@walletofsatoshi.com`],
+      );
+
+      expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
+        moved: 2,
+        removed: 1,
+      });
+      const rows = await client.query<{ address: string; amount_usd: number; bucket: string }>(
+        'SELECT address, amount_usd, bucket FROM daily_roster_entry ORDER BY bucket',
+      );
+      expect(rows).toEqual([
+        { address: `${username}@gifts.example`, amount_usd: 3, bucket: 'daily' },
+        { address: `${username}@gifts.example`, amount_usd: 5, bucket: 'moderator' },
+      ]);
+      expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
       await closeIfPossible(sql);
     }
   });
