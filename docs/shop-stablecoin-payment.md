@@ -538,8 +538,8 @@ One procedure creates a shop payment, for a charge or for a payer:
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
-   `account-merge.ts`. The row lock serialises the creation with `POST
-   /pos`, also across the two containers of a deploy. The unique indexes
+   `account-merge.ts`. The row lock serialises the creation with
+   `POST /pos`, also across the two containers of a deploy. The unique indexes
    are the backstop. A lost insert (`23505`) does not insert again
    blindly: under the same locks the api reads the row that won. When
    that row is the shop payment of this charge, or of this payer
