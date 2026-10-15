@@ -73,11 +73,11 @@ The payer's address is unknown when the quote is created: the
 OpenCryptoPay pay request carries none. Without a refund address,
 Orchestra refunds to the detected source address when that is safe, and
 never to an exchange's shared sender address. This design sends no
-`refundAddress`. [Release checks](#release-checks) items 2 and 4 decide
-whether that holds, pair by pair. A pair for which Orchestra refuses such
-quotes, or does not refund to the sender, stays off. A refund address
-that 21.gifts controls would make 21.gifts hold coins, so it needs a new
-decision and is not part of this document.
+`refundAddress`. Release check 2 confirms that Orchestra commits such
+quotes; a pair for which it refuses them stays off. How Orchestra
+refunds a deposit is not a gate for this payment: release check 4 only
+records it. A refund address that 21.gifts controls would make 21.gifts
+hold coins and is not part of this document.
 
 ## Flow
 
@@ -1450,7 +1450,7 @@ records each result in the pull request that turns the feature on.
    the Tether rails and from an ordinary account on the others. A deposit
    made just after `expiresAt` is filled or refunded, and a submit after
    the BOLT11 expired answers `409 quote_expired`. Each answer is
-   recorded. A pair whose refund fails stays off.
+   recorded for support. It does not switch a pair off.
 5. Orchestra accepts parallel quotes for different pairs, and later
    replacement quotes, that name the same BOLT11, and gives each quote
    its own deposit address.
