@@ -107,6 +107,7 @@ export type OcpPlaceInput = {
   category: string;
   paymentMethods: string | null;
   techProvider?: string;
+  street?: string;
 };
 
 /**
@@ -264,19 +265,35 @@ export function normalizeOcpPlace(
 }
 
 /**
- * Display name for a shop OCP place: pin label, else author name, else
- * `"Shop"`, truncated to 80 characters.
+ * Display name for a shop OCP place: the author name, else `"Shop"`,
+ * truncated to 80 characters. The pin label is the street, not the name.
  *
- * @param place - Forum pin just written.
  * @param authorName - Message author display name, if any.
  * @returns Trimmed name of length 1–80.
  */
-export function shopOcpPlaceName(place: ForumPlace, authorName: string | null | undefined): string {
-  const fromLabel = place.label !== null && place.label.trim() !== '' ? place.label.trim() : null;
+export function shopOcpPlaceName(authorName: string | null | undefined): string {
   const fromAuthor =
     typeof authorName === 'string' && authorName.trim() !== '' ? authorName.trim() : null;
-  const raw = fromLabel ?? fromAuthor ?? 'Shop';
+  const raw = fromAuthor ?? 'Shop';
   return raw.length > PLACE_NAME_MAX ? raw.slice(0, PLACE_NAME_MAX) : raw;
+}
+
+/**
+ * Street line for a shop pin. The forum label is that line. A missing or
+ * blank label is omitted so an update keeps a stored street.
+ *
+ * @param place - Forum pin just written.
+ * @returns Trimmed label, or `undefined`.
+ */
+function shopPlaceStreet(place: ForumPlace): string | undefined {
+  if (place.label === null) {
+    return undefined;
+  }
+  const trimmed = place.label.trim();
+  if (trimmed === '') {
+    return undefined;
+  }
+  return trimmed.length > 120 ? trimmed.slice(0, 120) : trimmed;
 }
 
 /**
@@ -286,22 +303,25 @@ export function shopOcpPlaceName(place: ForumPlace, authorName: string | null | 
  * @param place - Forum pin (lat/lng; mapped to lat/lon).
  * @param authorName - Message author display name, if any.
  * @returns Input with `origin` `21gifts`, `techProvider` `21.gifts`,
- *   `category` `shopping`, `paymentMethods` `lightning`.
+ *   `category` `shopping`, `paymentMethods` `lightning`. `street` is the
+ *   pin label when that label is non-empty.
  */
 export function shopOcpPlaceInput(
   messageId: string,
   place: ForumPlace,
   authorName: string | null | undefined,
 ): OcpPlaceInput {
+  const street = shopPlaceStreet(place);
   return {
     origin: SHOP_ORIGIN,
     externalId: messageId,
-    name: shopOcpPlaceName(place, authorName),
+    name: shopOcpPlaceName(authorName),
     lat: place.lat,
     lon: place.lng,
     category: SHOP_CATEGORY,
     paymentMethods: SHOP_PAYMENT_METHODS,
     techProvider: SHOP_TECH_PROVIDER,
+    ...(street === undefined ? {} : { street }),
   };
 }
 

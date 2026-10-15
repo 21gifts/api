@@ -220,23 +220,50 @@ describe('normalizeOcpPlace', () => {
 });
 
 describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
-  it('prefers label, then author name, then Shop, truncated to 80', () => {
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: 'Pin' }, 'Ada')).toBe('Pin');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: null }, 'Ada')).toBe('Ada');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: null }, null)).toBe('Shop');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: 'A'.repeat(90) }, null)).toHaveLength(80);
+  it('uses the author name, otherwise Shop, truncated to 80', () => {
+    expect(shopOcpPlaceName('Ada')).toBe('Ada');
+    expect(shopOcpPlaceName('  Ada  ')).toBe('Ada');
+    expect(shopOcpPlaceName(null)).toBe('Shop');
+    expect(shopOcpPlaceName('   ')).toBe('Shop');
+    expect(shopOcpPlaceName('A'.repeat(90))).toHaveLength(80);
   });
 
-  it('maps a shop pin onto origin 21gifts and lightning', () => {
+  it('maps a shop pin onto origin 21gifts and sends the label as the street', () => {
     expect(shopOcpPlaceInput('msg-1', { lat: 47.3, lng: 8.5, label: 'Stall' }, 'Ada')).toEqual({
       origin: '21gifts',
       externalId: 'msg-1',
-      name: 'Stall',
+      name: 'Ada',
+      street: 'Stall',
       lat: 47.3,
       lon: 8.5,
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
+    });
+    expect(shopOcpPlaceInput('msg-1', { lat: 47.3, lng: 8.5, label: null }, 'Ada')).toEqual({
+      origin: '21gifts',
+      externalId: 'msg-1',
+      name: 'Ada',
+      lat: 47.3,
+      lon: 8.5,
+      category: 'shopping',
+      paymentMethods: 'lightning',
+      techProvider: '21.gifts',
+    });
+    expect(shopOcpPlaceInput('msg-1', { lat: 47.3, lng: 8.5, label: '   ' }, null)).toEqual({
+      origin: '21gifts',
+      externalId: 'msg-1',
+      name: 'Shop',
+      lat: 47.3,
+      lon: 8.5,
+      category: 'shopping',
+      paymentMethods: 'lightning',
+      techProvider: '21.gifts',
+    });
+    const longLabel = `  ${'S'.repeat(130)}  `;
+    expect(shopOcpPlaceInput('msg-1', { lat: 1, lng: 2, label: longLabel }, 'Ada')).toMatchObject({
+      name: 'Ada',
+      street: 'S'.repeat(120),
     });
   });
 });
@@ -362,7 +389,8 @@ describe('createApp map push', () => {
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
-      name: 'Stall',
+      name: 'Ada',
+      street: 'Stall',
       lat: 47.3,
       lon: 8.5,
     });
@@ -401,7 +429,8 @@ describe('syncShopOcpPlace', () => {
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
     expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
       origin: '21gifts',
-      name: 'Stall',
+      name: 'Ada',
+      street: 'Stall',
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
@@ -428,7 +457,8 @@ describe('syncShopOcpPlace', () => {
     expect(JSON.parse(calls[1]?.body ?? '{}')).toMatchObject({
       lat: 3,
       lon: 4,
-      name: 'Moved',
+      name: 'Ada',
+      street: 'Moved',
       techProvider: '21.gifts',
     });
   });

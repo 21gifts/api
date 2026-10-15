@@ -3328,14 +3328,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: shopOcpPlaceName
 
-- **Purpose:** Choose the public name of a shop pin: the pin label, otherwise the author name, otherwise `Shop`, cut at 80 characters.
-- **Inputs:** A forum place and an optional author name.
+- **Purpose:** Choose the public name of a shop pin: the author name, otherwise `Shop`, cut at 80 characters. The pin label is the street, not this name.
+- **Inputs:** An optional author name.
 - **Returns / side effects:** A trimmed string of length 1–80. No I/O.
 - **Used by:** `shopOcpPlaceInput`.
 
 ## Function: shopOcpPlaceInput
 
-- **Purpose:** Map a shop pin onto an OpenCryptoPay place with origin `21gifts`, techProvider `21.gifts`, category `shopping`, and payment methods `lightning`.
+- **Purpose:** Map a shop pin onto an OpenCryptoPay place with origin `21gifts`, techProvider `21.gifts`, category `shopping`, and payment methods `lightning`. `street` is the pin label when that label is non-empty, and is omitted when the label is missing or blank.
 - **Inputs:** Message id, forum place, and optional author name.
 - **Returns / side effects:** An `OcpPlaceInput`. No I/O.
 - **Used by:** `syncShopOcpPlace` and `publishExistingShopPlaces`.
@@ -3344,7 +3344,7 @@ Builds the operator-only external-pubkey inspection route.
 
 - **Purpose:** PUT the current shop pin to `/map/places` when mapPush is set, the note is top-level, the text has the shop hashtag, and a pin is present. A pin that already existed is still sent. Replies, a missing pin, a missing shop tag, and a missing map push do nothing. BTC Map is not called.
 - **Inputs:** Optional map push, message id, text, parent id, place, author name, and the hashtag check. There is no hadPlaceBefore flag.
-- **Returns / side effects:** Resolves after the PUT. A non-2xx answer logs `ocp.place.failed` with numeric `status`, and a thrown fetch logs `ocp.place.failed` with the allowlisted error name and an allowlisted `code` or `errno` from the error or its cause, never the message, the address, or the bearer. It does not throw. Timeout is 5000 ms. The body includes techProvider `21.gifts`.
+- **Returns / side effects:** Resolves after the PUT. A non-2xx answer logs `ocp.place.failed` with numeric `status`, and a thrown fetch logs `ocp.place.failed` with the allowlisted error name and an allowlisted `code` or `errno` from the error or its cause, never the message, the address, or the bearer. It does not throw. Timeout is 5000 ms. The body includes techProvider `21.gifts` and `street` when the pin label is non-empty.
 - **Used by:** `messagesRoutes` on create (not a replay), on every place write that sets a pin, on a shop-account change when a place exists, and debug restore of a live top-level shop pin.
 
 ## Function: removeShopOcpPlace
@@ -3363,14 +3363,14 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: seedDevShopPlaces
 
-- **Purpose:** On the dev 21.gifts API only, insert four public shop pins into `message` with production message ids, `account_id` null, `nostr_publish_state` skipped, and `event_id` null. Idempotent via `ON CONFLICT (id) DO NOTHING`. Stored text is the public label or name plus `#21GiftsShop`, not the production note body. Does not create accounts and does not publish to Nostr.
+- **Purpose:** On the dev 21.gifts API only, insert the public shop pins into `message` with production message ids, `account_id` null, `nostr_publish_state` skipped, and `event_id` null. Idempotent via `ON CONFLICT (id) DO NOTHING`. Stored text is the public label or name plus `#21GiftsShop`, not the production note body. Does not create accounts and does not publish to Nostr.
 - **Inputs:** `{ env, sql? }`. Seeds only when `isDevShopSeedTarget(env)` is true and `sql` is set.
-- **Returns / side effects:** Resolves after one parameterised INSERT of all four rows, or immediately on a no-op. A failed insert logs `dev.shop.places.failed` and does not stop boot. Success does not log.
+- **Returns / side effects:** Resolves after one parameterised INSERT of all rows, or immediately on a no-op. A failed insert logs `dev.shop.places.failed` and does not stop boot. Success does not log.
 - **Used by:** `src/index.ts`, awaited after `welcomeCatchUp` and before `publishExistingShopPlaces`.
 
 ## Function: publishExistingShopPlaces
 
-- **Purpose:** After listen, PUT each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. A 200 is success. The body includes techProvider `21.gifts`. BTC Map is not called here.
+- **Purpose:** After listen, PUT each existing live top-level shop pin to the OpenCryptoPay map at `/map/places`. A missing map push does nothing. Replies, hidden notes, notes without a pin, and notes without the shop tag are skipped. A 200 is success. The body includes techProvider `21.gifts` and `street` when the pin label is non-empty. BTC Map is not called here.
 - **Inputs:** Optional map push, `listPlaces` (capped at 1000), `getById`, and the hashtag check.
 - **Returns / side effects:** Resolves when the walk finishes or when listing pins fails. Does not reject. A failed list logs only the event name `ocp.place.failed` and returns. A failed load logs only the event name `ocp.place.failed` and the walk continues. A non-2xx answer logs `ocp.place.failed` with numeric `status` and the walk continues. A thrown fetch logs `ocp.place.failed` with the allowlisted error name and an allowlisted `code` or `errno` from the error or its cause, never the message, the address, or the bearer, and the walk continues. Timeout is 5000 ms.
 - **Used by:** The process entry point, once, after listen. Not on the welcome interval.

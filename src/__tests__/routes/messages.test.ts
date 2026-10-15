@@ -11612,7 +11612,8 @@ describe('shop OCP place hook', () => {
     expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
       origin: '21gifts',
       externalId: body.id,
-      name: 'Stall',
+      name: 'Ada',
+      street: 'Stall',
       lat: 47.3,
       lon: 8.5,
       category: 'shopping',
@@ -11659,7 +11660,8 @@ describe('shop OCP place hook', () => {
     expect(JSON.parse(calls[1] ?? '{}')).toMatchObject({
       lat: 1,
       lon: 2,
-      name: 'New',
+      name: 'Ada',
+      street: 'New',
       techProvider: '21.gifts',
     });
 
