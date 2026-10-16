@@ -14,6 +14,7 @@ import { InMemoryTrustStore } from '@/lib/trust-store';
 describe('isDebugCatalogTable', () => {
   it('accepts allowlisted names and rejects others', () => {
     expect(isDebugCatalogTable('account')).toBe(true);
+    expect(isDebugCatalogTable('address_verification')).toBe(false);
     expect(isDebugCatalogTable('auth_session')).toBe(true);
     expect(isDebugCatalogTable('api_log')).toBe(true);
     expect(isDebugCatalogTable('nope')).toBe(false);
@@ -29,8 +30,6 @@ describe('loadDebugTables', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -42,8 +41,6 @@ describe('loadDebugTables', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bea',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -58,12 +55,6 @@ describe('loadDebugTables', () => {
       createdAt: 2,
     });
     await auth.createSession({ token: 'sess', accountId, createdAt: 3 });
-    await auth.putVerification({
-      accountId,
-      address: 'ada@walletofsatoshi.com',
-      nonce: 'ab'.repeat(16),
-      createdAt: 4,
-    });
     await auth.createPasskeyChallenge({
       id: 'chal',
       type: 'register',
@@ -779,8 +770,6 @@ describe('loadDebugTables', () => {
         linkingKey: null,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: i.toString(16).padStart(64, '0'),
@@ -809,8 +798,6 @@ describe('loadDebugTables', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -822,8 +809,6 @@ describe('loadDebugTables', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -889,8 +874,6 @@ describe('loadDebugTables', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),

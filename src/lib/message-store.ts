@@ -27,6 +27,7 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
 import {
   forumContentFingerprint,
+  MESSAGE_LIST_LIMIT,
   unsignedNostrDefaults,
   type ForumFeedMode,
   type ForumPhoto,
@@ -34,7 +35,7 @@ import {
   type MessageRow,
   type NostrPublishState,
 } from '@/lib/message';
-import { placesMatch, type ForumPlace } from '@/lib/place';
+import { placeCountryCode, placesMatch, type ForumPlace } from '@/lib/place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -51,6 +52,9 @@ import {
 export type ShopNoteRef = { id: string; accountId: string; text: string };
 
 const MAX_PUBLISH_ATTEMPTS = 5;
+
+/** Canonical UUID text, the only shape allowed into a `uuid[]` array literal. */
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 interface PaymentFiatStoreOptions {
   fetchImpl?: FetchFn;
@@ -222,6 +226,56 @@ export function textHasHashtagToken(text: string, name: string): boolean {
   return new RegExp(`#${escaped}(?![A-Za-z0-9_])`, 'i').test(text);
 }
 
+const SHOP_HASHTAG = '21GiftsShop';
+
+function assignedShopAccountId(row: MessageRow): string | null {
+  return row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id;
+}
+
+function isLiveShopNote(row: MessageRow): boolean {
+  return (
+    row.parentId === null && row.deletedAt === null && textHasHashtagToken(row.text, SHOP_HASHTAG)
+  );
+}
+
+function isAccountShop(row: MessageRow, accountId: string): boolean {
+  if (!isLiveShopNote(row)) {
+    return false;
+  }
+  const assigned = assignedShopAccountId(row);
+  if (assigned !== null) {
+    return assigned === accountId;
+  }
+  return row.accountId === accountId;
+}
+
+function isPubkeyShop(row: MessageRow, key: string): boolean {
+  return (
+    isLiveShopNote(row) &&
+    row.accountId === null &&
+    assignedShopAccountId(row) === null &&
+    row.authorPubkey !== null &&
+    row.authorPubkey.toLowerCase() === key
+  );
+}
+
+function isLiveCreditNote(row: MessageRow): boolean {
+  return row.parentId === null && row.deletedAt === null && row.goalRepayable === true;
+}
+
+function isAccountCredit(row: MessageRow, accountId: string): boolean {
+  return isLiveCreditNote(row) && row.accountId === accountId;
+}
+
+function isPubkeyCredit(row: MessageRow, key: string): boolean {
+  return (
+    isLiveCreditNote(row) &&
+    row.accountId === null &&
+    row.authorPubkey !== null &&
+    row.authorPubkey.toLowerCase() === key
+  );
+}
+
 function extraHashtagBindings(
   extraHashtagsByAccountId: ReadonlyMap<string, readonly string[]> | undefined,
 ): { accountIds: string[]; patterns: string[] } | null {
@@ -251,6 +305,12 @@ function pendingKind1LacksBitcoinTag(event: Record<string, unknown> | null): boo
 }
 
 /**
+ * Rows per query when {@link PostgresMessageStore.listFeed} filters by country:
+ * the largest page `GET /messages` serves, so a full page usually needs one query.
+ */
+const COUNTRY_FEED_BATCH = MESSAGE_LIST_LIMIT;
+
+/**
  * Keyset page query for {@link MessageStore.listFeed}.
  */
 export type MessageFeedQuery = {
@@ -264,6 +324,11 @@ export type MessageFeedQuery = {
   staffAccountIds: ReadonlySet<string>;
   /** Optional hashtag name without `#`. When set, only notes whose `text` contains that token. */
   hashtag?: string;
+  /**
+   * Optional ISO 3166-1 alpha-2 code. When set, only notes whose pin lies in
+   * that country ({@link placeCountryCode}); a note without a pin never matches.
+   */
+  country?: string;
 };
 
 /** Top-level list row with computed reply count. */
@@ -328,7 +393,7 @@ export interface MessageStore {
    * those ids).
    * A real About me stays.
    *
-   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag.
+   * @param query - Mode, limit, exclusive cursor, staff ids (`active` only), and optional hashtag and country.
    * @returns At most `query.limit` list row copies.
    */
   listFeed(query: MessageFeedQuery): Promise<MessageListRow[]>;
@@ -530,6 +595,36 @@ export interface MessageStore {
   accountHasLiveTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean>;
 
   /**
+   * Whether `accountId` has at least one **top-level** forum row that is not
+   * `excludeId`, live or soft-hidden. `parentId` null and `accountId` equals
+   * the argument (Damus-only `accountId: null` rows never match). `excludeId`
+   * is the auto profile note id; `null` excludes nothing extra. Replies do
+   * not count. `false` means the account's next note is its first post.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean>;
+
+  /**
+   * Insert a text-only top-level note as the account's free first post.
+   *
+   * Inserts only when {@link accountHasTopLevelPost} is `false` for
+   * `row.accountId` and `excludeId` at write time. Two concurrent calls for
+   * the same account store at most one row; the other returns `undefined`.
+   * Postgres marks the row `first_post_free` (unique per account). The row
+   * must be top-level with a non-null `accountId`; photo, video, and extra
+   * stills are not accepted.
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when the account already has a top-level note.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  createFirstPost(row: MessageRow, excludeId: string | null): Promise<MessageRow | undefined>;
+
+  /**
    * Whether `accountId` has at least one live **top-level** forum row that
    * is not `excludeId` and has media (photo 0, extra stills, or video).
    * Live = `deletedAt` null, `parentId` null, and `accountId` equals the
@@ -551,6 +646,17 @@ export interface MessageStore {
    * @returns Message id, or `null` when none.
    */
   latestLiveTopLevelMediaId(accountId: string): Promise<string | null>;
+
+  /**
+   * Whether the account already received the one-time welcome gift: a
+   * platform reply whose trimmed text is `Welcome` under one of the account's
+   * notes (live or soft-hidden, so a hidden note or marker still counts).
+   *
+   * @param accountId - Member whose notes are checked.
+   * @param platformAccountId - Official platform account id.
+   * @returns `true` when such a reply exists.
+   */
+  accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean>;
 
   /**
    * Live post/reply totals for one 21.gifts author.
@@ -615,6 +721,110 @@ export interface MessageStore {
    * @returns Message list rows (caller-owned copies).
    */
   listPostsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level shop notes for one 21.gifts account.
+   *
+   * A shop is `parentId` null, `deletedAt` null, and
+   * {@link textHasHashtagToken}(`text`, `'21GiftsShop'`). It belongs to the
+   * assigned shop account when one is set; otherwise to the author. A shop
+   * assigned to someone else does not belong to the author. Not derived
+   * from a capped list.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByAccount(accountId: string): Promise<number>;
+
+  /**
+   * Newest live top-level shop notes for one 21.gifts account, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countShopsByAccount}.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level shop notes for one external Nostr
+   * author.
+   *
+   * A shop is `parentId` null, `deletedAt` null, `accountId` null, shop
+   * account unset, `authorPubkey` matching `pubkey` case-insensitively,
+   * and {@link textHasHashtagToken}(`text`, `'21GiftsShop'`). A note
+   * assigned to a member is not counted here. Not derived from a capped
+   * list.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByPubkey(pubkey: string): Promise<number>;
+
+  /**
+   * Newest live top-level shop notes for an external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countShopsByPubkey}.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level credit notes for one 21.gifts account.
+   *
+   * A credit is `parentId` null, `deletedAt` null, and `goalRepayable`
+   * exactly `true`. It belongs to the author (`accountId`), not the shop
+   * account. Funded, unfunded, and still-live repaid notes all count. Not
+   * derived from a capped list.
+   *
+   * @param accountId - Author account id.
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByAccount(accountId: string): Promise<number>;
+
+  /**
+   * Newest live top-level credit notes for one 21.gifts account, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countCreditsByAccount}.
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]>;
+
+  /**
+   * Uncapped count of live top-level credit notes for one external Nostr
+   * author.
+   *
+   * A credit is `parentId` null, `deletedAt` null, `accountId` null,
+   * `authorPubkey` matching `pubkey` case-insensitively, and
+   * `goalRepayable` exactly `true`. Funded, unfunded, and still-live
+   * repaid notes all count. Not derived from a capped list.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByPubkey(pubkey: string): Promise<number>;
+
+  /**
+   * Newest live top-level credit notes for an external pubkey, capped at
+   * `limit`, with `replyCount` of live attributed children (`deletedAt`
+   * null and either an account or a recorded zapper pubkey). Same
+   * ownership as {@link countCreditsByPubkey}.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows to return.
+   * @returns Message list rows (caller-owned copies).
+   */
+  listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]>;
 
   /**
    * Newest live replies for `accountId` (`parentId` not null, `deletedAt`
@@ -992,6 +1202,15 @@ export interface MessageStore {
   claimZapPayment(paymentHash: string, receiptEventId: string, at: Date): Promise<boolean>;
 
   /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when the hash is unclaimed.
+   * @throws Propagates persistence failures.
+   */
+  zapPaymentReceiptId(paymentHash: string): Promise<string | undefined>;
+
+  /**
    * Persist a zap receipt once and credit the message. A reply folds into
    * `received_*`; a top-level note folds into `sats` / `fiat_*` /
    * `goal_funded_at`. Join is `message_id`, never `gift_reply_id`.
@@ -1013,6 +1232,24 @@ export interface MessageStore {
 
   /** Append one POST /messages/:id/invoice attempt (success or failure). */
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void>;
+
+  /**
+   * Claimed 1-sat hearts per message, plus whether `viewerAccountId` sent at
+   * least one of them.
+   *
+   * A heart counts only when the invoice is a heart, `result` is `ok`, the
+   * payment hash is set, and that lowercase hash is claimed in
+   * `nostr_zap_payment`. An empty `messageIds` list returns an empty map
+   * without a query. Ids with no matching heart are omitted.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>>;
 
   /** Newest invoice attempts first, capped at `limit`. */
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
@@ -1399,7 +1636,10 @@ export type MessageInvoiceResult =
   | 'sign_failed'
   | 'rate_limited'
   | 'bad_body'
-  | 'not_found';
+  | 'not_found'
+  | 'self_heart'
+  | 'self_reply'
+  | 'heart_unavailable';
 
 /** One persisted invoice attempt for operator debug. */
 export interface MessageInvoiceAttempt {
@@ -1433,6 +1673,8 @@ export interface MessageInvoiceAttempt {
   amountChf?: string | null;
   amountEur?: string | null;
   amountPhp?: string | null;
+  /** True when this invoice is a 1-sat heart tip, not a living-room zap. */
+  heart?: boolean;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -1810,6 +2052,14 @@ WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL`,
   `UPDATE message SET received_sats = 0 WHERE received_sats IS NULL`,
   `ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0`,
   `ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx
+  ON message (account_id)
+  WHERE first_post_free IS TRUE`,
+  `CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx
+  ON message_invoice (payment_hash, created_at DESC, id DESC)
+  WHERE result = 'ok'`,
+  `ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false`,
 ];
 
 /**
@@ -2134,6 +2384,7 @@ function copyInvoiceAttempt(row: MessageInvoiceAttempt): MessageInvoiceAttempt {
     lnurlResponse: row.lnurlResponse === null ? null : { ...row.lnurlResponse },
     conversationId: row.conversationId ?? null,
     conversationMessageId: row.conversationMessageId ?? null,
+    heart: row.heart === true,
   };
 }
 
@@ -2228,6 +2479,8 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #zappers = new Map<string, NostrZapperRow>();
   readonly #blockedPubkeys = new Map<string, NostrBlockedPubkeyRow>();
   readonly #edits: MessageEditRow[] = [];
+  /** Account ids with a free first post still being stored. */
+  readonly #firstPostClaims = new Set<string>();
   readonly #paymentFiat: Required<PaymentFiatStoreOptions>;
 
   /**
@@ -2253,6 +2506,28 @@ export class InMemoryMessageStore implements MessageStore {
     copy.photoCount = (hasPhoto0 ? 1 : 0) + (this.#extraPhotos.get(row.id)?.length ?? 0);
     copy.photoTakenAts = padPhotoTakenAts(row.photoTakenAts, copy.photoCount);
     return copy;
+  }
+
+  #listShops(match: (row: MessageRow) => boolean, limit: number): MessageListRow[] {
+    const shops = this.#rows.filter(match);
+    const sorted = [...shops].sort((a, b) => {
+      const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+      if (byTime !== 0) {
+        return byTime;
+      }
+      return b.id.localeCompare(a.id);
+    });
+    return sorted.slice(0, limit).map((row) => {
+      const copy = this.#withListedMedia(row);
+      const replyCount = this.#rows.filter(
+        (child) =>
+          child.parentId === row.id &&
+          child.deletedAt === null &&
+          (child.accountId !== null ||
+            (child.authorPubkey !== null && this.#zappers.has(child.authorPubkey.toLowerCase()))),
+      ).length;
+      return { ...copy, replyCount };
+    });
   }
 
   /**
@@ -2306,7 +2581,7 @@ export class InMemoryMessageStore implements MessageStore {
    * children (`deletedAt` null and either an account or a recorded zapper pubkey).
    * Profile notes are omitted when {@link useProfileNoteIds} was set.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns A new array of list row copies; mutating it does not change the store.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
@@ -2335,7 +2610,17 @@ export class InMemoryMessageStore implements MessageStore {
       typeof hashtag === 'string' && hashtag !== ''
         ? topLevel.filter((row) => textHasHashtagToken(row.text, hashtag))
         : topLevel;
-    const sorted = [...tagged].sort((a, b) => {
+    const country = query.country;
+    const located =
+      typeof country === 'string' && country !== ''
+        ? tagged.filter(
+            (row) =>
+              row.place !== undefined &&
+              row.place !== null &&
+              placeCountryCode(row.place) === country,
+          )
+        : tagged;
+    const sorted = [...located].sort((a, b) => {
       if (query.mode === 'popular') {
         const bySats = b.sats - a.sats;
         if (bySats !== 0) {
@@ -2795,6 +3080,56 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /**
+   * Whether `accountId` has at least one top-level forum row that is not
+   * `excludeId`, live or soft-hidden.
+   *
+   * @param accountId - Author account id.
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const found = this.#rows.some(
+      (row) =>
+        row.accountId === accountId &&
+        row.parentId === null &&
+        (excludeId === null || row.id !== excludeId),
+    );
+    return Promise.resolve(found);
+  }
+
+  /**
+   * Insert a text-only top-level note as the account's free first post.
+   * A claim set keeps a second concurrent call for the same account out
+   * while the first one is still storing.
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when the account already has a top-level note.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  async createFirstPost(
+    row: MessageRow,
+    excludeId: string | null,
+  ): Promise<MessageRow | undefined> {
+    const accountId = row.accountId;
+    if (accountId === null || row.parentId !== null) {
+      throw new Error('first post must be a top-level note of an account');
+    }
+    if (this.#firstPostClaims.has(accountId)) {
+      return undefined;
+    }
+    this.#firstPostClaims.add(accountId);
+    try {
+      if (await this.accountHasTopLevelPost(accountId, excludeId)) {
+        return undefined;
+      }
+      return await this.create(row);
+    } finally {
+      this.#firstPostClaims.delete(accountId);
+    }
+  }
+
+  /**
    * Whether `accountId` has at least one live top-level forum row that is
    * not `excludeId` and has media (photo 0, extra stills, or video).
    *
@@ -2837,6 +3172,28 @@ export class InMemoryMessageStore implements MessageStore {
       return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
     });
     return Promise.resolve(matches[0]?.id ?? null);
+  }
+
+  /**
+   * Whether a platform `Welcome` reply exists under one of the account's notes.
+   *
+   * @param accountId - Member whose notes are checked.
+   * @param platformAccountId - Official platform account id.
+   * @returns `true` when such a reply exists (live or soft-hidden).
+   */
+  accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
+    const authored = new Set(
+      this.#rows.filter((row) => row.accountId === accountId).map((row) => row.id),
+    );
+    return Promise.resolve(
+      this.#rows.some(
+        (row) =>
+          row.accountId === platformAccountId &&
+          row.parentId !== null &&
+          authored.has(row.parentId) &&
+          row.text.trim() === 'Welcome',
+      ),
+    );
   }
 
   /**
@@ -2981,6 +3338,126 @@ export class InMemoryMessageStore implements MessageStore {
         return { ...copy, replyCount };
       }),
     );
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one 21.gifts account.
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByAccount(accountId: string): Promise<number> {
+    let shopCount = 0;
+    for (const row of this.#rows) {
+      if (isAccountShop(row, accountId)) {
+        shopCount += 1;
+      }
+    }
+    return Promise.resolve(shopCount);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one 21.gifts
+   * account, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param accountId - Shop account id, or author account id when unassigned.
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    return Promise.resolve(this.#listShops((row) => isAccountShop(row, accountId), limit));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one external pubkey.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching shops (0 when none).
+   */
+  countShopsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    let shopCount = 0;
+    for (const row of this.#rows) {
+      if (isPubkeyShop(row, key)) {
+        shopCount += 1;
+      }
+    }
+    return Promise.resolve(shopCount);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    return Promise.resolve(this.#listShops((row) => isPubkeyShop(row, key), limit));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one 21.gifts account.
+   *
+   * @param accountId - Author account id.
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByAccount(accountId: string): Promise<number> {
+    let creditCount = 0;
+    for (const row of this.#rows) {
+      if (isAccountCredit(row, accountId)) {
+        creditCount += 1;
+      }
+    }
+    return Promise.resolve(creditCount);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one 21.gifts
+   * account, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param accountId - Author account id.
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    return Promise.resolve(this.#listShops((row) => isAccountCredit(row, accountId), limit));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one external pubkey.
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @returns Count of matching credits (0 when none).
+   */
+  countCreditsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    let creditCount = 0;
+    for (const row of this.#rows) {
+      if (isPubkeyCredit(row, key)) {
+        creditCount += 1;
+      }
+    }
+    return Promise.resolve(creditCount);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (account or recorded zapper pubkey).
+   *
+   * @param pubkey - External author pubkey (compared case-insensitively).
+   * @param limit - Maximum rows.
+   * @returns A new array of list row copies.
+   */
+  listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    return Promise.resolve(this.#listShops((row) => isPubkeyCredit(row, key), limit));
   }
 
   /**
@@ -3524,6 +4001,16 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
+  /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when unclaimed.
+   */
+  zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
+    return Promise.resolve(this.#zapPayments.get(paymentHash.toLowerCase())?.receiptEventId);
+  }
+
   async recordZapReceipt(
     receiptEventId: string,
     messageId: string,
@@ -3568,6 +4055,43 @@ export class InMemoryMessageStore implements MessageStore {
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void> {
     this.#invoiceAttempts.push(copyInvoiceAttempt(row));
     return Promise.resolve();
+  }
+
+  /**
+   * Count claimed hearts on invoice attempts whose payment hash is in
+   * `#zapPayments`. Empty `messageIds` returns before the scan.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>> {
+    if (messageIds.length === 0) {
+      return Promise.resolve(new Map());
+    }
+    const wanted = new Set(messageIds);
+    const stats = new Map<string, { heartCount: number; hearted: boolean }>();
+    for (const row of this.#invoiceAttempts) {
+      if (row.heart !== true || row.result !== 'ok' || row.paymentHash === null) {
+        continue;
+      }
+      if (!this.#zapPayments.has(row.paymentHash.toLowerCase())) {
+        continue;
+      }
+      if (!wanted.has(row.messageId)) {
+        continue;
+      }
+      const current = stats.get(row.messageId);
+      const heartCount = current === undefined ? 1 : current.heartCount + 1;
+      const alreadyHearted = current !== undefined && current.hearted;
+      const hearted =
+        alreadyHearted || (viewerAccountId !== null && row.payerAccountId === viewerAccountId);
+      stats.set(row.messageId, { heartCount, hearted });
+    }
+    return Promise.resolve(stats);
   }
 
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
@@ -4592,10 +5116,60 @@ export class PostgresMessageStore implements MessageStore {
    * `photo` bytea column. Name-copy profile notes without a photo, extra
    * stills, or video are omitted. A real About me stays.
    *
-   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag.
+   * With a `country`, the country is read from each row's own coordinates
+   * ({@link placeCountryCode}): pinned rows are read in keyset batches of
+   * {@link COUNTRY_FEED_BATCH}, in feed order and with every other filter,
+   * until the page is full or no row is left. No single query loads every pin,
+   * a page that fills early stops reading, and a row is judged by the
+   * coordinates read with it. A country with few matches walks the pinned rows
+   * after the cursor, one batch per {@link COUNTRY_FEED_BATCH} rows.
+   *
+   * @param query - Mode, limit, exclusive keyset cursor, staff ids, and optional hashtag and country.
    * @returns Mapped list rows.
    */
   async listFeed(query: MessageFeedQuery): Promise<MessageListRow[]> {
+    const { country, ...rest } = query;
+    if (country === undefined || country === '') {
+      return this.#listFeedPage(rest, false);
+    }
+    const matches: MessageListRow[] = [];
+    let cursor = query.cursor;
+    for (;;) {
+      const batch = await this.#listFeedPage({ ...rest, limit: COUNTRY_FEED_BATCH, cursor }, true);
+      for (const row of batch) {
+        if (
+          row.place !== undefined &&
+          row.place !== null &&
+          placeCountryCode(row.place) === country
+        ) {
+          matches.push(row);
+          if (matches.length === query.limit) {
+            return matches;
+          }
+        }
+      }
+      const last = batch[batch.length - 1];
+      if (last === undefined || batch.length < COUNTRY_FEED_BATCH) {
+        return matches;
+      }
+      cursor =
+        query.mode === 'popular'
+          ? { k: 's', s: last.sats, c: last.createdAt, i: last.id }
+          : { k: 't', c: last.createdAt, i: last.id };
+    }
+  }
+
+  /**
+   * One keyset page for {@link listFeed}, without the country filter.
+   *
+   * @param query - The feed query without `country`.
+   * @param pinnedOnly - Keep only rows with both place coordinates.
+   * @returns Mapped list rows.
+   */
+  async #listFeedPage(
+    query: Omit<MessageFeedQuery, 'country'>,
+    pinnedOnly: boolean,
+  ): Promise<MessageListRow[]> {
     const params: unknown[] = [query.limit];
     const filters: string[] = [
       'parent_id IS NULL',
@@ -4632,6 +5206,9 @@ export class PostgresMessageStore implements MessageStore {
     if (typeof hashtag === 'string' && hashtag !== '') {
       params.push(posixHashtagTokenPattern(hashtag));
       filters.push(`text ~* $${params.length}`);
+    }
+    if (pinnedOnly) {
+      filters.push('place_lat IS NOT NULL AND place_lng IS NOT NULL');
     }
     if (query.cursor !== null) {
       if (query.mode === 'popular') {
@@ -4915,6 +5492,111 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
+   * Whether `accountId` has at least one top-level forum row that is not
+   * `excludeId`, live or soft-hidden.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param excludeId - Auto profile note id (`$2`), or `null` to exclude nothing extra.
+   * @returns `true` when a matching top-level row exists.
+   */
+  async accountHasTopLevelPost(accountId: string, excludeId: string | null): Promise<boolean> {
+    const rows = await this.#sql.query<Record<string, unknown>>(
+      `SELECT 1 FROM message
+       WHERE account_id = $1
+         AND parent_id IS NULL
+         AND ($2::uuid IS NULL OR id <> $2::uuid)
+       LIMIT 1`,
+      [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  /**
+   * Insert a text-only top-level note as the account's free first post in
+   * one statement. `NOT EXISTS` skips an account that already has a
+   * top-level note (live or hidden, other than `excludeId`). The row stores
+   * `first_post_free = true`; the partial unique index
+   * `message_first_post_free_uidx` makes a concurrent second first post wait
+   * and then insert nothing (`ON CONFLICT DO NOTHING`).
+   *
+   * @param row - Fully formed top-level row (`parentId` null, `accountId` set).
+   * @param excludeId - Auto profile note id, or `null` to exclude nothing extra.
+   * @returns The stored row, or `undefined` when nothing was inserted.
+   * @throws Error `first post must be a top-level note of an account` for a reply or a null account.
+   */
+  async createFirstPost(
+    row: MessageRow,
+    excludeId: string | null,
+  ): Promise<MessageRow | undefined> {
+    if (row.accountId === null || row.parentId !== null) {
+      throw new Error('first post must be a top-level note of an account');
+    }
+    const stored = copyRow({
+      ...unsignedNostrDefaults(),
+      ...row,
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      contentFp: null,
+      photoCount: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      photoTakenAts: [],
+    });
+    applyStoredGoal(stored);
+    const place = stored.place ?? null;
+    const inserted = await this.#sql.query<{ id: string }>(
+      `INSERT INTO message (
+         id, account_id, name, text, created_at, nostr_publish_state, sats, author_pubkey,
+         event_id, nostr_event, goal_sats, place_lat, place_lng, place_label,
+         goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php,
+         goal_repayable, goal_term_days, shop_account_id, mentions, first_post_free
+       )
+       SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,
+              $15,$16::numeric,$17::numeric,$18::numeric,$19::numeric,$20::numeric,
+              $21,$22,$23,$24::jsonb,TRUE
+       WHERE NOT EXISTS (
+         SELECT 1 FROM message
+         WHERE account_id = $2
+           AND parent_id IS NULL
+           AND ($25::uuid IS NULL OR id <> $25::uuid)
+       )
+       ON CONFLICT DO NOTHING
+       RETURNING id`,
+      [
+        stored.id,
+        stored.accountId,
+        stored.name,
+        stored.text,
+        stored.createdAt,
+        stored.nostrPublishState,
+        stored.sats,
+        stored.authorPubkey,
+        stored.eventId,
+        stored.nostrEvent,
+        stored.goalSats ?? null,
+        place === null ? null : place.lat,
+        place === null ? null : place.lng,
+        place === null ? null : place.label,
+        stored.goalCurrency ?? null,
+        stored.goalAmount ?? null,
+        stored.goalAmountUsd ?? null,
+        stored.goalAmountChf ?? null,
+        stored.goalAmountEur ?? null,
+        stored.goalAmountPhp ?? null,
+        stored.goalRepayable === true ? true : null,
+        stored.goalTermDays ?? null,
+        stored.shopAccount?.id ?? null,
+        JSON.stringify(stored.mentions ?? []),
+        excludeId,
+      ],
+    );
+    return inserted.length === 0 ? undefined : stored;
+  }
+
+  /**
    * Whether `accountId` has at least one live top-level forum row that is
    * not `excludeId` and has media (photo 0, extra stills, or video).
    *
@@ -4939,6 +5621,27 @@ export class PostgresMessageStore implements MessageStore {
          )
        LIMIT 1`,
       [accountId, excludeId],
+    );
+    return rows[0] !== undefined;
+  }
+
+  /**
+   * Whether a platform `Welcome` reply exists under one of the account's notes.
+   * Live and soft-hidden rows both count.
+   *
+   * @param accountId - Member whose notes are checked (`$1`).
+   * @param platformAccountId - Official platform account id (`$2`).
+   * @returns `true` when such a reply exists.
+   */
+  async accountHasWelcomeGift(accountId: string, platformAccountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ found?: number }>(
+      `SELECT 1 AS found FROM message reply
+       JOIN message parent ON parent.id = reply.parent_id
+       WHERE reply.account_id = $2
+         AND parent.account_id = $1
+         AND trim(reply.text) = 'Welcome'
+       LIMIT 1`,
+      [accountId, platformAccountId],
     );
     return rows[0] !== undefined;
   }
@@ -5113,6 +5816,248 @@ export class PostgresMessageStore implements MessageStore {
        FROM message
        WHERE parent_id IS NULL
          AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [key, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one 21.gifts account
+   * (`parent_id IS NULL`, `deleted_at IS NULL`, `text ~* $2`, assigned
+   * `shop_account_id = $1` or else unassigned `account_id = $1`). Empty
+   * is 0.
+   *
+   * @param accountId - Shop account id (`$1`).
+   * @returns Count of matching shops, mapped via `Number`.
+   */
+  async countShopsByAccount(accountId: string): Promise<number> {
+    const rows = await this.#sql.query<{ shop_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS shop_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND text ~* $2
+         AND (shop_account_id = $1 OR (shop_account_id IS NULL AND account_id = $1))`,
+      [accountId, posixHashtagTokenPattern(SHOP_HASHTAG)],
+    );
+    const row = rows[0];
+    return Number(row?.shop_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one account,
+   * capped at `limit`, with `replyCount` of live attributed children —
+   * a 21.gifts author or an external zapper row with `author_pubkey`
+   * (same subquery as {@link listPostsByAccount}).
+   *
+   * @param accountId - Shop account id (`$1`).
+   * @param limit - Maximum rows (`$3`).
+   * @returns Mapped list rows.
+   */
+  async listShopsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND text ~* $2
+         AND (shop_account_id = $1 OR (shop_account_id IS NULL AND account_id = $1))
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [accountId, posixHashtagTokenPattern(SHOP_HASHTAG), limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level `#21GiftsShop` notes for one external pubkey
+   * (`account_id IS NULL`, `shop_account_id IS NULL`, `deleted_at IS NULL`,
+   * `author_pubkey` present, `lower(author_pubkey) = $1`, `text ~* $2`).
+   * Empty is 0.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @returns Count of matching shops, mapped via `Number`.
+   */
+  async countShopsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<{ shop_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS shop_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND shop_account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+         AND text ~* $2`,
+      [key, posixHashtagTokenPattern(SHOP_HASHTAG)],
+    );
+    const row = rows[0];
+    return Number(row?.shop_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level `#21GiftsShop` notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (same subquery as {@link listPostsByAccount}).
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$3`).
+   * @returns Mapped list rows.
+   */
+  async listShopsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND account_id IS NULL
+         AND shop_account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1
+         AND text ~* $2
+       ORDER BY created_at DESC, id DESC
+       LIMIT $3`,
+      [key, posixHashtagTokenPattern(SHOP_HASHTAG), limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one 21.gifts account
+   * (`parent_id IS NULL`, `deleted_at IS NULL`, `goal_repayable IS TRUE`,
+   * `account_id = $1`). Empty is 0.
+   *
+   * @param accountId - Author account id (`$1`).
+   * @returns Count of matching credits, mapped via `Number`.
+   */
+  async countCreditsByAccount(accountId: string): Promise<number> {
+    const rows = await this.#sql.query<{ credit_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS credit_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id = $1`,
+      [accountId],
+    );
+    const row = rows[0];
+    return Number(row?.credit_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one account,
+   * capped at `limit`, with `replyCount` of live attributed children —
+   * a 21.gifts author or an external zapper row with `author_pubkey`
+   * (same subquery as {@link listPostsByAccount}).
+   *
+   * @param accountId - Author account id (`$1`).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listCreditsByAccount(accountId: string, limit: number): Promise<MessageListRow[]> {
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id = $1
+       ORDER BY created_at DESC, id DESC
+       LIMIT $2`,
+      [accountId, limit],
+    );
+    return rows.map((row) => ({
+      ...mapMessageRow(row),
+      replyCount: Number(row.reply_count ?? 0),
+    }));
+  }
+
+  /**
+   * Uncapped live top-level credit notes for one external pubkey
+   * (`account_id IS NULL`, `deleted_at IS NULL`, `author_pubkey` present,
+   * `lower(author_pubkey) = $1`, `goal_repayable IS TRUE`). Empty is 0.
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @returns Count of matching credits, mapped via `Number`.
+   */
+  async countCreditsByPubkey(pubkey: string): Promise<number> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<{ credit_count: string | number | null }>(
+      `SELECT COUNT(*)::int AS credit_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
+         AND account_id IS NULL
+         AND author_pubkey IS NOT NULL
+         AND lower(author_pubkey) = $1`,
+      [key],
+    );
+    const row = rows[0];
+    return Number(row?.credit_count ?? 0);
+  }
+
+  /**
+   * Newest-first live top-level credit notes for one external
+   * pubkey, capped at `limit`, with `replyCount` of live attributed
+   * children (same subquery as {@link listPostsByAccount}).
+   *
+   * @param pubkey - External author pubkey (`$1`, already lowercased).
+   * @param limit - Maximum rows (`$2`).
+   * @returns Mapped list rows.
+   */
+  async listCreditsByPubkey(pubkey: string, limit: number): Promise<MessageListRow[]> {
+    const key = pubkey.toLowerCase();
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS},
+              (SELECT COUNT(*)::int FROM message child
+               WHERE child.parent_id = message.id AND child.deleted_at IS NULL
+                 AND (child.account_id IS NOT NULL
+                   OR (child.author_pubkey IS NOT NULL
+                     AND EXISTS (
+                       SELECT 1 FROM nostr_zapper z
+                       WHERE z.pubkey = lower(child.author_pubkey))))) AS reply_count
+       FROM message
+       WHERE parent_id IS NULL
+         AND deleted_at IS NULL
+         AND goal_repayable IS TRUE
          AND account_id IS NULL
          AND author_pubkey IS NOT NULL
          AND lower(author_pubkey) = $1
@@ -6264,6 +7209,23 @@ export class PostgresMessageStore implements MessageStore {
     return rows[0]?.receipt_event_id === receiptEventId;
   }
 
+  /**
+   * Receipt event id that owns a payment hash claim, without claiming it.
+   *
+   * @param paymentHash - BOLT11 payment hash (any case).
+   * @returns The owning receipt event id, or `undefined` when unclaimed.
+   * @throws Propagates SQL failures.
+   */
+  async zapPaymentReceiptId(paymentHash: string): Promise<string | undefined> {
+    const rows = await this.#sql.query<{ receipt_event_id: string }>(
+      `SELECT receipt_event_id
+       FROM nostr_zap_payment
+       WHERE payment_hash = $1`,
+      [paymentHash.toLowerCase()],
+    );
+    return rows[0]?.receipt_event_id;
+  }
+
   async recordZapReceipt(
     receiptEventId: string,
     messageId: string,
@@ -6374,10 +7336,10 @@ export class PostgresMessageStore implements MessageStore {
          amount_sats, lightning_address, zap_request, result, http_status,
          pr, payment_hash, description, description_hash, is_nip57_invoice,
          lnurl_response, conversation_id, conversation_message_id,
-         fiat_pinned, fiat_usd, fiat_chf, fiat_eur, fiat_php
+         fiat_pinned, fiat_usd, fiat_chf, fiat_eur, fiat_php, heart
        ) VALUES (
          $1,$2,$3,$4,$5,$6,$7,$8::jsonb,$9,$10,$11,$12,$13,$14,$15,$16::jsonb,$17,$18,
-         $19,$20::numeric,$21::numeric,$22::numeric,$23::numeric
+         $19,$20::numeric,$21::numeric,$22::numeric,$23::numeric,$24
        )`,
       [
         row.id,
@@ -6403,8 +7365,56 @@ export class PostgresMessageStore implements MessageStore {
         row.amountChf ?? null,
         row.amountEur ?? null,
         row.amountPhp ?? null,
+        row.heart === true,
       ],
     );
+  }
+
+  /**
+   * Count claimed hearts with one join of `message_invoice` to
+   * `nostr_zap_payment`. Only well-formed UUIDs go into `$1::uuid[]`.
+   *
+   * @param messageIds - Forum message ids to count.
+   * @param viewerAccountId - Session account id, or `null` when unsigned.
+   * @returns Per-id `{ heartCount, hearted }`. Missing ids have no entry.
+   */
+  async heartStats(
+    messageIds: readonly string[],
+    viewerAccountId: string | null,
+  ): Promise<Map<string, { heartCount: number; hearted: boolean }>> {
+    if (messageIds.length === 0) {
+      return new Map();
+    }
+    const uuids = messageIds.filter((id) => UUID_RE.test(id));
+    if (uuids.length === 0) {
+      return new Map();
+    }
+    const rows = await this.#sql.query<{
+      message_id: string;
+      heart_count: number | string;
+      hearted: boolean | string | null;
+    }>(
+      `SELECT i.message_id,
+              COUNT(*)::int AS heart_count,
+              BOOL_OR($2::uuid IS NOT NULL AND i.payer_account_id = $2::uuid) AS hearted
+       FROM message_invoice i
+       INNER JOIN nostr_zap_payment p
+         ON p.payment_hash = lower(i.payment_hash)
+       WHERE i.heart = true
+         AND i.result = 'ok'
+         AND i.payment_hash IS NOT NULL
+         AND i.message_id = ANY($1::uuid[])
+       GROUP BY i.message_id`,
+      [postgresTextArrayLiteral(uuids), viewerAccountId],
+    );
+    const stats = new Map<string, { heartCount: number; hearted: boolean }>();
+    for (const row of rows) {
+      stats.set(row.message_id, {
+        heartCount: Number(row.heart_count),
+        hearted: row.hearted === true || row.hearted === 't',
+      });
+    }
+    return stats;
   }
 
   async listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
@@ -6414,7 +7424,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        ORDER BY created_at DESC, id DESC
        LIMIT $1`,
@@ -6430,7 +7440,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE result = 'ok' AND created_at >= $1
        ORDER BY created_at DESC, id DESC
@@ -6576,7 +7586,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE payer_account_id = $1
        ORDER BY created_at DESC, id DESC`,
@@ -6661,7 +7671,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE payment_hash = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -6682,7 +7692,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE message_id = $1 AND description = $2 AND result = 'ok' AND pr IS NOT NULL
        ORDER BY created_at DESC, id DESC
@@ -6700,7 +7710,7 @@ export class PostgresMessageStore implements MessageStore {
               pr, payment_hash, description, description_hash, is_nip57_invoice,
               lnurl_response, conversation_id, conversation_message_id,
               fiat_pinned, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
-              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
+              fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php, heart
        FROM message_invoice
        WHERE pr = $1 AND result = 'ok'
        ORDER BY created_at DESC, id DESC
@@ -7100,6 +8110,7 @@ interface MessageInvoiceSqlRow {
   fiat_chf?: string | number | null;
   fiat_eur?: string | number | null;
   fiat_php?: string | number | null;
+  heart?: boolean | null;
 }
 
 /** SQL row shape for `nostr_zap_ingest`. */
@@ -7168,6 +8179,7 @@ function mapInvoiceAttemptRow(row: MessageInvoiceSqlRow): MessageInvoiceAttempt 
     amountChf: row.fiat_chf === null || row.fiat_chf === undefined ? null : String(row.fiat_chf),
     amountEur: row.fiat_eur === null || row.fiat_eur === undefined ? null : String(row.fiat_eur),
     amountPhp: row.fiat_php === null || row.fiat_php === undefined ? null : String(row.fiat_php),
+    heart: row.heart === true,
   };
 }
 

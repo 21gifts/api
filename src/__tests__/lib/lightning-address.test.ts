@@ -3,9 +3,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 
 describe('normalizeLightningAddress', () => {
   it('accepts a valid address', () => {
-    expect(normalizeLightningAddress('alice@walletofsatoshi.com')).toBe(
-      'alice@walletofsatoshi.com',
-    );
+    expect(normalizeLightningAddress('alice@wallet.example')).toBe('alice@wallet.example');
   });
 
   it('trims surrounding whitespace', () => {

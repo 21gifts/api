@@ -388,3 +388,16 @@ WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL;
 UPDATE message SET received_sats = 0 WHERE received_sats IS NULL;
 ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0;
 ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL;
+-- Free first post: set only on the note a member posted without the fee
+-- because it was their first top-level note. At most one per account, so two
+-- concurrent first posts cannot both be stored free.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean;
+CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx
+  ON message (account_id)
+  WHERE first_post_free IS TRUE;
+
+-- Wallet reports classify every payment by its hash (findOkInvoiceByPaymentHash).
+CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx
+  ON message_invoice (payment_hash, created_at DESC, id DESC)
+  WHERE result = 'ok';
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false;

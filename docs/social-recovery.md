@@ -38,10 +38,11 @@ group, not because one share is enough.
 Daily login stays a passkey. The passkey private key is not one of these
 shares and never leaves the authenticator. On the new device the recovered
 bytes authorize one new passkey for this account, and they are shown as the
-same 12 words. Those words are the phrase the phone already derives,
-including the Spark wallet seed specified in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md). Recovery does not
-move that bitcoin.
+same 12 words. Those words are the phrase the phone already derives.
+The shop payment in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+these words and does not deliver to a Spark address. Recovery does not
+move bitcoin.
 
 ## Mein Konto absichern
 
@@ -88,9 +89,10 @@ It does not generate a new secret.
 That derivation already exists. This document does not change it. The bytes
 are the backup phrase. They are not uploaded. Recovery uses them to open
 this account on a new device and to show the same 12 words. It does not
-move a balance. The same words are the Spark wallet seed specified in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md). That wallet is not
-implemented, and recovery does not perform the payment.
+move a balance. The shop payment in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+these words and does not deliver to a Spark address. It is not
+implemented. Recovery does not move bitcoin.
 
 Before any share is given out, the phone reconstructs the shares locally
 and checks that BIP-39 of those bytes is the phrase it just derived. If
@@ -99,9 +101,10 @@ not, it stops.
 ## What this does not do
 
 Opening the account on a new device and restoring those words is what it
-does. The restored words are also the Spark wallet seed in
-[`docs/shop-spark-payment.md`](./shop-spark-payment.md). This recovery does
-not send or receive that bitcoin. The passkey private key is not split.
+does. The shop payment in
+[`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+these words and does not deliver to a Spark address. This recovery does
+not send or receive bitcoin. The passkey private key is not split.
 A new passkey is a new door onto the same account. Deleting the old credential on the server stops the
 old passkey from logging in. It does not erase the secret inside a lost
 phone. The phrase is not replaced with different words. No balance is
@@ -400,8 +403,9 @@ that still works is the cancel path during the 48 hours.
 - Both shares reconstruct the original 16 bytes, and BIP-39 of those
   bytes is the original 12 words. One share does not.
 - Those bytes authorize a new passkey on the same account and are the
-  same 12-word seed, including the Spark wallet seed in
-  [`docs/shop-spark-payment.md`](./shop-spark-payment.md). Recovery does
+  same 12 words. The shop payment in
+  [`docs/shop-spark-payment.md`](./shop-spark-payment.md) does not read
+  these words and does not deliver to a Spark address. Recovery does
   not send or receive bitcoin.
 - **Mein Konto absichern** is optional. The account works with no
   recovery set. Closing the screen before two people are confirmed stores
@@ -453,4 +457,4 @@ that still works is the cancel path during the 48 hours.
   both chosen people.
 - A SLIP-39 passphrase or a second Shamir group.
 - Remote wipe of a lost authenticator.
-- Wallet of Satoshi recovery.
+- Recovery of an external Lightning wallet.

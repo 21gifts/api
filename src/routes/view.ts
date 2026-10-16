@@ -3,6 +3,7 @@ import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeViewProfile } from '@/lib/auth/account-json';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
@@ -41,6 +42,8 @@ export interface ViewRouteDeps {
   fiatRates?: FiatRateBook;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
+  /** LNURL server config for the receiving address on the card; omitted → none. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 /** 64 lowercase hex view-key shape. */
@@ -53,7 +56,7 @@ const VIEW_KEY_RE = /^[0-9a-f]{64}$/;
  * `GET /view/:viewKey/about/photo`, and `GET /view/:viewKey/activity`.
  * No auth. Never calls `resolveSession`. Never accepts the key as Bearer.
  *
- * @param deps - Shared auth store, optional message store for About me, and optional activity collaborators including the fiat book.
+ * @param deps - Shared auth store, optional message store for About me, optional activity collaborators including the fiat book, and optional `lnurlServer` for the receiving address.
  * @returns A Hono app exposing `GET /:viewKey/about/photo`, `GET /:viewKey/activity`, and `GET /:viewKey`.
  */
 export function viewRoutes(deps: ViewRouteDeps): Hono {
@@ -138,7 +141,10 @@ export function viewRoutes(deps: ViewRouteDeps): Hono {
             aboutMeHasPhoto = row.hasPhoto === true;
           }
         }
-        return c.json(serializeViewProfile(account, hasPasskey, aboutMe, aboutMeHasPhoto), 200);
+        return c.json(
+          serializeViewProfile(account, hasPasskey, aboutMe, aboutMeHasPhoto, deps.lnurlServer),
+          200,
+        );
       } catch {
         logEvent('view.get.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);

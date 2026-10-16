@@ -1,10 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 import { MESSAGE_MAX_LENGTH, unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
-import { parseNostrKek } from '@/lib/nostr/kek';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { meRoutes } from '@/routes/me';
@@ -30,8 +29,7 @@ const now = (): number => 1_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const LINKING_KEY = `02${'a'.repeat(64)}`;
 const VIEW_KEY = 'a'.repeat(64);
-const ADDRESS = 'alice@walletofsatoshi.com';
-const NOSTR_KEK = parseNostrKek('cd'.repeat(32));
+const ADDRESS = 'alice@example.test';
 const NOTE_ID = 'note-ada';
 const BIO = 'I build on Bitcoin';
 const JSON_HEADERS = { ...AUTH, 'content-type': 'application/json' };
@@ -47,6 +45,8 @@ interface MountOpts {
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
   spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
+  /** Mount without the LNURL server (no receiving address). */
+  noLnurlServer?: boolean;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -56,9 +56,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       store,
       messages: opts.messages ?? new InMemoryMessageStore(),
       now,
-      payer: new UnconfiguredInvoicePayer(),
-      fetchImpl: globalThis.fetch,
-      nostrKek: NOSTR_KEK,
+      ...(opts.noLnurlServer === true ? {} : { lnurlServer: LNURL_SERVER }),
       ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
       ...(opts.notificationStore === undefined
         ? {}
@@ -70,7 +68,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
 
 /** A store with a signed-in account `acc` reachable via session `tok`. */
 async function seededStore(
-  overrides: { lightningAddress?: string | null; verified?: boolean; name?: string | null } = {},
+  overrides: { wallet?: boolean; verified?: boolean; name?: string | null } = {},
 ): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
@@ -79,20 +77,24 @@ async function seededStore(
     role: 'basis',
     name: overrides.name ?? null,
     location: null,
-    lightningAddress: overrides.lightningAddress ?? null,
-    lightningAddressVerified: overrides.verified ?? false,
     forumLawsDismissed: false,
     viewKey: VIEW_KEY,
     createdAt: 1_000_000,
     rulesAgreedAt: null,
+    username: 'alice',
+    walletRequired: true,
   });
+  if (overrides.wallet === true) {
+    await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'alice', 1);
+  }
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
   return store;
 }
 
 async function patchAccount(
   store: InMemoryAuthStore,
-  patch: { name?: string | null; lightningAddress?: string | null; profileMessageId?: string },
+  patch: { name?: string | null; profileMessageId?: string },
 ): Promise<void> {
   const existing = await store.getAccount('acc');
   expect(existing).toBeDefined();
@@ -135,6 +137,22 @@ async function seedNoteWithPhoto(text: string = 'Ada'): Promise<InMemoryMessageS
 }
 
 describe('PUT /me/about', () => {
+  it('saves About me without a welcome ping when the LNURL server is off', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
+    await store.updateAccount({ ...(await store.getAccount('acc'))!, role: 'verified' });
+    const ping = vi.fn(async () => undefined);
+    const messages = await seedNoteWithPhoto();
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const res = await mount(store, { messages, spendPing: { ping }, noLnurlServer: true }).request(
+      '/me/about',
+      { method: 'PUT', headers: JSON_HEADERS, body: JSON.stringify({ text: BIO }) },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { lightningAddress: string | null };
+    expect(body.lightningAddress).toBeNull();
+    expect(ping).not.toHaveBeenCalled();
+  });
+
   it('returns 401 without a bearer', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/me/about', {
       method: 'PUT',
@@ -177,8 +195,8 @@ describe('PUT /me/about', () => {
     });
   });
 
-  it('returns 409 missing name even when a Lightning Address is linked', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
+  it('returns 409 missing name even when the in-app wallet is verified', async () => {
+    const store = await seededStore({ wallet: true });
     const res = await putAbout(store, { text: BIO });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'missing_requirements', missing: ['name'] });
@@ -191,8 +209,8 @@ describe('PUT /me/about', () => {
     expect(await res.json()).toEqual({ error: 'missing_requirements', missing: ['name'] });
   });
 
-  it('updates an existing name-only note when name and Lightning Address are set', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+  it('updates an existing name-only note when the name is set and the wallet is verified', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
     const res = await putAbout(store, { text: BIO }, messages);
@@ -209,7 +227,7 @@ describe('PUT /me/about', () => {
 
   it('welcome-pings when a verified member saves an About-me photo', async () => {
     const ping = vi.fn(async () => undefined);
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     const existing = await store.getAccount('acc');
     expect(existing).toBeDefined();
     if (existing === undefined) {
@@ -228,7 +246,7 @@ describe('PUT /me/about', () => {
 
   it('does not welcome-ping an About-me photo while the role is basis', async () => {
     const ping = vi.fn(async () => undefined);
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     const res = await mount(store, { spendPing: { ping } }).request('/me/about', {
       method: 'PUT',
       headers: JSON_HEADERS,
@@ -238,18 +256,101 @@ describe('PUT /me/about', () => {
     expect(ping).not.toHaveBeenCalled();
   });
 
-  it('clears About me when text is empty', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+  it('clears About me when text is empty by restoring the name-copy', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
     const res = await putAbout(store, { text: '' }, messages);
     expect(res.status).toBe(200);
     const body = (await res.json()) as { aboutMe: string | null };
     expect(body.aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears with whitespace to the stored note name after a rename', async () => {
+    const store = await seededStore({ name: 'Grace', wallet: true });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    const res = await putAbout(store, { text: '  \n ' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears to the display name when the stored note name is blank', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([{ ...nameOnlyNote({ text: BIO }), name: ' ' }]);
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { aboutMe: string | null }).aboutMe).toBeNull();
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+  });
+
+  it('clears to the name-copy when empty text also removes the photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('');
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { aboutMe: string | null; aboutMeHasPhoto: boolean };
+    expect(body).toMatchObject({ aboutMe: null, aboutMeHasPhoto: false });
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('Ada');
+    expect(note?.hasPhoto).toBe(false);
+  });
+
+  it('keeps empty text on a live note that keeps its photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect((await res.json()) as { aboutMeHasPhoto: boolean }).toMatchObject({
+      aboutMeHasPhoto: true,
+    });
     expect((await messages.getById(NOTE_ID))?.text).toBe('');
   });
 
-  it('does not create a note when empty text and no live profile note', async () => {
+  it('keeps empty text on a live note that replaces its photo', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
+    const res = await putAbout(store, { text: '', photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(200);
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(true);
+  });
+
+  it('keeps empty text when a null photo leaves extra stills on the note', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = await seedNoteWithPhoto('Hi');
+    const still = { contentType: 'image/jpeg' as const, bytes: JPEG_BYTES };
+    const dated = { ...still, takenAt: '2026-10-05T10:00:00' };
+    await messages.replacePhotos(NOTE_ID, [still, dated, still]);
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(200);
+    const note = await messages.getById(NOTE_ID);
+    expect(note?.text).toBe('');
+    expect(note?.hasPhoto).toBe(false);
+    expect(note?.photoCount).toBe(2);
+    expect(note?.photoTakenAts).toEqual(['2026-10-05T10:00:00', null]);
+  });
+
+  it('keeps empty text on a live note with a video', async () => {
+    const store = await seededStore({ name: 'Ada' });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([
+      { ...nameOnlyNote({ text: BIO }), hasVideo: true, videoContentType: 'video/mp4' },
+    ]);
+    const res = await putAbout(store, { text: '' }, messages);
+    expect(res.status).toBe(200);
+    expect((await messages.getById(NOTE_ID))?.text).toBe('');
+  });
+
+  it('refuses empty text when there is no live profile note', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -269,27 +370,27 @@ describe('PUT /me/about', () => {
         body: JSON.stringify({ text: '   ' }),
       },
     );
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Write something about yourself' });
     expect(await messages.listLatest(10)).toEqual([]);
     expect((await store.getAccount('acc'))?.profileMessageId ?? null).toBeNull();
     expect(await pushStore.claimPending(10, now(), 60_000)).toEqual([]);
     expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
   });
 
-  it('does not create a note when empty text and the profile note is hidden', async () => {
+  it('refuses empty text with a null photo when the profile note is hidden', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote({ text: BIO })]);
     expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
-    const res = await putAbout(store, { text: '' }, messages);
-    expect(res.status).toBe(200);
-    expect((await res.json()) as { aboutMe: string | null }).toMatchObject({ aboutMe: null });
+    const res = await putAbout(store, { text: '', photo: null }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Write something about yourself' });
     expect(await messages.listLatest(10)).toEqual([]);
     expect((await store.getAccount('acc'))?.profileMessageId).toBe(NOTE_ID);
   });
 
-  it('creates a profile note without a Lightning Address', async () => {
+  it('creates a profile note without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const res = await putAbout(store, { text: BIO }, messages);
@@ -333,7 +434,7 @@ describe('PUT /me/about', () => {
     expect(listed[0]?.text).toBe(BIO);
   });
 
-  it('writes in-app rows to accounts without a push subscription on a no-LN create', async () => {
+  it('writes in-app rows to accounts without a push subscription on a create without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     await store.createAccount({
       id: 'other',
@@ -341,8 +442,6 @@ describe('PUT /me/about', () => {
       role: 'basis',
       name: 'Bob',
       location: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_000,
@@ -363,7 +462,7 @@ describe('PUT /me/about', () => {
     expect(await notificationStore.listByRecipient('acc', 10)).toEqual([]);
   });
 
-  it('returns 200 when forum push enqueue throws on a no-LN create', async () => {
+  it('returns 200 when forum push enqueue throws on a create without a verified wallet', async () => {
     const store = await seededStore({ name: 'Ada' });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
@@ -414,7 +513,7 @@ describe('PUT /me/about', () => {
     expect(await notificationStore.listByRecipient('other', 10)).toEqual([]);
   });
 
-  it('creates a note when a stale profileMessageId has no row and LN is missing', async () => {
+  it('creates a note when a stale profileMessageId has no row and no wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: 'gone' });
     const messages = new InMemoryMessageStore();
@@ -427,7 +526,7 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
   });
 
-  it('creates a new live note when the profile note is soft-hidden and LN is missing', async () => {
+  it('creates a new live note when the profile note is soft-hidden and no wallet is verified', async () => {
     const store = await seededStore({ name: 'Ada' });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
@@ -445,8 +544,8 @@ describe('PUT /me/about', () => {
     expect(live?.text).toBe(BIO);
   });
 
-  it('ensures a missing note when name and Lightning Address are set, then writes the bio', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+  it('ensures a missing note when the name is set and the wallet is verified, then writes the bio', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
     const messages = new InMemoryMessageStore();
     const res = await putAbout(store, { text: BIO }, messages);
     expect(res.status).toBe(200);
@@ -461,15 +560,13 @@ describe('PUT /me/about', () => {
   });
 
   it('notifies with the bio, not the name-copy, when PUT ensures a note with LN', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await store.createAccount({
       id: 'other',
       linkingKey: `03${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bob',
       location: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1_000_000,
@@ -491,7 +588,7 @@ describe('PUT /me/about', () => {
   });
 
   it('ensures a missing note with a defined pushStore, then writes the bio', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     const res = await mount(store, { pushStore: new InMemoryPushStore() }).request('/me/about', {
       method: 'PUT',
       headers: JSON_HEADERS,
@@ -502,8 +599,8 @@ describe('PUT /me/about', () => {
     expect(body.aboutMe).toBe(BIO);
   });
 
-  it('ensures then updates when profileMessageId points at a missing row and LN is set', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+  it('ensures then updates when profileMessageId points at a missing row and the wallet is verified', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: 'gone' });
     const messages = new InMemoryMessageStore();
     const res = await putAbout(store, { text: BIO }, messages);
@@ -515,8 +612,8 @@ describe('PUT /me/about', () => {
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe(BIO);
   });
 
-  it('ensures a new live note when the profile note is soft-hidden and LN is set', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+  it('ensures a new live note when the profile note is soft-hidden and the wallet is verified', async () => {
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
     expect(await messages.markDeleted(NOTE_ID, new Date(now()), 'staff')).toBe(true);
@@ -533,7 +630,7 @@ describe('PUT /me/about', () => {
   });
 
   it('returns 503 when updateText throws', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const messages = new InMemoryMessageStore([nameOnlyNote()]);
     vi.spyOn(messages, 'updateText').mockRejectedValue(new Error('store down'));
@@ -544,7 +641,7 @@ describe('PUT /me/about', () => {
   });
 
   it('resets the signed event after a bio PUT on a published sats=0 note', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const eventId = 'ee'.repeat(32);
     const messages = new InMemoryMessageStore([nameOnlyNote({ eventId, sats: 0 })]);
@@ -556,7 +653,7 @@ describe('PUT /me/about', () => {
   });
 
   it('does not reset a signed event when the note already has sats', async () => {
-    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    const store = await seededStore({ name: 'Ada', wallet: true });
     await patchAccount(store, { profileMessageId: NOTE_ID });
     const eventId = 'ee'.repeat(32);
     const messages = new InMemoryMessageStore([nameOnlyNote({ eventId, sats: 21 })]);

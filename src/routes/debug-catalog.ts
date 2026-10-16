@@ -12,6 +12,7 @@ import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PosStore } from '@/lib/pos-store';
 import type { PushStore } from '@/lib/push-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { TrustStore } from '@/lib/trust-store';
 
 /** Collaborators for GET `/debug/dump`. */
@@ -42,6 +43,8 @@ export interface DebugCatalogRouteDeps {
   listUsdFiatDaily?: (limit: number) => Promise<unknown[]>;
   /** Optional db_change dump. */
   listDbChange?: (limit: number) => Promise<unknown[]>;
+  /** LNURL server config for each account's receiving address; omitted → none. */
+  lnurlServer?: LnurlServerConfig;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -94,6 +97,9 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
   }
   if (deps.listDbChange !== undefined) {
     catalog.listDbChange = deps.listDbChange;
+  }
+  if (deps.lnurlServer !== undefined) {
+    catalog.lnurlServer = deps.lnurlServer;
   }
   return catalog;
 }

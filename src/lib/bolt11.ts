@@ -167,6 +167,26 @@ export function inspectBolt11(
 }
 
 /**
+ * Every plaintext description tag of any decodable BOLT11, zero-amount invoices included.
+ *
+ * @param pr - BOLT11 string.
+ * @param decodeImpl - Optional decoder (tests inject a fake).
+ * @returns All string `description` values in tag order; empty when the invoice does not decode or has none (for example only a description hash).
+ */
+export function bolt11Descriptions(
+  pr: string,
+  decodeImpl?: (invoice: string) => { sections?: Bolt11Section[] },
+): string[] {
+  const descriptions: string[] = [];
+  for (const section of decodeSections(pr, decodeImpl) ?? []) {
+    if (section.name === 'description' && typeof section.value === 'string') {
+      descriptions.push(section.value);
+    }
+  }
+  return descriptions;
+}
+
+/**
  * NIP-57 invoice: description_hash equals sha256(utf8(zap request JSON)).
  *
  * @param descriptionHash - Lowercase hex hash from the invoice, or null.

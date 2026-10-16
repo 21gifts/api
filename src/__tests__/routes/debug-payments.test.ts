@@ -12,6 +12,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -54,16 +55,29 @@ function mount(
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      lnurlServer: LNURL_SERVER,
     }),
   );
+}
+
+/**
+ * Create a verified account with the username `ada` and a verified wallet, so
+ * it receives on `ada@example.test`.
+ */
+async function createReceiver(
+  auth: InMemoryAuthStore,
+  partial: Pick<Account, 'id' | 'role'> & Partial<Account>,
+): Promise<void> {
+  await auth.createAccount(account({ username: 'ada', walletRequired: true, ...partial }));
+  const pubkey = `02${partial.id.replace(/-/g, '').padEnd(64, '0').slice(0, 64)}`;
+  await auth.claimSparkPubkey(partial.id, pubkey);
+  await auth.markSparkPubkeyVerified(partial.id, pubkey, 'ada', 1);
 }
 
 function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Account {
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -516,14 +530,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'a1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -546,11 +557,11 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(202);
     const json: unknown = await res.json();
     expect(json).toEqual({ messageId, status: 'accepted' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -558,7 +569,7 @@ describe('debugPaymentsRoutes', () => {
     const sent = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.sent');
     expect(sent?.['messageId']).toBe(messageId);
     expect(sent).not.toHaveProperty('address');
-    expect(JSON.stringify(sent)).not.toContain('ada@example.com');
+    expect(JSON.stringify(sent)).not.toContain('ada@example.test');
   });
 
   it('returns 503 for spend-ping when debug is not configured', async () => {
@@ -830,15 +841,12 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'd1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-        profileMessageId: messageId,
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+      profileMessageId: messageId,
+    });
     await store.create(
       {
         id: messageId,
@@ -869,14 +877,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'e1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -901,14 +906,14 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-29',
       'none',
     ]);
   });
 
-  it('returns 409 when the spend-ping account has no Lightning address', async () => {
+  it('returns 409 when the spend-ping account has no verified wallet', async () => {
     const messageId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const accountId = 'f1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
@@ -939,57 +944,16 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
-  it('returns 409 when the spend-ping Lightning address is blank', async () => {
-    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-    const accountId = 'a2222222-2222-4222-8222-222222222222';
-    const store = new InMemoryMessageStore();
-    const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: '   ',
-      }),
-    );
-    await store.create(
-      {
-        id: messageId,
-        accountId,
-        name: 'Ada',
-        text: 'photo',
-        createdAt: SPEND_CREATED_AT,
-        hasPhoto: false,
-        ...unsignedNostrDefaults(),
-      },
-      SPEND_PHOTO,
-    );
-    const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
-    const res = await app.request('/debug/spend-ping', {
-      method: 'POST',
-      headers: SPEND_HEADERS,
-      body: JSON.stringify({ messageId }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No Lightning address' });
-    expect(spendPing.ping).not.toHaveBeenCalled();
-    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
-  });
-
   it('returns 403 when the spend-ping account is not eligible', async () => {
     const messageId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
     const accountId = 'b2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'basis',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'basis',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1012,7 +976,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(403);
     const json: unknown = await res.json();
     expect(json).toEqual({ error: 'Not eligible' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     const skipped = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.skipped');
     expect(skipped?.['reason']).toBe('not_eligible');
     expect(skipped?.['messageId']).toBe(messageId);
@@ -1026,14 +990,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'c2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1072,14 +1033,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new VideoRowStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1101,7 +1059,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1121,14 +1079,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new PhotoCountStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1150,7 +1105,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1162,14 +1117,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'f2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1199,7 +1151,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1216,14 +1168,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1260,14 +1209,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'b3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1303,14 +1249,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'c3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1336,7 +1279,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(200);
     const json: unknown = await res.json();
     expect(json).toEqual({ messageId, status: 'skipped', reason: 'paid' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
@@ -1345,14 +1288,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'd3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1387,14 +1327,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'e3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1424,14 +1361,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'f3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,

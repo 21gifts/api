@@ -53,7 +53,9 @@ It handles everything that doesn't have to run client-side:
 
 It explicitly **does not** hold keys or sign events for the non-custodial
 target (v1 signs custodial identities server-side). Guest Donate LNURL-pay
-stays in the browser; the spend-worker path is the exception
+is paid in the browser; for a member's wallet address this api forwards the
+LNURL metadata and invoice callback, so it sees the amount and the invoice,
+but it never pays or holds funds. The spend-worker path is the exception
 (`POST /invoices` fetches a recipient BOLT11, this api still does not pay).
 
 ## Stack
@@ -105,16 +107,16 @@ bun run e2e             # Playwright against bun src/index.ts
 
 ## Documentation
 
-| Doc                                                          | Purpose                                                                                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| [`CONCEPT.md`](./CONCEPT.md)                                 | Project vision, architecture, principles, decisions                                                                      |
-| [`SPEC.md`](./SPEC.md)                                       | Implemented HTTP surface (request/response contracts)                                                                    |
-| [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                      |
-| [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                  |
-| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC pays out as bitcoin on the shop's Spark wallet (concept only, not implemented) |
-| [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                              |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                         |
-| [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                |
+| Doc                                                          | Purpose                                                                                                                                   |
+| ------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| [`CONCEPT.md`](./CONCEPT.md)                                 | Project vision, architecture, principles, decisions                                                                                       |
+| [`SPEC.md`](./SPEC.md)                                       | Implemented HTTP surface (request/response contracts)                                                                                     |
+| [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                                       |
+| [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                                   |
+| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC is paid by Orchestra as the BOLT11 stored on the quote it accepted (specified, not implemented) |
+| [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                                               |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                                          |
+| [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                                 |
 
 ## License
 

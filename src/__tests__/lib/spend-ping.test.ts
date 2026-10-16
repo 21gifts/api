@@ -7,12 +7,15 @@ import {
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
+import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 
-const ADDRESS = 'ada@walletofsatoshi.com';
+const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';
+const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -138,6 +141,7 @@ describe('resolveSpendPing', () => {
 
   it('forwards the gift ledger and the clock into the daily decision', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const welcomeToday: GiftRow = {
@@ -160,10 +164,11 @@ describe('resolveSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
+    setAddressRefKey(null);
     warn.mockRestore();
   });
 });
@@ -172,12 +177,41 @@ describe('HttpSpendPing', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    setAddressRefKey(TOKEN);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    setDiagnosticSink(null);
+    setAddressRefKey(null);
   });
+
+  it.each([
+    ['spend.ping.ok', 200, true],
+    ['spend.ping.failed', 500, true],
+    ['spend.ping.skipped', 200, false],
+  ])(
+    'prints %s with addressRef and no address, and the sink keeps the address',
+    async (event, pingStatus, listed) => {
+      const sink = vi.fn();
+      setDiagnosticSink(sink);
+      await new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl: pingFetch({ pingStatus }),
+        rosterStore: writtenStore(
+          listed ? { recipients: [{ address: ADDRESS, amountUsd: 2 }] } : {},
+        ),
+      }).ping(ADDRESS, MESSAGE_ID);
+      const lines = parsedEvents(warn).filter((e) => e['event'] === event);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.['addressRef']).toBe(ADDRESS_REF);
+      expect('address' in (lines[0] ?? {})).toBe(false);
+      expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
+      expect(sink).toHaveBeenCalledWith(event, expect.objectContaining({ address: ADDRESS }));
+    },
+  );
 
   it('does not POST daily when the roster is undecided and logs spend.ping.skipped', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
@@ -192,7 +226,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -246,7 +280,7 @@ describe('HttpSpendPing', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -293,7 +327,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -312,7 +346,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -331,7 +365,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'not_listed',
       ),
     ).toBe(true);
@@ -364,7 +398,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -381,7 +417,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -401,7 +437,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -423,7 +459,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -444,7 +480,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'not_listed',
       ),
     ).toBe(true);
@@ -463,7 +499,7 @@ describe('HttpSpendPing', () => {
       fetchImpl,
       rosterStore: writtenStore({
         comment: 'thanks',
-        recipients: [{ address: 'Ada@WalletOfSatoshi.com', amountUsd: 2 }],
+        recipients: [{ address: 'Ada@Example.com', amountUsd: 2 }],
       }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(seenInit?.body).toBe(
@@ -475,7 +511,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -506,7 +544,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -523,7 +563,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -555,7 +595,9 @@ describe('HttpSpendPing', () => {
     );
     expect(String(seenInit?.body)).not.toContain('"kind"');
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -599,7 +641,7 @@ describe('HttpSpendPing', () => {
         parsedEvents(warn).some(
           (e) =>
             e['event'] === 'spend.ping.skipped' &&
-            e['address'] === ADDRESS &&
+            e['addressRef'] === ADDRESS_REF &&
             e['reason'] === 'not_listed',
         ),
       ).toBe(true);
@@ -650,7 +692,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -681,7 +723,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
@@ -748,7 +790,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -830,7 +872,9 @@ describe('HttpSpendPing', () => {
     expect(getSpy).not.toHaveBeenCalled();
     expect(importSpy).not.toHaveBeenCalled();
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -865,7 +909,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -918,7 +962,7 @@ describe('HttpSpendPing', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toMatch(/\/daily-roster$/u);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -934,7 +978,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -952,7 +996,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -973,7 +1017,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -1028,7 +1072,9 @@ describe('HttpSpendPing', () => {
     );
     expect(String(seenInit?.body)).not.toContain('2026-09-20');
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -1057,7 +1103,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
@@ -1081,7 +1127,9 @@ describe('HttpSpendPing', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'spend.ping.skipped' && e['address'] === ADDRESS && e['reason'] === 'paid',
+          e['event'] === 'spend.ping.skipped' &&
+          e['addressRef'] === ADDRESS_REF &&
+          e['reason'] === 'paid',
       ),
     ).toBe(true);
   });
@@ -1099,7 +1147,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1118,7 +1168,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1137,7 +1189,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1157,7 +1209,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1312,7 +1364,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1339,7 +1391,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });

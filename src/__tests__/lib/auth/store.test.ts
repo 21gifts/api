@@ -67,8 +67,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -89,8 +87,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -108,8 +104,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -120,16 +114,14 @@ describe('InMemoryAuthStore', () => {
       id: 'acc',
       linkingKey: KEY,
       role: 'basis',
-      name: null,
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: false,
+      name: 'Ada',
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
   });
 
   it('persists walletRequired and walletBackupSeenAt on create and update', async () => {
@@ -139,8 +131,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -157,8 +147,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -178,8 +166,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -192,8 +178,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'f'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: true,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -206,8 +190,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: true,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -224,8 +206,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'One',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -238,8 +218,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Two',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'f'.repeat(64),
@@ -270,8 +248,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -283,8 +259,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'c'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -298,8 +272,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'d'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -314,8 +286,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -345,8 +315,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -377,8 +345,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -421,51 +387,6 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getSession('a'))?.token).toBe('a');
   });
 
-  it('stores and retrieves a pending address verification', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    expect((await store.getVerification('acc'))?.nonce).toBe('a'.repeat(32));
-  });
-
-  it('upserts verification by accountId', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'bob@getalby.com',
-      nonce: 'b'.repeat(32),
-      createdAt: T0 + 1,
-    });
-    expect((await store.getVerification('acc'))?.address).toBe('bob@getalby.com');
-    expect((await store.getVerification('acc'))?.nonce).toBe('b'.repeat(32));
-  });
-
-  it('returns undefined for an unknown verification account', async () => {
-    expect(await new InMemoryAuthStore().getVerification('missing')).toBeUndefined();
-  });
-
-  it('deletes a pending verification', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    await store.deleteVerification('acc');
-    expect(await store.getVerification('acc')).toBeUndefined();
-  });
-
   it('stores two passkey accounts without clobbering the linkingKey index', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -473,8 +394,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -486,8 +405,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -499,8 +416,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '3'.repeat(64),
@@ -512,37 +427,6 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('ln'))?.id).toBe('ln');
   });
 
-  it('keeps the LNURL index when updateAccount only changes the address', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await store.updateAccount({
-      id: 'acc',
-      linkingKey: KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
-  });
-
   it('drops the linkingKey index when updateAccount clears it', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -550,8 +434,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -563,8 +445,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -581,8 +461,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -594,8 +472,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -781,8 +657,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -794,8 +668,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -807,8 +679,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -827,8 +697,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -839,27 +707,6 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
   });
 
-  it('finds an account by lightningAddress with mixed case and whitespace', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect((await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id).toBe(
-      'acc',
-    );
-    expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
-  });
-
   it('looks up an account by nostr pubkey case-insensitively', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -867,8 +714,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
@@ -886,57 +731,6 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByPubkey('')).toBeUndefined();
   });
 
-  it('updateAccountNameByLightningAddress changes only name', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'nameless',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Skip',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'moderator',
-      name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: true,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 9_000,
-    });
-    const named = await store.updateAccountNameByLightningAddress(
-      '  Guest@WalletOfSatoshi.com  ',
-      'Ada Lovelace',
-    );
-    expect(named).toMatchObject({
-      id: 'acc',
-      name: 'Ada Lovelace',
-      role: 'moderator',
-      rulesAgreedAt: 9_000,
-      viewKey: 'a'.repeat(64),
-      lightningAddressVerified: true,
-      location: null,
-      forumLawsDismissed: true,
-    });
-    const stored = await store.getAccount('acc');
-    expect(stored?.name).toBe('Ada Lovelace');
-    expect(stored?.role).toBe('moderator');
-    expect(stored?.rulesAgreedAt).toBe(9_000);
-    expect(
-      await store.updateAccountNameByLightningAddress('missing@example.com', 'X'),
-    ).toBeUndefined();
-  });
-
   it('refuses createAccount and updateAccount when the username is taken', async () => {
     const store = new InMemoryAuthStore();
     const base = {
@@ -944,8 +738,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada',
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -961,7 +753,6 @@ describe('InMemoryAuthStore', () => {
       id: 'b',
       name: 'Bob',
       username: '  Ada  ',
-      lightningAddress: 'bob@walletofsatoshi.com',
       viewKey: 'b'.repeat(64),
     });
     expect(await store.getAccount('b')).toBeUndefined();
@@ -970,7 +761,6 @@ describe('InMemoryAuthStore', () => {
       id: 'c',
       name: 'Cara',
       username: 'cara',
-      lightningAddress: 'cara@walletofsatoshi.com',
       viewKey: 'c'.repeat(64),
     });
     expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
@@ -994,8 +784,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1035,8 +823,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1070,8 +856,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null as string | null,
       role: 'basis' as const,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1111,8 +895,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1156,8 +938,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1185,8 +965,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null as string | null,
       role: 'basis' as const,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1218,67 +996,6 @@ describe('InMemoryAuthStore', () => {
     ]);
   });
 
-  it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
-    const store = new InMemoryAuthStore();
-    const base = {
-      linkingKey: null as string | null,
-      role: 'basis' as const,
-      name: 'Ada',
-      location: null as string | null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      createdAt: 1,
-      rulesAgreedAt: null as number | null,
-    };
-    await store.createAccount({
-      ...base,
-      id: 'a',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      viewKey: 'a'.repeat(64),
-    });
-    await store.createAccount({
-      ...base,
-      id: 'b',
-      name: 'Bob',
-      lightningAddress: '  Guest@WalletOfSatoshi.com  ',
-      viewKey: 'b'.repeat(64),
-    });
-    expect(await store.getAccount('b')).toBeUndefined();
-    await store.createAccount({
-      ...base,
-      id: 'c',
-      name: 'Cara',
-      lightningAddress: 'cara@walletofsatoshi.com',
-      viewKey: 'c'.repeat(64),
-    });
-    await store.updateAccount({
-      ...base,
-      id: 'c',
-      name: 'Cara',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      viewKey: 'c'.repeat(64),
-    });
-    expect((await store.getAccount('c'))?.lightningAddress).toBe('cara@walletofsatoshi.com');
-  });
-
-  it('skips null lightningAddress rows when looking up by address', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect(await store.getAccountByLightningAddress('null@example.com')).toBeUndefined();
-  });
-
   it('reports whether an account has a passkey credential', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -1286,8 +1003,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1429,8 +1144,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1475,8 +1188,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1502,8 +1213,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1515,8 +1224,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1551,8 +1258,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1609,8 +1314,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1624,8 +1327,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1639,8 +1340,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1652,8 +1351,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -1689,8 +1386,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1725,8 +1420,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1761,8 +1454,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1794,8 +1485,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1830,8 +1519,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1858,8 +1545,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1871,8 +1556,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `03${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1937,8 +1620,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1970,8 +1651,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1992,8 +1671,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2030,8 +1707,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2067,8 +1742,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2096,8 +1769,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2117,8 +1788,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2140,8 +1809,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2153,8 +1820,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2175,8 +1840,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: oldKey,
@@ -2188,8 +1851,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: newKey,
@@ -2207,8 +1868,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -2220,8 +1879,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -2233,8 +1890,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'stolen',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -2254,8 +1909,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2269,8 +1922,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2287,8 +1938,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2303,8 +1952,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2435,8 +2082,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2460,8 +2105,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2491,8 +2134,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2513,8 +2154,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2543,8 +2182,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Founder',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2556,8 +2193,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'moderator',
       name: 'Mod',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2569,8 +2204,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'initiator',
       name: 'Initiator',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -2582,8 +2215,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Basis',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2595,8 +2226,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Verified',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -2618,8 +2247,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2638,8 +2265,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2658,8 +2283,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2676,8 +2299,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2694,8 +2315,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2707,8 +2326,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2720,8 +2337,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2743,8 +2358,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2760,5 +2373,174 @@ describe('InMemoryAuthStore', () => {
     expect(await store.claimProfileMessageId('acc', 'note-1', 'note-3')).toBe(true);
     expect((await store.getAccount('acc'))?.profileMessageId).toBe('note-3');
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
+  });
+});
+
+describe('InMemoryAuthStore spark pubkey', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+  const OTHER_KEY = `03${'b'.repeat(64)}`;
+
+  async function walletAccount(
+    store: InMemoryAuthStore,
+    id: string,
+    opts: { username?: string | null; walletRequired?: boolean; viewKey?: string } = {},
+  ) {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: opts.username === undefined ? 'ada' : opts.username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: opts.viewKey ?? `${id.replace(/-/g, '').padEnd(64, 'a').slice(0, 64)}`,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: opts.walletRequired ?? true,
+    });
+  }
+
+  it('createAccount ignores wallet fields from the input', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      sparkPubkey: PUBKEY,
+      sparkPubkeyVerifiedAt: 99,
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBeNull();
+    expect(stored?.sparkPubkeyVerifiedAt).toBeNull();
+  });
+
+  it('claimSparkPubkey writes while unverified and overwrites', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    const first = await store.claimSparkPubkey('acc', PUBKEY);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.sparkPubkey).toBe(PUBKEY);
+    const second = await store.claimSparkPubkey('acc', OTHER_KEY);
+    expect(second?.wrote).toBe(true);
+    expect(second?.account.sparkPubkey).toBe(OTHER_KEY);
+  });
+
+  it('claimSparkPubkey returns wrote false without walletRequired, without username, and once verified', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'no-wallet', {
+      walletRequired: false,
+      username: 'nowallet',
+      viewKey: 'b'.repeat(64),
+    });
+    expect((await store.claimSparkPubkey('no-wallet', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'no-name', { username: null, viewKey: 'c'.repeat(64) });
+    expect((await store.claimSparkPubkey('no-name', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'blank', { username: '  ', viewKey: 'd'.repeat(64) });
+    expect((await store.claimSparkPubkey('blank', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'acc', { username: 'carol', viewKey: 'e'.repeat(64) });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'carol', 10);
+    expect((await store.claimSparkPubkey('acc', OTHER_KEY))?.wrote).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(PUBKEY);
+  });
+
+  it('claimSparkPubkey returns undefined for an unknown id', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.claimSparkPubkey('missing', PUBKEY)).toBeUndefined();
+  });
+
+  it('allows two accounts to hold the same unverified key', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect((await store.claimSparkPubkey('acc-1', PUBKEY))?.wrote).toBe(true);
+    expect((await store.claimSparkPubkey('acc-2', PUBKEY))?.wrote).toBe(true);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+  });
+
+  it('markSparkPubkeyVerified succeeds exactly once', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(true);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 11)).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+  });
+
+  it('markSparkPubkeyVerified refuses wrong key, wrong username, unknown id, and a key verified by another account', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    await store.claimSparkPubkey('acc-1', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-1', OTHER_KEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'wrong', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('missing', PUBKEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'ada', 10)).toBe(true);
+    await store.claimSparkPubkey('acc-2', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-2', PUBKEY, 'grace', 11)).toBe(false);
+  });
+
+  it('getAccountByVerifiedSparkPubkey and isSparkPubkeyClaimed cover claimed, verified, and unknown keys', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(false);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect((await store.getAccountByVerifiedSparkPubkey(PUBKEY))?.id).toBe('acc');
+    expect(await store.getAccountByVerifiedSparkPubkey(OTHER_KEY)).toBeUndefined();
+    expect(await store.isSparkPubkeyClaimed(OTHER_KEY)).toBe(false);
+  });
+
+  it('updateAccount keeps verified username but writes other fields', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    const before = await store.getAccount('acc');
+    await store.updateAccount({ ...before!, username: 'grace' });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'grace', 10);
+    await walletAccount(store, 'other', { username: 'ada', viewKey: 'b'.repeat(64) });
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({ ...verified!, username: 'ada', name: 'New' });
+    const afterVerified = await store.getAccount('acc');
+    expect(afterVerified?.username).toBe('grace');
+    expect(afterVerified?.name).toBe('New');
+    await walletAccount(store, 'unverified', {
+      username: 'bob',
+      viewKey: 'c'.repeat(64),
+    });
+    const unverified = await store.getAccount('unverified');
+    await store.updateAccount({ ...unverified!, username: 'carol' });
+    expect((await store.getAccount('unverified'))?.username).toBe('carol');
+  });
+
+  it('updateAccount never alters the two wallet fields', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({
+      ...verified!,
+      sparkPubkey: OTHER_KEY,
+      sparkPubkeyVerifiedAt: null,
+      name: 'Changed',
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBe(PUBKEY);
+    expect(stored?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(stored?.name).toBe('Changed');
   });
 });

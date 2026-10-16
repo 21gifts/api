@@ -14,12 +14,14 @@ import {
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
+import type { LnurlServerConfig } from '@/lib/config';
 import {
   DAILY_ROSTER_INVALID_ADDRESS,
   DAILY_ROSTER_INVALID_COMMENT,
@@ -42,6 +44,7 @@ import {
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
+import { accountByReceivingAddress, receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
@@ -63,6 +66,8 @@ export interface FundingRouteDeps {
   fundingStore: FundingStore;
   /** Forum persistence for staff application detail. */
   messageStore: MessageStore;
+  /** LNURL server; omitted when off. A verified wallet makes an applicant's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
@@ -268,8 +273,8 @@ async function pingTodayMedia(
   if (deps.spendPing === undefined) {
     return;
   }
-  const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-  if (address === '') {
+  const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+  if (address === null) {
     return;
   }
   try {
@@ -380,7 +385,7 @@ async function answerSpendDocument(
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
- * @param deps - Route collaborators (auth store for recipient identity).
+ * @param deps - Route collaborators (auth store and LNURL server for recipient identity).
  * @param caller - Initiator or founder.
  * @param action - Stable action name.
  * @param call - Client method.
@@ -395,11 +400,11 @@ async function callRoster(
   try {
     const roster = publicDailyRoster(await call());
     const body = await withRecipientIdentities(roster, async (address) => {
-      const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined) {
+      const found = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (found === undefined) {
         return undefined;
       }
-      return { id: account.id, name: account.name };
+      return { id: found.account.id, name: found.account.name };
     });
     logEvent('funding.daily_roster', { accountId: caller.id, action });
     return { status: 200, body };
@@ -470,8 +475,8 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
  * @param deps - Auth store, funding store, message store, gift store, clock,
- *   optional spend ping, optional roster store, optional spend token, and
- *   optional applicationsPaused flag.
+ *   optional spend ping, optional roster store, optional spend token,
+ *   optional LNURL server, and optional applicationsPaused flag.
  * @returns A Hono app with member apply, staff review, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
@@ -604,8 +609,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           const payable =
             kept.eventId !== null &&
             kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+            receivingAddress(account, deps.lnurlServer) !== null;
           messages.push(
             serializeMessage(
               kept,
@@ -624,7 +628,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               id: account.id,
               name: account.name,
               role: account.role,
-              lightningAddress: account.lightningAddress,
+              lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             },
             grant: {
               status: effectiveStatus(grant, nowMs),
@@ -633,7 +637,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               admittedAt: grant.admittedAt,
               decidedAt: grant.decidedAt,
             },
-            messages,
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              staff.caller.id,
+              messages,
+            ),
           },
           200,
         );
@@ -813,7 +821,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             id: account.id,
             name: account.name,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
           })),
           grants,
           gifts: giftRows,
@@ -1017,8 +1025,8 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
       }
-      const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-      if (address === '') {
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
         return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
       }
       const result = await callRoster(deps, opened.caller, 'recipient-add', () =>
