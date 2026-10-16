@@ -5,6 +5,24 @@ Status: **release check**. Decided 2026-10-16. Measured on production data on
 release keeps being paid after it, on the in-app wallet only, and what must be
 true on release day for that to hold.
 
+## In short
+
+- **Where do payouts go after the release?** Every daily grant payout and
+  every moderator stipend goes only to the member's own in-app wallet
+  `<username>@21.gifts`. Nothing is paid to Wallet of Satoshi any more.
+- **Does anyone lose a payout?** No. All 58 people paid from 2026-10-13 to
+  2026-10-15 keep being paid without a gap, when these three conditions hold:
+  1. The API release includes the roster move at boot, so listed amounts and
+     moderator stipends keep matching.
+  2. The API and the app go live together.
+  3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
+     `NEXT_PUBLIC_BREEZ_API_KEY` (app) set.
+- **What does a member do?** Open the app, tap **Log in**, confirm the
+  passkey. The wallet sets itself up in a few seconds, then they post as
+  before. One of the 58 members first confirms a passkey renew dialog once.
+
+The rest of this document is the evidence.
+
 ## Decision
 
 - Wallet of Satoshi is removed completely. After the release, every daily
