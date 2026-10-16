@@ -17,7 +17,7 @@
 ## Function: shopActivityRoutes
 
 - **Purpose:** Hono sub-app for `GET /shops/activity`. No bearer. Any caller, including no session, gets `{ days }`. Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
-- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween }, debugToken, debugReadToken? }`. Both tokens unset keeps the session-only path.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
 - **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
 - **Used by:** `createApp`.
 
@@ -31,7 +31,7 @@
 ## Function: grantContinuationRoutes
 
 - **Purpose:** Hono sub-app for `GET /funding/goal`. Any signed-in role, including `basis`, gets the body. The operator `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` gets the same body without a session (checked first via `classifyDebugDbBearer`); the body holds only counts. No bearer or a bearer that is neither an operator token nor a session is 401. Loads live assigned shop notes and POS charges in the 7-UTC-day window, then returns `measureGrantContinuation`. Does not call `activeShopDays` or read `GET /shops/activity`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
-- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween }, debugToken, debugReadToken? }`. Both tokens unset keeps the session-only path.
 - **Returns / side effects:** Hono app mounted at `/funding/goal`. 200 `{ days, qualifyingShops }`. 401 `{ error: 'Unauthorized' }`. Store throw → 503 `{ error: 'Funding goal is unavailable' }` and `funding.goal.failed` with only `event` and `ts`.
 - **Used by:** `createApp`.
 
