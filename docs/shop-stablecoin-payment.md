@@ -588,8 +588,10 @@ One procedure creates a shop payment, for a charge or for a payer:
    charge.
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
-   charge amount, as the invoice forward does. A payer creation never
-   records against a charge, also not against one that appeared after
+   charge amount, as the invoice forward does. When `recordInvoice`
+   returns `false`, the hash is already recorded against a charge, and
+   the procedure stops the same way as for a hash a shop payment holds.
+   A payer creation never records against a charge, also not against one that appeared after
    step 2.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
    one Orchestra quote per candidate pair, within 3 s for the whole step;
@@ -616,9 +618,10 @@ One procedure creates a shop payment, for a charge or for a payer:
    `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
    means the LNURL server returned an invoice that another payment
    already holds: the procedure stops as after a failed mint (order 8)
-   and logs `shop.alert.duplicate_invoice`. This is the race step 4's check cannot see. For a charge it also
-   deletes the `pos_charge_invoice` row that step 4 wrote for that hash,
-   unless the payment that holds the hash is this charge's own. It writes nothing
+   and logs `shop.alert.duplicate_invoice`. This is the race step 4's check cannot see. For a charge it also deletes the `pos_charge_invoice` row for that
+   hash when step 4's `recordInvoice` inserted it (returned `true`),
+   unless the payment that holds the hash is this charge's own; a row
+   step 4 did not insert belongs to another charge and stays. It writes nothing
    else. Any
    other lost insert (`23505`), which only the payment's indexes can
    raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
