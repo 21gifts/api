@@ -2067,6 +2067,48 @@ describe('POST /me/username', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.username.set')).toBe(false);
   });
 
+  it('moves the roster again when the previous username was taken meanwhile', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    let calls = 0;
+    const flaky: DailyRosterStore = Object.assign(Object.create(roster) as DailyRosterStore, {
+      renameAddress: async (from: string, to: string) => {
+        calls += 1;
+        if (calls === 1) {
+          await store.createAccount({
+            id: 'other',
+            linkingKey: null,
+            role: 'basis',
+            name: null,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: 'b'.repeat(64),
+            createdAt: 1_000_000,
+            rulesAgreedAt: null,
+            username: 'oldname',
+          });
+          throw new Error('roster down');
+        }
+        return roster.renameAddress(from, to);
+      },
+    });
+    const res = await mount(store, { walletEnabled: true, dailyRoster: flaky }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(calls).toBe(2);
+    expect((await store.getAccount('acc'))?.username).toBe('newname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'newname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'newname@example.test', amountUsd: 3 }],
+    });
+  });
+
   it('leaves the roster when the previous username is blank', async () => {
     const store = await seededStore();
     const roster = rosterAt('oldname@example.test');

@@ -142,7 +142,7 @@ export interface DailyRosterStore {
    * @param from - Old address (trimmed, case-insensitive).
    * @param to - New address (trimmed, case-insensitive).
    * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
    */
   renameAddress(from: string, to: string): Promise<DailyRosterWalletMove>;
 
@@ -458,7 +458,7 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
    * @param from - Old address (trimmed, case-insensitive).
    * @param to - New address (trimmed, case-insensitive).
    * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
    */
   async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
     const source = rosterAddress(from);
@@ -727,7 +727,7 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    * @param from - Old address (trimmed, case-insensitive).
    * @param to - New address (trimmed, case-insensitive).
    * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
    */
   async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
     const source = rosterAddress(from);

@@ -261,7 +261,8 @@ moderators would get no stipend.
   `POST /me/username` then moves the member's roster rows from
   `<old>@<host>` to `<new>@<host>` (`renameAddress`, one statement), so
   the fixed amount follows the new receiving address. If that move fails,
-  the previous username is stored again and the request fails.
+  the previous username is stored again and the request fails; if the
+  previous username was taken meanwhile, the move runs once more instead.
 
 On the roster of 2026-10-16 this rewrites 15 recipient rows and 6 moderator
 rows and deletes 1 recipient row.
