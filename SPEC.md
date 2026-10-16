@@ -2993,8 +2993,9 @@ the stored column is true (omitted when null; never false), `goalTermDays`
 only when the stored column is not null (omitted when null), `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
 stored (omitted on a legacy row; a snapshot may be null), and always-present
-`placeLat`, `placeLng`, `placeLabel`, and `shopAccountId` (JSON `null` when
-unset). Never
+`placeLat`, `placeLng`, `placeLabel`, `placeStreet`, `placeHouseNumber`,
+`placePostalCode`, `placeCity`, `placeCountry`, and `shopAccountId`
+(JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -3031,8 +3032,9 @@ MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
 never false), `goalTermDays` only when the stored column is not null (omitted
 when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
 snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
-may be null), and always-present `placeLat`, `placeLng`, `placeLabel`, and
-`shopAccountId` (JSON `null` when unset). Never
+may be null), and always-present `placeLat`, `placeLng`, `placeLabel`,
+`placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
+`placeCountry`, and `shopAccountId` (JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
@@ -3813,7 +3815,8 @@ column is not null (omitted when null), and when `goalCurrency` is stored also
 `goalCurrency`, `goalAmount`, and `goalAmountUsd` / `goalAmountChf` /
 `goalAmountEur` / `goalAmountPhp` (a snapshot may be null; a legacy row omits
 those keys),
-optional `place` (`{ lat, lng, label }` when a pin is stored;
+optional `place` (`{ lat, lng, label, address }` when a pin is stored;
+`address` is the structured postal address or JSON `null`;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
@@ -4031,8 +4034,9 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "accountId?" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "accountId?" }] }`.
 `shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
+`address` is `{ "street", "houseNumber", "postalCode", "city", "country" }` or JSON `null`.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.
@@ -4138,14 +4142,21 @@ then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
 `goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
-Optional `place` is `{ lat, lng, label? }`. Omitted or null stores no pin
-and the 200 JSON omits `place`. Invalid place is 400 with `Place must be a
-latitude and longitude` or `Place label must be at most 80 characters`.
+Optional `place` is `{ lat, lng, label?, address? }`. Omitted or null stores no pin
+and the 200 JSON omits `place`. `address` omitted or null stores `address: null`.
+Invalid place is 400 with `Place must be a latitude and longitude`,
+`Place label must be at most 80 characters`, or `Place address is invalid`.
 `inReplyTo` together with a non-null place is 400
 `{ "error": "A reply cannot include a place" }`. Multipart fields are
-`placeLat`, `placeLng`, and optional `placeLabel` (always top-level). Both
-coordinates empty means no pin. Exactly one of them set is 400
-`Place must be a latitude and longitude`.
+`placeLat`, `placeLng`, optional `placeLabel`, and optional
+`placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
+`placeCountry` (always top-level). Both coordinates empty means no pin.
+Exactly one of them set is 400 `Place must be a latitude and longitude`.
+All five address fields blank means no address; any present field requires
+all five (same `Place address is invalid`). A top-level note whose text has
+`#21GiftsShop` and that carries a pin must pass `shopPlaceProblem` then
+`shopTextProblem`; otherwise **400** with that shop error and nothing is
+stored. A shop note without a pin stays allowed.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, but never before 2026-11-01, for `goal_term_days` days. A credit that filled on or before 2026-10-31 starts on 2026-11-01. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
@@ -4709,7 +4720,8 @@ when the stored column is true (omitted when null; never false), optional
 `goalTermDays` when the stored column is not null (omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
-keys — optional `place` when a pin is stored and omitted when unset,
+keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
+`address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
 stored and omitted when unset, even when `accountId` is omitted,
 `payable`, `hasPhoto`, `photoCount`
@@ -4873,6 +4885,11 @@ Body is JSON via `c.req.json()`; a non-JSON body or an object with no
 accepts a pin or `null` (clears). A bad coordinate is **400**
 `{ "error": "Place must be a latitude and longitude" }`. A label over
 80 characters is **400** `{ "error": "Place label must be at most 80 characters" }`.
+An invalid structured address is **400**
+`{ "error": "Place address is invalid" }`. A non-null shop pin that fails
+`shopPlaceProblem` is **400** with `Shop name is required`,
+`Shop address is required`, or `Shop name must not contain the address`
+and nothing is stored. Clearing the pin stays allowed.
 Missing or hidden row → **404** and no write. A reply → **400**
 `{ "error": "A reply cannot include a place" }`. A non-shop top-level
 note → **400** `{ "error": "Only a shop note can set a place" }`.
@@ -4914,7 +4931,7 @@ unchanged. The write stores only `shop_account_id`. A real change appends `messa
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. An unchanged body is **200** without `message_edit`. A real change writes the body and `message_edit` together and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a pin, `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then PUT the current complete shop pin to `/map/places` when `mapPush` is set (an incomplete existing shop is not sent), and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 
@@ -4948,8 +4965,9 @@ top-level note; omitted when unset/null/0 or on a reply), optional
 never false), optional `goalTermDays` when the stored column is not null
 (omitted when null), and when `goalCurrency` is stored also `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
-a legacy row omits those keys), optional `place`
-when a pin is stored (omitted when unset), optional `shopAccount`
+a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
+when a pin is stored; `address` is the structured postal address or JSON `null`;
+omitted when unset), optional `shopAccount`
 (`{ id, username, name }`) when a shop account is stored (omitted when
 unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
