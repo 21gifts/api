@@ -138,8 +138,8 @@ Each term has exactly one meaning in this document.
   delivery.
 - **Held**: a proof that is not `accepted`, with an order that is not final, whose order is not
   progressing (`refunding`, `unfulfilled`, or a status the api does not
-  know), or whose amount is not known yet or lies outside the bounds in
-  [States](#states). A held
+  know), whose amount is not known yet or lies outside the bounds in
+  [States](#states), or whose payment is already `paid`. A held
   proof is never submitted again; the watcher follows its order.
 
 Every timestamp in a response is ISO 8601 UTC with milliseconds and `Z`,
@@ -611,8 +611,12 @@ One procedure creates a shop payment, for a charge or for a payer:
    `account-merge.ts`. The row lock serialises the creation with
    `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
    means the LNURL server returned an invoice that another payment
-   already holds: the procedure stops as after a failed mint (order 8),
-   writes nothing more, and logs `shop.alert.duplicate_invoice`. Any
+   already holds: the procedure stops as after a failed mint (order 8)
+   and logs `shop.alert.duplicate_invoice`. For a charge it also deletes
+   the `pos_charge_invoice` row that step 4 wrote for that hash, unless
+   the payment that holds the hash is this charge's own, so that another
+   payment's invoice cannot mark the charge paid. It writes nothing
+   else. Any
    other lost insert (`23505`), which only the payment's indexes can
    raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
    that row is the shop payment of this charge, or of this payer
@@ -1071,8 +1075,8 @@ absolute time in milliseconds.
   `supersededByOperationId` is set, the api follows that order instead.
   A progressing status can make a proof `accepted`, as [States](#states)
   states. `refunding`, `unfulfilled`, and an unknown status hold a proof that is
-  not `accepted`: it answers **503** and is not accepted until a
-  progressing or final status arrives. A proof that is already
+  not `accepted`: it answers **503** and is not accepted until [States](#states) accepts
+  it or its order is final. A proof that is already
   `accepted` keeps that state through them, and the till keeps showing
   "on its way", because Orchestra can still complete the order; only a
   final status moves it, as [States](#states) states. A timeout and every other HTTP error change
