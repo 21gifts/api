@@ -581,7 +581,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    `lnurlServerFetch`, whose default of 15 s (`LNURL_SERVER_TIMEOUT_MS`)
    stays for other callers. Decode the BOLT11 with `decodeBolt11` and
    check the amount, and compute its expiry as [Lifetimes](#lifetimes)
-   states, first. A wrong amount stops the procedure, and nothing is recorded.
+   states, first. A wrong amount stops the procedure, and nothing is recorded. A
+   payment hash that a shop payment already holds stops it the same way,
+   as a failed mint (order 8), and logs `shop.alert.duplicate_invoice`,
+   so that another payment's invoice is never recorded against a
+   charge.
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. A payer creation never
@@ -612,10 +616,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
    means the LNURL server returned an invoice that another payment
    already holds: the procedure stops as after a failed mint (order 8)
-   and logs `shop.alert.duplicate_invoice`. For a charge it also deletes
-   the `pos_charge_invoice` row that step 4 wrote for that hash, unless
-   the payment that holds the hash is this charge's own, so that another
-   payment's invoice cannot mark the charge paid. It writes nothing
+   and logs `shop.alert.duplicate_invoice`. This is the race step 4's check cannot see. For a charge it also
+   deletes the `pos_charge_invoice` row that step 4 wrote for that hash,
+   unless the payment that holds the hash is this charge's own. It writes nothing
    else. Any
    other lost insert (`23505`), which only the payment's indexes can
    raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
