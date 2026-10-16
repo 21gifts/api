@@ -156,7 +156,7 @@ api/
 │   │   ├── spend-instruction.ts  # Decide the USD amount and memo for a spend ping
 │   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
 │   │   ├── daily-roster.ts   # Daily roster types, 400 texts, comment folding, public identity projection
-│   │   ├── daily-roster-store.ts  # DailyRosterStore port, InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL
+│   │   ├── daily-roster-store.ts  # DailyRosterStore port, InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL, moveDailyRosterToWalletAddresses (DAILY_ROSTER_WALLET_MOVE_SQL)
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare

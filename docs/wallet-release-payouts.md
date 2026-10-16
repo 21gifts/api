@@ -1,9 +1,9 @@
 # Daily payouts across the in-app wallet release
 
 Status: **release check**. Decided 2026-10-16. Measured on production data on
-2026-10-16. This document records why every member who was paid before the
-release keeps being paid after it, on the in-app wallet only, and what must be
-true on release day for that to hold.
+2026-10-16. This document records why every member paid from 2026-10-13 to
+2026-10-15 keeps being paid after the release, on the in-app wallet only, and
+what must be true on release day for that to hold.
 
 ## In short
 
@@ -20,6 +20,9 @@ true on release day for that to hold.
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
+- **How does it ship?** The API change and the app change each go through the
+  release pull requests `staging → develop` and `develop → main` of their
+  repository, and both go live together.
 
 The rest of this document is the evidence.
 
@@ -29,9 +32,10 @@ The rest of this document is the evidence.
   grant payout and every moderator stipend goes only to the member's in-app
   wallet `<username>@<host of PUBLIC_BASE_URL>`. No payout goes to a stored
   external Lightning Address.
-- There is no intermediate stage. The release is one API pull request and one
-  app pull request, each released `staging → develop` and then
-  `develop → main`. After the `main` deploy of both, the switch is complete.
+- There is no intermediate stage. The API change and the app change each ship
+  through the release pull requests `staging → develop` and `develop → main`
+  of their repository. After the `main` deploy of both, the switch is
+  complete.
 - No manual step is part of the release. Anything that has to change in data
   changes at boot (see [Roster move at boot](#roster-move-at-boot)).
 
@@ -135,8 +139,8 @@ after opening the app and posting.
 ### Passkey rows
 
 30 accounts in production have two `passkey_credential` rows, and none has
-more (23 of them are among the 58 people paid). Each of these members still
-uses only one passkey:
+more (23 of them are among the 58 people paid). On the device that ran the
+renew, each of these members has one passkey for 21.gifts:
 
 - The second row comes from the passkey renew. The API side ("Add a recovery
   phrase without replacing the login passkey", api#271) reached `main` on
@@ -152,14 +156,21 @@ uses only one passkey:
 - Registration and renew use the same WebAuthn user handle, the account id
   (`userID` in `src/lib/auth/passkey.ts`). A passkey provider (iCloud
   Keychain, Google Password Manager, the device itself) that creates a passkey
-  for the same RP ID and user handle replaces the one it held. On the device
-  that ran the renew, only the new, wallet-capable passkey exists. The older
-  row is a leftover that no device signs with.
+  for the same RP ID and user handle replaces the one it held. In that
+  provider only the new, wallet-capable passkey exists.
+- The server keeps both rows and accepts a login with either
+  (`getPasskeyCredential` in `src/lib/auth/passkey.ts`). The older passkey can
+  still sign only where a different provider that did not run the renew still
+  holds it, for example a second device that does not sync with the first.
+  Signing in with it is the case in which the app asks for the seed passkey a
+  second time (see [First open of the new app](#first-open-of-the-new-app)).
 
 ### Daily roster
 
-Spend's live list on 2026-10-16: 16 recipients and 6 moderators, every
-address on `walletofsatoshi.com`. Amounts: recipients 9 × 3 USD, 3 × 2 USD,
+Spend's live list on 2026-10-16 (`gifts-debug spend --raw`): 16 recipients and
+6 moderators, every address on `walletofsatoshi.com`. The API's own
+`daily_roster_entry` rows were not read; they are the copy the roster move
+works on (see [How a payout is triggered](#how-a-payout-is-triggered)). Amounts: recipients 9 × 3 USD, 3 × 2 USD,
 2 × 2.5 USD, 2 × 1 USD; moderators 6 × 5 USD. Matched against
 `account.lightning_address`: 15 recipients and all 6 moderators belong to an
 account with a username; 1 recipient address belongs to no account.
@@ -208,17 +219,23 @@ moderators would get no stipend.
 `db_change` records every DELETE and UPDATE it makes, when
 `resolveLnurlServerConfig` resolves:
 
-- A row already on the host stays.
+- A row on the host (exactly one `@`, the part after it equals the host)
+  keeps its address, trimmed and lower-cased.
 - A row whose address equals an account's legacy `lightning_address`
   (trimmed, case-insensitive) becomes `<username>@<host>`, the same string
   `receivingAddress` returns. The amount and bucket stay.
-- Every other row is deleted (no account, or no username), and so is a row
-  that would repeat an address already kept in the same bucket.
+- Every other row is deleted (no account, or no username).
+- Per bucket and target address one row stays: the one already holding that
+  exact address, else a row on the host, else the oldest. The others are
+  deleted, so no row is ever rewritten to an address another row holds.
+- It is one SQL statement (`DAILY_ROSTER_WALLET_MOVE_SQL`), so it applies
+  completely or not at all, and all its `db_change` rows share one
+  transaction.
 - A second boot changes nothing. The log line `daily_roster.wallet_move`
   carries the two counts only.
 
-On the 2026-10-16 roster this rewrites 15 recipients and 6 moderators and
-deletes 1 recipient.
+If the API roster matches spend's live list of 2026-10-16, this rewrites 15
+recipients and 6 moderators and deletes 1 recipient.
 
 ## Result
 
@@ -234,7 +251,8 @@ in-app wallet only, when all of these hold:
    created or verified, and nobody can post.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
-passkey confirmation. The one member with `wallet_required = false` confirms
+passkey confirmation, or a second one in the case described under
+[Passkey rows](#passkey-rows). The one member with `wallet_required = false` confirms
 the passkey renew dialog once.
 
 ## Risks

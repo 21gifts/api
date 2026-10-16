@@ -25,7 +25,11 @@ import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
-import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
+import {
+  DAILY_ROSTER_WALLET_MOVE_SQL,
+  InMemoryDailyRosterStore,
+  PostgresDailyRosterStore,
+} from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
@@ -627,22 +631,24 @@ describe('openBootStores', () => {
   });
 
   it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
-    const executes: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
+    const operations: Array<{
+      kind: 'query' | 'execute';
+      text: string;
+      params?: readonly unknown[];
+    }> = [];
     const client: SqlClient = {
-      query: async <T>(text: string): Promise<T[]> => {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        operations.push({ kind: 'query', text, params });
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
         }
-        if (text.includes('FROM daily_roster_entry e')) {
-          return [
-            { id: 1, address: 'ada@walletofsatoshi.com', bucket: 'daily', username: 'ada' },
-            { id: 2, address: 'gone@walletofsatoshi.com', bucket: 'daily', username: null },
-          ] as T[];
+        if (text === DAILY_ROSTER_WALLET_MOVE_SQL) {
+          return [{ moved: 1, removed: 1 }] as T[];
         }
         return [] as T[];
       },
       execute: async (text: string, params?: readonly unknown[]) => {
-        executes.push({ text, params });
+        operations.push({ kind: 'execute', text, params });
       },
     };
 
@@ -655,33 +661,29 @@ describe('openBootStores', () => {
       lnurlServer: {
         baseUrl: 'http://lnurl.internal',
         publicBaseUrl: 'https://21.gifts',
-        host: '21.gifts',
+        host: '21.Gifts',
       },
     });
 
-    const rosterIdx = executes.findIndex((e) =>
-      /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(e.text),
+    const rosterIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(o.text),
     );
-    const deleteIdx = executes.findIndex(
-      (e) => e.text === 'DELETE FROM daily_roster_entry WHERE id = $1',
+    const dbChangeIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS db_change/i.test(o.text),
     );
-    const updateIdx = executes.findIndex(
-      (e) => e.text === 'UPDATE daily_roster_entry SET address = $2 WHERE id = $1',
-    );
-    const dbChangeIdx = executes.findIndex((e) =>
-      /CREATE TABLE IF NOT EXISTS db_change/i.test(e.text),
-    );
-    const lastTriggerIdx = executes.reduce(
-      (last, e, i) => (e.text.includes('trg_db_change') ? i : last),
+    const lastTriggerIdx = operations.reduce(
+      (last, o, i) => (o.text.includes('trg_db_change') ? i : last),
       -1,
     );
+    const moves = operations.filter((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    const moveIdx = operations.findIndex((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
     expect(rosterIdx).toBeGreaterThanOrEqual(0);
     expect(dbChangeIdx).toBeGreaterThan(rosterIdx);
     expect(lastTriggerIdx).toBeGreaterThan(dbChangeIdx);
-    expect(deleteIdx).toBeGreaterThan(lastTriggerIdx);
-    expect(updateIdx).toBeGreaterThan(deleteIdx);
-    expect(executes[deleteIdx]?.params).toEqual([2]);
-    expect(executes[updateIdx]?.params).toEqual([1, 'ada@21.gifts']);
+    expect(moveIdx).toBeGreaterThan(lastTriggerIdx);
+    expect(moves).toEqual([
+      { kind: 'query', text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] },
+    ]);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'daily_roster.wallet_move', moved: 1, removed: 1 }),
     );
@@ -709,7 +711,7 @@ describe('openBootStores', () => {
       lnurlServer: null,
     });
 
-    expect(queries.some((q) => q.includes('FROM daily_roster_entry e'))).toBe(false);
+    expect(queries).not.toContain(DAILY_ROSTER_WALLET_MOVE_SQL);
     expect(parsedEvents(warn)).not.toContainEqual(
       expect.objectContaining({ event: 'daily_roster.wallet_move' }),
     );

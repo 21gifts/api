@@ -177,24 +177,75 @@ export async function migrateDailyRosterSchema(sql: SqlClient): Promise<void> {
 
 /** Counts from {@link moveDailyRosterToWalletAddresses}. */
 export interface DailyRosterWalletMove {
-  /** Rows rewritten to `<username>@<host>`. */
+  /** Rows rewritten to their target address. */
   moved: number;
   /** Rows deleted: no member behind the address, or a repeat in its bucket. */
   removed: number;
 }
 
 /**
+ * One statement that points every listed row at the member's in-app wallet
+ * address (see {@link moveDailyRosterToWalletAddresses}). `$1` is the host,
+ * lower-cased. Data-modifying CTEs run as one statement, so the move is
+ * atomic and `trg_db_change` records each DELETE and UPDATE.
+ */
+export const DAILY_ROSTER_WALLET_MOVE_SQL = `WITH src AS (
+  SELECT e.id, e.bucket, e.address,
+         (btrim(e.address) ~ '^[^@]+@[^@]+$'
+          AND lower(split_part(btrim(e.address), '@', 2)) = $1) AS on_host,
+         a.username
+    FROM daily_roster_entry e
+    LEFT JOIN account a
+      ON lower(btrim(a.lightning_address)) = lower(btrim(e.address))
+),
+targeted AS (
+  SELECT id, bucket, address, on_host,
+         CASE
+           WHEN on_host THEN lower(btrim(address))
+           WHEN btrim(coalesce(username, '')) <> '' THEN lower(btrim(username)) || '@' || $1
+         END AS target
+    FROM src
+),
+ranked AS (
+  SELECT id, address, target,
+         row_number() OVER (
+           PARTITION BY bucket, target
+           ORDER BY (address = target) DESC, on_host DESC, id
+         ) AS position
+    FROM targeted
+),
+removed AS (
+  DELETE FROM daily_roster_entry d
+   USING ranked r
+   WHERE d.id = r.id AND (r.target IS NULL OR r.position > 1)
+  RETURNING d.id
+),
+moved AS (
+  UPDATE daily_roster_entry u
+     SET address = r.target
+    FROM ranked r
+   WHERE u.id = r.id AND r.target IS NOT NULL AND r.position = 1 AND u.address <> r.target
+  RETURNING u.id
+)
+SELECT (SELECT count(*) FROM moved)::int AS moved,
+       (SELECT count(*) FROM removed)::int AS removed`;
+
+/**
  * Point every listed row at the member's in-app wallet address.
  *
- * A row whose address is already on `host` stays. A row whose address equals
- * an account's legacy `lightning_address` (trimmed, case-insensitive) becomes
- * `<username>@<host>` (username trimmed and lower-cased), the address
- * `receivingAddress` gives that member. Every other row (no account, or an
- * account without a username) is deleted, and so is a row that would repeat
- * an address already kept in the same bucket (case-insensitive). Rows on
- * `host` keep their address first, then the rest in `id` order. Deletes run
- * before updates, so `UNIQUE (address, bucket)` never trips. A second run
- * changes nothing. Needs `account` and `daily_roster_entry`.
+ * A row is on `host` when its trimmed address has exactly one `@` and the
+ * part after it equals `host` (case-insensitive); its target is that address
+ * trimmed and lower-cased. A row whose address equals an account's legacy
+ * `lightning_address` (trimmed, case-insensitive) targets `<username>@<host>`
+ * (username trimmed and lower-cased), the address `receivingAddress` gives
+ * that member. Every other row (no account, or an account without a username)
+ * is deleted. Per bucket and target one row stays: the one already holding
+ * the exact target, else a row on `host`, else the lowest `id`; the others are
+ * deleted. The kept row is rewritten to its target when it differs. No row is
+ * rewritten to an address another row holds, so `UNIQUE (address, bucket)`
+ * never trips. Runs as {@link DAILY_ROSTER_WALLET_MOVE_SQL}, one atomic
+ * statement. A second run changes nothing. Needs `account` and
+ * `daily_roster_entry`.
  *
  * @param sql - Parameter-bound SQL client.
  * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`).
@@ -204,54 +255,11 @@ export async function moveDailyRosterToWalletAddresses(
   sql: SqlClient,
   host: string,
 ): Promise<DailyRosterWalletMove> {
-  const suffix = `@${host.toLowerCase()}`;
-  const rows = await sql.query<{
-    id: number;
-    address: string;
-    bucket: string;
-    username: string | null;
-  }>(
-    `SELECT e.id, e.address, e.bucket, a.username
-       FROM daily_roster_entry e
-       LEFT JOIN account a
-         ON lower(btrim(a.lightning_address)) = lower(btrim(e.address))
-      ORDER BY e.id`,
+  const [row] = await sql.query<{ moved: number | string; removed: number | string }>(
+    DAILY_ROSTER_WALLET_MOVE_SQL,
+    [host.toLowerCase()],
   );
-  const onHost = (address: string): boolean => address.trim().toLowerCase().endsWith(suffix);
-  const ordered = [
-    ...rows.filter((row) => onHost(row.address)),
-    ...rows.filter((row) => !onHost(row.address)),
-  ];
-  const kept = new Set<string>();
-  const deletes: number[] = [];
-  const updates: Array<{ id: number; address: string }> = [];
-  for (const row of ordered) {
-    const username = row.username?.trim().toLowerCase() ?? '';
-    const target = onHost(row.address)
-      ? row.address
-      : username === ''
-        ? null
-        : `${username}${suffix}`;
-    const key = `${row.bucket}\n${(target ?? '').trim().toLowerCase()}`;
-    if (target === null || kept.has(key)) {
-      deletes.push(row.id);
-      continue;
-    }
-    kept.add(key);
-    if (target !== row.address) {
-      updates.push({ id: row.id, address: target });
-    }
-  }
-  for (const id of deletes) {
-    await sql.execute('DELETE FROM daily_roster_entry WHERE id = $1', [id]);
-  }
-  for (const update of updates) {
-    await sql.execute('UPDATE daily_roster_entry SET address = $2 WHERE id = $1', [
-      update.id,
-      update.address,
-    ]);
-  }
-  return { moved: updates.length, removed: deletes.length };
+  return { moved: Number(row?.moved ?? 0), removed: Number(row?.removed ?? 0) };
 }
 
 /**

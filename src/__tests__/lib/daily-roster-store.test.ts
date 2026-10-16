@@ -13,6 +13,7 @@ import {
   DAILY_ROSTER_SCHEMA_SQL,
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
+  DAILY_ROSTER_WALLET_MOVE_SQL,
   migrateDailyRosterSchema,
   moveDailyRosterToWalletAddresses,
 } from '@/lib/daily-roster-store';
@@ -73,63 +74,36 @@ describe('migrateDailyRosterSchema', () => {
 });
 
 describe('moveDailyRosterToWalletAddresses', () => {
-  it('rewrites legacy rows to the wallet address and deletes the rest', async () => {
+  it('runs the move as one statement with the lower-cased host and returns its counts', async () => {
     const sql = new MockSql();
-    sql.queryResults.push([
-      { id: 1, address: 'Alice@WalletOfSatoshi.com ', bucket: 'daily', username: ' Alice ' },
-      { id: 2, address: 'nobody@walletofsatoshi.com', bucket: 'daily', username: null },
-      { id: 3, address: 'blank@walletofsatoshi.com', bucket: 'daily', username: '  ' },
-      { id: 4, address: 'bob@walletofsatoshi.com', bucket: 'moderator', username: 'bob' },
-      { id: 5, address: 'Bob@21.Gifts', bucket: 'moderator', username: null },
-      { id: 6, address: 'alice-old@walletofsatoshi.com', bucket: 'daily', username: 'alice' },
-      { id: 7, address: 'alice@walletofsatoshi.com', bucket: 'moderator', username: 'alice' },
-      { id: 8, address: 'carol@21.gifts', bucket: 'daily', username: null },
-    ]);
+    sql.queryResults.push([{ moved: 2, removed: '4' }]);
 
-    const result = await moveDailyRosterToWalletAddresses(sql, '21.Gifts');
+    expect(await moveDailyRosterToWalletAddresses(sql, '21.Gifts')).toEqual({
+      moved: 2,
+      removed: 4,
+    });
+    expect(sql.queries).toEqual([{ text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] }]);
+    expect(sql.executes).toEqual([]);
+  });
 
-    expect(result).toEqual({ moved: 2, removed: 4 });
-    expect(sql.queries).toHaveLength(1);
-    expect(sql.queries[0]?.text).toMatch(/FROM daily_roster_entry e/);
-    expect(sql.queries[0]?.text).toMatch(
+  it('reads zero counts when the statement returns no row', async () => {
+    const sql = new MockSql();
+
+    expect(await moveDailyRosterToWalletAddresses(sql, '21.gifts')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('keeps the move in one statement that joins the legacy address and ranks per bucket', () => {
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/^WITH src AS \(/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(
       /LEFT JOIN account a\s+ON lower\(btrim\(a\.lightning_address\)\) = lower\(btrim\(e\.address\)\)/,
     );
-    expect(sql.queries[0]?.text).toMatch(/ORDER BY e\.id/);
-    expect(sql.executes).toEqual([
-      { text: 'DELETE FROM daily_roster_entry WHERE id = $1', params: [2] },
-      { text: 'DELETE FROM daily_roster_entry WHERE id = $1', params: [3] },
-      { text: 'DELETE FROM daily_roster_entry WHERE id = $1', params: [4] },
-      { text: 'DELETE FROM daily_roster_entry WHERE id = $1', params: [6] },
-      {
-        text: 'UPDATE daily_roster_entry SET address = $2 WHERE id = $1',
-        params: [1, 'alice@21.gifts'],
-      },
-      {
-        text: 'UPDATE daily_roster_entry SET address = $2 WHERE id = $1',
-        params: [7, 'alice@21.gifts'],
-      },
-    ]);
-  });
-
-  it('changes nothing when every row is already on the host', async () => {
-    const sql = new MockSql();
-    sql.queryResults.push([{ id: 1, address: 'alice@21.gifts', bucket: 'daily', username: null }]);
-
-    expect(await moveDailyRosterToWalletAddresses(sql, '21.gifts')).toEqual({
-      moved: 0,
-      removed: 0,
-    });
-    expect(sql.executes).toEqual([]);
-  });
-
-  it('changes nothing on an empty roster', async () => {
-    const sql = new MockSql();
-
-    expect(await moveDailyRosterToWalletAddresses(sql, '21.gifts')).toEqual({
-      moved: 0,
-      removed: 0,
-    });
-    expect(sql.executes).toEqual([]);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/PARTITION BY bucket, target/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/DELETE FROM daily_roster_entry d/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/UPDATE daily_roster_entry u/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).not.toMatch(/;/);
   });
 });
 

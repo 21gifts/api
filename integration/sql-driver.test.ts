@@ -346,47 +346,111 @@ describe('PostgresDailyRosterStore importDocument', () => {
 });
 
 describe('moveDailyRosterToWalletAddresses', () => {
-  test('moves legacy rows to the member wallet address on real Postgres', async () => {
+  test('moves the roster to wallet addresses in one logged transaction on real Postgres', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
-    const accountId = crypto.randomUUID();
+    const named = crypto.randomUUID();
+    const unnamed = crypto.randomUUID();
     const username = `roster_${stamp}`;
-    const legacy = `Roster_${stamp}@WalletOfSatoshi.com`;
-    const viewKey = `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    const legacy = `legacy_${stamp}@walletofsatoshi.com`;
+    const unnamedLegacy = `unnamed_${stamp}@walletofsatoshi.com`;
+    const viewKey = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
     try {
       await migrateAuthSchema(client);
       await migrateDailyRosterSchema(client);
+      await migrateDbChangeSchema(client);
       await client.execute('DELETE FROM daily_roster_entry');
       await client.execute(
         `INSERT INTO account (id, role, name, username, lightning_address, lightning_address_verified,
            forum_laws_dismissed, created_at, view_key)
-         VALUES ($1, 'verified', 'Roster', $2, $3, true, false, now(), $4)`,
-        [accountId, username, legacy.toLowerCase(), viewKey],
+         VALUES ($1, 'verified', 'Roster', $2, $3, true, false, now(), $4),
+                ($5, 'verified', 'Unnamed', NULL, $6, true, false, now(), $7)`,
+        [named, username, legacy, viewKey(), unnamed, unnamedLegacy, viewKey()],
       );
-      await client.execute(
-        `INSERT INTO daily_roster_entry (address, amount_usd, bucket) VALUES
-           ($1, 3, 'daily'), ($1, 5, 'moderator'), ($2, 2, 'daily')`,
-        [` ${legacy} `, `nobody_${stamp}@walletofsatoshi.com`],
+      const inserted = await client.query<{ id: number; address: string; bucket: string }>(
+        `INSERT INTO daily_roster_entry (address, amount_usd, bucket)
+         SELECT address, amount_usd, bucket
+           FROM unnest($1::text[], $2::double precision[], $3::text[])
+                WITH ORDINALITY AS t(address, amount_usd, bucket, n)
+          ORDER BY n
+         RETURNING id, address, bucket`,
+        [
+          [
+            ` ${legacy.toUpperCase()} `,
+            legacy,
+            legacy,
+            `${username}@GIFTS.example`,
+            `nobody_${stamp}@walletofsatoshi.com`,
+            unnamedLegacy,
+            ` Carol_${stamp}@Gifts.Example `,
+            `Dave_${stamp}@gifts.example`,
+            `dave_${stamp}@gifts.example`,
+            `x_${stamp}@evil@gifts.example`,
+          ],
+          [3, 9, 5, 7, 2, 2, 2, 6, 4, 1],
+          [
+            'daily',
+            'daily',
+            'moderator',
+            'moderator',
+            'daily',
+            'daily',
+            'daily',
+            'moderator',
+            'moderator',
+            'daily',
+          ],
+        ],
       );
+      const ids = inserted.map((row) => Number(row.id));
+      const markerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const marker = markerRows[0]?.marker ?? '0';
 
-      expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
-        moved: 2,
-        removed: 1,
+      expect(await moveDailyRosterToWalletAddresses(client, 'Gifts.Example')).toEqual({
+        moved: 3,
+        removed: 6,
       });
       const rows = await client.query<{ address: string; amount_usd: number; bucket: string }>(
-        'SELECT address, amount_usd, bucket FROM daily_roster_entry ORDER BY bucket',
+        'SELECT address, amount_usd, bucket FROM daily_roster_entry ORDER BY bucket, address',
       );
       expect(rows).toEqual([
+        { address: `carol_${stamp}@gifts.example`, amount_usd: 2, bucket: 'daily' },
         { address: `${username}@gifts.example`, amount_usd: 3, bucket: 'daily' },
-        { address: `${username}@gifts.example`, amount_usd: 5, bucket: 'moderator' },
+        { address: `dave_${stamp}@gifts.example`, amount_usd: 4, bucket: 'moderator' },
+        { address: `${username}@gifts.example`, amount_usd: 7, bucket: 'moderator' },
       ]);
+
+      const changes = await client.query<{ op: string; row_id: number; txid: string }>(
+        `SELECT op, coalesce(before ->> 'id', after ->> 'id')::int AS row_id, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [marker],
+      );
+      expect(
+        changes
+          .filter((c) => c.op === 'UPDATE')
+          .map((c) => c.row_id)
+          .sort(),
+      ).toEqual([ids[0], ids[3], ids[6]].sort());
+      expect(
+        changes
+          .filter((c) => c.op === 'DELETE')
+          .map((c) => c.row_id)
+          .sort(),
+      ).toEqual([ids[1], ids[2], ids[4], ids[5], ids[7], ids[9]].sort());
+      expect(new Set(changes.map((c) => c.txid)).size).toBe(1);
+
       expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
         moved: 0,
         removed: 0,
       });
     } finally {
       await client.execute('DELETE FROM daily_roster_entry');
-      await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [[named, unnamed]]);
       await closeIfPossible(sql);
     }
   });
