@@ -602,8 +602,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
    budget allows are skipped, in the order of [Methods](#methods).
 6. Keep each quote that commits and passes [Offer checks](#offer-checks).
-7. When none is kept, write nothing, and the account's next creation waits
-   60 s. Until then a fetch answers today's pinned Lightning request, and
+7. When none is kept, write nothing, and the account's next creation in
+   this container waits 60 s; the other container of a deploy keeps its
+   own wait, so during a deploy an account can see two creations in 60 s. Until then a fetch answers today's pinned Lightning request, and
    `POST /pay/:username/payment` answers order 9.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
    one database transaction that first locks the account row, as
@@ -951,9 +952,11 @@ for an id this service does not have.
 
 The response is
 `{ "status": <DFX status>, "paymentStatus": <status>, "invoiceExpiresAt": <BOLT11 expiry> }`.
-It answers at once when `status` is not `Pending`. Otherwise it waits
-for a change of `paymentStatus` as `GET /messages/:id?sinceSats=` waits
-for sats: up to `WAIT_SATS_TIMEOUT_MS` (25 s) and checking every
+It answers at once when `status` is not `Pending`, and at once when
+the request has no `since` query. With `?since=<paymentStatus>`, the
+last `paymentStatus` the page saw, it waits while the stored
+`paymentStatus` still equals that value, as `GET /messages/:id?sinceSats=`
+waits while the sats have not passed the client's value: up to `WAIT_SATS_TIMEOUT_MS` (25 s) and checking every
 `WAIT_SATS_POLL_MS` (250 ms), both in `src/routes/messages.ts`. Then it
 answers with the state on hand.
 
@@ -1355,7 +1358,8 @@ page.
   OpenCryptoPay wallet. Tether
   1.11.0 opens only `https://…?lightning=` links, so the page shows no
   `lightning:` stablecoin deeplink.
-- It polls `GET /lnurlp/wait/:payment` with its payment id and follows
+- It polls `GET /lnurlp/wait/:payment` with its payment id, the first
+  time without `since` and then with the last `paymentStatus` it saw, and follows
   `paymentStatus`: "waiting" (`open`), "on its way" (`accepted`),
   "paid", or "ended" (`ended`). On `accepted` and on `ended` it hides
   the invoice and the Wallet of Satoshi button at once, so the invoice is
