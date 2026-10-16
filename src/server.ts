@@ -143,10 +143,10 @@ export interface AppDeps {
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db` (default: `process.env.DEBUG_READ_TOKEN`).
+   * Read-only bearer for `GET /debug/db` and `GET /funding/goal` (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
-   * interpolating either value. Other debug routes do not receive this value.
+   * interpolating either value. Other routes do not receive this value.
    */
   debugReadToken?: string;
   /**
@@ -731,7 +731,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route(
     '/funding/goal',
-    grantContinuationRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+    grantContinuationRoutes({
+      authStore: store,
+      now,
+      messages: messageStore,
+      pos: posStore,
+      debugToken,
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
+    }),
   );
   app.route(
     '/conversations',
