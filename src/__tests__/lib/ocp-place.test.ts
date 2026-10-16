@@ -238,6 +238,25 @@ describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
     });
+    const withCountry = shopOcpPlaceInput(
+      'msg-1',
+      { lat: 47.3, lng: 8.5, label: 'Stall', country: 'PH' },
+      'Ada',
+    );
+    expect(withCountry).toEqual({
+      origin: '21gifts',
+      externalId: 'msg-1',
+      name: 'Stall',
+      lat: 47.3,
+      lon: 8.5,
+      category: 'shopping',
+      paymentMethods: 'lightning',
+      techProvider: '21.gifts',
+      country: 'PH',
+    });
+    expect(
+      shopOcpPlaceInput('msg-1', { lat: 47.3, lng: 8.5, label: 'Stall' }, 'Ada'),
+    ).not.toHaveProperty('country');
   });
 });
 

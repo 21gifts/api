@@ -3,20 +3,26 @@
  *
  * A note with no place stays valid. Replies cannot carry a pin. Coordinates
  * are finite numbers in the geographic range; an optional short label is
- * stored beside them and is not a Nostr hashtag.
+ * stored beside them and is not a Nostr hashtag. An optional country is
+ * stored only when the editor supplied an ISO code.
  */
+
+import { PLACE_COUNTRIES } from '@/lib/place-country';
 
 /** Maximum stored place label length after trim. */
 export const PLACE_LABEL_MAX = 80;
 
-/** Stored / public pin: both coordinates, optional label. */
-export type ForumPlace = { lat: number; lng: number; label: string | null };
+/** Stored / public pin: both coordinates, optional label, optional country. */
+export type ForumPlace = { lat: number; lng: number; label: string | null; country?: string };
 
 /** 400 body when latitude or longitude is missing or out of range. */
 const PLACE_COORD_ERROR = 'Place must be a latitude and longitude' as const;
 
 /** 400 body when the optional label is over-long or has C0/DEL controls. */
 const PLACE_LABEL_ERROR = 'Place label must be at most 80 characters' as const;
+
+/** 400 body when a supplied country is not an accepted ISO code. */
+const PLACE_COUNTRY_ERROR = 'Place country is invalid' as const;
 
 /**
  * Round a coordinate to 6 decimal places and collapse `-0` to `0`.
@@ -33,7 +39,7 @@ function roundCoord(n: number): number {
  * Compare two optional pins.
  *
  * Both absent matches. One absent does not. Otherwise latitude, longitude,
- * and label must all be equal.
+ * label, and country must all be equal. A missing country matches null.
  *
  * @param a - One pin, or `null` when that side has none.
  * @param b - The other pin, or `null` when that side has none.
@@ -43,7 +49,12 @@ export function placesMatch(a: ForumPlace | null, b: ForumPlace | null): boolean
   if (a === null || b === null) {
     return a === b;
   }
-  return a.lat === b.lat && a.lng === b.lng && a.label === b.label;
+  return (
+    a.lat === b.lat &&
+    a.lng === b.lng &&
+    a.label === b.label &&
+    (a.country ?? null) === (b.country ?? null)
+  );
 }
 
 /**
@@ -89,11 +100,12 @@ export function parseMultipartCoord(raw: unknown): 'missing' | 'invalid' | numbe
  * @param input - JSON `place`, multipart-derived object, or omitted/null.
  * @returns `{ ok: true, value: ForumPlace | null }` or `{ ok: false, error }`.
  */
-export function normalizePlace(
-  input: unknown,
-):
+export function normalizePlace(input: unknown):
   | { ok: true; value: ForumPlace | null }
-  | { ok: false; error: typeof PLACE_COORD_ERROR | typeof PLACE_LABEL_ERROR } {
+  | {
+      ok: false;
+      error: typeof PLACE_COORD_ERROR | typeof PLACE_LABEL_ERROR | typeof PLACE_COUNTRY_ERROR;
+    } {
   if (input === undefined || input === null) {
     return { ok: true, value: null };
   }
@@ -137,8 +149,45 @@ export function normalizePlace(
       label = trimmed;
     }
   }
+  const country = readPlaceCountry(rec['country']);
+  if (!country.ok) {
+    return country;
+  }
   return {
     ok: true,
-    value: { lat: roundCoord(lat), lng: roundCoord(lng), label },
+    value: {
+      lat: roundCoord(lat),
+      lng: roundCoord(lng),
+      label,
+      ...(country.value === null ? {} : { country: country.value }),
+    },
   };
+}
+
+/**
+ * Read an optional editor-supplied country.
+ *
+ * Absent, null, or trim-empty is no country. Any other value must be an
+ * accepted ISO code after trim and uppercase.
+ *
+ * @param raw - JSON `country`.
+ * @returns The code, null, or the country error.
+ */
+function readPlaceCountry(
+  raw: unknown,
+): { ok: true; value: string | null } | { ok: false; error: typeof PLACE_COUNTRY_ERROR } {
+  if (raw === undefined || raw === null) {
+    return { ok: true, value: null };
+  }
+  if (typeof raw !== 'string') {
+    return { ok: false, error: PLACE_COUNTRY_ERROR };
+  }
+  const trimmed = raw.trim().toUpperCase();
+  if (trimmed === '') {
+    return { ok: true, value: null };
+  }
+  if (!PLACE_COUNTRIES.has(trimmed)) {
+    return { ok: false, error: PLACE_COUNTRY_ERROR };
+  }
+  return { ok: true, value: trimmed };
 }

@@ -1756,6 +1756,35 @@ describe('POST /messages', () => {
     expect(body.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
   });
 
+  it('stores a JSON place country and rejects one that is not an ISO code', async () => {
+    const app = mount(await namedStore('Ada'));
+    const post = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'pin',
+        place: { lat: 14.6, lng: 120.98, label: 'Stall', country: ' ph ' },
+      }),
+    });
+    expect(post.status).toBe(200);
+    expect((await post.json()) as { place?: unknown }).toHaveProperty('place', {
+      lat: 14.6,
+      lng: 120.98,
+      label: 'Stall',
+      country: 'PH',
+    });
+    const rejected = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'bad',
+        place: { lat: 14.6, lng: 120.98, country: 'ZZ' },
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error: 'Place country is invalid' });
+  });
+
   it('omits place when JSON has no pin', async () => {
     const post = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
@@ -8735,6 +8764,42 @@ describe('forum video', () => {
     expect(
       ((await res.json()) as { place?: { lat: number; lng: number; label: string } }).place,
     ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+  });
+
+  it('stores a multipart placeCountry and omits an empty one', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '14.6');
+    form.set('placeLng', '120.98');
+    form.set('placeCountry', ' ph ');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { place?: unknown }).place).toEqual({
+      lat: 14.6,
+      lng: 120.98,
+      label: null,
+      country: 'PH',
+    });
+    const empty = new FormData();
+    empty.set('text', 'plain pin');
+    empty.set('placeLat', '1');
+    empty.set('placeLng', '2');
+    empty.set('placeCountry', ' ');
+    const emptyRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: empty,
+    });
+    expect(emptyRes.status).toBe(200);
+    expect(((await emptyRes.json()) as { place?: unknown }).place).toEqual({
+      lat: 1,
+      lng: 2,
+      label: null,
+    });
   });
 
   it('returns 400 when multipart place is incomplete or out of range', async () => {

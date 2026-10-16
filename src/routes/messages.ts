@@ -1267,6 +1267,7 @@ async function postMultipartMessage(
   const placeLat = form.get('placeLat');
   const placeLng = form.get('placeLng');
   const placeLabel = form.get('placeLabel');
+  const placeCountry = form.get('placeCountry');
   const latParsed = parseMultipartCoord(placeLat);
   const lngParsed = parseMultipartCoord(placeLng);
   const latMissing = latParsed === 'missing';
@@ -1279,6 +1280,7 @@ async function postMultipartMessage(
       lat: latParsed,
       lng: lngParsed,
       ...(placeLabel === null || placeLabel === '' ? {} : { label: placeLabel }),
+      ...(placeCountry === null ? {} : { country: placeCountry }),
     });
     if (!parsedPlace.ok) {
       return c.json({ error: parsedPlace.error }, 400);
@@ -2674,6 +2676,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               label: row.label,
               shop: row.shop,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
+              ...(typeof row.country === 'string' ? { country: row.country } : {}),
             })),
           },
           200,

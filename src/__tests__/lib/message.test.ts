@@ -952,6 +952,12 @@ describe('serializeDebugMessage', () => {
     expect(unlabeled['placeLat']).toBe(1);
     expect(unlabeled['placeLng']).toBe(2);
     expect(unlabeled['placeLabel']).toBeNull();
+    expect(unlabeled).not.toHaveProperty('placeCountry');
+    const coded = serializeDebugMessage({
+      ...row,
+      place: { lat: 1, lng: 2, label: null, country: 'PH' },
+    });
+    expect(coded['placeCountry']).toBe('PH');
   });
 
   it('always includes shopAccountId, JSON null when unset, and omits username', () => {

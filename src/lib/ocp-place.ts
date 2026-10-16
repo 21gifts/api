@@ -107,6 +107,8 @@ export type OcpPlaceInput = {
   category: string;
   paymentMethods: string | null;
   techProvider?: string;
+  /** ISO code. Omitted when the shop pin has none, so a stored map country stays. */
+  country?: string;
 };
 
 /**
@@ -286,7 +288,8 @@ export function shopOcpPlaceName(place: ForumPlace, authorName: string | null | 
  * @param place - Forum pin (lat/lng; mapped to lat/lon).
  * @param authorName - Message author display name, if any.
  * @returns Input with `origin` `21gifts`, `techProvider` `21.gifts`,
- *   `category` `shopping`, `paymentMethods` `lightning`.
+ *   `category` `shopping`, `paymentMethods` `lightning`. `country` is
+ *   included only when the pin stores a code.
  */
 export function shopOcpPlaceInput(
   messageId: string,
@@ -302,6 +305,9 @@ export function shopOcpPlaceInput(
     category: SHOP_CATEGORY,
     paymentMethods: SHOP_PAYMENT_METHODS,
     techProvider: SHOP_TECH_PROVIDER,
+    ...(typeof place.country === 'string' && place.country !== ''
+      ? { country: place.country }
+      : {}),
   };
 }
 

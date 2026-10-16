@@ -150,6 +150,43 @@ describe('normalizePlace', () => {
       value: { lat: 47.3, lng: 8.5, label: 'Zürich' },
     });
   });
+
+  it('stores a trimmed uppercase ISO country and omits an empty one', () => {
+    expect(normalizePlace({ lat: 14.6, lng: 120.98, label: null, country: ' ph ' })).toEqual({
+      ok: true,
+      value: { lat: 14.6, lng: 120.98, label: null, country: 'PH' },
+    });
+    expect(normalizePlace({ lat: 1, lng: 2, country: '' })).toEqual({
+      ok: true,
+      value: { lat: 1, lng: 2, label: null },
+    });
+    expect(normalizePlace({ lat: 1, lng: 2, country: '   ' })).toEqual({
+      ok: true,
+      value: { lat: 1, lng: 2, label: null },
+    });
+    expect(normalizePlace({ lat: 1, lng: 2, country: null })).toEqual({
+      ok: true,
+      value: { lat: 1, lng: 2, label: null },
+    });
+  });
+
+  it('rejects a country that is not an accepted ISO code', () => {
+    const error = { ok: false, error: 'Place country is invalid' };
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'Switzerland' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'C' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'CHE' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'ZZ' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'XX' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 'UK' })).toEqual(error);
+    expect(normalizePlace({ lat: 1, lng: 2, country: 41 })).toEqual(error);
+  });
+
+  it('does not create a pin from a country alone', () => {
+    expect(normalizePlace({ country: 'PH' })).toEqual({
+      ok: false,
+      error: 'Place must be a latitude and longitude',
+    });
+  });
 });
 
 describe('placesMatch', () => {
@@ -164,6 +201,9 @@ describe('placesMatch', () => {
     expect(placesMatch(pin, { ...pin, lng: 1 })).toBe(false);
     expect(placesMatch(pin, { ...pin, label: 'Other' })).toBe(false);
     expect(placesMatch(pin, { ...pin, label: null })).toBe(false);
+    expect(placesMatch(pin, { ...pin, country: 'PH' })).toBe(false);
+    expect(placesMatch({ ...pin, country: 'PH' }, { ...pin, country: 'KE' })).toBe(false);
+    expect(placesMatch({ ...pin, country: 'PH' }, { ...pin, country: 'PH' })).toBe(true);
   });
 });
 

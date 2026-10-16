@@ -448,14 +448,20 @@ function publicGoalTermDays(row: MessageRow): number | undefined {
 
 /**
  * Public/debug/hidden JSON `place` when both coordinates are stored.
- * Omitted when unset or null (same omit rule as `parentId`).
+ * Omitted when unset or null (same omit rule as `parentId`). `country` is
+ * included only when a code is stored.
  */
 function publicPlace(row: MessageRow): ForumPlace | undefined {
   const place = row.place;
   if (place === undefined || place === null) {
     return undefined;
   }
-  return { lat: place.lat, lng: place.lng, label: place.label };
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    label: place.label,
+    ...(typeof place.country === 'string' ? { country: place.country } : {}),
+  };
 }
 
 /**
@@ -796,7 +802,8 @@ export interface DebugMessagePhotoMeta {
  *   when null; never false). `goalTermDays` is included only when the stored
  *   column is not null (omitted when null). Currency-ask keys are included only when
  *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
- *   `placeLabel` (JSON `null` when unset). Always includes `shopAccountId`
+ *   `placeLabel` (JSON `null` when unset). Includes `placeCountry` only when
+ *   a code is stored. Always includes `shopAccountId`
  *   (`null` when unset). Does not include the shop username or name.
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
@@ -854,6 +861,9 @@ export function serializeDebugMessage(
     placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
     placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
     placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
+    ...(row.place === undefined || row.place === null || typeof row.place.country !== 'string'
+      ? {}
+      : { placeCountry: row.place.country }),
     shopAccountId:
       row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id,
     photoContentType: photo?.photoContentType ?? null,

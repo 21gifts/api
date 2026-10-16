@@ -14,7 +14,7 @@
 -- and retried on the next boot. A value that cannot be parsed is skipped with a
 -- warning instead of failing the migration. The statement lives in the store's
 -- MESSAGE_SCHEMA_SQL array, not in this file.
--- Top-level notes may store place_lat, place_lng, and place_label.
+-- Top-level notes may store place_lat, place_lng, place_label, and place_country.
 -- Top-level shop notes may store shop_account_id (not the note author).
 
 CREATE TABLE IF NOT EXISTS message (
@@ -255,9 +255,11 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS video_taken_at text;
 ALTER TABLE message_extra_photo ADD COLUMN IF NOT EXISTS photo_taken_at text;
 -- Optional map pin on a top-level note is place_lat / place_lng / place_label
 -- (null lat or lng means no pin; label is not a Nostr hashtag).
+-- place_country is an optional ISO 3166-1 alpha-2 code, null when the editor sent none.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;
+ALTER TABLE message ADD COLUMN IF NOT EXISTS place_country text;
 -- Optional 21.gifts account on a top-level shop note. Not the author.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL;
 -- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.

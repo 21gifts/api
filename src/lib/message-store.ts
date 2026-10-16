@@ -424,6 +424,8 @@ export interface MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      /** ISO code when the editor stored one. Omitted when none is stored. */
+      country?: string;
       accountId: string | null;
       /** True when the note text contains the shop tag. */
       shop: boolean;
@@ -706,14 +708,15 @@ export interface MessageStore {
 
   /**
    * Set, replace, or clear the stored map pin. Writes only `place_lat` /
-   * `place_lng` / `place_label` (in-memory `place`). Does not change text,
-   * sats, goals, media, hide stamps, event ids, or publish state.
+   * `place_lng` / `place_label` / `place_country` (in-memory `place`).
+   * Does not change text, sats, goals, media, hide stamps, event ids, or
+   * publish state.
    *
    * @param id - Message id.
    * @param place - Pin to store, or `null` to store SQL NULL / `place: null`.
    * @param edit - When set, and the pin actually changes, the history row is
    *   written in the same step as the pin. An unchanged pin writes no history.
-   * @returns `false` when no row has that id; `true` when the three columns
+   * @returns `false` when no row has that id; `true` when the place columns
    *   were written.
    */
   setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean>;
@@ -1647,6 +1650,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS place_country text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text`,
@@ -2013,7 +2017,14 @@ function copyRow(row: MessageRow): MessageRow {
     place:
       place === undefined || place === null
         ? null
-        : { lat: place.lat, lng: place.lng, label: place.label },
+        : {
+            lat: place.lat,
+            lng: place.lng,
+            label: place.label,
+            ...(typeof place.country === 'string' && place.country !== ''
+              ? { country: place.country }
+              : {}),
+          },
   };
   if (row.mentions !== undefined && row.mentions.length > 0) {
     copy.mentions = row.mentions.map((mark) => ({
@@ -2533,6 +2544,7 @@ export class InMemoryMessageStore implements MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      country?: string;
       accountId: string | null;
       shop: boolean;
     }>
@@ -2557,6 +2569,8 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(
       sorted.slice(0, limit).map((row) => {
         const place = row.place as ForumPlace;
+        const country =
+          typeof place.country === 'string' && place.country !== '' ? place.country : null;
         return {
           id: row.id,
           name: row.name,
@@ -2564,6 +2578,7 @@ export class InMemoryMessageStore implements MessageStore {
           lat: place.lat,
           lng: place.lng,
           label: place.label,
+          ...(country === null ? {} : { country }),
           accountId: row.accountId,
           shop: textHasHashtagToken(row.text, '21GiftsShop'),
         };
@@ -4119,7 +4134,17 @@ export class InMemoryMessageStore implements MessageStore {
     if (row === undefined) {
       return Promise.resolve(false);
     }
-    const next = place === null ? null : { lat: place.lat, lng: place.lng, label: place.label };
+    const next =
+      place === null
+        ? null
+        : {
+            lat: place.lat,
+            lng: place.lng,
+            label: place.label,
+            ...(typeof place.country === 'string' && place.country !== ''
+              ? { country: place.country }
+              : {}),
+          };
     const changed = !placesMatch(row.place ?? null, next);
     row.place = next;
     if (edit !== undefined && changed) {
@@ -4248,6 +4273,7 @@ interface MessageSqlRow {
   place_lat?: string | number | null;
   place_lng?: string | number | null;
   place_label?: string | null;
+  place_country?: string | null;
   shop_account_id?: string | null;
   shop_username?: string | null;
   shop_name?: string | null;
@@ -4295,6 +4321,7 @@ function placeFromSql(
   lat: string | number | null | undefined,
   lng: string | number | null | undefined,
   label: string | null | undefined,
+  country?: string | null,
 ): ForumPlace | null {
   if (lat === null || lat === undefined || lng === null || lng === undefined) {
     return null;
@@ -4304,10 +4331,12 @@ function placeFromSql(
   if (!Number.isFinite(latN) || !Number.isFinite(lngN)) {
     return null;
   }
+  const stored = typeof country === 'string' && country !== '' ? country : null;
   return {
     lat: latN,
     lng: lngN,
     label: label === null || label === undefined || label === '' ? null : label,
+    ...(stored === null ? {} : { country: stored }),
   };
 }
 
@@ -4459,7 +4488,7 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
     goalAmountChf: mapGoalFiatText(row.goal_fiat_chf),
     goalAmountEur: mapGoalFiatText(row.goal_fiat_eur),
     goalAmountPhp: mapGoalFiatText(row.goal_fiat_php),
-    place: placeFromSql(row.place_lat, row.place_lng, row.place_label),
+    place: placeFromSql(row.place_lat, row.place_lng, row.place_label, row.place_country),
     shopAccount: shopAccountFromSql(row),
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
@@ -4509,7 +4538,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               received_fiat_chf::text AS received_fiat_chf,
               received_fiat_eur::text AS received_fiat_eur,
               received_fiat_php::text AS received_fiat_php,
-              place_lat, place_lng, place_label,
+              place_lat, place_lng, place_label, place_country,
               shop_account_id,
               (SELECT username FROM account WHERE account.id = message.shop_account_id) AS shop_username,
               (SELECT name FROM account WHERE account.id = message.shop_account_id) AS shop_name,
@@ -4816,6 +4845,7 @@ export class PostgresMessageStore implements MessageStore {
       lat: number;
       lng: number;
       label: string | null;
+      country?: string;
       accountId: string | null;
       shop: boolean;
     }>
@@ -4827,10 +4857,11 @@ export class PostgresMessageStore implements MessageStore {
       place_lat: string | number | null;
       place_lng: string | number | null;
       place_label: string | null;
+      place_country: string | null;
       account_id: string | null;
       shop: boolean | null;
     }>(
-      `SELECT id, name, created_at, place_lat, place_lng, place_label, account_id,
+      `SELECT id, name, created_at, place_lat, place_lng, place_label, place_country, account_id,
               (text ~* $2) AS shop
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
@@ -4839,16 +4870,23 @@ export class PostgresMessageStore implements MessageStore {
        LIMIT $1`,
       [limit, posixHashtagTokenPattern('21GiftsShop')],
     );
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
-      lat: Number(row.place_lat),
-      lng: Number(row.place_lng),
-      label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
-      accountId: row.account_id,
-      shop: row.shop === true,
-    }));
+    return rows.map((row) => {
+      const country =
+        typeof row.place_country === 'string' && row.place_country !== ''
+          ? row.place_country
+          : null;
+      return {
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+        lat: Number(row.place_lat),
+        lng: Number(row.place_lng),
+        label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
+        ...(country === null ? {} : { country }),
+        accountId: row.account_id,
+        shop: row.shop === true,
+      };
+    });
   }
 
   /**
@@ -5311,6 +5349,7 @@ export class PostgresMessageStore implements MessageStore {
       stored.receivedAmountChf ?? null,
       stored.receivedAmountEur ?? null,
       stored.receivedAmountPhp ?? null,
+      stored.place?.country ?? null,
     ];
     try {
       if (stored.parentId !== null) {
@@ -5321,12 +5360,13 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
+           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,
+           place_country
          )
          SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
                 $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
                 $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34,
-                $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric
+                $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric,$40
          WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
          RETURNING id`,
           params,
@@ -5346,12 +5386,13 @@ export class PostgresMessageStore implements MessageStore {
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
+           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,
+           place_country
          ) VALUES (
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,
            $26,$27::numeric,$28::numeric,$29::numeric,$30::numeric,$31::numeric,$32,$33,$34,
-           $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric
+           $35,$36::numeric,$37::numeric,$38::numeric,$39::numeric,$40
          )`,
           params,
         );
@@ -5541,29 +5582,31 @@ export class PostgresMessageStore implements MessageStore {
     const lat = place === null ? null : place.lat;
     const lng = place === null ? null : place.lng;
     const label = place === null ? null : place.label;
+    const country = place === null || place.country === undefined ? null : place.country;
     if (edit === undefined) {
       const rows = await this.#sql.query<{ id: string }>(
-        `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4 WHERE id = $1 RETURNING id`,
-        [id, lat, lng, label],
+        `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4, place_country = $5 WHERE id = $1 RETURNING id`,
+        [id, lat, lng, label, country],
       );
       return rows[0] !== undefined;
     }
     const rows = await this.#sql.query<{ id: string }>(
       `WITH locked AS (
-         SELECT id, place_lat, place_lng, place_label FROM message WHERE id = $1 FOR UPDATE
+         SELECT id, place_lat, place_lng, place_label, place_country FROM message WHERE id = $1 FOR UPDATE
        ), updated AS (
-         UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4
+         UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4, place_country = $5
          FROM locked
          WHERE message.id = locked.id
            AND (
              locked.place_lat IS DISTINCT FROM $2
              OR locked.place_lng IS DISTINCT FROM $3
              OR locked.place_label IS DISTINCT FROM $4
+             OR locked.place_country IS DISTINCT FROM $5
            )
          RETURNING message.id
        ), inserted AS (
          INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
-         SELECT $5, locked.id, $6, $7, $8, $9::jsonb, $10::jsonb
+         SELECT $6, locked.id, $7, $8, $9, $10::jsonb, $11::jsonb
          FROM locked
          WHERE EXISTS (SELECT 1 FROM updated)
          RETURNING id
@@ -5574,6 +5617,7 @@ export class PostgresMessageStore implements MessageStore {
         lat,
         lng,
         label,
+        country,
         edit.id,
         edit.actorId,
         edit.createdAt,
