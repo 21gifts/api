@@ -436,7 +436,7 @@ api/
 | `staging` | Experimental testing               | staging       |
 | `main`    | Production releases                | PRD           |
 
-- Push to `develop` via **feature branch + PR**
+- Changes go through a **feature branch + PR**; the bullet below on feature pull requests sets its base
 - `main` is protected — updates flow via an auto-generated Release PR (`develop → main`)
 - **Hard requirement:** `staging` is the environment for experimental testing. It publishes `21gifts/api:staging`. A change that is good there is released to `develop` first (`Release: staging -> develop`). `main` receives changes only from `develop` (`Release: develop -> main`). `staging` is never released directly to `main`. An open release pull request is left unchanged. The staging release is not opened when the three-dot diff against `develop` has no file changes.
 - Feature pull requests target `develop`, never `main`. A feature pull request that has to ship inside the open `staging → develop` release targets `staging` instead. Developers rebase `staging` onto `develop` regularly, because pull requests that land on `develop` do not update `staging`.

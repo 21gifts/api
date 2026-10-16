@@ -738,7 +738,7 @@ GitHub organization: **`21gifts`** (created 2026-05-25).
 
 - `develop` is the default branch
 - `main` is the production branch
-- Feature branch → PR → merge to `develop`
+- Feature branch → PR; each repository's `CONTRIBUTING.md` sets the base: app feature pull requests target `staging`, api feature pull requests target `develop`, or `staging` when the change has to ship inside the open `staging → develop` release. No feature pull request targets `main`.
 - `main` is protected; updates flow via an auto-generated Release PR (`develop → main`)
 - Every repo has `README.md`, `CONTRIBUTING.md`, `SECURITY.md`, `LICENSE`
 - Strict linting (Prettier + ESLint)
