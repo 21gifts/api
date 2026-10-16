@@ -625,7 +625,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    and logs `shop.alert.duplicate_invoice`. This is the race step 4's check cannot see. For a charge it also deletes the `pos_charge_invoice` row for that
    hash when step 4's `recordInvoice` inserted it (returned `true`),
    unless the payment that holds the hash is this charge's own; a row
-   step 4 did not insert belongs to another charge and stays. It writes nothing
+   this attempt did not insert stays, whichever charge it belongs to. It writes nothing
    else. Any
    other lost insert (`23505`), which only the payment's indexes can
    raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
@@ -942,8 +942,9 @@ pay-link poll with `timeout` is therefore the 404 above.
 
 `GET /lnurlp/wait/:payment` serves the payment page. No session. CORS
 `*`, `Cache-Control: no-store`, 120 requests per minute per client
-address; over that limit it answers **429**
-`{ "error": "Too many requests" }`, as the pay link does. `:payment`
+address; over that limit it answers **429** with the body in
+[Error bodies](#error-bodies) and the text `Too many requests`, the
+pay link's text. `:payment`
 must be a shop payment id. Otherwise the response is
 **404**, reason `Not found`, the text `POST /pay/:username/invoice` uses
 for an id this service does not have.
@@ -1078,7 +1079,8 @@ absolute time in milliseconds.
   `shop.alert.orchestra_request`; other errors and timeouts change
   nothing.
 - **Status**: `GET {base}/v1/orchestration/status` with `id=<orderId>`
-  for a known order. HTTP 404 `not_found` means no order. The
+  and the server key, for a known order; Orchestra answers status only
+  to an authenticated caller. HTTP 404 `not_found` means no order. The
   api stores `order.status` as `order_status`. Final statuses are
   `completed`, `refunded`, `failed`, `fallback_delivered`, and `expired`;
   [States](#states) states what each does to the proof. `unfulfilled` can resume and is watched like a status in progress. When
@@ -1089,8 +1091,10 @@ absolute time in milliseconds.
   it or its order is final. A proof that is already
   `accepted` keeps that state through them, and the till keeps showing
   "on its way", because Orchestra can still complete the order; only a
-  final status moves it, as [States](#states) states. A timeout and every other HTTP error change
-  nothing. An unknown status is logged once per order.
+  final status moves it, as [States](#states) states. HTTP 400, 401, and 403 change nothing and log
+  `shop.alert.orchestra_request`, as for history. A timeout and every
+  other HTTP error change nothing. An unknown status is logged once per
+  order.
 
 The api registers no webhook and does not call
 `/v1/orchestration/estimate`.
@@ -1111,7 +1115,7 @@ also count against the budget in [Calls](#calls).
 | ----- | ------------------ | -------------- | -------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 1     | End lapsed windows | 0              | `open` payments whose `window_ends_at` has passed                                                        | Every tick, one conditional update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s, and a final read 10 min after the BOLT11 expiry. Only a successful read that reports the invoice unpaid closes a payment; a failed final read is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                                                                                |
-| 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` set; payments that are neither paid nor closed before the others         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds moves that proof to the successor order instead; when another row already holds the successor, the two rows merge as in step 4 of that section. An order without `sourceTxHash` yet stores nothing and is read again. |
+| 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds moves that proof to the successor order instead; when another row already holds the successor, the two rows merge as in step 4 of that section. An order without `sourceTxHash` yet stores nothing and is read again. |
 | 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores the proof through the same step. After one hour it logs `shop.proof.lookup_expired`; Orchestra's own detection still applies.                                                                                                                                                                                                                                                                         |
 | 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min, for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                                                                                                                                                                 |
 | 6     | Submits            | 1              | Unresolved proofs that may still be submitted                                                            | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                                                                                      |
