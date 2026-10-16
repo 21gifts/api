@@ -376,7 +376,7 @@ describe('moveDailyRosterToWalletAddresses', () => {
           ORDER BY n
          RETURNING id, address, bucket`,
         [
-          [
+          postgresTextArrayLiteral([
             ` ${legacy.toUpperCase()} `,
             legacy,
             legacy,
@@ -387,9 +387,9 @@ describe('moveDailyRosterToWalletAddresses', () => {
             `Dave_${stamp}@gifts.example`,
             `dave_${stamp}@gifts.example`,
             `x_${stamp}@evil@gifts.example`,
-          ],
-          [3, 9, 5, 7, 2, 2, 2, 6, 4, 1],
-          [
+          ]),
+          '{3,9,5,7,2,2,2,6,4,1}',
+          postgresTextArrayLiteral([
             'daily',
             'daily',
             'moderator',
@@ -400,10 +400,12 @@ describe('moveDailyRosterToWalletAddresses', () => {
             'moderator',
             'moderator',
             'daily',
-          ],
+          ]),
         ],
       );
       const ids = inserted.map((row) => Number(row.id));
+      const idsAt = (...positions: number[]): number[] =>
+        positions.map((position) => Number(ids[position])).sort((x, y) => x - y);
       const markerRows = await client.query<{ marker: string }>(
         'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
       );
@@ -450,7 +452,9 @@ describe('moveDailyRosterToWalletAddresses', () => {
       });
     } finally {
       await client.execute('DELETE FROM daily_roster_entry');
-      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [[named, unnamed]]);
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral([named, unnamed]),
+      ]);
       await closeIfPossible(sql);
     }
   });

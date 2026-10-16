@@ -634,7 +634,7 @@ describe('openBootStores', () => {
     const operations: Array<{
       kind: 'query' | 'execute';
       text: string;
-      params?: readonly unknown[];
+      params: readonly unknown[] | undefined;
     }> = [];
     const client: SqlClient = {
       query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
