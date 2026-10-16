@@ -205,18 +205,18 @@ method is a change to the table and to its tests.
 
 ## Lifetimes
 
-| Name               | Value                                                                                                                                                                                         |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                 |
-| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                     |
-| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                |
-| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                       |
-| Replacement        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, and the payment has had fewer than 4 replacements. |
-| BOLT11 expiry      | The invoice timestamp plus its `expiry` tag, or plus 3600 s when the tag is absent, as BOLT11 defines.                                                                                        |
-| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                      |
-| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                |
-| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                          |
-| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                            |
+| Name               | Value                                                                                                                                                                                                                                                                                                                          |
+| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                                                                                                                                                  |
+| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                                                                                                                                                      |
+| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                                                                                                                                                 |
+| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                                                                                                                                                        |
+| Replacement        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, and the payment has had fewer than 4 replacements.                                                                                                                                  |
+| BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` in `src/routes/repayment.ts` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`. Taking the request time, not the later answer, keeps the stored expiry at or before the real one. |
+| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                       |
+| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                 |
+| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                           |
+| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                             |
 
 A wallet can take longer than the funding margin, for example when the
 chain is slow. Orchestra then decides about the late deposit. The api
@@ -230,13 +230,13 @@ The caller checks the affected row count. Zero rows means another step
 won, and the caller re-reads. `markPaid` in `pos-store.ts` uses this
 pattern.
 
-| From                        | To         | Trigger                                                                                                                                                                        | Columns                                             |
-| --------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
-| (none)                      | `open`     | A charge-backed creation, or `POST /pay/:username/payment`.                                                                                                                    | sets `created_at`, `window_ends_at`                 |
-| `open`                      | `ended`    | The window ends; `POST /pos`; a new payer amount; the charge is cancelled; the charge is paid by an invoice that is not this payment's; or the account is merged into another. | sets `ended_at`, `end_reason`                       |
-| `open`, `ended`             | `accepted` | A proof of the payment becomes `accepted` before the payment is closed.                                                                                                        | sets `accepted_at`; clears `ended_at`, `end_reason` |
-| `open`, `ended`, `accepted` | `paid`     | The BOLT11 settles, found by any settlement read up to the final one.                                                                                                          | sets `paid_at`; clears `ended_at`, `end_reason`     |
-| `accepted`                  | `ended`    | The accepted proof leaves `accepted` without another proof taking its place, or the final settlement read finds the BOLT11 unpaid.                                             | sets `ended_at`, `end_reason`                       |
+| From                        | To         | Trigger                                                                                                                                    | Columns                                             |
+| --------------------------- | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------- |
+| (none)                      | `open`     | A charge-backed creation, or `POST /pay/:username/payment`.                                                                                | sets `created_at`, `window_ends_at`                 |
+| `open`                      | `ended`    | The window ends; `POST /pos`; a new payer amount; the charge is cancelled; or the charge is paid by an invoice that is not this payment's. | sets `ended_at`, `end_reason`                       |
+| `open`, `ended`             | `accepted` | A proof of the payment becomes `accepted` before the payment is closed.                                                                    | sets `accepted_at`; clears `ended_at`, `end_reason` |
+| `open`, `ended`, `accepted` | `paid`     | The BOLT11 settles, found by any settlement read up to the final one.                                                                      | sets `paid_at`; clears `ended_at`, `end_reason`     |
+| `accepted`                  | `ended`    | The accepted proof leaves `accepted` without another proof taking its place, or the final settlement read finds the BOLT11 unpaid.         | sets `ended_at`, `end_reason`                       |
 
 The final settlement read sets `closed_at` on a payment that is not
 `paid`. `paid` is final, and a closed payment is final. Before that,
@@ -251,7 +251,6 @@ charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
-`merged` (by an account merge),
 `orchestra_refunded`, `orchestra_failed`, `proof_refused`, or
 `expired_unpaid`. An `accepted` payment whose accepted proof becomes
 `refunded`, `failed`, or `refused` ends with `orchestra_refunded`,
@@ -484,22 +483,24 @@ references the merged account to the surviving one, under both account
 row locks. A shop payment's BOLT11 pays the wallet it was minted for, so
 the merge handles shop payments first, in the same transaction:
 
-- When either account has an `accepted` shop payment, the merge returns
-  `{ ok: false, error: 'shop_payment_accepted' }`, as it returns
-  `both_grants`, and changes nothing. The operator route `POST /debug/accounts/merge`
-  answers it with **409** `{ "error": "A shop payment is on its way" }`,
-  beside its other 409 answers. An `accepted` payment leaves that state when its
-  order reaches a final status, and the merge can be repeated then.
-- The merged account's `open` shop payment ends with `end_reason`
-  `merged`, so the surviving account never shows an amount whose
-  invoice pays another wallet.
-- The other shop payments move with the account like every other row.
-  A later proof can still move an `ended` one to `accepted`; its BOLT11
-  still pays the wallet it was minted for.
+- When the merged account has a shop payment that is neither `paid`
+  nor closed, the merge returns
+  `{ ok: false, error: 'shop_payment_open' }`, as it returns
+  `both_grants`, and changes nothing. Such a payment's BOLT11 can still
+  be paid, and it pays the merged account's wallet, which the merge
+  does not carry over. The operator route
+  `POST /debug/accounts/merge` answers it with **409**
+  `{ "error": "A payment is already open" }`, the text `POST /pos`
+  uses. A payment is paid or closed after its final settlement read, 10
+  minutes after its BOLT11 expired, and the merge can be repeated then.
+- The merged account's other shop payments are `paid` or closed and
+  never change again; they move with the account like every other row.
 - The merge deletes a pending charge of the merged account when the
-  surviving account has one. `pos_charge_id` is `ON DELETE SET NULL`, so
-  that delete clears the link of the charge's shop payment, which the
-  steps above have already ended.
+  surviving account has one. It first deletes that charge's
+  `pos_charge_invoice` rows, whose `charge_id` has no cascade. Any shop
+  payment of that charge is paid or closed by the first rule, and
+  `pos_charge_id` is `ON DELETE SET NULL`, so the delete clears its
+  link.
 
 ### By the payer
 
@@ -526,8 +527,11 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
-pending charge pins that range to the charge amount. Orders 4, 6, and 7
-run again under the creation lock. The counters in order 7 are two `IpRateLimiter` instances, keyed by
+pending charge pins that range to the charge amount. Orders 4 and 6 run again under the creation lock. Order 7 runs only
+there, once per creation, because `IpRateLimiter.allow` records every
+call it allows: the api-wide counter is asked first, and the account
+counter only when it allows, so a refusal by the account counter leaves
+one extra hit on the api-wide counter at most. The counters in order 7 are two `IpRateLimiter` instances, keyed by
 the account id as `src/routes/wallet-report.ts` does and by one fixed
 key for the whole api; they count started creations in their 60 s
 window. Like every `IpRateLimiter`, each container of a deploy keeps its
@@ -571,8 +575,8 @@ One procedure creates a shop payment, for a charge or for a payer:
    as a parameter and hands each call the time left until it through
    `lnurlServerFetch`, whose default of 15 s (`LNURL_SERVER_TIMEOUT_MS`)
    stays for other callers. Decode the BOLT11 with `decodeBolt11` and
-   check the amount, and read its expiry with `inspectBolt11`, which the
-   implementing change extends with the invoice timestamp, first. A wrong amount stops the procedure, and nothing is recorded.
+   check the amount, and compute its expiry as [Lifetimes](#lifetimes)
+   states, first. A wrong amount stops the procedure, and nothing is recorded.
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. A payer creation never
@@ -689,6 +693,9 @@ open amount: OpenCryptoPay needs a details callback that answers
 by replacing the `cb` path segment with `tx`, which the existing path
 cannot give. CORS `*`, methods `GET, OPTIONS`,
 `Cache-Control: no-store`, 120 requests per minute per client address.
+Over that limit it answers **503**, reason `Too many requests`, as the
+proof route does, because Tether 1.11.0 reads a 400 or 404 here as a
+final answer.
 
 ### LNURL amount path
 
@@ -894,7 +901,7 @@ deposit when its own detection missed it.
 | ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
 | `accepted`                   | **200** `{ "txId": "<tx_hash>" }`                                                                            |
 | `superseded`                 | **400**, reason `Another transfer is paying this payment`                                                    |
-| `late`                       | **400**, reason `The invoice expired before the transfer arrived`                                            |
+| `late`                       | **400**, reason `Invoice expired`                                                                            |
 | `refunded`                   | **400**, reason `The transfer was refunded`                                                                  |
 | `failed`                     | **400**, reason `The transfer was not completed`                                                             |
 | `refused`                    | **400**, reason `Transaction already used` when `refusal` is `tx_used`, otherwise `Payment was not accepted` |
@@ -913,7 +920,9 @@ pay-link poll with `timeout` is therefore the 404 above.
 
 `GET /lnurlp/wait/:payment` serves the payment page. No session. CORS
 `*`, `Cache-Control: no-store`, 120 requests per minute per client
-address. `:payment` must be a shop payment id. Otherwise the response is
+address; over that limit it answers **429**
+`{ "error": "Too many requests" }`, as the pay link does. `:payment`
+must be a shop payment id. Otherwise the response is
 **404**, reason `Not found`, the text `POST /pay/:username/invoice` uses
 for an id this service does not have.
 
@@ -925,11 +934,11 @@ for sats: up to `WAIT_SATS_TIMEOUT_MS` (25 s) and checking every
 `WAIT_SATS_POLL_MS` (250 ms), both in `src/routes/messages.ts`. Then it
 answers with the state on hand.
 
-| `paymentStatus`              | `status` (DFX `PaymentLinkPaymentStatus`)                                                                |
-| ---------------------------- | -------------------------------------------------------------------------------------------------------- |
-| `paid`                       | `Completed`                                                                                              |
-| `ended` with `closed_at` set | `Cancelled` when `end_reason` is `superseded`, `replaced`, `cancelled`, or `merged`; otherwise `Expired` |
-| any other                    | `Pending`                                                                                                |
+| `paymentStatus`              | `status` (DFX `PaymentLinkPaymentStatus`)                                                      |
+| ---------------------------- | ---------------------------------------------------------------------------------------------- |
+| `paid`                       | `Completed`                                                                                    |
+| `ended` with `closed_at` set | `Cancelled` when `end_reason` is `superseded`, `replaced`, or `cancelled`; otherwise `Expired` |
+| any other                    | `Pending`                                                                                      |
 
 As at DFX, every status except `Pending` is final: only a paid or a
 closed payment leaves `Pending`, and neither changes again. A client that
@@ -1053,9 +1062,12 @@ absolute time in milliseconds.
   [States](#states) states what each does to the proof. `unfulfilled` can resume and is watched like a status in progress. When
   `supersededByOperationId` is set, the api follows that order instead.
   A progressing status can make a proof `accepted`, as [States](#states)
-  states. `refunding`, `unfulfilled`, and an unknown status hold the
-  proof: it answers **503** and is not accepted until a progressing or
-  final status arrives. A timeout and every other HTTP error change
+  states. `refunding`, `unfulfilled`, and an unknown status hold a proof that is
+  not `accepted`: it answers **503** and is not accepted until a
+  progressing or final status arrives. A proof that is already
+  `accepted` keeps that state through them, and the till keeps showing
+  "on its way", because Orchestra can still complete the order; only a
+  final status moves it, as [States](#states) states. A timeout and every other HTTP error change
   nothing. An unknown status is logged once per order.
 
 The api registers no webhook and does not call
@@ -1119,14 +1131,14 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   id                 uuid PRIMARY KEY,
   account_id         uuid NOT NULL REFERENCES account (id),
   amount_sats        bigint NOT NULL CHECK (amount_sats > 0),
-    pos_charge_id      uuid UNIQUE REFERENCES pos_charge (id) ON DELETE SET NULL,
+  pos_charge_id      uuid UNIQUE REFERENCES pos_charge (id) ON DELETE SET NULL,
   bolt11             text NOT NULL,
   payment_hash       text NOT NULL UNIQUE,
   bolt11_expires_at  timestamptz NOT NULL,
   status             text NOT NULL CHECK (status IN ('open', 'accepted', 'paid', 'ended')),
   end_reason         text CHECK (end_reason IN ('window', 'superseded', 'replaced', 'cancelled',
                        'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'proof_refused',
-                                              'expired_unpaid', 'merged')),
+                       'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
   replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
   next_settle_at     timestamptz,
@@ -1293,9 +1305,14 @@ page.
   `POST /pay/:username/invoice`.
 - With an entered amount it calls `POST /pay/:username/payment` instead
   of `POST /pay/:username/invoice`. On **409** `payment_open` it reloads
-  and shows the till charge. On **503** `stablecoin_unavailable`, and on
-  any other failure of that call, it falls back to
-  `POST /pay/:username/invoice`, which is today's Lightning-only path.
+  and shows the till charge. On **503** `stablecoin_unavailable` and on any other 4xx answer it
+  falls back to `POST /pay/:username/invoice`, which is today's
+  Lightning-only path. On a timeout, a transport error, or another 5xx
+  it does not know whether a payment was opened, so it repeats the same
+  call once; a new payer amount replaces any payment the lost answer
+  opened, so at most one stays open. When the repeat fails that way
+  too, it says the payment could not be started and offers to try
+  again, and it does not mint with `POST /pay/:username/invoice`.
   After a success it fetches the pay link and checks that `quote.payment`
   is the payment it opened. When it is not, another payer replaced the
   amount, and the page says so and offers to enter the amount again.
@@ -1490,10 +1507,15 @@ The implementing change adds:
   `GET /pos`;
 - `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
-- the shop payment step in `mergeAccounts` and its
-  `shop_payment_accepted` result;
+- the shop payment check in `mergeAccounts` with its `shop_payment_open`
+  result, and the delete of a deleted charge's `pos_charge_invoice`
+  rows;
 - a deadline parameter on `requestGiftInvoice` that covers both of its
-  calls, and the invoice timestamp on `inspectBolt11`;
+  calls;
+- `invoiceStillOpen` and `DEFAULT_INVOICE_EXPIRY_MS` moved from
+  `src/routes/repayment.ts` to `src/lib/bolt11.ts`, with an expiry
+  function both use, so repayment and the shop payment compute an
+  invoice's expiry one way;
 - the shop payment step in the charge watch's `markPaid` transaction;
 - the transactional port with the account row lock, used by `POST /pos`
   and by the creation procedure;
@@ -1518,9 +1540,10 @@ limits, `resolveLnurlServerConfig`, `startPosPaidWorker`, the LUD-21
 
 - Vitest with fakes for Orchestra, the RPC endpoints, and the LNURL
   server covers every row of every table in this document at 100 %, as
-  CONTRIBUTING requires. It also covers the account merge with an
-  `accepted` shop payment (refused), with an `open` one of the merged
-  account (ended `merged`), and with two pending charges (link cleared),
+  CONTRIBUTING requires. It also covers the account merge with a shop payment of the merged
+  account that is not paid or closed (refused), with only paid or closed
+  ones (moved), and with two pending charges where the deleted one has a
+  recorded invoice (rows and link cleared),
   and an order first seen as `refunding` or with an unknown status (held,
   **503**).
 - The default end-to-end suite boots without these services. Its
