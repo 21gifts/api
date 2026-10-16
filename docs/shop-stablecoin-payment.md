@@ -264,8 +264,8 @@ payment is `accepted`.
 
 | From                                                       | To           | Trigger                                                                                                                                                                                                                                                          |
 | ---------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is not closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.                 |
-| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is not closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                           |
+| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.  |
+| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                            |
 | `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
 | null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                  |
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
@@ -273,6 +273,11 @@ payment is `accepted`.
 | `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
 | null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
 | `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
+
+A proof whose payment is already `paid` is held: its order is
+expected to fail with `duplicate_lightning_invoice`, so it answers
+**503** until the order is final, and only `completed` moves it to
+`accepted`, as the row above states.
 
 Orchestra is the authority on deposits: an order for a `refused` or
 `stuck` proof moves it as the table states. An order that is already
@@ -604,9 +609,12 @@ One procedure creates a shop payment, for a charge or for a payer:
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
    `account-merge.ts`. The row lock serialises the creation with
-   `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A lost insert (`23505`), which
-   only the payment's indexes can raise because offers never do, does not
-   insert again blindly: under the same locks the api reads the row that won. When
+   `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
+   means the LNURL server returned an invoice that another payment
+   already holds: the procedure stops as after a failed mint (order 8),
+   writes nothing more, and logs `shop.alert.duplicate_invoice`. Any
+   other lost insert (`23505`), which only the payment's indexes can
+   raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
    that row is the shop payment of this charge, or of this payer
    request, the api uses it, the fetch answers as for an open amount,
    and the background creation from `POST /pos` ends. When it is another
@@ -1097,9 +1105,11 @@ also count against the budget in [Calls](#calls).
 | 8     | Order status       | 1, even ticks  | Proofs with an order whose `order_status` is not final                                                   | Status by `id` every 10 s for 10 min, then every 60 s, until a final status or 24 h after the order was found. Then it logs `shop.alert.order_stuck`.                                                                                                                                                                                                                                                                                                                                                                  |
 
 Duties 3 and 8 take turns: duty 3 reads on odd ticks and duty 8 on even
-ticks, one read each, so neither can starve the other. That is at most
-30 reads per minute, within the status budget, and no payment or order
-is read faster than every 10 s. `next_history_at` is set when the first
+ticks, one read each, so neither can starve the other. That is at most 30 reads per minute, within the status budget, and in
+one container no payment or order is read faster than every 10 s. The
+two containers of a deploy each run their own ticks, so during a deploy
+a row can be read by both; their budgets together stay below
+Orchestra's limit, as [Calls](#calls) states. `next_history_at` is set when the first
 detail of a payment is issued and cleared when the order watch of its
 last offer ends. One read is one page; `history_offset` keeps the next
 offset, and a short page starts the next read at offset 0 again. Duty 3
@@ -1311,11 +1321,13 @@ page.
   it does not know whether a payment was opened, so it repeats the same
   call once; a new payer amount replaces any payment the lost answer
   opened, so at most one stays open. When the repeat fails that way
-  too, it says the payment could not be started and offers to try
-  again, and it does not mint with `POST /pay/:username/invoice`.
+  too, it shows "This payment could not be started. Try again." with a
+  button that repeats the call, and it does not mint with
+  `POST /pay/:username/invoice`.
   After a success it fetches the pay link and checks that `quote.payment`
-  is the payment it opened. When it is not, another payer replaced the
-  amount, and the page says so and offers to enter the amount again.
+  is the payment it opened. When it is not, another payer replaced the amount, and the page shows
+  "Another payer entered an amount first. Enter yours again." and the
+  amount field.
 - It fetches the pay link on its own origin, without `timeout`. It shows
   one line per method and asset from `transferAmounts`, with the quote's
   expiry, and fetches again when the quote expires.
@@ -1483,6 +1495,7 @@ api never logs a key, an RPC URL, raw `hex`, or a BOLT11.
   `shop.alert.proof_stuck`, `shop.alert.detected_mismatch`,
   `shop.alert.accepted_unpaid`,
   `shop.alert.double_settled`, `shop.alert.cancelled_settled`,
+  `shop.alert.duplicate_invoice`,
   `shop.alert.shared_deposit_address`, and
   `shop.alert.accepted_long` (a payment `accepted` for more than one
   hour)
