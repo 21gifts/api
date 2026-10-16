@@ -2599,7 +2599,16 @@ export class InMemoryMessageStore implements MessageStore {
           lat: place.lat,
           lng: place.lng,
           label: place.label,
-          address: place.address ?? null,
+          address:
+            place.address === undefined || place.address === null
+              ? null
+              : {
+                  street: place.address.street,
+                  houseNumber: place.address.houseNumber,
+                  postalCode: place.address.postalCode,
+                  city: place.address.city,
+                  country: place.address.country,
+                },
           accountId: row.accountId,
           shop: textHasHashtagToken(row.text, '21GiftsShop'),
         };
