@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
+import type { Context, MiddlewareHandler } from 'hono';
 import { z } from 'zod';
 import { resolveWebAuthnConfig, type LnurlServerConfig } from '@/lib/config';
 import {
@@ -10,6 +11,7 @@ import {
   startPasskeyClaim,
   startPasskeyRegistration,
   startPasskeySeed,
+  type SessionAdmit,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
@@ -17,6 +19,15 @@ import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
+import {
+  APP_BUILD_HEADER,
+  APP_OUTDATED_CODE,
+  APP_OUTDATED_ERROR,
+  appBuildAccepted,
+  LOGINS_CLOSED_CODE,
+  LOGINS_CLOSED_ERROR,
+  type LoginGate,
+} from '@/lib/login-gate';
 import { logEvent, type LogFields } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
@@ -53,6 +64,17 @@ export interface AuthRouteDeps {
   fundingStore?: FundingStore;
   /** LNURL server config for the receiving address in owner JSON; omitted → off. */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * Operator login switch. Omitted → every session-creating request passes.
+   * Checked by register begin (new and claim), register finish, and
+   * authenticate finish before anything is written.
+   */
+  loginGate?: LoginGate;
+  /**
+   * Required app build (`APP_BUILD_REQUIRED`). `null` or omitted → no build
+   * check. Checked first on register and authenticate begin and finish.
+   */
+  requiredAppBuild?: string | null;
 }
 
 /** Body schema for passkey finish (registration or authentication). */
@@ -229,13 +251,43 @@ async function recordPasskeySeedAttempt(
 }
 
 /**
+ * Build check for one session-creating route: a missing or different
+ * `X-App-Build` is 403 `app_outdated` before any other check.
+ */
+function requireAppBuild(deps: AuthRouteDeps): MiddlewareHandler {
+  return async (c, next) => {
+    if (!appBuildAccepted(deps.requiredAppBuild ?? null, c.req.header(APP_BUILD_HEADER))) {
+      logEvent('auth.app.outdated', { path: c.req.path });
+      return c.json({ error: APP_OUTDATED_ERROR, code: APP_OUTDATED_CODE }, 403);
+    }
+    await next();
+  };
+}
+
+/** Login switch check handed to the passkey steps; `undefined` without a gate. */
+function sessionAdmit(deps: AuthRouteDeps): SessionAdmit | undefined {
+  const gate = deps.loginGate;
+  return gate === undefined ? undefined : (account) => gate.admits(account);
+}
+
+/** 503 `logins_closed` response. */
+function loginsClosed(c: Context): Response {
+  return c.json({ error: LOGINS_CLOSED_ERROR, code: LOGINS_CLOSED_CODE }, 503);
+}
+
+/**
  * Build the `/auth` route group.
  *
  * @param deps - Shared store, message store, clock, and passkey collaborators.
  * @returns A Hono app exposing passkey register, authenticate, replace, and seed routes.
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
+  const buildCheck = requireAppBuild(deps);
   return new Hono()
+    .use('/passkey/register/begin', buildCheck)
+    .use('/passkey/register/finish', buildCheck)
+    .use('/passkey/authenticate/begin', buildCheck)
+    .use('/passkey/authenticate/finish', buildCheck)
     .post('/passkey/register/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
@@ -267,13 +319,21 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
           config,
           deps.now(),
           viewKey,
+          sessionAdmit(deps),
         );
         if (!claimed.ok) {
           logPasskeyStop('auth.passkey.register.fail', claimed.error);
+          if (claimed.error === LOGINS_CLOSED_ERROR) {
+            return loginsClosed(c);
+          }
           const status = claimed.error === 'This profile already has a passkey' ? 409 : 404;
           return c.json({ error: claimed.error }, status);
         }
         return c.json(claimed.value, 200);
+      }
+      if (deps.loginGate !== undefined && !(await deps.loginGate.admits(null))) {
+        logPasskeyStop('auth.passkey.register.fail', LOGINS_CLOSED_ERROR);
+        return loginsClosed(c);
       }
       if (body !== null && typeof body === 'object' && !Array.isArray(body) && 'name' in body) {
         const name = (body as { name: unknown }).name;
@@ -329,11 +389,15 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         read.challengeId,
         read.credential,
         nostrOpts(deps),
+        sessionAdmit(deps),
       );
       if (!result.ok) {
         logPasskeyStop('auth.passkey.register.fail', result.error, {
           challengeId: read.challengeId,
         });
+        if (result.error === LOGINS_CLOSED_ERROR) {
+          return loginsClosed(c);
+        }
         const status =
           result.error === WRONG_ACCOUNT_ERROR
             ? 403
@@ -394,11 +458,15 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         read.challengeId,
         read.credential,
         nostrOpts(deps),
+        sessionAdmit(deps),
       );
       if (!result.ok) {
         logPasskeyStop('auth.passkey.login.fail', result.error, {
           challengeId: read.challengeId,
         });
+        if (result.error === LOGINS_CLOSED_ERROR) {
+          return loginsClosed(c);
+        }
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }

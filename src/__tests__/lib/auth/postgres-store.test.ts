@@ -882,6 +882,18 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(new MockSql()).getSession('x')).toBeUndefined();
   });
 
+  it('deleteAllSessions deletes every auth_session row and returns the count', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ deleted: 3 }];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(3);
+    expect(sql.queries[0]?.text).toContain('DELETE FROM auth_session RETURNING 1');
+    expect(sql.queries[0]?.params).toEqual([]);
+    sql.nextRows = [{ deleted: '4' }];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(4);
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(0);
+  });
+
   it('maps verified and founder account roles', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);

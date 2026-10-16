@@ -750,6 +750,14 @@ LIMIT $2`,
     return row === undefined ? undefined : mapSession(row);
   }
 
+  async deleteAllSessions(): Promise<number> {
+    const rows = await this.#sql.query<{ deleted: number | string }>(
+      `WITH gone AS (DELETE FROM auth_session RETURNING 1)
+       SELECT count(*)::int AS deleted FROM gone`,
+    );
+    return Number(rows[0]?.deleted ?? 0);
+  }
+
   async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
     await this.#evictExpiredPasskeyChallenges(challenge.createdAt);
     await this.#sql.execute(

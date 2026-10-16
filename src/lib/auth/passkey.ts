@@ -5,6 +5,7 @@ import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
+import { LOGINS_CLOSED_ERROR } from '@/lib/login-gate';
 import { logEvent } from '@/lib/log';
 import { ensureAccountNostrKey, generateNostrKeyRecord, type NostrKeygen } from '@/lib/nostr/keys';
 import { normalizeUsername } from '@/lib/username';
@@ -35,6 +36,13 @@ export interface PasskeyFinishErr {
 
 /** Outcome of a passkey finish step. */
 export type PasskeyFinishResult = { ok: true; value: PasskeyFinishOk } | PasskeyFinishErr;
+
+/**
+ * Login switch check run before a session-creating step writes anything.
+ * Receives the account the session would authenticate, or `null` for an
+ * account that does not exist yet; `false` refuses with {@link LOGINS_CLOSED_ERROR}.
+ */
+export type SessionAdmit = (account: Account | null) => Promise<boolean>;
 
 /** Outcome of passkey replace finish: existing session stays valid (no new token). */
 export type PasskeyReplaceFinishResult = { ok: true; account: Account } | PasskeyFinishErr;
@@ -131,7 +139,9 @@ export async function startPasskeyRegistration(
  * @param config - RP ID, name, and allowed origins.
  * @param now - Current time in epoch milliseconds.
  * @param viewKey - Capability secret from the invite link (64 lowercase hex).
- * @returns Creation options, or a stable 404/409 error string.
+ * @param admit - Optional login switch check; a refusal is {@link LOGINS_CLOSED_ERROR}
+ *   after the 404/409 checks and before a challenge is stored.
+ * @returns Creation options, or a stable 404/409 or logins-closed error string.
  */
 export async function startPasskeyClaim(
   store: AuthStore,
@@ -139,6 +149,7 @@ export async function startPasskeyClaim(
   config: WebAuthnRuntimeConfig,
   now: number,
   viewKey: string,
+  admit?: SessionAdmit,
 ): Promise<{ ok: true; value: PasskeyBeginResult } | { ok: false; error: string }> {
   if (!/^[0-9a-f]{64}$/.test(viewKey)) {
     logEvent('auth.passkey.claim.fail', { error: CLAIM_NOT_FOUND });
@@ -152,6 +163,9 @@ export async function startPasskeyClaim(
   if (await store.accountHasPasskey(account.id)) {
     logEvent('auth.passkey.claim.fail', { error: CLAIM_ALREADY_HAS_PASSKEY });
     return { ok: false, error: CLAIM_ALREADY_HAS_PASSKEY };
+  }
+  if (admit !== undefined && !(await admit(account))) {
+    return { ok: false, error: LOGINS_CLOSED_ERROR };
   }
   const generated = await ceremony.generateRegistrationOptions({
     rpName: config.rpName,
@@ -197,6 +211,9 @@ export async function startPasskeyClaim(
  *   {@link startPasskeyClaim}.
  * @param credential - Browser attestation JSON.
  * @param nostr - Optional KEK (and test-only keygen) to mint a custodial nsec.
+ * @param admit - Optional login switch check, run after the attestation is
+ *   verified and before any account, credential, or session write; a refusal
+ *   is {@link LOGINS_CLOSED_ERROR}. A new account is checked as `null`.
  * @returns Session + account, or `{ ok: false, error }`. New accounts have
  *   walletRequired true and walletBackupSeenAt null. Claim sets
  *   walletRequired true without clearing a seen timestamp. An existing
@@ -212,6 +229,7 @@ export async function finishPasskeyRegistration(
   challengeId: string,
   credential: unknown,
   nostr?: { kek: Uint8Array; keygen?: NostrKeygen },
+  admit?: SessionAdmit,
 ): Promise<PasskeyFinishResult> {
   const originErr = requireOrigin(origin, config.expectedOrigins);
   if (originErr !== null) {
@@ -249,6 +267,9 @@ export async function finishPasskeyRegistration(
     if (await store.accountHasPasskey(accountId)) {
       return { ok: false, error: 'Invalid passkey' };
     }
+    if (admit !== undefined && !(await admit(existing))) {
+      return { ok: false, error: LOGINS_CLOSED_ERROR };
+    }
     const stored = await store.createFirstPasskeyCredential({
       credentialId: verified.credentialId,
       publicKey: verified.publicKey,
@@ -272,6 +293,9 @@ export async function finishPasskeyRegistration(
     }
     const claimed: Account = { ...existing, walletRequired: true };
     return mintSession(store, now, claimed);
+  }
+  if (admit !== undefined && !(await admit(null))) {
+    return { ok: false, error: LOGINS_CLOSED_ERROR };
   }
   let name: string | null = null;
   if (typeof challenge.requestedName === 'string') {
@@ -381,6 +405,9 @@ export async function startPasskeyAuthentication(
  * @param challengeId - Id returned by {@link startPasskeyAuthentication}.
  * @param credential - Browser assertion JSON.
  * @param nostr - Optional KEK (and test-only keygen) to backfill a missing nsec.
+ * @param admit - Optional login switch check, run after the assertion is
+ *   verified and before the sign count or a session is written; a refusal is
+ *   {@link LOGINS_CLOSED_ERROR}.
  * @returns Session + account, or `{ ok: false, error }`. After the account is
  *   loaded, {@link isWrongAccount} is {@link WRONG_ACCOUNT_ERROR} and never
  *   issues a token.
@@ -394,6 +421,7 @@ export async function finishPasskeyAuthentication(
   challengeId: string,
   credential: unknown,
   nostr?: { kek: Uint8Array; keygen?: NostrKeygen },
+  admit?: SessionAdmit,
 ): Promise<PasskeyFinishResult> {
   const originErr = requireOrigin(origin, config.expectedOrigins);
   if (originErr !== null) {
@@ -433,6 +461,9 @@ export async function finishPasskeyAuthentication(
   });
   if (!verified.ok) {
     return { ok: false, error: 'Invalid passkey' };
+  }
+  if (admit !== undefined && !(await admit(account))) {
+    return { ok: false, error: LOGINS_CLOSED_ERROR };
   }
   const latest = await store.getPasskeyCredential(stored.credentialId);
   /* v8 ignore next 3 -- credential cannot vanish mid-request in the in-memory store */

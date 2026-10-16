@@ -89,6 +89,11 @@ import {
 } from '@/lib/spark-invoice-store';
 import { migrateWalletSchema, PostgresWalletStore, type WalletStore } from '@/lib/wallet-store';
 import {
+  migrateLoginGateSchema,
+  PostgresLoginGateStore,
+  type LoginGateStore,
+} from '@/lib/login-gate-store';
+import {
   migrateMemberEventSchema,
   PostgresMemberEventStore,
   type MemberEventStore,
@@ -212,6 +217,12 @@ export interface BootStores {
    * SQL client was opened so `createApp` keeps the empty in-memory default.
    */
   memberEventStore: MemberEventStore | undefined;
+  /**
+   * Postgres-backed login switch and allowlist (`app_setting`,
+   * `login_allowlist`), or `undefined` when no SQL client was opened so
+   * `createApp` keeps the empty in-memory default.
+   */
+  loginGateStore: LoginGateStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -257,6 +268,7 @@ export interface BootFxOptions {
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
  * `memberEventStore: undefined`,
+ * `loginGateStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, an empty {@link InMemoryFiatStore}, and an
@@ -266,7 +278,7 @@ export interface BootFxOptions {
  * `btc_fiat_spot`, served by {@link PostgresFxSpotStore}),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, and `member_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
@@ -276,8 +288,8 @@ export interface BootFxOptions {
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore},
  * {@link PostgresDailyRosterStore}, {@link PostgresBannerStore},
- * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore}, and
- * {@link PostgresMemberEventStore}, parses
+ * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
+ * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
  * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
@@ -302,7 +314,7 @@ export interface BootFxOptions {
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
- * `migrateMemberEventSchema`, then `migrateDbChangeSchema`, so
+ * `migrateMemberEventSchema`, then `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
  * `diagnostic_event`, `spark_invoice`, wallet tables, and `member_event` are
  * migrated between `account_image` and `db_change` and `trg_db_change`
  * attaches to `api_log`, `account_image`, `diagnostic_event`,
@@ -364,6 +376,7 @@ export async function openBootStores(
       sparkInvoiceStore: undefined,
       walletStore: undefined,
       memberEventStore: undefined,
+      loginGateStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -395,6 +408,7 @@ export async function openBootStores(
   await migrateSparkInvoiceSchema(sqlClient);
   await migrateWalletSchema(sqlClient);
   await migrateMemberEventSchema(sqlClient);
+  await migrateLoginGateSchema(sqlClient);
   const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -591,5 +605,6 @@ export async function openBootStores(
     sparkInvoiceStore: new PostgresSparkInvoiceStore(sqlClient),
     walletStore: new PostgresWalletStore(sqlClient),
     memberEventStore: new PostgresMemberEventStore(sqlClient),
+    loginGateStore: new PostgresLoginGateStore(sqlClient),
   };
 }

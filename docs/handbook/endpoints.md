@@ -150,7 +150,7 @@
 
 ## Endpoint: POST /debug/accounts/:id/session
 
-- **Purpose:** Operator mint of a member bearer session for the given account id. Response `{ token }`. For e2e and operator debugging only — not a member login path. An account with `sessionRefused` is refused with no mint and no `debug.accounts.session_minted` log.
+- **Purpose:** Operator mint of a member bearer session for the given account id. Response `{ token }`. For e2e and operator debugging only — not a member login path. An account with `sessionRefused` is refused with no mint and no `debug.accounts.session_minted` log. Not checked against the login switch or `APP_BUILD_REQUIRED`: it is an operator tool, not a member login.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match; 404 `{ error: 'Not found' }` when the account id is unknown; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true.
 - **Used by:** Playwright e2e against the booted process; operators reproducing member HTTP.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
@@ -302,6 +302,41 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: GET /debug/logins
+
+- **Purpose:** Operator read of the login switch. Returns `{ open, source, defaultOpen, allowlist }`: `source` is `stored` once `PUT /debug/logins` ran and `default` before that (then `open` equals `defaultOpen` from `LOGINS_OPEN_DEFAULT`); `allowlist` is `[{ accountId, createdAt }]`, oldest first, `createdAt` ISO.
+- **Errors:** 503 `{ error: 'Debug is not configured' }` when `DEBUG_TOKEN` is unset or blank; 401 `{ error: 'Unauthorized' }` when the Bearer token does not match.
+- **Used by:** Operators before and after a release; `scripts/gifts-debug.sh logins`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: PUT /debug/logins
+
+- **Purpose:** Operator set of the login switch. Body `{ open: boolean }` (no other keys). Stores the value in `app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from then on, and returns the same JSON as `GET /debug/logins`. While closed, `POST /auth/passkey/register/begin`, `POST /auth/passkey/register/finish`, and `POST /auth/passkey/authenticate/finish` answer 503 `logins_closed` except for the platform account and allowlisted accounts. Existing sessions are not touched. Logs `debug.logins.set`.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 `{ error: 'Expected a JSON body with an "open" boolean' }`.
+- **Used by:** Operators closing logins for a release and opening them again; `scripts/gifts-debug.sh logins-open` / `logins-close`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: POST /debug/logins/allowlist
+
+- **Purpose:** Operator add of one account to the login allowlist. Body `{ accountId }` (UUID, any case; stored lower case). Returns `{ added, ...GET /debug/logins }`; `added` is `false` when the account was already listed (its first `createdAt` stays). Removing the account removes its row. Logs `debug.logins.allowlist.add`.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 `{ error: 'Expected a JSON body with an "accountId" uuid' }`; 404 `{ error: 'Not found' }` when no account has that id.
+- **Used by:** Operators letting testers sign in while logins are closed; `scripts/gifts-debug.sh logins-allow`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: DELETE /debug/logins/allowlist/:accountId
+
+- **Purpose:** Operator removal of one account from the login allowlist. Returns `{ removed, ...GET /debug/logins }`; `removed` is `false` when the account was not listed. Does not end its sessions. Logs `debug.logins.allowlist.remove`.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 404 `{ error: 'Not found' }` when `:accountId` is not a UUID.
+- **Used by:** Operators; `scripts/gifts-debug.sh logins-disallow`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: DELETE /debug/sessions
+
+- **Purpose:** Operator end of every member session: deletes every `auth_session` row and returns `{ deleted }` (row count). Every bearer that held one answers 401 from then on, so the app falls back to signed out; members sign in again (subject to the login switch). Operators authenticate with `DEBUG_TOKEN`, not a session, so no row is kept. Each deleted row is logged in `db_change` with the token hashed. Logs `debug.sessions.deleted` with the count.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized.
+- **Used by:** Operators after a release that must sign every member out; `scripts/gifts-debug.sh end-sessions`.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /debug/passkey-renew/reopen
 
 - **Purpose:** Operator delete of one account's failed passkey-renew rows so the blocking dialog opens again at the explanation. Body `{ accountId }` UUID. Returns `{ deleted }`. Succeeded and cancelled rows stay. Does not change the account. Refuses when `walletRequired` is true.
@@ -312,28 +347,28 @@
 ## Endpoint: POST /auth/passkey/authenticate/begin
 
 - **Purpose:** Issues WebAuthn request options for a discoverable credential. JSON: challengeId, options (`extensions.prf.eval.first` = base64url SHA-256 of `21gifts-nostr-v1`).
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it. That 500 is logged as `auth.passkey.login.fail` with the same error and no account id.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it. That 500 is logged as `auth.passkey.login.fail` with the same error and no account id. With `APP_BUILD_REQUIRED` set, a missing or different `X-App-Build` header is HTTP 403 `{ error: 'A new app version is ready. Reload the page.', code: 'app_outdated' }` before any other check (logged as `auth.app.outdated`). Not checked against the login switch: the account is unknown until finish.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/authenticate/finish
 
 - **Purpose:** Verifies the assertion and issues `{ token, account }` immediately. Requires `Origin`. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `notifyHearts`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
-- **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.login.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`.
+- **Errors:** 400 invalid body/origin/challenge/credential; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.login.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`. With `APP_BUILD_REQUIRED` set, a missing or different `X-App-Build` header is HTTP 403 `{ error: 'A new app version is ready. Reload the page.', code: 'app_outdated' }` before any other check (logged as `auth.app.outdated`). While the operator login switch is closed (`GET /debug/logins`), HTTP 503 `{ error: 'Logins are paused for an update. Try again later.', code: 'logins_closed' }` after the assertion is verified and before the sign count or a session is written, unless the account is the platform account or on the login allowlist.
 - **Used by:** App passkey sign-in.
 - **Auth:** Public (proof is the assertion).
 
 ## Endpoint: POST /auth/passkey/register/begin
 
 - **Purpose:** Issues WebAuthn creation options. JSON: challengeId, options (`extensions.prf: {}`). Empty body, `{}`, or no `name` and no `viewKey` mints a pending new account id (row created only on finish); `user.name` is that UUID and `user.displayName` is `21.gifts`. Optional `{ "name": string }` with no `viewKey` normalizes with the username rules; on success `user.name` and `user.displayName` are that normalized string and `user.id` stays the new account UUID. Optional body `{ "viewKey": "<64-hex>" }` claims an operator-provisioned account (same id/name/username/viewKey) and ignores `name`.
-- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 400 `{ error: 'Expected a JSON body with an optional "name" string' }` when `name` is present and not a string; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` when `name` does not normalize; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential; 409 `{ error: 'Username is already in use' }` when the normalized name is taken. Failed name checks write no challenge row. Invalid JSON is 400 `{ error: 'Begin body is not valid JSON' }`, logs `auth.passkey.register.fail` with `json` `invalid` and `bodyBytes`, and does not open a challenge. Those failures log `auth.passkey.register.fail` with the error text and not the view key.
+- **Errors:** HTTP 500 `{ error: 'Server auth is not configured' }` if `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist, or no CORS origin matches it; 400 `{ error: 'Expected a JSON body with an optional "viewKey" string' }` when `viewKey` is present but not a string; 400 `{ error: 'Expected a JSON body with an optional "name" string' }` when `name` is present and not a string; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` when `name` does not normalize; 404 `{ error: 'This profile could not be found.' }` for a malformed/unknown view key; 409 `{ error: 'This profile already has a passkey' }` when the provisioned account already has a credential; 409 `{ error: 'Username is already in use' }` when the normalized name is taken. Failed name checks write no challenge row. Invalid JSON is 400 `{ error: 'Begin body is not valid JSON' }`, logs `auth.passkey.register.fail` with `json` `invalid` and `bodyBytes`, and does not open a challenge. Those failures log `auth.passkey.register.fail` with the error text and not the view key. With `APP_BUILD_REQUIRED` set, a missing or different `X-App-Build` header is HTTP 403 `{ error: 'A new app version is ready. Reload the page.', code: 'app_outdated' }` before any other check (logged as `auth.app.outdated`). While the operator login switch is closed (`GET /debug/logins`), HTTP 503 `{ error: 'Logins are paused for an update. Try again later.', code: 'logins_closed' }` for a new registration (no body or `{ name }`), and for a claim (`{ viewKey }`) after the 404/409 checks unless the profile is the platform account or on the login allowlist.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public.
 
 ## Endpoint: POST /auth/passkey/register/finish
 
 - **Purpose:** Verifies the attestation, creates a `linkingKey: null` account (or binds a passkey to a provisioned account without recreating it), issues `{ token, account }`. Requires `Origin`. When the challenge stored a name, the new account's `name` and `username` are that string. `{ token, account }` uses owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`, `notifyHearts`, `amountUnit`, `funding`, `walletRequired`, `walletBackupSeenAt`, and `passkeyCredentialId`. An account with `sessionRefused` is refused with no bearer.
-- **Errors:** 400 invalid body/origin/challenge/passkey; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` when the stored name no longer normalizes; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 409 `{ error: 'Username is already in use' }` when that handle is taken or the account row was not inserted. Those name failures create no credential and no session. 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.register.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`.
+- **Errors:** 400 invalid body/origin/challenge/passkey; 400 `{ error: 'Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot' }` when the stored name no longer normalizes; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true; 409 `{ error: 'Username is already in use' }` when that handle is taken or the account row was not inserted. Those name failures create no credential and no session. 500 if WebAuthn is unconfigured. A missing body is 400 `Expected a JSON body with challengeId and credential`, logged as `auth.passkey.register.fail` with `json` `absent` and `bodyBytes`. Invalid JSON is 400 `Finish body is not valid JSON`, logged with `json` `invalid` and `bodyBytes`, and the text is not logged. A parsed body without `challengeId` and `credential` is the expected-body 400, logged with `json` `parsed`, `bodyKind`, and for an object `hasCredential` and `challengeIdKind`. The challenge id is logged only when it is 64 lowercase hex. The credential and the raw body are not logged. The 500 is logged as the same event with `Server auth is not configured`. With `APP_BUILD_REQUIRED` set, a missing or different `X-App-Build` header is HTTP 403 `{ error: 'A new app version is ready. Reload the page.', code: 'app_outdated' }` before any other check (logged as `auth.app.outdated`). While the operator login switch is closed (`GET /debug/logins`), HTTP 503 `{ error: 'Logins are paused for an update. Try again later.', code: 'logins_closed' }` after the attestation is verified and before any account, credential, or session write; a new account is always refused, a claimed profile only when it is neither the platform account nor on the login allowlist.
 - **Used by:** App passkey account creation and claim-by-viewKey.
 - **Auth:** Public (proof is the attestation).
 
