@@ -21,8 +21,9 @@ what must be true on release day for that to hold.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
      live list counted below. It was not readable on 2026-10-16; read it on
      release day (see [Check again before release](#check-again-before-release)).
-  5. Production runs exactly the released API and app heads (checked with
-     the deploy runs, see [Check again before release](#check-again-before-release)).
+  5. Production runs exactly the released API and app heads: the newest
+     production deploy of each is the release merge commit (see
+     [Check again before release](#check-again-before-release)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
@@ -246,10 +247,12 @@ recipients and 6 moderators and deletes 1 recipient.
 ## Result
 
 The release does not change who is eligible. `eligibleToday`
-(`src/lib/funding.ts`) is identical on `main` and `staging`: a payout needs an
-`admitted` grant, or a `trial` grant on the current UTC day, unless the
-grant requirement is off for that day. Daily payouts and moderator stipends
-both pass through it. A member whose grant is not eligible on a day is not
+(`src/lib/funding.ts`) is identical on `main` and `staging`: a payout needs a
+role other than `basis`, and an `admitted` grant or a `trial` grant on the
+current UTC day. The grant requirement has applied since 2026-10-01
+(`FUNDING_REQUIRED_FROM_UTC`). Daily payouts and moderator stipends both pass
+through it. The 58 people had the roles `verified`, `moderator` and
+`founder` on 2026-10-16. A member who is not eligible on a day is not
 paid that day, before and after the release alike.
 
 After the `main` release of both changes, every one of the 58 people paid
@@ -267,9 +270,11 @@ they are eligible, on the in-app wallet only, when all of these hold:
    row then belongs to an account with a username, except the one recipient
    without an account, and the move keeps every listed amount. A row that is
    only in the API roster and belongs to no account would be deleted.
-5. Production runs the released heads: the `main` merge commit of the API
-   release and of the app release are the ones their `deploy-prd.yaml` runs
-   published.
+5. Production runs the released heads: in each repository the newest
+   `deploy-prd.yaml` run is the one on the `main` merge commit of the
+   release, it succeeded, and no newer run is queued or in progress. The
+   workflow publishes the movable tag `latest`, so an older green run alone
+   does not prove what is running.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -295,12 +300,15 @@ Repeat the counts above with the same `gifts-debug` reads on release day.
 Read the API roster with `gifts-debug db daily_roster_entry` and compare it
 with `gifts-debug spend --raw`: same addresses, amounts and buckets, and every
 non-host address equal to an account's `lightning_address` with a username.
-Read the grants of the 58 people with `gifts-debug db funding_grant` to know
-who is eligible on release day (`admitted`, or `trial` for that UTC day).
+Read the grants of the 58 people with `gifts-debug db funding_grant` and their
+roles with `gifts-debug db account` to know who is eligible on release day
+(role not `basis`, and `admitted`, or `trial` for that UTC day).
 Check the three settings in the production deployment configuration.
-After both `develop → main` merges, confirm that `deploy-prd.yaml` succeeded
-on each merge commit (`gh run list -R 21gifts/api --workflow deploy-prd.yaml`
-and the same for `21gifts/app`). Each run waits for the infrastructure run
-titled `image-published 21gifts/api:<tag> <sha>` or
-`image-published 21gifts/app:<tag> <sha>`, so its success shows that the
-merge commit was deployed.
+After both `develop → main` merges, confirm for each repository that the
+newest `deploy-prd.yaml` run is the one on the release merge commit, that it
+succeeded, and that no newer run is queued or in progress:
+`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 3 --json headSha,status,conclusion`
+and the same for `21gifts/app`. Each run waits for the infrastructure run
+titled `image-published 21gifts/api:latest <sha>` or
+`image-published 21gifts/app:latest <sha>`, so the newest succeeded run shows
+which merge commit `latest` points to.
