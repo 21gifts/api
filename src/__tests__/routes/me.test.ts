@@ -6,7 +6,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerToken, meRoutes } from '@/routes/me';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
@@ -40,7 +40,7 @@ interface MountOpts {
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
   walletEnabled?: boolean;
-  dailyRoster?: InMemoryDailyRosterStore;
+  dailyRoster?: DailyRosterStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -2036,6 +2036,35 @@ describe('POST /me/username', () => {
         (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
       ),
     ).toBe(true);
+  });
+
+  it('puts the previous username back when the roster rename fails', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const failing: DailyRosterStore = Object.assign(Object.create(roster) as DailyRosterStore, {
+      renameAddress: async () => {
+        throw new Error('roster down');
+      },
+    });
+    const res = await mount(store, { walletEnabled: true, dailyRoster: failing }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(500);
+    expect((await store.getAccount('acc'))?.username).toBe('oldname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+    });
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'daily_roster.address.rename_failed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.username.set')).toBe(false);
   });
 
   it('leaves the roster when the previous username is blank', async () => {

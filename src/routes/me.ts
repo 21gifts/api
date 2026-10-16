@@ -4,7 +4,7 @@ import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
-import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import type { DailyRosterStore, DailyRosterWalletMove } from '@/lib/daily-roster-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
@@ -517,7 +517,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if ((stored.username ?? '').trim().toLowerCase() !== username) {
         return c.json({ error: 'Username is already in use' }, 409);
       }
-      const previous = (current.username ?? '').trim().toLowerCase();
+      const previous = (latest.username ?? '').trim().toLowerCase();
       if (
         deps.dailyRoster !== undefined &&
         deps.lnurlServer !== undefined &&
@@ -525,10 +525,18 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         previous !== username
       ) {
         const host = deps.lnurlServer.host.toLowerCase();
-        const rename = await deps.dailyRoster.renameAddress(
-          `${previous}@${host}`,
-          `${username}@${host}`,
-        );
+        let rename: DailyRosterWalletMove;
+        try {
+          rename = await deps.dailyRoster.renameAddress(
+            `${previous}@${host}`,
+            `${username}@${host}`,
+          );
+        } catch (error) {
+          // Put the previous username back so the roster rows still match it.
+          await deps.store.updateAccount({ ...stored, username: previous });
+          logEvent('daily_roster.address.rename_failed', { accountId: current.id });
+          throw error;
+        }
         if (rename.moved + rename.removed > 0) {
           logEvent('daily_roster.address.renamed', {
             accountId: current.id,
