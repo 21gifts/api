@@ -2109,6 +2109,80 @@ describe('POST /me/username', () => {
     });
   });
 
+  it('moves the roster again when putting the previous username back throws', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    let calls = 0;
+    const flaky: DailyRosterStore = Object.assign(Object.create(roster) as DailyRosterStore, {
+      renameAddress: async (from: string, to: string) => {
+        calls += 1;
+        if (calls === 1) {
+          const update = store.updateAccount.bind(store);
+          store.updateAccount = async (account) => {
+            store.updateAccount = update;
+            throw new Error(`write failed for ${account.id}`);
+          };
+          throw new Error('roster down');
+        }
+        return roster.renameAddress(from, to);
+      },
+    });
+    const res = await mount(store, { walletEnabled: true, dailyRoster: flaky }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(calls).toBe(2);
+    expect((await store.getAccount('acc'))?.username).toBe('newname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'newname@example.test', amountUsd: 2 }],
+    });
+  });
+
+  it('still fails the request when the second roster move throws too', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    let calls = 0;
+    const failing: DailyRosterStore = Object.assign(Object.create(roster) as DailyRosterStore, {
+      renameAddress: async () => {
+        calls += 1;
+        if (calls === 1) {
+          await store.createAccount({
+            id: 'other',
+            linkingKey: null,
+            role: 'basis',
+            name: null,
+            forumLawsDismissed: false,
+            location: null,
+            viewKey: 'c'.repeat(64),
+            createdAt: 1_000_000,
+            rulesAgreedAt: null,
+            username: 'oldname',
+          });
+        }
+        throw new Error('roster down');
+      },
+    });
+    const res = await mount(store, { walletEnabled: true, dailyRoster: failing }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(500);
+    expect(calls).toBe(2);
+    expect((await store.getAccount('acc'))?.username).toBe('newname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+    });
+  });
+
   it('leaves the roster when the previous username is blank', async () => {
     const store = await seededStore();
     const roster = rosterAt('oldname@example.test');

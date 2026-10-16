@@ -531,9 +531,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         try {
           rename = await deps.dailyRoster.renameAddress(from, to);
         } catch (error) {
-          // Put the previous username back so the roster rows still match it.
-          await deps.store.updateAccount({ ...stored, username: previous });
           logEvent('daily_roster.address.rename_failed', { accountId: current.id });
+          // Put the previous username back so the roster rows still match it. The
+          // re-read below decides what to do when that write fails or is ignored.
+          await deps.store.updateAccount({ ...stored, username: previous }).catch(() => undefined);
           const restored = await storedAccount(deps, current.id);
           /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
           if (restored === null) {
@@ -542,7 +543,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           // When the store kept the new username (the old one was taken meanwhile),
           // move the roster once more so it follows the username that stayed.
           if (restored.username === username) {
-            await deps.dailyRoster.renameAddress(from, to);
+            await deps.dailyRoster.renameAddress(from, to).catch(() => undefined);
           }
           throw error;
         }

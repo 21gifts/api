@@ -2006,8 +2006,9 @@ change moves every daily roster row (both buckets) on `<old>@<host>` to
 `<new>@<host>`, so a fixed amount or moderator stipend follows the new
 receiving address; a bucket that already holds the new address drops the old
 row. If that move fails, the previous username is stored again and the
-request fails with 500. If the previous username was taken in the meantime,
-the new username stays and the move runs once more.
+request fails with 500. If the new username stays stored (the previous one
+was taken in the meantime, or writing it back failed), the move runs once
+more so the roster follows it.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
