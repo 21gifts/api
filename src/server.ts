@@ -229,7 +229,8 @@ export interface AppDeps {
   spendPing?: SpendPing;
   /**
    * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
-   * Boot injects the same instance used by {@link resolveSpendPing}.
+   * Boot injects the same instance used by {@link resolveSpendPing}. It is
+   * also passed to `meRoutes` for the `POST /me/username` roster rewrite.
    */
   rosterStore?: DailyRosterStore;
   /**
