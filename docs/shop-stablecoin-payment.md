@@ -256,17 +256,17 @@ conditional update on the expected result, in the same database
 transaction as the payment change it causes. At most one proof of a
 payment is `accepted`.
 
-| From                                           | To           | Trigger                                                                                                                                                                                                                                                          |
-| ---------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| null, `refused`, `stuck`                       | `accepted`   | The proof has an order that is not final and a known amount within the bounds below, whichever comes last; the payment is not closed; and no other proof of the payment is `accepted`. Filling in a value re-evaluates the proof.                                |
-| null, `refused`, `stuck`                       | `superseded` | The same, while the payment is not closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                           |
-| `superseded`, `late`, `refused`, `stuck`, null | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
-| null, `refused`, `stuck`                       | `late`       | The proof gets an order that is not final after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                           |
-| `accepted`, `superseded`, `late`, null         | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
-| `accepted`, `superseded`, `late`, null         | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
-| `accepted`, `superseded`, `late`, null         | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
-| null                                           | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
-| `stuck`                                        | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
+| From                                                       | To           | Trigger                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| null, `refused`, `stuck`                                   | `accepted`   | The proof has an order that is not final and a known amount within the bounds below, whichever comes last; the payment is not closed; and no other proof of the payment is `accepted`. Filling in a value re-evaluates the proof.                                |
+| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is not closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                           |
+| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
+| null, `refused`, `stuck`                                   | `late`       | The proof gets an order that is not final after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                           |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
+| `accepted`, `superseded`, `late`, null                     | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
+| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
+| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
 
 Orchestra is the authority on deposits: an order for a `refused` or
 `stuck` proof moves it as the table states. An order that is already
@@ -329,8 +329,7 @@ When the request carries `timeout`, the api follows the standard's
 waiting rule, which DFX implements. `timeout` is a whole number of
 seconds. Values above 10 count as 10, and an empty or unparseable value
 counts as 0. The api checks every `WAIT_SATS_POLL_MS` (250 ms) until it finds an open amount or a waiting charge, or the time is up. With an open amount it answers
-the pay request below. With a waiting charge it answers today's pinned
-Lightning request. With neither it answers **404** with the body of the
+the pay request below. With a pending charge it answers exactly as a fetch without `timeout` does, including starting or joining the creation procedure for a charge with no shop payment. With neither it answers **404** with the body of the
 standard's example. At most 50 requests per process wait at the same
 time; a further request is answered at once.
 
@@ -522,12 +521,13 @@ One procedure creates a shop payment, for a charge or for a payer:
    payer stop with order 4 when a charge is now pending.
 3. Read the route list and select the candidate pairs ([Methods](#methods)).
 4. Mint one BOLT11 with `requestGiftInvoice`, as
-   `POST /pay/:username/invoice` does, with a 4 s timeout. The
-   implementing change adds that timeout as a parameter and passes it
-   through to `lnurlServerFetch`, whose default of 15 s
-   (`LNURL_SERVER_TIMEOUT_MS`) stays for other callers. Decode the
-   BOLT11 with `decodeBolt11`, check the amount, and read its expiry
-   first. A wrong amount stops the procedure, and nothing is recorded.
+   `POST /pay/:username/invoice` does, with one 4 s deadline for both of its calls, the pay-request
+   resolve and the callback. The implementing change adds that deadline
+   as a parameter and hands each call the time left until it through
+   `lnurlServerFetch`, whose default of 15 s (`LNURL_SERVER_TIMEOUT_MS`)
+   stays for other callers. Decode the BOLT11 with `decodeBolt11` and
+   check the amount, and read its expiry with `inspectBolt11`, which the
+   implementing change extends with the invoice timestamp, first. A wrong amount stops the procedure, and nothing is recorded.
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. A payer creation never
@@ -577,9 +577,15 @@ and expire unused.
 A replacement quote is created under the creation lock. A second fetch
 waits for it and returns it. The replacement runs steps 3, 5, and 6 of
 the creation procedure for the same sats and the same BOLT11, within
-4 s, and inserts one `shop_quote` with the offers that pass in a
-transaction under the account row lock. The same transaction increments
-`shop_payment.replacements`. The payment id stays. A payment never gets a second BOLT11, so the shop can only
+4 s, and inserts one `shop_quote` with the offers that pass in a transaction
+under the account row lock. That transaction first increments
+`shop_payment.replacements` with a conditional update (`status` is
+`open`, `replacements` is below 4, and at least 45 s remain before
+`window_ends_at`), and inserts the quote only when that update changed
+one row. Otherwise it inserts nothing, and the fetch answers with the
+current quote, or as for an ended payment. The in-process lock is per
+container; this update keeps the limit across the two containers of a
+deploy. The payment id stays. A payment never gets a second BOLT11, so the shop can only
 be paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
@@ -1024,11 +1030,13 @@ detail ends, also after the payment is paid or closed, because a later
 deposit still makes an order that Orchestra must fill or refund.
 
 The BOLT11 settling marks the payment `paid` and runs `markPaid` for its
-charge. When the payment's BOLT11 settles after its charge was already
-paid by another invoice or cancelled, the api logs
-`shop.alert.double_settled`: the shop then received the charge twice and
-refunds the payer directly. The watcher does not reopen a cancelled
-charge.
+charge. When the payment's BOLT11 settles after its charge was already paid by
+another invoice, the api logs `shop.alert.double_settled`: the shop then
+received the charge twice and refunds the payer directly. When it
+settles after its charge was cancelled, the api logs
+`shop.alert.cancelled_settled`: the shop received a payment for a
+cancelled charge and refunds the payer or hands over the goods. The
+charge stays `cancelled`; the watcher does not reopen it.
 
 ## Rows
 
@@ -1054,7 +1062,7 @@ CREATE TABLE IF NOT EXISTS shop_payment (
                        'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'proof_refused',
                        'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
-  replacements       integer NOT NULL DEFAULT 0,
+    replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
   next_settle_at     timestamptz,
     next_history_at    timestamptz,
   history_offset     integer NOT NULL DEFAULT 0,
@@ -1189,10 +1197,13 @@ it.
   `{ "id": <uuid>, "status": <status> }`, or `null`. The till shows
   `accepted` as "on its way". It shows the charge as paid only when the
   charge is `paid`. The response is otherwise unchanged.
-- The charge watch stays as it is. A charge is paid when the Spark
-  invoice or any BOLT11 recorded against it settles. Orchestra paying the
-  shop payment's BOLT11 is one of those, because step 4 of the creation
-  procedure records that BOLT11 against the charge. When that happens
+- The charge watch keeps finding a charge paid when the Spark invoice
+  or any BOLT11 recorded against it settles. Orchestra paying the shop
+  payment's BOLT11 is one of those, because step 4 of the creation
+  procedure records that BOLT11 against the charge. The charge watch's
+  `markPaid` now also settles the charge's shop payment in the same
+  transaction under the account row lock, as
+  [By a till charge](#by-a-till-charge) states. When the BOLT11 settles
   after the charge watch ended, the shop payment's `paid` step runs
   `markPaid`.
 
@@ -1388,7 +1399,8 @@ api never logs a key, an RPC URL, raw `hex`, or a BOLT11.
   `shop.alert.order_stuck`, `shop.alert.late_deposit`,
   `shop.alert.proof_stuck`, `shop.alert.detected_mismatch`,
   `shop.alert.accepted_unpaid`,
-  `shop.alert.double_settled`, `shop.alert.shared_deposit_address`, and
+  `shop.alert.double_settled`, `shop.alert.cancelled_settled`,
+  `shop.alert.shared_deposit_address`, and
   `shop.alert.accepted_long` (a payment `accepted` for more than one
   hour)
 
@@ -1412,7 +1424,9 @@ The implementing change adds:
   `GET /pos`;
 - `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
-- a timeout parameter on `requestGiftInvoice`;
+- a deadline parameter on `requestGiftInvoice` that covers both of its
+  calls, and the invoice timestamp on `inspectBolt11`;
+- the shop payment step in the charge watch's `markPaid` transaction;
 - the transactional port with the account row lock, used by `POST /pos`
   and by the creation procedure;
 - the in-process counters of order 7 and the Orchestra call budget, which
