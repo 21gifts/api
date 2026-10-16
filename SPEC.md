@@ -2001,6 +2001,13 @@ accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `"name" | "lightning-address"`). Same handle on the same account is
 idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
+When the account already had a username and the LNURL server is configured, a
+change moves every daily roster row (both buckets) on `<old>@<host>` to
+`<new>@<host>`, so a fixed amount or moderator stipend follows the new
+receiving address; a bucket that already holds the new address drops the old
+row. If that move fails, the previous username is stored again and the
+request fails with 500.
+
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
 Body is not JSON with a `username` string → **Response** `400`:

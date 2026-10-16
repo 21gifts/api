@@ -421,7 +421,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
- *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
+ *   `POST /spend/daily-instruction`, the `POST /me/username` roster rewrite,
+ *   and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), invoiceRateCaps (optional; default
  *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
