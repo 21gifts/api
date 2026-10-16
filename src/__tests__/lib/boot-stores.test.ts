@@ -668,11 +668,18 @@ describe('openBootStores', () => {
     const updateIdx = executes.findIndex(
       (e) => e.text === 'UPDATE daily_roster_entry SET address = $2 WHERE id = $1',
     );
-    const apiLogIdx = executes.findIndex((e) => /CREATE TABLE IF NOT EXISTS api_log/i.test(e.text));
+    const dbChangeIdx = executes.findIndex((e) =>
+      /CREATE TABLE IF NOT EXISTS db_change/i.test(e.text),
+    );
+    const lastTriggerIdx = executes.reduce(
+      (last, e, i) => (e.text.includes('trg_db_change') ? i : last),
+      -1,
+    );
     expect(rosterIdx).toBeGreaterThanOrEqual(0);
-    expect(deleteIdx).toBeGreaterThan(rosterIdx);
+    expect(dbChangeIdx).toBeGreaterThan(rosterIdx);
+    expect(lastTriggerIdx).toBeGreaterThan(dbChangeIdx);
+    expect(deleteIdx).toBeGreaterThan(lastTriggerIdx);
     expect(updateIdx).toBeGreaterThan(deleteIdx);
-    expect(apiLogIdx).toBeGreaterThan(updateIdx);
     expect(executes[deleteIdx]?.params).toEqual([2]);
     expect(executes[updateIdx]?.params).toEqual([1, 'ada@21.gifts']);
     expect(parsedEvents(warn)).toContainEqual(

@@ -385,12 +385,6 @@ export async function openBootStores(
   await migrateTrustSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
   await migrateDailyRosterSchema(sqlClient);
-  const rosterLnurlServer =
-    fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
-  if (rosterLnurlServer !== null) {
-    const move = await moveDailyRosterToWalletAddresses(sqlClient, rosterLnurlServer.host);
-    logEvent('daily_roster.wallet_move', { moved: move.moved, removed: move.removed });
-  }
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
@@ -415,6 +409,12 @@ export async function openBootStores(
   });
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
+  const rosterLnurlServer =
+    fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
+  if (rosterLnurlServer !== null) {
+    const move = await moveDailyRosterToWalletAddresses(sqlClient, rosterLnurlServer.host);
+    logEvent('daily_roster.wallet_move', { moved: move.moved, removed: move.removed });
+  }
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);

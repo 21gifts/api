@@ -88,13 +88,15 @@ data is copied into this document beyond counts.
 Outbound gifts from 2026-10-13 to 2026-10-15 (UTC), kinds `daily` and
 `moderator`, all from source wallet `lightning.space`:
 
-| Day        | Daily recipients | Moderator recipients |
-| ---------- | ---------------- | -------------------- |
-| 2026-10-13 | 57               | 6                    |
-| 2026-10-14 | 57               | 6                    |
-| 2026-10-15 | 55               | 6                    |
+| Day        | Daily payouts | Daily people | Moderator payouts | Moderator people |
+| ---------- | ------------- | ------------ | ----------------- | ---------------- |
+| 2026-10-13 | 86            | 57           | 6                 | 6                |
+| 2026-10-14 | 57            | 57           | 6                 | 6                |
+| 2026-10-15 | 55            | 55           | 6                 | 6                |
 
-- 216 payouts: 198 daily and 18 moderator.
+- 216 payouts: 198 daily and 18 moderator. On 2026-10-13, 29 people received
+  a second daily payout in the catch-up run described below; on the other two
+  days every person received exactly one.
 - 58 distinct people. Every one has an account and a username (matched by the
   local part of `account.lightning_address` against
   `gift.recipient_wos_user`).
@@ -113,7 +115,9 @@ stipend.
 | 6 hours or more                    | 28      |
 
 All 30 payouts more than 2 minutes after the action were paid on 2026-10-13
-between 13:44 and 14:03 UTC. That was a one-off catch-up run for posts of the
+between 13:44 and 14:03 UTC (25 × 1 USD, 4 × 3 USD, 1 × 2 USD). For 29 of
+them it was that person's second daily payout of the day, for 1 the only
+one. That was a one-off catch-up run for posts of the
 same day, not the regular flow. In the regular flow, a member is paid only
 after opening the app and posting.
 
@@ -200,7 +204,8 @@ row would match: listed recipients would fall back to the 1 USD default, and
 moderators would get no stipend.
 
 `moveDailyRosterToWalletAddresses` (`src/lib/daily-roster-store.ts`) runs in
-`openBootStores` right after `migrateDailyRosterSchema`, when
+`openBootStores` after `migrateDbChangeSchema` and `repairGiftKind`, so
+`db_change` records every DELETE and UPDATE it makes, when
 `resolveLnurlServerConfig` resolves:
 
 - A row already on the host stays.
