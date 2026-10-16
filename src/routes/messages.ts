@@ -18,6 +18,7 @@ import {
 } from '@/lib/goal-rate';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { isOperatorBearer } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
@@ -330,6 +331,10 @@ export interface MessagesRouteDeps {
    * ask; a BTC ask still stores the typed sats.
    */
   goalRateDay?: () => Promise<GoalRateDay | null>;
+  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  debugToken?: string;
+  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  debugReadToken?: string;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
@@ -2566,12 +2571,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
     })
     .get('/:id/edits', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      if (!roleAtLeast(account.role, 'moderator')) {
-        return c.json({ error: 'Forbidden' }, 403);
+      const header = c.req.header('authorization');
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        const account = await authedAccount(deps, header);
+        if (account === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (!roleAtLeast(account.role, 'moderator')) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
       }
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
@@ -2619,12 +2627,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
     })
     .get('/hidden', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      if (!roleAtLeast(account.role, 'moderator')) {
-        return c.json({ error: 'Forbidden' }, 403);
+      const header = c.req.header('authorization');
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        const account = await authedAccount(deps, header);
+        if (account === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (!roleAtLeast(account.role, 'moderator')) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
       }
       try {
         const rows = await deps.store.listHidden(MESSAGE_LIST_LIMIT);

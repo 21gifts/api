@@ -1676,3 +1676,66 @@ describe('GET /funding/payout-days', () => {
     );
   });
 });
+
+describe('operator tokens on the staff funding GETs', () => {
+  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+
+  function operatorApp(
+    authStore: InMemoryAuthStore,
+    fundingStore: FundingStore,
+    tokens: { debugToken?: string; debugReadToken?: string } = TOKENS,
+  ): Hono {
+    return new Hono().route(
+      '/funding',
+      fundingRoutes({
+        authStore,
+        fundingStore,
+        messageStore: new InMemoryMessageStore(),
+        now,
+        gifts: new InMemoryGiftStore(),
+        ...tokens,
+      }),
+    );
+  }
+
+  it.each([
+    ['write', 'op-write'],
+    ['read', 'op-read'],
+  ] as const)(
+    'reads the queue, one application, and the payout matrix with the %s token',
+    async (_kind, token) => {
+      const { authStore, fundingStore } = await staffed();
+      await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+      const app = operatorApp(authStore, fundingStore);
+
+      const list = await get(app, '/funding/applications', token);
+      expect(list.status).toBe(200);
+      const listed = (await list.json()) as { applications: Array<{ accountId: string }> };
+      expect(listed.applications.map((row) => row.accountId)).toEqual([VERIFIED]);
+
+      const one = await get(app, `/funding/applications/${VERIFIED}`, token);
+      expect(one.status).toBe(200);
+      expect(((await one.json()) as { grant: { status: string } }).grant.status).toBe('pending');
+
+      const payouts = await get(app, '/funding/payout-days', token);
+      expect(payouts.status).toBe(200);
+      expect(((await payouts.json()) as { days: unknown[] }).days).toHaveLength(7);
+    },
+  );
+
+  it('keeps a staff session and refuses a wrong or unconfigured operator bearer', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const staff = await get(operatorApp(authStore, fundingStore), '/funding/applications', 'mod');
+    expect(staff.status).toBe(200);
+    for (const path of [
+      '/funding/applications',
+      `/funding/applications/${VERIFIED}`,
+      '/funding/payout-days',
+    ]) {
+      const wrong = await get(operatorApp(authStore, fundingStore), path, 'op-other');
+      expect(wrong.status).toBe(401);
+      const unset = await get(operatorApp(authStore, fundingStore, {}), path, 'op-write');
+      expect(unset.status).toBe(401);
+    }
+  });
+});
