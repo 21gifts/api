@@ -1,6 +1,7 @@
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
+import { classifyDebugDbBearer } from '@/lib/debug-token';
 import { measureGrantContinuation } from '@/lib/grant-continuation';
 import { logEvent } from '@/lib/log';
 import type { ShopNoteRef } from '@/lib/message-store';
@@ -20,26 +21,36 @@ export interface GrantContinuationRouteDeps {
   messages: { listLiveAssignedShops(): Promise<ShopNoteRef[]> };
   /** POS charges in the UTC window, every status. */
   pos: { listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]> };
+  /** Operator write token, or `undefined` when unset. Reads the same body as a session. */
+  debugToken: string | undefined;
+  /** Optional operator read-only token. Reads the same body as a session. */
+  debugReadToken?: string;
 }
 
 /**
  * Build the `/funding/goal` route group.
  *
  * Mounted at `/funding/goal` so the public path is `GET /funding/goal`.
- * Any signed-in role may read it. This does not serve the public 30-day series.
+ * Any signed-in role may read it. `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` also
+ * reads it without a session, because the body holds only counts.
+ * This does not serve the public 30-day series.
  *
- * @param deps - Auth store, clock, shop notes, and POS charges.
+ * @param deps - Auth store, clock, shop notes, POS charges, and operator tokens.
  * @returns A Hono app with `GET /`.
  */
 export function grantContinuationRoutes(deps: GrantContinuationRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
-    const token = bearerToken(c.req.header('authorization'));
-    if (token === null) {
-      return c.json({ error: 'Unauthorized' }, 401);
-    }
-    const account = await resolveSession(deps.authStore, deps.now(), token);
-    if (account === null) {
-      return c.json({ error: 'Unauthorized' }, 401);
+    const authorization = c.req.header('authorization');
+    const access = classifyDebugDbBearer(deps.debugToken, deps.debugReadToken, authorization);
+    if (access !== 'write' && access !== 'read') {
+      const token = bearerToken(authorization);
+      if (token === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const account = await resolveSession(deps.authStore, deps.now(), token);
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
     }
     const today = new Date(deps.now()).toISOString().slice(0, 10);
     const todayMs = Date.parse(`${today}T00:00:00.000Z`);

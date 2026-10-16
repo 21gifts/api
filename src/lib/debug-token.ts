@@ -54,7 +54,8 @@ export function assertDistinctDebugTokens(
 }
 
 /**
- * Classify a Bearer header for `GET /debug/db`.
+ * Classify a Bearer header for `GET /debug/db` and the operator read of
+ * `GET /funding/goal`.
  *
  * Trim both tokens. Both empty → `unconfigured`. Otherwise the write token
  * is tried first, then the read token. A configured token that does not

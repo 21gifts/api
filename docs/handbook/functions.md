@@ -17,7 +17,7 @@
 ## Function: shopActivityRoutes
 
 - **Purpose:** Hono sub-app for `GET /shops/activity`. No bearer. Any caller, including no session, gets `{ days }`. Loads live assigned shop notes and POS charges in the 30-UTC-day window, then returns `{ days }` from `activeShopDays`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
-- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
+- **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween }, debugToken, debugReadToken? }`. Both tokens unset keeps the session-only path.
 - **Returns / side effects:** Hono app mounted at `/shops/activity`. 200 `{ days }`. Store throw → 503 `{ error: 'Shop activity is unavailable' }` and `shops.activity.failed`.
 - **Used by:** `createApp`.
 
@@ -30,7 +30,7 @@
 
 ## Function: grantContinuationRoutes
 
-- **Purpose:** Hono sub-app for `GET /funding/goal`. Bearer session required; any signed-in role, including `basis`, gets the body. No session or an unknown bearer is 401. Loads live assigned shop notes and POS charges in the 7-UTC-day window, then returns `measureGrantContinuation`. Does not call `activeShopDays` or read `GET /shops/activity`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
+- **Purpose:** Hono sub-app for `GET /funding/goal`. Any signed-in role, including `basis`, gets the body. The operator `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` gets the same body without a session (checked first via `classifyDebugDbBearer`); the body holds only counts. No bearer or a bearer that is neither an operator token nor a session is 401. Loads live assigned shop notes and POS charges in the 7-UTC-day window, then returns `measureGrantContinuation`. Does not call `activeShopDays` or read `GET /shops/activity`. Does not log account ids, note ids, or charge rows. No Sunday-rest gate on this GET.
 - **Inputs:** `{ authStore, now, messages: { listLiveAssignedShops }, pos: { listCreatedBetween } }`.
 - **Returns / side effects:** Hono app mounted at `/funding/goal`. 200 `{ days, qualifyingShops }`. 401 `{ error: 'Unauthorized' }`. Store throw → 503 `{ error: 'Funding goal is unavailable' }` and `funding.goal.failed` with only `event` and `ts`.
 - **Used by:** `createApp`.
@@ -526,10 +526,10 @@
 
 ## Function: classifyDebugDbBearer
 
-- **Purpose:** Classify a Bearer header for `GET /debug/db` only. The read token opens no other route.
+- **Purpose:** Classify a Bearer header for `GET /debug/db` and the operator read of `GET /funding/goal`. The read token opens no other route.
 - **Inputs:** Write token and read token (each `string | undefined`, both trimmed) and the raw `Authorization` header or `undefined`.
 - **Returns / side effects:** `'unconfigured'` when both trimmed tokens are empty. Otherwise the write token is tried first, then the read token. No match returns `'unauthorized'`. No I/O.
-- **Used by:** `debugDbRoutes` for `GET /debug/db`. HEAD uses that same GET handler.
+- **Used by:** `debugDbRoutes` for `GET /debug/db`. HEAD uses that same GET handler. `grantContinuationRoutes` for `GET /funding/goal`, where `'write'` and `'read'` skip the session lookup and every other result falls through to the Bearer session.
 
 ## Function: compareAccountsForList
 

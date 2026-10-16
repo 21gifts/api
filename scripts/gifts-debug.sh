@@ -3,8 +3,8 @@
 # gifts-debug — operator listing, role assignment, Lightning Address unlink,
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
-#               spend live roster, trust-edge backfill, account-by-id, and
-#               full-table dump for 21.gifts
+#               spend live roster, trust-edge backfill, account-by-id,
+#               grant goal, and full-table dump for 21.gifts
 #               (GET /debug/accounts, GET /debug/accounts/:id,
 #               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
@@ -15,7 +15,8 @@
 #               GET {DEBUG_SPEND_URL}/debug/recipients,
 #               GET /debug/trust-edges, POST /debug/trust-edges,
 #               DELETE /debug/trust-edges,
-#               GET /debug/dump, GET /debug/dump/:table). No raw SQL.
+#               GET /debug/dump, GET /debug/dump/:table,
+#               GET /funding/goal). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -46,6 +47,7 @@
 #   gifts-debug restore <id>         # POST unhide; print GET /debug/messages/:id JSON
 #   gifts-debug settle <payment-hash> <note> [preimage]  # POST manual settle; print response JSON
 #   gifts-debug spend [--raw]        # spend live roster table (default) or JSON
+#   gifts-debug funding-goal [--raw] # grant goal: shops per UTC day and qualifyingShops
 #   gifts-debug trust-edge <subject-id> <actor-id> <kind>
 #                                      # POST a stored trust edge; print edge JSON
 #                                      # kind: verify | moderator_propose |
@@ -645,6 +647,23 @@ print("%s rows" % len(rows), file=sys.stderr)
 '
 }
 
+cmd_funding_goal() {
+  local body
+  body=$(debug_get "/funding/goal")
+  if [ "$RAW" -eq 1 ]; then
+    printf '%s\n' "$body"
+    return
+  fi
+  printf '%s' "$body" | python3 -c '
+import json, sys
+data = json.load(sys.stdin)
+print("day\tshopCount")
+for row in data.get("days") or []:
+    print("%s\t%s" % (row.get("day", ""), row.get("shopCount", "")))
+print("qualifyingShops\t%s" % data.get("qualifyingShops", ""))
+'
+}
+
 fetch_debug_db() {
   local tmp status body
   tmp=$(mktemp)
@@ -745,6 +764,7 @@ case "${1:-}" in
   restore) shift; cmd_restore "$@" ;;
   settle) shift; cmd_settle "$@" ;;
   spend) cmd_spend ;;
+  funding-goal) cmd_funding_goal ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
   trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
   ""|-h|--help) usage 0 ;;
