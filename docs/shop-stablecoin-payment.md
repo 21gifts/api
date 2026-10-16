@@ -264,7 +264,7 @@ payment is `accepted`.
 | null, `refused`, `stuck`                                   | `late`       | The proof gets an order that is not final after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                           |
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
-| `accepted`, `superseded`, `late`, null                     | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
+| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
 | null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
 | `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
 
@@ -328,8 +328,14 @@ answers today's pinned Lightning request.
 When the request carries `timeout`, the api follows the standard's
 waiting rule, which DFX implements. `timeout` is a whole number of
 seconds. Values above 10 count as 10, and an empty or unparseable value
-counts as 0. The api checks every `WAIT_SATS_POLL_MS` (250 ms) until it finds an open amount or a waiting charge, or the time is up. With an open amount it answers
-the pay request below. With a pending charge it answers exactly as a fetch without `timeout` does, including starting or joining the creation procedure for a charge with no shop payment. With neither it answers **404** with the body of the
+counts as 0. The api checks every `WAIT_SATS_POLL_MS` (250 ms) until it finds an open amount or a pending charge that has no shop payment or an `open` one, or the time is up. With an open amount it answers
+the pay request below. A pending charge with no shop payment or an `open` one answers exactly
+as a fetch without `timeout` does, including starting or joining the
+creation procedure. A pending charge whose shop payment is `accepted`,
+`paid`, or `ended` counts as nothing waiting, because the request with
+`timeout` comes from an OpenCryptoPay wallet and no OpenCryptoPay
+payment is waiting; LNURL wallets, which never send `timeout`, still get
+today's request. With neither it answers **404** with the body of the
 standard's example. At most 50 requests per process wait at the same
 time; a further request is answered at once.
 
@@ -811,7 +817,11 @@ duty, and the order duty.
    Orchestra counted the deposit there, and the newer row is recorded
    `refused` with `refusal` `tx_used`.
 4. A `23505` on `shop_proof_log_idx` or `shop_proof_order_idx` while a
-   row is filled in means both rows are one deposit. In one transaction
+   row is filled in means both rows are one deposit. The api reads the
+   row that holds the value. When it belongs to another offer, the row
+   being filled in is recorded `refused` with `refusal` `tx_used`, as in
+   step 3, and nothing is deleted. When it belongs to the same offer, in
+   one transaction
    the api keeps the row that holds an order, or else the older row,
    reads the other row's log index, value, and order, keeps any value
    the kept row already has, deletes the other
