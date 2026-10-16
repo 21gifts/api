@@ -913,7 +913,7 @@ export function serializeDebugMessage(
  * exactly when `row.accountId === null && row.authorPubkey !== null`; the
  * pubkey itself never appears in this JSON. Includes `accountId` for a
  * 21.gifts author and omits it for an external row. Never includes
- * `eventId`, `nostrPublishState`, `payable`, author `role`, `nostrEvent`,
+ * `eventId`, `nostrPublishState`, `payable`, `authorCanReceive`, author `role`, `nostrEvent`,
  * `claimedUntil`, `contentFp`, nsec, or photo/video bytes.
  *
  * @param row - Persisted message (including hidden rows and replies).

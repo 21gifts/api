@@ -1440,7 +1440,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a receiving address are set;
+`replyCount`, `payable` when a non-empty `eventId` and a receiving address are set,
+`authorCanReceive` (true when the author has a receiving address, signed or not);
 optional `goalSats` omitted when unset, optional `goalRepayable: true` when
 the stored column is true (omitted when null; never false), optional
 `goalTermDays` when the stored column is not null (omitted when null), and when
@@ -1456,8 +1457,9 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 notes owned by the member under the assigned-shop rule described above,
 newest-first (`createdAt` desc, `id` desc), capped at 200. Body
 `{ "messages": [...] }` uses the same `serializeMessage` shape as the posts
-route, including `accountId`, attributed `replyCount`, and `payable` when a
-non-empty `eventId` and a non-blank Lightning Address are set; it omits
+route, including `accountId`, attributed `replyCount`, `payable` when a
+non-empty `eventId` and a non-blank Lightning Address are set, and
+`authorCanReceive` (true when the author has a receiving address, signed or not); it omits
 `parentId`.
 
 ### `GET /members/:accountId/credits`
@@ -1469,15 +1471,15 @@ assignment, no hashtag), newest-first (`createdAt` desc, `id` desc),
 capped at 200. Funded, unfunded, and still-live repaid notes all count;
 deleted notes and replies do not. Body `{ "messages": [...] }` uses the
 same `serializeMessage` shape as the posts route, including `accountId`,
-attributed `replyCount`, and `payable` when a non-empty `eventId` and a
-non-blank Lightning Address are set; it omits `parentId`.
+attributed `replyCount`, `payable` when a non-empty `eventId` and a
+non-blank Lightning Address are set, and `authorCanReceive` (true when the author has a receiving address, signed or not); it omits `parentId`.
 
 ### `GET /members/:accountId/replies`
 
 Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
-`serializeMessage` with `payable` when a non-empty `eventId` and a receiving address are set, `accountId`, and optional
+`serializeMessage` with `payable` when a non-empty `eventId` and a receiving address are set, `authorCanReceive` (true when the author has a receiving address, signed or not), `accountId`, and optional
 `parentId` when set; omits `replyCount`. Replies never include `goalSats`,
 `goalRepayable`, or `goalTermDays`.
 Top-level notes by that member are not listed.
@@ -5028,7 +5030,9 @@ JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **8000** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
-in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
+in `{ messages }`), including `sats`, `payable`, `authorCanReceive` (a freshly
+created note is not signed yet, so `payable` is false while `authorCanReceive`
+is true when the author can receive), `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
@@ -5571,7 +5575,8 @@ public message JSON (`photoCount` 0–10 always present;
 stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
 photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and the author has a
-receiving address (see [Receiving address](#receiving-address)), and no `replyCount`. Items include `accountId` whenever
+receiving address (see [Receiving address](#receiving-address)),
+`authorCanReceive` when the author has a receiving address, signed or not, and no `replyCount`. Items include `accountId` whenever
 the stored author id is non-null, with or without a session. External replies
 set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
@@ -5998,7 +6003,7 @@ authorPubkey !== null` (the same rule as public message JSON), and
 `role` null; null `deletedBy` is `{ id: null, name: null, role: null }`).
 Includes `accountId` for a 21gifts author and omits it for an external row.
 Never includes `authorPubkey`, `eventId`, `nostrPublishState`,
-`payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
+`payable`, `authorCanReceive`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
 A founder/moderator session may GET the hidden permalink and photo/video.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
@@ -6732,7 +6737,8 @@ status or the text:
 - `"code": "cannot_receive"`: the recipient cannot receive. It has no member
   account, no verified wallet, or its wallet refuses the zap (forum gift and
   compose-target posting fee, conversation invoice, repayment, habit
-  donation).
+  donation). On `POST /conversations/:id/invoice` it also covers a counterpart
+  whose profile note is not signed yet or who has no Nostr key.
 
 Other 400s on the same routes (for example an unsigned forum note on
 `POST /messages/:id/invoice`) carry no `code`.
