@@ -555,11 +555,11 @@ CI will fail on the same conditions; catching them locally is faster.
 ### A38
 
 This repository requires A38 according to the canonical A38 standard in
-[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/59e31ebd11ab587897dc8e5b2a6f21e489f35f3d/docs/a38.md)
-at commit `59e31ebd11ab587897dc8e5b2a6f21e489f35f3d`. Repo job selection:
+[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/1b153cdf7a1ac3687ba98cad7d323743050fb54b/docs/a38.md)
+at commit `1b153cdf7a1ac3687ba98cad7d323743050fb54b`. Repo job selection:
 `.github/a38.json`. Target-branch applicability and fork workflow approval:
 `.github/pr-guard.json`. `dfx pr guard` is
-[wired in](https://github.com/DFXswiss/agent/blob/59e31ebd11ab587897dc8e5b2a6f21e489f35f3d/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
+[wired in](https://github.com/DFXswiss/agent/blob/1b153cdf7a1ac3687ba98cad7d323743050fb54b/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
 
 This is a **public** repository. GitHub-hosted runners execute the heavy suite
 (typecheck, handbook completeness, e2e completeness, Vitest with the coverage
@@ -573,7 +573,9 @@ Draft pull requests run the GitHub CI jobs. GitHub holds fork runs from
 external contributors as `action_required`. Ready does not start CI. After a
 fresh A38 enforce pass on the current head, `dfx pr guard` approves those
 waiting initial runs, then sets Ready when the required GitHub jobs are green
-and the PR is mergeable. The merger does not click Approve and run workflows.
+and the PR is mergeable. A second review comment whose `blocks_merge` is true
+returns the pull request to draft until a newer second review clears it. The
+merger does not click Approve and run workflows.
 Do not ask a maintainer to approve workflow runs. Post the light A38 report
 on the current head only when the pinned standard requires one. A head that
 still requires a report needs a new report. That standard defines the waivers,
