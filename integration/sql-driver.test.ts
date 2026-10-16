@@ -4,6 +4,7 @@ import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store'
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
 import type { FundingGrant } from '@/lib/funding';
+import type { MergeDb } from '@/lib/account-merge';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
 import { migrateDbChangeSchema } from '@/lib/db-change';
@@ -86,6 +87,79 @@ describe('Bun SQL text[] binding', () => {
       } else {
         throw new Error(`unexpected tags shape: ${typeof tags}`);
       }
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('admitWithinPlaces never exceeds the round under concurrent admissions', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateFundingSchema(client);
+      const transactions: MergeDb = {
+        begin: (run) =>
+          sql.begin(async (tx) =>
+            run({
+              query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+                (await tx.unsafe(text, [...params])) as R[],
+            }),
+          ),
+      };
+      const store = new PostgresFundingStore(client, transactions);
+      const startsAtMs = Date.now() + 60_000;
+      const round = { number: 99, startsAtMs, places: 2, nextGoalShops: 20 };
+      const ids = [
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+        crypto.randomUUID(),
+      ];
+      for (const id of ids) {
+        await client.execute(
+          `INSERT INTO account (id, role, lightning_address_verified, forum_laws_dismissed, created_at)
+VALUES ($1, 'verified', false, false, $2)`,
+          [id, new Date()],
+        );
+        await store.transition(
+          {
+            accountId: id,
+            status: 'pending',
+            appliedAt: Date.now(),
+            decidedAt: null,
+            decidedBy: null,
+            trialUtcDate: null,
+            admittedAt: null,
+            note: null,
+          },
+          ['none'],
+        );
+      }
+      const results = await Promise.all(
+        ids.map((id) =>
+          store.admitWithinPlaces(
+            {
+              accountId: id,
+              status: 'admitted',
+              appliedAt: Date.now(),
+              decidedAt: startsAtMs,
+              decidedBy: null,
+              trialUtcDate: null,
+              admittedAt: startsAtMs,
+              note: null,
+            },
+            ['pending', 'trial'],
+            round,
+          ),
+        ),
+      );
+      expect(results.filter((result) => result === 'full')).toHaveLength(2);
+      expect(results.filter((result) => typeof result === 'object')).toHaveLength(2);
+      const stored = await Promise.all(ids.map((id) => store.getByAccountId(id)));
+      expect(stored.filter((grant) => grant?.status === 'admitted')).toHaveLength(2);
+      await client.execute('DELETE FROM funding_grant WHERE account_id = ANY($1::uuid[])', [
+        `{${ids.join(',')}}`,
+      ]);
     } finally {
       await closeIfPossible(sql);
     }

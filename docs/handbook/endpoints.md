@@ -1040,9 +1040,9 @@
 
 ## Endpoint: POST /funding/apply
 
-- **Purpose:** Bearer session. Role `basis` → 403 Forbidden. While applications are paused, usernames `joey-rosima`, `vincent`, and `jewel-bacolbas` still run the About me, photo, location, and grant write. Every other verified caller still gets 403 `{ error: 'Applications are paused' }` with no grant write. Those checks and the grant write also run when `applicationsPaused` is false. Production omits that flag. Logs `funding.apply.paused` `{ accountId }` while paused (not for an exempt caller). A 200 logs `funding.applied` `{ accountId }`.
-- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 403 `{ error: 'Applications are paused' }` for verified and above while paused except `joey-rosima`, `vincent`, and `jewel-bacolbas`; 400 `{ error: 'About me is required' }`; 400 `{ error: 'About me photo is required' }`; 400 `{ error: 'Location is required' }` (exempt callers while paused, or when the switch is off); 409 `{ error: 'Conflict' }` when the grant is already pending, trial, or admitted, or the pending write matches no row (same callers); 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
-- **Used by:** The app does not submit this route while applications are paused except for usernames `joey-rosima`, `vincent`, and `jewel-bacolbas`. Direct clients still receive the paused error unless the username is one of those three.
+- **Purpose:** Bearer session. Role `basis` → 403 Forbidden. Applications are open to `verified` and above (no pause since round 1 of the grant program, UTC 2026-10-16). Runs the About me, photo, and location checks and the pending grant write. A 200 logs `funding.applied` `{ accountId }`. Admission is limited per round on `POST /funding/admit`, not here.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 403 `{ error: 'Forbidden' }` for `basis`; 400 `{ error: 'About me is required' }`; 400 `{ error: 'About me photo is required' }`; 400 `{ error: 'Location is required' }`; 409 `{ error: 'Conflict' }` when the grant is already pending, trial, or admitted, or the pending write matches no row; 503 `{ error: 'Funding is unavailable' }` (`funding.write.failed`). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** The app grant apply screen.
 - **Auth:** `Authorization: Bearer` session. Not `basis`.
 
 ## Endpoint: GET /shops/activity
@@ -1087,11 +1087,18 @@
 - **Used by:** Staff one-day trial.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
+## Endpoint: GET /funding/places
+
+- **Purpose:** Public, no session. How many people moderators may still admit in the current grant round. JSON `{ round, startsAt, places, admitted, placesLeft, nextGoalShops }`: round 1 starts UTC 2026-10-16 with 10 places; `admitted` counts grants with status `admitted` and `admittedAt` at or after `startsAt` (`countRoundAdmissions`); `placesLeft` is `places - admitted`, never below 0; `nextGoalShops` is the active-shop goal (20) that opens the next round. Applications stay open when `placesLeft` is 0.
+- **Errors:** 503 `{ error: 'Funding is unavailable' }` when listing grants throws (`funding.places.failed`).
+- **Used by:** The app grant goals and apply pages, so every visitor sees the free places.
+- **Auth:** none.
+
 ## Endpoint: POST /funding/admit
 
-- **Purpose:** Staff Bearer. Body `{ accountId }`. Target effective pending or trial, not self, not `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null. 200 `{ id, name, role, funding }`. Logs `funding.admitted`. A 200 from effective pending uses that same daily ping. A 200 from an active trial does not ping.
-- **Errors:** Same 401/403/400/404/409/503 JSON as `POST /funding/trial`. 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
-- **Used by:** Staff recurring admission.
+- **Purpose:** Staff Bearer. Body `{ accountId }`. Target effective pending or trial, not self, not `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null, but only while the current round (`CURRENT_GRANT_ROUND`, round 1 from UTC 2026-10-16: 10 places) has a free place. Count and write are one atomic store step (`admitWithinPlaces`; Postgres takes an advisory lock in a transaction), so concurrent admissions never exceed the round. 200 `{ id, name, role, funding }`. Logs `funding.admitted`. A 200 from effective pending uses that same daily ping. A 200 from an active trial does not ping.
+- **Errors:** Same 401/403/400/404/409/503 JSON as `POST /funding/trial`. 409 `{ error: 'All grant places are taken' }` when the round has no free place (logs `funding.admit.full` `{ accountId, actorId }`; the grant stays unchanged). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse).
+- **Used by:** Staff recurring admission. `GET /funding/places` shows the remaining places.
 - **Auth:** `Authorization: Bearer` session. Staff only.
 
 ## Endpoint: POST /funding/reject

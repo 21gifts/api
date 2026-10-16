@@ -4,11 +4,14 @@ import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
 import {
-  applicationPauseExempt,
+  countRoundAdmissions,
+  CURRENT_GRANT_ROUND,
   effectiveStatus,
+  grantPlaces,
   serializeOwnerFunding,
   utcDayKey,
   type FundingGrant,
+  type GrantRound,
   type OwnerFundingJson,
 } from '@/lib/funding';
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
@@ -51,8 +54,8 @@ import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply (paused: 403, no write, except joey-rosima, vincent, and
- * jewel-bacolbas), staff review, and the initiator/founder daily payout roster.
+ * Member apply (open), staff review with a per-round admission limit, the
+ * public places count, and the initiator/founder daily payout roster.
  * Bearer session required. Grant routes are independent of `account.role`
  * except `basis` cannot apply or be granted. Roster routes use
  * {@link canEditDailyPayoutRoster} (initiator or founder only).
@@ -83,13 +86,12 @@ export interface FundingRouteDeps {
   spendApiToken?: string;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
-  /**
-   * When omitted or true, new applications are paused except joey-rosima,
-   * vincent, and jewel-bacolbas. Pass false to run the stored apply walk
-   * for every caller.
-   */
-  applicationsPaused?: boolean;
+  /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
+  grantRound?: GrantRound;
 }
+
+/** 409 body when every place of the round is taken. */
+export const GRANT_PLACES_FULL_ERROR = 'All grant places are taken';
 
 /** Body schema for staff POSTs that target one account. */
 const accountIdBody = z.object({ accountId: z.string() });
@@ -462,11 +464,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `POST /funding/daily-roster/worker/moderators/delete`, and
  * `POST /funding/daily-roster/worker/moderators/payments`.
  *
- * `POST /apply` is paused unless `deps.applicationsPaused` is false.
- * While paused, authenticated `verified` and above receive 403
- * `{ error: 'Applications are paused' }` with no grant write, except
- * `joey-rosima`, `vincent`, and `jewel-bacolbas`. Those three, and every
- * caller when `applicationsPaused` is false, still run the About-me,
+ * `POST /apply` is open to `verified` and above. It runs the About-me,
  * photo, location, and grant write. That walk returns 400
  * `{ error: 'About me is required' }`, 400
  * `{ error: 'About me photo is required' }`, 400
@@ -476,7 +474,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  *
  * @param deps - Auth store, funding store, message store, gift store, clock,
  *   optional spend ping, optional roster store, optional spend token,
- *   optional LNURL server, and optional applicationsPaused flag.
+ *   optional LNURL server, and optional admission round.
  * @returns A Hono app with member apply, staff review, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
@@ -489,10 +487,6 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
-      }
-      if (deps.applicationsPaused !== false && !applicationPauseExempt(caller.username)) {
-        logEvent('funding.apply.paused', { accountId: caller.id });
-        return c.json({ error: 'Applications are paused' }, 403);
       }
       const nowMs = deps.now();
       try {
@@ -535,6 +529,16 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         );
       } catch {
         logEvent('funding.write.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
+    })
+    .get('/places', async (c) => {
+      const round = deps.grantRound ?? CURRENT_GRANT_ROUND;
+      try {
+        const admitted = countRoundAdmissions(await deps.fundingStore.listGrants(), round);
+        return c.json(grantPlaces(round, admitted), 200);
+      } catch {
+        logEvent('funding.places.failed');
         return c.json({ error: 'Funding is unavailable' }, 503);
       }
     })
@@ -729,7 +733,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         const appliedAt = observed.appliedAt;
-        const grant = await deps.fundingStore.transition(
+        const grant = await deps.fundingStore.admitWithinPlaces(
           {
             accountId: subject.id,
             status: 'admitted',
@@ -741,7 +745,12 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             note: observed.note,
           },
           ['pending', 'trial'],
+          deps.grantRound ?? CURRENT_GRANT_ROUND,
         );
+        if (grant === 'full') {
+          logEvent('funding.admit.full', { accountId: subject.id, actorId: staff.caller.id });
+          return c.json({ error: GRANT_PLACES_FULL_ERROR }, 409);
+        }
         if (grant === undefined) {
           return c.json({ error: 'Conflict' }, 409);
         }
