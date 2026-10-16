@@ -272,11 +272,12 @@ they are eligible, on the in-app wallet only, when all of these hold:
    without an account, and the move keeps every listed amount. A row that is
    only in the API roster and belongs to no account would be deleted.
 5. Production runs the released heads: in each repository no
-   `deploy-prd.yaml` run is queued, waiting or in progress, and among its
-   succeeded runs the one that finished last is on the `main` merge commit
-   of the release. The workflow publishes the movable tag `latest`, and a
-   re-run of an older run keeps its creation time but pushes `latest` again,
-   so the last run to finish decides, not the newest created one.
+   `deploy-prd.yaml` run is queued, waiting or in progress, and the run that
+   finished last, whatever its result, succeeded and is on the `main` merge
+   commit of the release. The workflow pushes the movable tag `latest`
+   before it waits for the deploy, so a later run that failed or was
+   cancelled may already have moved `latest`, and a re-run of an older run
+   keeps its creation time but pushes `latest` again.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -310,12 +311,12 @@ roles with `gifts-debug db account` to know who is eligible on release day
 Check the three settings in the production deployment configuration.
 After both `develop → main` merges, list the production deploys of each
 repository:
-`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 20 --json headSha,status,conclusion,createdAt,updatedAt`
-and the same for `21gifts/app`. No run may be queued, waiting or in
-progress, and among the succeeded runs the one with the latest `updatedAt`
-must have the release merge commit as `headSha`. The list is ordered by
-`createdAt`, so a re-run of an older run can sit lower in it and still be
-the last push of `latest`. Each run waits for the infrastructure run titled
-`image-published 21gifts/api:latest <sha>` or
-`image-published 21gifts/app:latest <sha>`, so the last succeeded run shows
-which merge commit `latest` points to.
+`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 100 --json headSha,status,conclusion,createdAt,updatedAt`
+and the same for `21gifts/app`. The oldest listed run must have been
+created before the release merge, so no re-run falls outside the list. No
+run may be queued, waiting or in progress. The completed run with the latest
+`updatedAt`, whatever its conclusion, must have `conclusion` `success` and
+the release merge commit as `headSha`. Each run pushes `latest` and then
+waits for the infrastructure run titled `image-published 21gifts/api:latest <sha>`
+or `image-published 21gifts/app:latest <sha>`, so that last completed run
+shows which merge commit `latest` points to.
