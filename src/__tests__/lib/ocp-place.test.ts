@@ -267,14 +267,14 @@ describe('syncShopOcpPlace', () => {
       mapPush,
       messageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       text: SHOP_TEXT,
-      place: INCOMPLETE,
+      place: STALL,
       textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
     };
     await syncShopOcpPlace({ ...base, parentId: 'parent' });
     await syncShopOcpPlace({
       ...base,
       parentId: null,
-      text: 'plain',
+      text: SHOP_DESCRIPTION,
     });
     await syncShopOcpPlace({
       ...base,
@@ -663,10 +663,10 @@ describe('publishExistingShopPlaces', () => {
         if (id === 'notag') {
           return {
             id: 'notag',
-            text: 'plain',
+            text: SHOP_DESCRIPTION,
             name: 'Ada',
             parentId: null,
-            place: INCOMPLETE,
+            place: stall,
           };
         }
         if (id === 'reply') {
@@ -675,7 +675,7 @@ describe('publishExistingShopPlaces', () => {
             text: SHOP_TEXT,
             name: 'Ada',
             parentId: 'parent',
-            place: INCOMPLETE,
+            place: stall,
           };
         }
         if (id === 'nullplace') {
@@ -701,7 +701,7 @@ describe('publishExistingShopPlaces', () => {
             text: SHOP_TEXT,
             name: 'Ada',
             parentId: null,
-            place: INCOMPLETE,
+            place: stall,
             deletedAt: new Date('2026-01-01T00:00:00.000Z'),
           };
         }

@@ -2517,6 +2517,27 @@ describe('InMemoryMessageStore', () => {
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
   });
 
+  it('listPlaces returns a copy of a structured address', async () => {
+    const address = {
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    };
+    const store = new InMemoryMessageStore([
+      { ...EARLY, place: { lat: 47.3, lng: 8.5, label: 'Stall', address } },
+    ]);
+    const listed = await store.listPlaces(10);
+    const listedAddress = listed[0]?.address;
+    expect(listedAddress).toEqual(address);
+    if (listedAddress !== null && listedAddress !== undefined) {
+      listedAddress.street = 'mutated';
+    }
+    expect((await store.listPlaces(10))[0]?.address).toEqual(address);
+    expect((await store.getById('a'))?.place?.address).toEqual(address);
+  });
+
   it('listLiveAssignedShops returns live top-level assigned notes and skips the rest', async () => {
     const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
     const shop = { id: 'shop-acc', username: 'ada', name: 'Ada' };
