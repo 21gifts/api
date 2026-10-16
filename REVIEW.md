@@ -26,7 +26,7 @@ The pull request lists what it reused and what it added, each with the file and 
 
 ## What the review reports
 
-Each pass lane is read-only. Its prompt contains this reminder: `Read CONTRIBUTING.md and REVIEW.md at the base revision. Review this pull request against those files. Do not change any files.`
+Each pass lane is read-only. Its prompt contains this reminder: `Read CONTRIBUTING.md and REVIEW.md at the base revision. Review this pull request against those files and against the linked issue. Do not change any files.`
 
 Quality judges the diff against these files, read at the base revision, and against the pull request. Logic judges whether the diff is sound and complete for that pull request, and whether it adds a second mechanism for a job these files say to reuse.
 
