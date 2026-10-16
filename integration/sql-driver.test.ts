@@ -432,18 +432,13 @@ describe('moveDailyRosterToWalletAddresses', () => {
           ORDER BY id`,
         [marker],
       );
-      expect(
+      const rowIds = (op: string): number[] =>
         changes
-          .filter((c) => c.op === 'UPDATE')
-          .map((c) => c.row_id)
-          .sort(),
-      ).toEqual([ids[0], ids[3], ids[6]].sort());
-      expect(
-        changes
-          .filter((c) => c.op === 'DELETE')
-          .map((c) => c.row_id)
-          .sort(),
-      ).toEqual([ids[1], ids[2], ids[4], ids[5], ids[7], ids[9]].sort());
+          .filter((c) => c.op === op)
+          .map((c) => Number(c.row_id))
+          .sort((x, y) => x - y);
+      expect(rowIds('UPDATE')).toEqual(idsAt(0, 3, 6));
+      expect(rowIds('DELETE')).toEqual(idsAt(1, 2, 4, 5, 7, 9));
       expect(new Set(changes.map((c) => c.txid)).size).toBe(1);
 
       expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
