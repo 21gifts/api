@@ -18,7 +18,7 @@ export interface DebugDbRouteDeps {
   store: DebugDbStore | undefined;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Optional read-only bearer. `GET /debug/db` only. */
+  /** Optional read-only bearer. `GET /debug/db` here; it also reads `GET /funding/goal`. */
   debugReadToken?: string;
 }
 

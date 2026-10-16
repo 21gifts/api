@@ -11,7 +11,7 @@ import { bearerToken } from '@/routes/me';
 const WINDOW_DAYS = 7;
 const MS_PER_DAY = 86_400_000;
 
-/** Collaborators the `/funding/goal` route needs. All required. */
+/** Collaborators the `/funding/goal` route needs. All required except `debugReadToken`. */
 export interface GrantContinuationRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
