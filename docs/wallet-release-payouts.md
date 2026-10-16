@@ -11,12 +11,15 @@ what must be true on release day for that to hold.
   every moderator stipend goes only to the member's own in-app wallet
   `<username>@21.gifts`. Nothing is paid to Wallet of Satoshi any more.
 - **Does anyone lose a payout?** No. All 58 people paid from 2026-10-13 to
-  2026-10-15 keep being paid without a gap, when these three conditions hold:
+  2026-10-15 keep being paid without a gap, when these four conditions hold:
   1. The API release includes the roster move at boot, so listed amounts and
      moderator stipends keep matching.
   2. The API and the app go live together.
   3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
      `NEXT_PUBLIC_BREEZ_API_KEY` (app) set.
+  4. The API roster (`daily_roster_entry`) holds the same rows as spend's
+     live list counted below. It was not readable on 2026-10-16; read it on
+     release day (see [Check again before release](#check-again-before-release)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
@@ -239,9 +242,9 @@ recipients and 6 moderators and deletes 1 recipient.
 
 ## Result
 
-After the `main` release of both pull requests, every one of the 58 people
-paid from 2026-10-13 to 2026-10-15 keeps being paid without a gap, on the
-in-app wallet only, when all of these hold:
+After the `main` release of both changes, every one of the 58 people paid
+from 2026-10-13 to 2026-10-15 keeps being paid without a gap, on the in-app
+wallet only, when all of these hold:
 
 1. The API release includes the roster move at boot.
 2. The API and the app go live together. The new API with the old app would
@@ -249,6 +252,11 @@ in-app wallet only, when all of these hold:
 3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` set for the API and
    `NEXT_PUBLIC_BREEZ_API_KEY` set for the app. Without them no wallet can be
    created or verified, and nobody can post.
+4. The API roster (`daily_roster_entry`) holds the same addresses, amounts and
+   buckets as spend's live list in [Daily roster](#daily-roster). Every legacy
+   row then belongs to an account with a username, except the one recipient
+   without an account, and the move keeps every listed amount. A row that is
+   only in the API roster and belongs to no account would be deleted.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -270,5 +278,8 @@ the passkey renew dialog once.
 
 ## Check again before release
 
-Repeat the counts above with the same `gifts-debug` reads on release day, and
-check the three settings in the production deployment configuration.
+Repeat the counts above with the same `gifts-debug` reads on release day.
+Read the API roster with `gifts-debug db daily_roster_entry` and compare it
+with `gifts-debug spend --raw`: same addresses, amounts and buckets, and every
+non-host address equal to an account's `lightning_address` with a username.
+Check the three settings in the production deployment configuration.
