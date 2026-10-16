@@ -589,8 +589,12 @@ One procedure creates a shop payment, for a charge or for a payer:
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. When `recordInvoice`
-   returns `false`, the hash is already recorded against a charge, and
-   the procedure stops the same way as for a hash a shop payment holds.
+   returns `false`, the api reads the `pos_charge_invoice` row for that
+   hash. When it belongs to another charge, the procedure stops the same
+   way as for a hash a shop payment holds. When it belongs to this
+   charge, the procedure goes on. When there is no row, the charge is no
+   longer pending or has expired, and the procedure ends as step 8 ends
+   for such a charge, without `shop.alert.duplicate_invoice`.
    A payer creation never records against a charge, also not against one that appeared after
    step 2.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
