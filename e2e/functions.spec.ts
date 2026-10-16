@@ -134,6 +134,20 @@ test('Function: healthRoute — GET /healthz is ok', async ({ request }) => {
   expect(body.status).toBe('ok');
 });
 
+test('Function: walletFeatures — GET /healthz reports the default-boot wallet flags', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as { wallet: Record<string, boolean> };
+  expect(body.wallet).toEqual({
+    lnurlServer: false,
+    zapSigning: false,
+    freePayments: false,
+    passkey: true,
+  });
+});
+
 test('Function: infoRoute — GET /info names the service', async ({ request }) => {
   const res = await request.get('/info');
   expect(res.status()).toBe(200);

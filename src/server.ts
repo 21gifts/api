@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { healthRoute } from '@/routes/health';
+import { healthRoute, walletFeatures } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
 import { brandRoutes, readPublicBrandFile } from '@/routes/brand';
 import type { BrandReader } from '@/routes/brand';
@@ -628,7 +628,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
     }),
   );
-  app.route('/healthz', healthRoute);
+  app.route('/healthz', healthRoute(walletFeatures(env, webAuthnRpId)));
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route(

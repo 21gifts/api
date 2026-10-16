@@ -1212,10 +1212,17 @@
 
 ## Function: healthRoute
 
-- **Purpose:** Hono app: GET `/` → `{ status: 'ok', service, version }`.
-- **Inputs:** None.
-- **Returns / side effects:** Mounted at `/healthz`.
-- **Used by:** Probes.
+- **Purpose:** Builds the Hono app for GET `/` → `{ status: 'ok', service, version, wallet }`. The body is fixed when the app is built; a request does no I/O.
+- **Inputs:** `wallet` — the flags from `walletFeatures`, copied once.
+- **Returns / side effects:** A Hono app mounted at `/healthz`. Always 200.
+- **Used by:** Probes; operators checking which wallet features a deploy has on.
+
+## Function: walletFeatures
+
+- **Purpose:** Resolves the in-app wallet flags once at `createApp`, with the same resolvers that mount the wallet routes. `lnurlServer`: `resolveLnurlServerConfig` is not null. `zapSigning`: `resolveFreePaymentsConfig` is not null (`LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s)). `freePayments`: both. `passkey`: `normalizeWebAuthnRpId` is not null.
+- **Inputs:** `env` (the slice `createApp` uses) and the raw WebAuthn RP ID.
+- **Returns / side effects:** `{ lnurlServer, zapSigning, freePayments, passkey }`, booleans only. No env value, key, or URL is returned. No I/O.
+- **Used by:** `createApp` for `GET /healthz`.
 
 ## Function: infoRoute
 

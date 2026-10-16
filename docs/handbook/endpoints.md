@@ -438,7 +438,7 @@
 
 ## Endpoint: GET /healthz
 
-- **Purpose:** Liveness. `{ status: 'ok', service, version }`. Not logged as http.request.
+- **Purpose:** Liveness. `{ status: 'ok', service, version, wallet }`. `wallet` is `{ lnurlServer, zapSigning, freePayments, passkey }`, booleans fixed at boot (see `walletFeatures`); it never carries an env value, key, or URL and never changes the status. Not logged as http.request.
 - **Errors:** Always 200 if the process is up.
 - **Used by:** Orchestrators, e2e, Uptime checks.
 - **Auth:** See Purpose — Bearer where stated, else public.
