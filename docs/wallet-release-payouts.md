@@ -49,13 +49,13 @@ The rest of this document is the evidence.
 
 ## How a payout is triggered
 
-A payout is not paid on a timer. It follows the member's own action:
+A payout is not paid on a timer. It follows the member's own post, or a staff grant decision about a post of the same day:
 
-| Payout            | Trigger                                                                                                                                            | Code (staging)                                                                        |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
-| Daily grant       | The member publishes a top-level forum post with a photo or video. The API pings spend with the member's receiving address.                        | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/spend-ping.ts` |
-| Moderator stipend | A moderator sends a message in the moderator group conversation. The API pings spend with `kind: "moderator"`.                                     | `src/routes/conversations.ts`, `src/lib/spend-ping.ts`                                |
-| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster address. The API pays only a member with a passkey, a live media post, and eligibility. | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`               |
+| Payout            | Trigger                                                                                                                                                                                                                                                               | Code (staging)                                                                                                                    |
+| ----------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Daily grant       | The member publishes a top-level forum post with a photo or video. The API pings spend with the member's receiving address. When staff later set the member's grant to `trial` or `admitted`, the API pings again for the member's newest media post of that UTC day. | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/routes/funding.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
+| Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                   | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                              |
+| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                    | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                           |
 
 The amount comes from the daily roster when the address is listed there, and
 from `DAILY_ROSTER_DEFAULT_AMOUNT_USD` (1 USD) for an unlisted admitted or
