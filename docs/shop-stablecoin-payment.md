@@ -288,9 +288,9 @@ amount until a receipt read fills in its log, by the repeat path below
 or by the receipts duty. The order's `amountIn` is not used, because
 Orchestra does not document it as the deposited value. A proof whose
 amount is unknown or outside those bounds is held: it answers **503**
-until its order is final, and it becomes `accepted` only when its order
-completes or, for an unknown amount, once the amount is known and within
-the bounds. A dust transfer to a public deposit address therefore cannot
+until its order is final, and it becomes `accepted` only when its order completes or, once the amount
+is known and within the bounds, as the table above states for a
+progressing order. A dust transfer to a public deposit address therefore cannot
 take acceptance away from the payer.
 
 The first order of a payment within the bounds is `accepted`, because
@@ -486,7 +486,7 @@ the merge handles shop payments first, in the same transaction:
 
 - When either account has an `accepted` shop payment, the merge returns
   `{ ok: false, error: 'shop_payment_accepted' }`, as it returns
-  `both_grants`, and changes nothing. The operator route `POST /debug/merge`
+  `both_grants`, and changes nothing. The operator route `POST /debug/accounts/merge`
   answers it with **409** `{ "error": "A shop payment is on its way" }`,
   beside its other 409 answers. An `accepted` payment leaves that state when its
   order reaches a final status, and the merge can be repeated then.
