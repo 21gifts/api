@@ -1,7 +1,9 @@
 import { createHash } from 'node:crypto';
 import type { AccountRole, StaffTag } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { GoalCurrency } from '@/lib/goal-rate';
 import type { ForumPlace } from '@/lib/place';
+import { receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
@@ -304,6 +306,12 @@ export interface PublicMessage {
   shopAccount?: { id: string; username: string; name: string };
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
+  /**
+   * Whether the author is a member who can receive ({@link receivingAddress}
+   * non-null), whether or not the note is signed yet. False for an external
+   * author, a missing account, and a soft-hidden row.
+   */
+  authorCanReceive: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
   hasPhoto: boolean;
   /**
@@ -605,6 +613,39 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
   return `${trimmed.slice(0, 8)}…${trimmed.slice(-4)}`;
 }
 
+/** Pay flags of one public forum row. */
+export interface MessagePay {
+  /** Whether `POST /messages/:id/invoice` can run (signed note, author can receive). */
+  payable: boolean;
+  /** Whether the author can receive, signed or not. */
+  authorCanReceive: boolean;
+}
+
+/** Pay flags of an external, missing-author, or otherwise unpayable row. */
+export const NOT_PAYABLE: MessagePay = { payable: false, authorCanReceive: false };
+
+/**
+ * Pay flags of a forum row.
+ *
+ * `authorCanReceive` is {@link receivingAddress} of the author being non-null
+ * (a verified wallet with the LNURL server configured). `payable` adds the
+ * mint gate: a non-empty signed `eventId`.
+ *
+ * @param row - Forum row (`eventId` is the mint gate).
+ * @param author - Author account when known.
+ * @param lnurlServer - LNURL server config, or `undefined` when off.
+ * @returns Both flags; both false without an author.
+ */
+export function messagePay(
+  row: { eventId: string | null },
+  author: ReceivingAccount | undefined,
+  lnurlServer: LnurlServerConfig | undefined,
+): MessagePay {
+  const authorCanReceive = author !== undefined && receivingAddress(author, lnurlServer) !== null;
+  const signed = row.eventId !== null && row.eventId !== '';
+  return { payable: signed && authorCanReceive, authorCanReceive };
+}
+
 /**
  * Project a store row to its public JSON shape.
  *
@@ -617,7 +658,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * `GET /messages/:id` return 503.
  *
  * @param row - Persisted message.
- * @param payable - Whether the note can accept a NIP-57 zap payment.
+ * @param pay - Pay flags from {@link messagePay} (or {@link NOT_PAYABLE}).
  * @param role - Author's live {@link AccountRole}, or `undefined` for Damus-only.
  * @param replyCount - Reply count for a top-level `GET /messages` list row
  * and for a top-level `GET /messages/:id`, including 0. A reply passes
@@ -626,13 +667,13 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * (`row.accountId !== null`). Live list, single-note GET, and replies pass
  * true with or without a session.
  * @param hidden - When set, stamp `deletedAt` / `deletedBy` and force
- * `payable` false (the `payable` argument is ignored). Omit on live JSON so
- * those keys are absent.
+ * `payable` and `authorCanReceive` false (the `pay` argument is ignored).
+ * Omit on live JSON so those keys are absent.
  * @param staffTag - Author's staff display label, or `null` / omitted when
  * unset. JSON `staffTag` is `"software_developer"` only when this argument
  * is exactly that string; otherwise the key is omitted (never JSON `null`).
  *
- * @returns Public fields (`sats`, `payable`, `hasPhoto`, `photoCount`,
+ * @returns Public fields (`sats`, `payable`, `authorCanReceive`, `hasPhoto`, `photoCount`,
  * `photoTakenAts` (always, length === photoCount, nulls when unknown, `[]`
  * when no stills), optional `photoTakenAt` only when photoCount === 1
  * (equal to slot 0, null allowed; omitted otherwise), `hasVideo`,
@@ -665,7 +706,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  */
 export function serializeMessage(
   row: MessageRow,
-  payable: boolean,
+  pay: MessagePay,
   role: AccountRole | undefined,
   replyCount?: number,
   includeAccountId?: boolean,
@@ -686,7 +727,8 @@ export function serializeMessage(
     amountChf: row.amountChf ?? null,
     amountEur: row.amountEur ?? null,
     amountPhp: row.amountPhp ?? null,
-    payable: hidden === undefined ? payable : false,
+    payable: hidden === undefined ? pay.payable : false,
+    authorCanReceive: hidden === undefined ? pay.authorCanReceive : false,
     hasPhoto: row.hasPhoto,
     photoCount: photoCountOf(row),
     photoTakenAts: taken.photoTakenAts,

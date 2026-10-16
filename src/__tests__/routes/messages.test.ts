@@ -563,19 +563,47 @@ describe('GET /messages', () => {
       { headers: AUTH },
     );
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ payable: boolean; role: string }> };
+    type Row = { payable: boolean; authorCanReceive: boolean; role: string };
+    const body = (await res.json()) as { messages: Row[] };
     expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.authorCanReceive).toBe(true);
     expect(body.messages[0]?.role).toBe('verified');
     const off = await mount(authStore, messageStore).request('/messages', { headers: AUTH });
-    const offBody = (await off.json()) as { messages: Array<{ payable: boolean }> };
+    const offBody = (await off.json()) as { messages: Row[] };
     expect(offBody.messages[0]?.payable).toBe(false);
+    expect(offBody.messages[0]?.authorCanReceive).toBe(false);
     const unverified = await rulesStore({ name: 'Ada' });
     const plain = await mount(unverified, messageStore, { lnurlServer: LNURL_SERVER }).request(
       '/messages',
       { headers: AUTH },
     );
-    const plainBody = (await plain.json()) as { messages: Array<{ payable: boolean }> };
+    const plainBody = (await plain.json()) as { messages: Row[] };
     expect(plainBody.messages[0]?.payable).toBe(false);
+    expect(plainBody.messages[0]?.authorCanReceive).toBe(false);
+  });
+
+  it('keeps authorCanReceive true on an unsigned note of an author who can receive', async () => {
+    const authStore = await namedStore('Ada');
+    const messageStore = new InMemoryMessageStore();
+    await messageStore.create({
+      id: 'unsigned-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(authStore, messageStore, { lnurlServer: LNURL_SERVER }).request(
+      '/messages',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: Array<{ payable: boolean; authorCanReceive: boolean }>;
+    };
+    expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.authorCanReceive).toBe(true);
   });
 
   it('includes the live author role for moderator, founder, and verified', async () => {
@@ -6865,6 +6893,7 @@ describe('GET /messages/:id', () => {
       amountEur: null,
       amountPhp: null,
       payable: false,
+      authorCanReceive: false,
       hasPhoto: false,
       photoCount: 0,
       photoTakenAts: [],
