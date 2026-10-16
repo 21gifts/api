@@ -135,6 +135,18 @@ export interface DailyRosterStore {
   deleteModerator(address: string): Promise<DailyRosterDocument>;
 
   /**
+   * Point every row on `from` at `to`, in both buckets. A row whose bucket
+   * already holds `to` is deleted instead, so `UNIQUE (address, bucket)` never
+   * trips. No row on `from` is a no-op.
+   *
+   * @param from - Old address (trimmed, case-insensitive).
+   * @param to - New address (trimmed, case-insensitive).
+   * @returns How many rows were rewritten and how many were deleted.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   */
+  renameAddress(from: string, to: string): Promise<DailyRosterWalletMove>;
+
+  /**
    * Write the full document only when it has never been written. A second
    * call returns the stored document unchanged, including an invalid body.
    * `defaultAmountUsd` in the body is ignored. A missing switch is `true`.
@@ -175,11 +187,17 @@ export async function migrateDailyRosterSchema(sql: SqlClient): Promise<void> {
   }
 }
 
-/** Counts from {@link moveDailyRosterToWalletAddresses}. */
+/**
+ * Counts from {@link moveDailyRosterToWalletAddresses} and
+ * {@link DailyRosterStore.renameAddress}.
+ */
 export interface DailyRosterWalletMove {
-  /** Rows rewritten to their target address. */
+  /** Rows rewritten to their new address. */
   moved: number;
-  /** Rows deleted: no member behind the address, or a repeat in its bucket. */
+  /**
+   * Rows deleted instead: no member behind the address, or the bucket already
+   * holds the new address.
+   */
   removed: number;
 }
 
@@ -261,6 +279,28 @@ export async function moveDailyRosterToWalletAddresses(
   );
   return { moved: Number(row?.moved ?? 0), removed: Number(row?.removed ?? 0) };
 }
+
+/**
+ * One statement that points every row on `$1` at `$2` (see
+ * {@link DailyRosterStore.renameAddress}). `$1` and `$2` are already
+ * normalized. Data-modifying CTEs run as one statement, so the rename is
+ * atomic and `trg_db_change` records each DELETE and UPDATE.
+ */
+export const DAILY_ROSTER_RENAME_SQL = `WITH removed AS (
+  DELETE FROM daily_roster_entry d
+   WHERE d.address = $1
+     AND EXISTS (SELECT 1 FROM daily_roster_entry t WHERE t.bucket = d.bucket AND t.address = $2)
+  RETURNING d.id
+),
+moved AS (
+  UPDATE daily_roster_entry u
+     SET address = $2
+   WHERE u.address = $1
+     AND NOT EXISTS (SELECT 1 FROM daily_roster_entry t WHERE t.bucket = u.bucket AND t.address = $2)
+  RETURNING u.id
+)
+SELECT (SELECT count(*) FROM moved)::int AS moved,
+       (SELECT count(*) FROM removed)::int AS removed`;
 
 /**
  * Process-local {@link DailyRosterStore}. Used in tests and when no database
@@ -408,6 +448,40 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
    */
   async deleteModerator(address: string): Promise<DailyRosterDocument> {
     return this.#delete('moderator', address);
+  }
+
+  /**
+   * Point every row on `from` at `to`, in both buckets. A row whose bucket
+   * already holds `to` is deleted instead. Does not change whether the store
+   * has been written.
+   *
+   * @param from - Old address (trimmed, case-insensitive).
+   * @param to - New address (trimmed, case-insensitive).
+   * @returns How many rows were rewritten and how many were deleted.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   */
+  async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
+    const source = rosterAddress(from);
+    const target = rosterAddress(to);
+    if (source === target) {
+      return { moved: 0, removed: 0 };
+    }
+    let moved = 0;
+    let removed = 0;
+    for (const list of [this.#recipients, this.#moderators]) {
+      const row = list.find((item) => item.address === source);
+      if (row === undefined) {
+        continue;
+      }
+      if (list.some((item) => item.address === target)) {
+        list.splice(list.indexOf(row), 1);
+        removed += 1;
+      } else {
+        row.address = target;
+        moved += 1;
+      }
+    }
+    return { moved, removed };
   }
 
   /**
@@ -645,6 +719,27 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
    */
   deleteModerator(address: string): Promise<DailyRosterDocument> {
     return this.#delete('moderator', address);
+  }
+
+  /**
+   * Point every row on `from` at `to`, in both buckets, as one statement.
+   *
+   * @param from - Old address (trimmed, case-insensitive).
+   * @param to - New address (trimmed, case-insensitive).
+   * @returns How many rows were rewritten and how many were deleted.
+   * @throws {@link DailyRosterRequestError} 400 `'Invalid address'` when either is blank.
+   */
+  async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
+    const source = rosterAddress(from);
+    const target = rosterAddress(to);
+    if (source === target) {
+      return { moved: 0, removed: 0 };
+    }
+    const [row] = await this.#sql.query<{ moved: number | string; removed: number | string }>(
+      DAILY_ROSTER_RENAME_SQL,
+      [source, target],
+    );
+    return { moved: Number(row?.moved ?? 0), removed: Number(row?.removed ?? 0) };
   }
 
   /**

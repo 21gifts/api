@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
@@ -92,6 +93,11 @@ export interface MeRouteDeps {
    * receiving address in owner JSON and the welcome ping. Omitted → off.
    */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * Daily payout roster; `POST /username` moves its rows from the old to the
+   * new receiving address. Omitted skips that.
+   */
+  dailyRoster?: DailyRosterStore;
 }
 
 /**
@@ -246,7 +252,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
+ * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet` and the receiving address, and optional `dailyRoster` for `POST /username` roster rewrites.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
@@ -510,6 +516,26 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       /* v8 ignore next 3 -- unique-index race: update no-ops and the stored handle stays taken */
       if ((stored.username ?? '').trim().toLowerCase() !== username) {
         return c.json({ error: 'Username is already in use' }, 409);
+      }
+      const previous = (current.username ?? '').trim().toLowerCase();
+      if (
+        deps.dailyRoster !== undefined &&
+        deps.lnurlServer !== undefined &&
+        previous !== '' &&
+        previous !== username
+      ) {
+        const host = deps.lnurlServer.host.toLowerCase();
+        const rename = await deps.dailyRoster.renameAddress(
+          `${previous}@${host}`,
+          `${username}@${host}`,
+        );
+        if (rename.moved + rename.removed > 0) {
+          logEvent('daily_roster.address.renamed', {
+            accountId: current.id,
+            moved: rename.moved,
+            removed: rename.removed,
+          });
+        }
       }
       logEvent('account.username.set', { accountId: current.id });
       return c.json(await ownerJson(deps, stored), 200);

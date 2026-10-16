@@ -6,6 +6,7 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryDailyRosterStore } from '@/lib/daily-roster-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerToken, meRoutes } from '@/routes/me';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
@@ -39,6 +40,7 @@ interface MountOpts {
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
   walletEnabled?: boolean;
+  dailyRoster?: InMemoryDailyRosterStore;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -53,6 +55,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
         ? {}
         : { notificationStore: opts.notificationStore }),
       ...(opts.walletEnabled === true ? { lnurlServer: LNURL_SERVER } : {}),
+      ...(opts.dailyRoster === undefined ? {} : { dailyRoster: opts.dailyRoster }),
     }),
   );
 }
@@ -1980,6 +1983,158 @@ describe('POST /me/username', () => {
     expect(await res.json()).toEqual({
       error: 'Username is fixed once the wallet is connected',
     });
+  });
+
+  async function storeWithUsername(username: string): Promise<InMemoryAuthStore> {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...existing, username });
+    return store;
+  }
+
+  function rosterAt(address: string): InMemoryDailyRosterStore {
+    return new InMemoryDailyRosterStore({
+      comment: '',
+      paymentsEnabled: true,
+      moderatorPaymentsEnabled: true,
+      defaultAmountUsd: 1,
+      recipients: [{ address, amountUsd: 2 }],
+      moderators: [{ address, amountUsd: 3 }],
+    });
+  }
+
+  it('renames roster rows on both buckets and logs the counts', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'newname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'newname@example.test', amountUsd: 3 }],
+    });
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'daily_roster.address.renamed' &&
+          e['accountId'] === 'acc' &&
+          e['moved'] === 2 &&
+          e['removed'] === 0,
+      ),
+    ).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('leaves the roster when the previous username is blank', async () => {
+    const store = await seededStore();
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'oldname@example.test', amountUsd: 3 }],
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+  });
+
+  it('leaves the roster when the username is unchanged', async () => {
+    const store = await storeWithUsername('ada');
+    const roster = rosterAt('ada@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'ada' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'ada@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'ada@example.test', amountUsd: 3 }],
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+  });
+
+  it('does not rename without a daily roster', async () => {
+    const store = await storeWithUsername('oldname');
+    const res = await mount(store, { walletEnabled: true }).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'newname' }),
+    });
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+  });
+
+  it('does not rename without lnurlServer', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { dailyRoster: roster }).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'newname' }),
+    });
+    expect(res.status).toBe(200);
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'oldname@example.test', amountUsd: 3 }],
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+  });
+
+  it('does not log a rename that touches no row', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('other@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'other@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'other@example.test', amountUsd: 3 }],
+    });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
   });
 });
 

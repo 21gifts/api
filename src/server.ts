@@ -689,6 +689,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      dailyRoster: rosterStore,
       ...receivingDeps,
       ...(spendPing === undefined ? {} : { spendPing }),
     }),

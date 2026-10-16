@@ -455,6 +455,87 @@ describe('moveDailyRosterToWalletAddresses', () => {
   });
 });
 
+describe('PostgresDailyRosterStore.renameAddress', () => {
+  test('moves both buckets, deletes a conflict, no-ops, and logs one txid', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const oldAddress = `old_${stamp}@gifts.example`;
+    const newAddress = `new_${stamp}@gifts.example`;
+    const conflictAddress = `keep_${stamp}@gifts.example`;
+    const store = new PostgresDailyRosterStore(client);
+    try {
+      await migrateDailyRosterSchema(client);
+      await migrateDbChangeSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+
+      await store.addRecipient(oldAddress, 2);
+      await store.addModerator(oldAddress, 3);
+      const moveMarkerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const moveMarker = moveMarkerRows[0]?.marker ?? '0';
+
+      expect(await store.renameAddress(oldAddress.toUpperCase(), ` ${newAddress} `)).toEqual({
+        moved: 2,
+        removed: 0,
+      });
+      expect(await store.get()).toMatchObject({
+        recipients: [{ address: newAddress, amountUsd: 2 }],
+        moderators: [{ address: newAddress, amountUsd: 3 }],
+      });
+      const moveChanges = await client.query<{ op: string; txid: string }>(
+        `SELECT op, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [moveMarker],
+      );
+      expect(moveChanges.map((row) => row.op)).toEqual(['UPDATE', 'UPDATE']);
+      expect(new Set(moveChanges.map((row) => row.txid)).size).toBe(1);
+
+      await store.addRecipient(conflictAddress, 9);
+      const conflictMarkerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const conflictMarker = conflictMarkerRows[0]?.marker ?? '0';
+
+      expect(await store.renameAddress(newAddress, conflictAddress)).toEqual({
+        moved: 1,
+        removed: 1,
+      });
+      expect(await store.get()).toMatchObject({
+        recipients: [{ address: conflictAddress, amountUsd: 9 }],
+        moderators: [{ address: conflictAddress, amountUsd: 3 }],
+      });
+      const conflictChanges = await client.query<{ op: string; txid: string }>(
+        `SELECT op, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [conflictMarker],
+      );
+      expect(conflictChanges.map((row) => row.op).sort()).toEqual(['DELETE', 'UPDATE']);
+      expect(new Set(conflictChanges.map((row) => row.txid)).size).toBe(1);
+
+      const afterConflict = await store.get();
+      expect(await store.renameAddress(`missing_${stamp}@gifts.example`, oldAddress)).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+      expect(await store.renameAddress(conflictAddress, conflictAddress.toUpperCase())).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+      expect(await store.get()).toEqual(afterConflict);
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore spark pubkey', () => {
   test('claim, verify, unique index, username freeze, and db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

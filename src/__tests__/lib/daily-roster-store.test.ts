@@ -14,6 +14,7 @@ import {
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
   DAILY_ROSTER_WALLET_MOVE_SQL,
+  DAILY_ROSTER_RENAME_SQL,
   migrateDailyRosterSchema,
   moveDailyRosterToWalletAddresses,
 } from '@/lib/daily-roster-store';
@@ -303,6 +304,90 @@ describe('InMemoryDailyRosterStore', () => {
     ).rejects.toMatchObject({ status: 400, error: DAILY_ROSTER_ADDRESS_LISTED });
     expect(await other.get()).toEqual(EMPTY);
   });
+
+  it('renames a row in both buckets', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    await store.addModerator('old@example.com', 3);
+    expect(await store.hasBeenWritten()).toBe(true);
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 2,
+      removed: 0,
+    });
+    expect(await store.get()).toMatchObject({
+      recipients: [{ address: 'new@example.com', amountUsd: 2 }],
+      moderators: [{ address: 'new@example.com', amountUsd: 3 }],
+    });
+    expect(await store.hasBeenWritten()).toBe(true);
+  });
+
+  it('deletes the old row when the target is already in a bucket and moves the other', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    await store.addRecipient('new@example.com', 9);
+    await store.addModerator('old@example.com', 3);
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 1,
+      removed: 1,
+    });
+    expect(await store.get()).toMatchObject({
+      recipients: [{ address: 'new@example.com', amountUsd: 9 }],
+      moderators: [{ address: 'new@example.com', amountUsd: 3 }],
+    });
+  });
+
+  it('returns zeros and leaves the document when no row matches', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('kept@example.com', 2);
+    const before = await store.get();
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.get()).toEqual(before);
+  });
+
+  it('returns zeros for the same address after normalization', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('ada@example.com', 2);
+    const before = await store.get();
+    expect(await store.renameAddress(' ADA@Example.COM ', 'ada@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.get()).toEqual(before);
+  });
+
+  it('refuses a blank from or to', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await expect(store.renameAddress('   ', 'new@example.com')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    await expect(store.renameAddress('old@example.com', ' \t ')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+  });
+
+  it('normalizes case and whitespace on both addresses', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    expect(await store.renameAddress('  OLD@Example.COM  ', '  New@Example.COM  ')).toEqual({
+      moved: 1,
+      removed: 0,
+    });
+    expect((await store.get()).recipients).toEqual([{ address: 'new@example.com', amountUsd: 2 }]);
+  });
+
+  it('does not mark a never-written store written when renaming misses', async () => {
+    const store = new InMemoryDailyRosterStore();
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.hasBeenWritten()).toBe(false);
+  });
 });
 
 describe('PostgresDailyRosterStore', () => {
@@ -545,5 +630,61 @@ describe('PostgresDailyRosterStore', () => {
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO daily_roster_entry/);
     expect(sql.executes[0]?.params).toEqual(['mod@example.com', 3, 'moderator']);
+  });
+
+  it('runs renameAddress as one statement with normalized addresses and parses counts', async () => {
+    const sql = new MockSql();
+    sql.queryResults.push([{ moved: 2, removed: '1' }]);
+    const store = new PostgresDailyRosterStore(sql);
+
+    expect(await store.renameAddress('  OLD@Example.COM  ', ' New@Example.COM ')).toEqual({
+      moved: 2,
+      removed: 1,
+    });
+    expect(sql.queries).toEqual([
+      { text: DAILY_ROSTER_RENAME_SQL, params: ['old@example.com', 'new@example.com'] },
+    ]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('reads zero rename counts when the statement returns no row', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresDailyRosterStore(sql).renameAddress('old@a', 'new@a')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('skips the rename statement when the addresses match after normalization', async () => {
+    const sql = new MockSql();
+    const store = new PostgresDailyRosterStore(sql);
+    expect(await store.renameAddress(' ADA@Host ', 'ada@host')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('refuses a blank from or to before querying', async () => {
+    const sql = new MockSql();
+    const store = new PostgresDailyRosterStore(sql);
+    await expect(store.renameAddress('  ', 'new@a')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    await expect(store.renameAddress('old@a', '')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('keeps the rename in one statement that deletes conflicts then rewrites', () => {
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/^WITH removed AS \(/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/DELETE FROM daily_roster_entry d/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/UPDATE daily_roster_entry u/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/SET address = \$2/);
+    expect(DAILY_ROSTER_RENAME_SQL).not.toMatch(/;/);
   });
 });
