@@ -142,7 +142,7 @@ Public base URLs used in examples:
 | POST   | `/funding/trial`                                     | Bearer (moderator+)                          | One-UTC-day trial                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/funding/admit`                                     | Bearer (moderator+)                          | Admit grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                          | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
-| GET    | `/funding/daily-roster`                              | Initiator/founder Bearer or `DEBUG_*_TOKEN`  | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderators stay off this list. 502 Daily roster is unavailable.                                                                                                                                                                                                                                          |
+| GET    | `/funding/daily-roster`                              | Initiator/founder Bearer or `DEBUG_*_TOKEN`  | Operator token skips the gate; else 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderators stay off this list. 502 Daily roster is unavailable.                                                                                                                                                                                                      |
 | POST   | `/funding/daily-roster/comment`                      | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                         |
 | POST   | `/funding/daily-roster/payments`                     | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                         |
 | POST   | `/funding/daily-roster/recipients`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }`. Route loads the account. Unknown account → 400 Unknown person. No Lightning address after trim → 400 Person has no Lightning address. Store load failure → 502 Daily roster is unavailable. The API store receives `{ address, amountUsd }` from the stored trimmed address. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. Local bad body → Invalid person or amount. |
@@ -946,7 +946,9 @@ Top-level notes by that member are not listed.
 
 ### `GET /members/:accountId/activity`
 
-Same auth and 401 / 409 / 404 as `GET /members/:accountId`. Success is the
+A session has the same auth and 401 / 409 / 404 as `GET /members/:accountId`.
+An operator token skips the session and `forum.read` gate; 404 still
+applies. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
 stats are unavailable" }` when the gift store throws or a gift day lacks
 BTC-USD.
@@ -1328,23 +1330,23 @@ Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same 
 
 ### `POST /funding/daily-roster/comment`
 
-Same gate and success/502 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }`. Newlines (`\n`, `\r`, `\r\n`) become spaces, then trim. Empty after trim is valid. Longer than 500 characters after that is 400 `{ "error": "Invalid comment" }` and is not cut. The stored `{ comment }` is that normalized string. The store returns any of these five exact texts unchanged: `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, `Unknown address`.
+Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ comment: string }`. A body that is not that object, including a non-string comment → 400 `{ "error": "Invalid comment" }`. Newlines (`\n`, `\r`, `\r\n`) become spaces, then trim. Empty after trim is valid. Longer than 500 characters after that is 400 `{ "error": "Invalid comment" }` and is not cut. The stored `{ comment }` is that normalized string. The store returns any of these five exact texts unchanged: `Invalid comment`, `Invalid payments switch`, `Invalid address or amount`, `Address already listed`, `Unknown address`.
 
 ### `POST /funding/daily-roster/payments`
 
-Same gate and success/502 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `paymentsEnabled` only. Store 400 texts are the same five.
+Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ enabled: boolean }` only. Strings, numbers, and missing fields → 400 `{ "error": "Invalid payments switch" }`. Sets `paymentsEnabled` only. Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/recipients`
 
-Same gate and success/502 as GET. Public body `{ accountId: string, amountUsd: number }`. `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. A body that is still `{ address, amountUsd }` fails. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account. Unknown account → 400 `{ "error": "Unknown person" }`. No Lightning address after trim → 400 `{ "error": "Person has no Lightning address" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`. The API store receives `{ address, amountUsd }` from the stored trimmed address and the amount. Duplicate addresses are case-insensitive (`trim` then `toLowerCase`). Store 400 texts are the same five.
+Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Public body `{ accountId: string, amountUsd: number }`. `accountId` must match `MESSAGE_ID_RE`. `amountUsd` must be a finite number; numeric strings are rejected here. A body that is still `{ address, amountUsd }` fails. Local bad body → 400 `{ "error": "Invalid person or amount" }`. The route loads the account. Unknown account → 400 `{ "error": "Unknown person" }`. No Lightning address after trim → 400 `{ "error": "Person has no Lightning address" }`. Store failure on that load → 502 `{ "error": "Daily roster is unavailable" }`. The API store receives `{ address, amountUsd }` from the stored trimmed address and the amount. Duplicate addresses are case-insensitive (`trim` then `toLowerCase`). Store 400 texts are the same five.
 
 ### `POST /funding/daily-roster/recipients/update`
 
-Same gate and success/502 as GET. Body `{ address: string, amountUsd: finite number }`. If the body is an object (not an array) whose `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing address → 400 `{ "error": "Unknown address" }`. Address match is after trim and lower-case. Other row fields stay. Store 400 strings are the same five.
+Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ address: string, amountUsd: finite number }`. If the body is an object (not an array) whose `address` is a string but the amount fails → 400 `{ "error": "Invalid address or amount" }`. Any other local failure, including a missing address → 400 `{ "error": "Unknown address" }`. Address match is after trim and lower-case. Other row fields stay. Store 400 strings are the same five.
 
 ### `POST /funding/daily-roster/recipients/delete`
 
-Same gate and success/502 as GET. Body `{ address: string }`. Local failure → 400 `{ "error": "Unknown address" }` always. Store 400 texts are the same five.
+Same session gate (initiator or founder; operator tokens do not write) and success/502 as GET. Body `{ address: string }`. Local failure → 400 `{ "error": "Unknown address" }` always. Store 400 texts are the same five.
 
 ### `GET /funding/daily-roster/document`
 
@@ -4941,8 +4943,7 @@ Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same 
 ### `GET /messages/hidden`
 
 Staff hidden-note log. Inverse **read** of `DELETE /messages/:id`. Bearer
-**session** required (moderator). This is **not** a
-`DEBUG_TOKEN` route. Registered **before** public `GET /messages/:id` so
+**session** required (moderator), or an operator token (below). Registered **before** public `GET /messages/:id` so
 `"hidden"` is not captured as `:id`. No `forum.read` gate — a
 moderator without rules agreement is still **200**. Listed rows
 include every hidden row regardless of external-zapper entitlement — the

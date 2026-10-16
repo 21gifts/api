@@ -387,8 +387,8 @@
 
 ## Endpoint: GET /members/:accountId/activity
 
-- **Purpose:** Same activity JSON as `GET /me/activity` for the member `:accountId`. Auth matches `GET /members/:accountId`.
-- **Errors:** 401 without session; 409 `missing_requirements` when the caller lacks rules; 404 non-uuid or unknown account; 503 gift stats unavailable. Missing fiat is never 503 (same as `GET /me/activity`).
+- **Purpose:** Same activity JSON as `GET /me/activity` for the member `:accountId`. A session has the same auth as `GET /members/:accountId`; an operator token skips the session and `forum.read` gate.
+- **Errors:** 401 without a session or operator token; 409 `missing_requirements` when the session caller lacks rules (session path only); 404 non-uuid or unknown account; 503 gift stats unavailable. Missing fiat is never 503 (same as `GET /me/activity`).
 - **Used by:** App `/forum/members/[accountId]/activity` proxy and member profile chart.
 - **Auth:** Bearer session with `forum.read`. The operator `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` reads the same body without a session (`isOperatorBearer`); a bearer that matches neither falls through to this session check.
 

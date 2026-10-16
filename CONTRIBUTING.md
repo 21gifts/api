@@ -65,7 +65,7 @@ api/
 │   │   ├── gifts.ts          # GET /gifts?day= (public per-day gift list)
 │   │   ├── invoices.ts       # GET /invoices/passkey, GET /invoices/eligible, GET /invoices/posted, POST /invoices, POST /invoices/proof (spend worker)
 │   │   ├── spend-instruction-route.ts  # POST /spend/daily-instruction (spend worker)
-│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session, not DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, GET/POST /messages/:id/repayment, POST /messages/:id/translate
+│   │   ├── messages.ts       # GET/POST /messages, GET /messages/compose-target, public GET /messages/:id, GET /messages/hidden (session or DEBUG_TOKEN), DELETE /messages/:id, GET /messages/:id/replies, GET /messages/:id/photo, GET /messages/:id/video.*, POST /messages/:id/invoice, GET/POST /messages/:id/repayment, POST /messages/:id/translate
 │   │   ├── repayment.ts      # GET/POST /messages/:id/repayment (public ledger; author pays the next share)
 │   │   ├── translate.ts      # GET /translate (DeepL configured?)
 │   │   ├── well-known.ts     # GET /.well-known/nostr.json (NIP-05); GET /.well-known/lnurlp/:username (LUD-16)
