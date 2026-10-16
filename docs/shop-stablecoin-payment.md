@@ -473,7 +473,11 @@ until its window ends.
 ### By the payer
 
 `POST /pay/:username/payment` opens a payment for an amount the payer
-entered on the payment page. No session. The body is
+entered on the payment page. It is a separate route from
+`POST /pay/:username/invoice`, whose checks and texts it reuses: that
+route mints one invoice for any amount and keeps no state, while this one
+opens a shop payment that pins the sticker, carries Orchestra quotes and
+their replacements, and is paid at most once. No session. The body is
 `{ "amountSats": <integer> }`. CORS is the page's origin list, the same
 as for `POST /pay/:username/invoice`. The checks run in this order:
 
@@ -492,9 +496,13 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
 pending charge pins that range to the charge amount. Orders 4, 6, and 7
-run again under the creation lock. The counters in order 7 count started
-creations, in process. They do not depend on the client address, because
-the web app's proxy forwards none.
+run again under the creation lock. The counters in order 7 count started creations, in process, so each
+container of a deploy keeps its own: with two containers an account can
+start up to 20 creations in 5 minutes and the api up to 120 in a minute.
+That is the bound order 7 states per container; no money depends on it,
+and a shared counter would add a database write before every Orchestra
+call. They do not depend on the client address, because the web app's
+proxy forwards none.
 
 An `open` payer-opened payment is always replaced: it ends with
 `end_reason` `replaced`, and the new payment is created. A stranger's
@@ -581,17 +589,20 @@ and expire unused.
 ## Quotes
 
 A replacement quote is created under the creation lock. A second fetch
-waits for it and returns it. The replacement runs steps 3, 5, and 6 of
+in the same container waits for it and returns it. The replacement runs steps 3, 5, and 6 of
 the creation procedure for the same sats and the same BOLT11, within
 4 s, and inserts one `shop_quote` with the offers that pass in a transaction
 under the account row lock. That transaction first increments
-`shop_payment.replacements` with a conditional update (`status` is
-`open`, `replacements` is below 4, and at least 45 s remain before
-`window_ends_at`), and inserts the quote only when that update changed
-one row. Otherwise it inserts nothing, and the fetch answers with the
-current quote, or as for an ended payment. The in-process lock is per
-container; this update keeps the limit across the two containers of a
-deploy. The payment id stays. A payment never gets a second BOLT11, so the shop can only
+`shop_payment.replacements` with a conditional update (`status` is `open`, `replacements` still
+has the value read when the replacement started and is below 4, and at
+least 45 s remain before `window_ends_at`), and inserts the quote only
+when that update changed one row. Otherwise it inserts nothing, re-reads
+the payment, and the fetch answers with the quote that is current now, or
+as for an ended payment. The in-process lock is per container; this
+update makes a replacement in the other container of a deploy win or
+lose as a whole, so two containers never use two replacements for one
+expiring quote. The losing container's Orchestra quotes are never shown
+and expire unused. The payment id stays. A payment never gets a second BOLT11, so the shop can only
 be paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
@@ -640,7 +651,12 @@ address also logs `shop.alert.shared_deposit_address`.
 
 ## Callback
 
-`GET /lnurlp/cb/:username`. No session. CORS `*`, methods `GET, OPTIONS`,
+`GET /lnurlp/cb/:username`. No session. It is a separate route from
+`GET /lnurlp/:username/invoice`, whose LUD-06 answer it repeats for the
+open amount: OpenCryptoPay needs a details callback that answers
+`method` and `asset` per quote, and Tether 1.11.0 derives the proof URL
+by replacing the `cb` path segment with `tx`, which the existing path
+cannot give. CORS `*`, methods `GET, OPTIONS`,
 `Cache-Control: no-store`, 120 requests per minute per client address.
 
 ### LNURL amount path
@@ -1075,9 +1091,9 @@ CREATE TABLE IF NOT EXISTS shop_payment (
                        'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'proof_refused',
                        'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
-    replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
+  replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
   next_settle_at     timestamptz,
-    next_history_at    timestamptz,
+  next_history_at    timestamptz,
   history_offset     integer NOT NULL DEFAULT 0,
   created_at         timestamptz NOT NULL,
   accepted_at        timestamptz,
@@ -1146,7 +1162,7 @@ CREATE TABLE IF NOT EXISTS shop_proof (
   order_status       text,
   order_found_at     timestamptz,
   refusal            text CHECK (refusal IN ('mismatch', 'expired_order', 'hex_rejected', 'tx_used')),
-    submit_stopped     boolean NOT NULL DEFAULT false, -- set when a submit answered 409 quote_expired
+  submit_stopped     boolean NOT NULL DEFAULT false, -- set when a submit answered 409 quote_expired
   sent_at            timestamptz,
   last_submit_at     timestamptz,
   give_up_at         timestamptz NOT NULL,
