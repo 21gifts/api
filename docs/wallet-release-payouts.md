@@ -260,7 +260,7 @@ through it. The 58 people had the roles `verified`, `moderator` and
 The welcome gift does not cut a payout for these 58. 50 of the 51 `verified`
 people already have the platform `Welcome` reply, so no welcome ping is sent
 for them. The one `verified` person without it has never received a welcome
-gift and is not on the daily roster: the one-time 1 USD welcome replaces that
+gift and is not on spend's live roster list: the one-time 1 USD welcome replaces that
 day's 1 USD daily payout, which is the same amount. Moderators and the
 founder never get a welcome ping. A member who is not eligible on a day is not
 paid that day, before and after the release alike.
