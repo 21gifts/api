@@ -21,9 +21,9 @@ what must be true on release day for that to hold.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
      live list counted below. It was not readable on 2026-10-16; read it on
      release day (see [Check again before release](#check-again-before-release)).
-  5. Production runs exactly the released API and app heads: the last
-     production deploy to finish in each repository is the release merge
-     commit (see
+  5. Production runs exactly the released API and app heads: in each
+     repository every production deploy run has completed, and the one that
+     finished last succeeded on the release merge commit (see
      [Check again before release](#check-again-before-release)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
@@ -271,10 +271,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    row then belongs to an account with a username, except the one recipient
    without an account, and the move keeps every listed amount. A row that is
    only in the API roster and belongs to no account would be deleted.
-5. Production runs the released heads: in each repository no
-   `deploy-prd.yaml` run is queued, waiting or in progress, and the run that
-   finished last, whatever its result, succeeded and is on the `main` merge
-   commit of the release. The workflow pushes the movable tag `latest`
+5. Production runs the released heads: in each repository every
+   `deploy-prd.yaml` run has status `completed`, and the run that finished
+   last, whatever its result, succeeded and is on the `main` merge commit of
+   the release. The workflow pushes the movable tag `latest`
    before it waits for the deploy, so a later run that failed or was
    cancelled may already have moved `latest`, and a re-run of an older run
    keeps its creation time but pushes `latest` again.
@@ -309,14 +309,17 @@ Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
 (role not `basis`, and `admitted`, or `trial` for that UTC day).
 Check the three settings in the production deployment configuration.
-After both `develop → main` merges, list the production deploys of each
+After both `develop → main` merges, list every production deploy of each
 repository:
-`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 100 --json headSha,status,conclusion,createdAt,updatedAt`
-and the same for `21gifts/app`. The oldest listed run must have been
-created before the release merge, so no re-run falls outside the list. No
-run may be queued, waiting or in progress. The completed run with the latest
-`updatedAt`, whatever its conclusion, must have `conclusion` `success` and
-the release merge commit as `headSha`. Each run pushes `latest` and then
-waits for the infrastructure run titled `image-published 21gifts/api:latest <sha>`
-or `image-published 21gifts/app:latest <sha>`, so that last completed run
-shows which merge commit `latest` points to.
+`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 1000 --json headSha,status,conclusion,createdAt,updatedAt`
+and the same for `21gifts/app`. The list must hold every run: its length
+equals `total_count` of
+`gh api "repos/21gifts/api/actions/workflows/deploy-prd.yaml/runs?per_page=1"`
+(on 2026-10-16: 128 runs for the api, 145 for the app). Every run must have
+`status` `completed`. The run with the latest `updatedAt`, whatever its
+conclusion, must have `conclusion` `success` and the release merge commit as
+`headSha`. Each run pushes `latest` and then waits for the infrastructure run
+titled `image-published 21gifts/api:latest <sha>` or
+`image-published 21gifts/app:latest <sha>`, so that last completed run shows
+which merge commit `latest` points to. A re-run keeps its creation time, which
+is why the whole list is read and not only its newest rows.
