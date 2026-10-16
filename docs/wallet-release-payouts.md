@@ -21,8 +21,9 @@ what must be true on release day for that to hold.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
      live list counted below. It was not readable on 2026-10-16; read it on
      release day (see [Check again before release](#check-again-before-release)).
-  5. Production runs exactly the released API and app heads: the newest
-     production deploy of each is the release merge commit (see
+  5. Production runs exactly the released API and app heads: the last
+     production deploy to finish in each repository is the release merge
+     commit (see
      [Check again before release](#check-again-before-release)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
@@ -270,11 +271,12 @@ they are eligible, on the in-app wallet only, when all of these hold:
    row then belongs to an account with a username, except the one recipient
    without an account, and the move keeps every listed amount. A row that is
    only in the API roster and belongs to no account would be deleted.
-5. Production runs the released heads: in each repository the newest
-   `deploy-prd.yaml` run is the one on the `main` merge commit of the
-   release, it succeeded, and no newer run is queued or in progress. The
-   workflow publishes the movable tag `latest`, so an older green run alone
-   does not prove what is running.
+5. Production runs the released heads: in each repository no
+   `deploy-prd.yaml` run is queued, waiting or in progress, and among its
+   succeeded runs the one that finished last is on the `main` merge commit
+   of the release. The workflow publishes the movable tag `latest`, and a
+   re-run of an older run keeps its creation time but pushes `latest` again,
+   so the last run to finish decides, not the newest created one.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -299,16 +301,21 @@ the passkey renew dialog once.
 Repeat the counts above with the same `gifts-debug` reads on release day.
 Read the API roster with `gifts-debug db daily_roster_entry` and compare it
 with `gifts-debug spend --raw`: same addresses, amounts and buckets, and every
-non-host address equal to an account's `lightning_address` with a username.
+non-host address equal to an account's `lightning_address` with a username,
+except rows that belong to no account (on 2026-10-16 one recipient), which the
+roster move deletes.
 Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
 (role not `basis`, and `admitted`, or `trial` for that UTC day).
 Check the three settings in the production deployment configuration.
-After both `develop → main` merges, confirm for each repository that the
-newest `deploy-prd.yaml` run is the one on the release merge commit, that it
-succeeded, and that no newer run is queued or in progress:
-`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 3 --json headSha,status,conclusion`
-and the same for `21gifts/app`. Each run waits for the infrastructure run
-titled `image-published 21gifts/api:latest <sha>` or
-`image-published 21gifts/app:latest <sha>`, so the newest succeeded run shows
+After both `develop → main` merges, list the production deploys of each
+repository:
+`gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 20 --json headSha,status,conclusion,createdAt,updatedAt`
+and the same for `21gifts/app`. No run may be queued, waiting or in
+progress, and among the succeeded runs the one with the latest `updatedAt`
+must have the release merge commit as `headSha`. The list is ordered by
+`createdAt`, so a re-run of an older run can sit lower in it and still be
+the last push of `latest`. Each run waits for the infrastructure run titled
+`image-published 21gifts/api:latest <sha>` or
+`image-published 21gifts/app:latest <sha>`, so the last succeeded run shows
 which merge commit `latest` points to.
