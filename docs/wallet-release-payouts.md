@@ -110,6 +110,30 @@ after opening the app and posting.
 - 1 has `wallet_required = false`. Find that member with the account query
   above (payees of the last three days with `wallet_required = false`).
 
+### Passkey rows
+
+30 accounts in production have two `passkey_credential` rows, and none has
+more (23 of them are among the 58 people paid). Each of these members still
+uses only one passkey:
+
+- The second row comes from the passkey renew. The API side ("Add a recovery
+  phrase without replacing the login passkey", api#271) reached `main` on
+  2026-09-24 (release #274). The app dialog that asks members without a seed
+  to renew their passkey (app#447) reached `main` on 2026-09-29 at 08:41 UTC
+  (release app#455). `addSeedPasskeyCredential` inserts the new seed passkey, keeps
+  the old row, and sets `wallet_required = true`. It runs at most once per
+  account, because it refuses an account that already has
+  `wallet_required = true`.
+- 22 of the 30 second rows were created on 2026-09-29 and 2026-09-30, right
+  after the app dialog went live. Two are from 2026-09-24, the rest followed
+  one by one as members confirmed the dialog.
+- Registration and renew use the same WebAuthn user handle, the account id
+  (`userID` in `src/lib/auth/passkey.ts`). A passkey provider (iCloud
+  Keychain, Google Password Manager, the device itself) that creates a passkey
+  for the same RP ID and user handle replaces the one it held. On the device
+  that ran the renew, only the new, wallet-capable passkey exists. The older
+  row is a leftover that no device signs with.
+
 ### Daily roster
 
 Spend's live list on 2026-10-16: 16 recipients and 6 moderators, every
@@ -127,10 +151,13 @@ build. A tab left open keeps the old JavaScript until it reloads.
 For a member with `wallet_required = true`:
 
 1. The app holds the stored session back, because the recovery phrase lives
-   only in tab memory, and shows the wallet login card.
-2. The member taps **Log in** and confirms the passkey prompt. The login reads
-   the passkey PRF output and derives the phrase. If the member signed in with
-   a passkey other than the seed passkey, a second prompt appears.
+   only in tab memory, and shows the wallet login card. This happens on every
+   new open of the app, not only the first.
+2. The member taps **Log in** and confirms the passkey prompt once. The login
+   reads the passkey PRF output and derives the phrase. A second prompt for
+   the seed passkey appears only when the member signed in with an older
+   passkey that still exists in another provider the renew did not replace
+   (see [Passkey rows](#passkey-rows)).
 3. The background wallet setup starts by itself (`WalletSync`,
    `listenForWalletSetup`). It connects the SDK, calls `PUT /me/wallet`,
    registers `<username>@<host>`, and reloads `GET /me`. It retries after 2 s,
