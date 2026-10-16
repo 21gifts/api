@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
+**Status**: living document. Last revised 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
 
 ---
 
@@ -4466,6 +4466,10 @@ optional `place` (`{ lat, lng, label }` when a pin is stored;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a receiving address (see [Receiving address](#receiving-address)); null or empty `eventId` is not payable),
+`authorCanReceive` (true when the author has a receiving address, whether or
+not the note is signed yet; false for a missing or external author and on a
+soft-hidden row; a client shows that the member cannot receive yet instead of
+offering a payment that can only fail),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `photoTakenAts` (always present, length
 equals `photoCount`, null when unknown, `[]` when there are no stills) and
@@ -4480,7 +4484,7 @@ null, and `account_id` set, or `author_pubkey` set and that pubkey is a
 recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
 an `EXISTS` subquery)). Visible external rows
 include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
-and `payable` is false. Rows with neither an account nor an author pubkey stay
+and `payable` and `authorCanReceive` are false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
 or video bytes. Live list, single-note GET, and replies include
 `accountId` whenever the stored author id is non-null, with or without a
@@ -4550,6 +4554,7 @@ Success → **Response** `200`:
       "amountEur": null,
       "amountPhp": null,
       "payable": false,
+      "authorCanReceive": false,
       "hasPhoto": false,
       "photoCount": 0,
       "photoTakenAts": [],
@@ -5974,7 +5979,8 @@ Success → **Response** `200`:
       "lastSats": 0,
       "unread": true,
       "unreadMessageCount": 1,
-      "accountId": "<uuid>"
+      "accountId": "<uuid>",
+      "canReceive": true
     }
   ],
   "unreadCount": 1
@@ -5993,7 +5999,11 @@ Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed rows,
 including contact tickets, are `false`). List GET does not stamp
 last-read. `accountId` is the
 counterpart 21.gifts account. It is omitted for Damus-only counterparts
-(never JSON `null`).
+(never JSON `null`). `canReceive` is always present: true when that
+counterpart has a receiving address (see [Receiving address](#receiving-address)),
+false for a Damus-only counterpart, a missing account, and the moderator group.
+The same row shape is returned by `POST /conversations` and
+`GET /conversations/moderator-group`.
 
 ### `GET /conversations/moderator-group`
 
@@ -6196,8 +6206,8 @@ The counterpart's address is the receiving address
 
 **400** `{ "error": "The author's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`
 for Damus threads, no counterpart, no counterpart receiving address or profile
-note, LNURL `noZap`, or a non-NIP-57 invoice. The same text without `code` when
-the counterpart's profile note is not signed yet or has no Nostr key. **400** `{ "error": "Could not start the Bitcoin payment" }`
+note, a profile note that is not signed yet, a counterpart without a Nostr key,
+LNURL `noZap`, or a non-NIP-57 invoice. **400** `{ "error": "Could not start the Bitcoin payment" }`
 when LNURL is unreachable or another transport failure. **400**
 `{ "error": "Cannot message yourself" }`. **429** Too many payments. **503**
 `{ "error": "Messages are unavailable" }` without a KEK. **503**
@@ -6421,6 +6431,9 @@ following Monday in that zone. `logged` is false and `status` is null
 when the owner has not recorded that period.
 
 Success → **Response** `200` `{ "reviewWeek": { "start" }, "habits" }`.
+Each comment carries `canReceive`: true when its author has a receiving
+address (see [Receiving address](#receiving-address)); each author is looked
+up once per request.
 Store failure → **503** `{ "error": "Habits are unavailable" }`.
 
 ### `POST /habits`
@@ -6470,7 +6483,7 @@ rule as `POST /pay/:username/invoice`.
 
 Donating to the caller's own comment is **400**
 `{ "error": "Cannot donate to yourself" }`. An author without a receiving
-address (no verified in-app wallet, or the LNURL server is off) is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`. The existing invoice
+address (no verified in-app wallet, or the LNURL server is off) is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`. The existing invoice
 limiter answers **429** `{ "error": "Too many payments" }`. A failed
 mint, or a BOLT11 that is missing, not a safe integer amount, or not the
 requested amount, is **502**
@@ -6505,7 +6518,8 @@ Used by `POST /messages/:id/invoice` (forum gift and compose-target posting
 fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`,
 `POST /messages/:id/repayment/due`, `canReceive` on `GET /messages/:id/repayment`, `GET /me/loans`,
 `GET /pay/:username`, `POST /pay/:username/invoice`, `POST /pos`, the
-`payable` flag on forum and member feeds, account JSON `lightningAddress`
+`payable` and `authorCanReceive` flags on forum and member feeds,
+`canReceive` on `GET /conversations` rows and `GET /habits` comments, account JSON `lightningAddress`
 (owner, public card, member card, funding detail, debug), spend pings, the
 Nostr kind 0 `lud16` (members without a verified wallet publish none), and
 the zap receipt ingest (the LNURL `nostrPubkey` that must sign a receipt).
@@ -6513,14 +6527,16 @@ Only a verified wallet clears `lightning-address` from `missing`, so a member
 without one cannot post (`POST /messages`, `GET /messages/compose-target`).
 
 A **400** that means "needs a wallet" or "cannot receive" carries a
-machine-readable `code` next to `error`. Clients decide by `code`, not by the
+machine-readable `code` next to `error`, as does the **409** of a habit
+donation to an author who cannot receive. Clients decide by `code`, not by the
 status or the text:
 
 - `"code": "wallet_required"`: the caller must set up and verify the in-app
   wallet first (`POST /pos`).
 - `"code": "cannot_receive"`: the recipient cannot receive. It has no member
   account, no verified wallet, or its wallet refuses the zap (forum gift and
-  compose-target posting fee, conversation invoice, repayment).
+  compose-target posting fee, conversation invoice, repayment, habit
+  donation).
 
 Other 400s on the same routes (for example an unsigned note) carry no `code`.
 

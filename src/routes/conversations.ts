@@ -372,16 +372,14 @@ function counterpartAccountId(
  * truncated npub; 21gifts members never expose npubs.
  *
  * @param thread - Stored thread.
- * @param viewerId - Session account id.
- * @param authStore - Account lookup.
- * @param platformId - Official platform account id, or `null`.
+ * @param otherId - Counterpart id from {@link counterpartAccountId}.
+ * @param other - Counterpart account, or `undefined` (group, Damus-only, or missing).
  */
-async function counterpartName(
+function counterpartName(
   thread: ConversationThread,
-  viewerId: string,
-  authStore: AuthStore,
-  platformId: string | null,
-): Promise<string> {
+  otherId: string | null,
+  other: Account | undefined,
+): string {
   const groupName = moderatorGroupDisplayName(thread.kind);
   if (groupName !== null) {
     return groupName;
@@ -389,11 +387,9 @@ async function counterpartName(
   if (thread.kind === 'member_damus' && thread.counterpartPubkey !== null) {
     return truncatePubkeyDisplay(thread.counterpartPubkey);
   }
-  const otherId = counterpartAccountId(thread, viewerId, platformId);
   if (otherId === null) {
     return thread.kind === 'member_platform' ? '21.gifts' : 'member';
   }
-  const other = await authStore.getAccount(otherId);
   const name = other?.name?.trim() ?? '';
   if (name !== '') {
     return name;
@@ -404,6 +400,11 @@ async function counterpartName(
   return 'member';
 }
 
+/**
+ * List/open JSON of one thread for the viewer. The counterpart is looked up
+ * once for its name and for `canReceive` ({@link receivingAddress} non-null);
+ * the moderator group has no single counterpart and never receives.
+ */
 async function publicThread(
   thread: ConversationThread,
   account: Account,
@@ -411,12 +412,15 @@ async function publicThread(
   platformId: string | null,
   unread: boolean,
   unreadMessageCount: number,
+  lnurlServer: LnurlServerConfig | undefined,
 ): Promise<PublicConversation> {
+  const otherId = counterpartAccountId(thread, account.id, platformId);
+  const other =
+    otherId === null || moderatorGroupDisplayName(thread.kind) !== null
+      ? undefined
+      : await authStore.getAccount(otherId);
   return serializeConversation(
-    {
-      ...thread,
-      name: await counterpartName(thread, account.id, authStore, platformId),
-    },
+    { ...thread, name: counterpartName(thread, otherId, other) },
     conversationFromMe({
       senderAccountId: thread.lastSenderAccountId,
       actorAccountId: thread.lastActorAccountId,
@@ -424,7 +428,8 @@ async function publicThread(
     }),
     unread,
     unreadMessageCount,
-    counterpartAccountId(thread, account.id, platformId),
+    otherId,
+    other !== undefined && receivingAddress(other, lnurlServer) !== null,
   );
 }
 
@@ -555,6 +560,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
               platformId,
               unread,
               unreadMessageCount,
+              deps.lnurlServer,
             ),
           );
         }
@@ -626,6 +632,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             platformId,
             unreadMessageCount > 0,
             unreadMessageCount,
+            deps.lnurlServer,
           ),
           200,
         );
@@ -664,6 +671,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
               platform.id,
               unreadMessageCount > 0,
               unreadMessageCount,
+              deps.lnurlServer,
             ),
           },
           200,
@@ -1248,7 +1256,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         const recipientPubkey = await deps.authStore.getNostrPublicKey(counterpart.id);
         if (recipientPubkey === undefined) {
@@ -1268,7 +1276,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
             isNip57Invoice: false,
             conversationMessageId: null,
           });
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         const kek = deps.nostrKek;
         if (kek === undefined) {

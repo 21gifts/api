@@ -465,6 +465,7 @@ describe('memberHabitRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -493,6 +494,7 @@ describe('memberHabitRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -522,6 +524,7 @@ describe('memberHabitRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -756,6 +759,57 @@ describe('memberHabitRoutes', () => {
     };
     expect(body.habits[0]?.comments[0]?.text).toBe('nice');
     expect(body.habits[0]?.comments[0]?.deletedAt).toBeUndefined();
+  });
+
+  it('GET marks each comment author canReceive with one lookup per author', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-recv', accountId: BASIS.id, role: 'basis' }));
+    const comment = (id: string, accountId: string) => ({
+      id,
+      habitId: 'h-recv',
+      accountId,
+      name: 'Name',
+      text: 'nice',
+      week: '2026-10-05',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    await store.comment(comment('c-alice-1', ALICE.id));
+    await store.comment(comment('c-alice-2', ALICE.id));
+    await store.comment(comment('c-init', INITIATOR.id));
+    await store.comment(comment('c-gone', 'acc-gone'));
+    const lookups: string[] = [];
+    const app = memberHabitRoutes({
+      store,
+      now: () => NOW_OPEN,
+      fetchImpl: unusedFetch,
+      resolve: async () => null,
+      lnurlServer: LNURL_SERVER,
+      authStore: {
+        async getAccount(id: string) {
+          lookups.push(id);
+          return { [ALICE.id]: ALICE, [INITIATOR.id]: INITIATOR }[id];
+        },
+        async getAccountByUsername() {
+          return undefined;
+        },
+      },
+    });
+    const listed = await app.request('/');
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as {
+      habits: Array<{ comments: Array<{ id: string; canReceive: boolean }> }>;
+    };
+    const byId = Object.fromEntries(
+      (body.habits[0]?.comments ?? []).map((row) => [row.id, row.canReceive]),
+    );
+    expect(byId).toEqual({
+      'c-alice-1': true,
+      'c-alice-2': true,
+      'c-init': false,
+      'c-gone': false,
+    });
+    expect(lookups.filter((id) => id === ALICE.id)).toHaveLength(1);
   });
 
   it('sorts the same role by owner name and habit name, and keeps a moderator with everyone else', async () => {
@@ -1312,6 +1366,7 @@ describe('memberHabitRoutes', () => {
     expect(emptyWallet.status).toBe(409);
     expect(await emptyWallet.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const stillNoWallet = await post(
       app,
@@ -1321,6 +1376,7 @@ describe('memberHabitRoutes', () => {
     expect(stillNoWallet.status).toBe(409);
     expect(await stillNoWallet.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const atCeiling = await post(
       mount({

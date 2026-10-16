@@ -26,12 +26,7 @@ import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
 import type { LnurlServerConfig } from '@/lib/config';
-import {
-  CANNOT_RECEIVE,
-  lnurlServerFetch,
-  receivingAddress,
-  type ReceivingAccount,
-} from '@/lib/receiving-address';
+import { CANNOT_RECEIVE, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import { issueSparkInvoice } from '@/lib/spark-invoice';
 import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
@@ -44,7 +39,9 @@ import {
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
+  messagePay,
   normalizePhotoTakenAt,
+  NOT_PAYABLE,
   serializeHiddenMessage,
   serializeMessage,
   unsignedNostrDefaults,
@@ -168,31 +165,6 @@ const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bi
 
 /** 503 code when a heart cannot get its fee-free Spark invoice; a heart never falls back to Lightning. */
 const HEART_UNAVAILABLE = 'HEART_UNAVAILABLE';
-
-/**
- * Whether a forum row can mint a zap: non-empty signed `eventId` plus an
- * author receiving address ({@link receivingAddress}: a verified wallet with
- * the LNURL server configured). Null or empty `eventId` and an author without
- * a verified wallet are not payable.
- *
- * @param row - Forum row (`eventId` is the mint gate).
- * @param author - Author account when known.
- * @param lnurlServer - LNURL server config, or `undefined` when off.
- * @returns True when list/get should mark the note payable.
- */
-function payableOf(
-  row: { eventId: string | null },
-  author: ReceivingAccount | undefined,
-  lnurlServer: LnurlServerConfig | undefined,
-): boolean {
-  const eventId = row.eventId;
-  return (
-    eventId !== null &&
-    eventId !== '' &&
-    author !== undefined &&
-    receivingAddress(author, lnurlServer) !== null
-  );
-}
 
 /**
  * Persist an invoice attempt without failing the HTTP payment response.
@@ -1022,7 +994,7 @@ async function persistForumPost(
           [
             serializeMessage(
               existing,
-              payableOf(existing, account, deps.lnurlServer),
+              messagePay(existing, account, deps.lnurlServer),
               account.role,
               undefined,
               true,
@@ -1257,7 +1229,7 @@ async function persistForumPost(
       [
         serializeMessage(
           published,
-          payableOf(published, account, deps.lnurlServer),
+          messagePay(published, account, deps.lnurlServer),
           account.role,
           undefined,
           true,
@@ -1632,11 +1604,11 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
       null,
       kept.map((row, i) => {
         const author = authors[i];
-        const payable = payableOf(row, author, deps.lnurlServer);
+        const pay = messagePay(row, author, deps.lnurlServer);
         const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
         return serializeMessage(
           row,
-          payable,
+          pay,
           role,
           row.replyCount,
           true,
@@ -1792,11 +1764,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           account.id,
           kept.map((row, i) => {
             const author = authors[i];
-            const payable = payableOf(row, author, deps.lnurlServer);
+            const pay = messagePay(row, author, deps.lnurlServer);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             return serializeMessage(
               row,
-              payable,
+              pay,
               role,
               row.replyCount,
               true,
@@ -2016,7 +1988,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (receivingAddress(live, deps.lnurlServer) === null) {
           return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
         }
-        if (!payableOf(row, live, deps.lnurlServer)) {
+        if (!messagePay(row, live, deps.lnurlServer).payable) {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
         const firstPostFree = !(await deps.store.accountHasTopLevelPost(
@@ -2071,7 +2043,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               messages.push(
                 serializeMessage(
                   row,
-                  false,
+                  NOT_PAYABLE,
                   role,
                   undefined,
                   true,
@@ -2096,12 +2068,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const author =
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-            const payable =
-              row.accountId === null ? false : payableOf(kept, author, deps.lnurlServer);
+            const pay =
+              row.accountId === null ? NOT_PAYABLE : messagePay(kept, author, deps.lnurlServer);
             messages.push(
               serializeMessage(
                 kept,
-                payable,
+                pay,
                 role,
                 undefined,
                 true,
@@ -2156,7 +2128,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
           } catch {
             continue;
           }
@@ -2193,7 +2165,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
           } catch {
             continue;
           }
@@ -2230,7 +2202,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
           } catch {
             continue;
           }
@@ -2267,7 +2239,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, undefined, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, undefined, true));
           } catch {
             continue;
           }
@@ -2442,8 +2414,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable =
-          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.place.updated', {
           messageId: id,
@@ -2472,7 +2444,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           [
             serializeMessage(
               updated,
-              payable,
+              pay,
               role,
               await deps.store.countAttributedReplies(updated.id),
               undefined,
@@ -2576,8 +2548,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable =
-          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.shop_account.updated', {
           messageId: id,
@@ -2601,7 +2573,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           [
             serializeMessage(
               updated,
-              payable,
+              pay,
               role,
               await deps.store.countAttributedReplies(updated.id),
               undefined,
@@ -2671,7 +2643,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author, deps.lnurlServer);
+          const pay =
+            row.accountId === null ? NOT_PAYABLE : messagePay(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const attached = await attachHeartStats(
             (ids, viewer) => deps.store.heartStats(ids, viewer),
@@ -2679,7 +2652,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             [
               serializeMessage(
                 row,
-                payable,
+                pay,
                 role,
                 await deps.store.countAttributedReplies(row.id),
                 undefined,
@@ -2715,8 +2688,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable =
-          updated.accountId === null ? false : payableOf(updated, author, deps.lnurlServer);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.text.updated', {
           messageId: id,
@@ -2729,7 +2702,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           [
             serializeMessage(
               updated,
-              payable,
+              pay,
               role,
               await deps.store.countAttributedReplies(updated.id),
               undefined,
@@ -2813,8 +2786,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           written.accountId === null
             ? undefined
             : await deps.authStore.getAccount(written.accountId);
-        const payable =
-          written.accountId === null ? false : payableOf(written, author, deps.lnurlServer);
+        const pay =
+          written.accountId === null ? NOT_PAYABLE : messagePay(written, author, deps.lnurlServer);
         const role = written.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.photos.updated', {
           messageId: id,
@@ -2827,7 +2800,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           [
             serializeMessage(
               written,
-              payable,
+              pay,
               role,
               await deps.store.countAttributedReplies(written.id),
               undefined,
@@ -3064,7 +3037,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               [
                 serializeMessage(
                   row,
-                  false,
+                  NOT_PAYABLE,
                   role,
                   row.parentId === null
                     ? await deps.store.countAttributedReplies(row.id)
@@ -3100,7 +3073,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author, deps.lnurlServer);
+          const pay =
+            row.accountId === null ? NOT_PAYABLE : messagePay(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
@@ -3113,7 +3087,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             [
               serializeMessage(
                 kept,
-                payable,
+                pay,
                 role,
                 kept.parentId === null
                   ? await deps.store.countAttributedReplies(kept.id)
