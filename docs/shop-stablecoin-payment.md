@@ -767,8 +767,12 @@ payers, so the request goes on to verification.
    and the [Watcher](#watcher) keeps looking. A quote holds at most 4
    lookup rows. Past that, the answer is the same **503** without a row;
    the wallet's retries and Orchestra's own detection still apply.
-3. The receipt status is not `0x1`: **400**, reason
-   `Payment was not accepted`. Nothing is stored.
+3. The transfer did not succeed: **400**, reason
+   `Payment was not accepted`. Nothing is stored. For a transaction
+   receipt that is a `status` other than `0x1`. For a user-operation
+   receipt it is a `success` other than `true`; the `status` of its
+   nested bundle receipt does not decide, because a bundle can succeed
+   while one of its user operations fails.
 4. Find the ERC-20 `Transfer` logs (topic
    `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef`)
    whose emitting address is an offer contract of this quote and method,
