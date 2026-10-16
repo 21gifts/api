@@ -16,6 +16,10 @@ const EMPTY = {
   receivedSats: 0,
   donatedOverTime: [],
   receivedOverTime: [],
+  owedSats: 0,
+  creditSats: 0,
+  owedOverTime: [],
+  creditOverTime: [],
   fx: {
     quote: 'BTC-USD',
     dayBasis: 'utc',
