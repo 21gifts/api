@@ -2477,13 +2477,13 @@ describe('InMemoryMessageStore', () => {
         deletedBy: 'staff',
         place: { lat: 5, lng: 6, label: 'hid' },
       },
-      { ...LATE, id: 'za', createdAt: same, place: { lat: 7, lng: 8, label: 'A' } },
+      { ...LATE, id: 'za', createdAt: same, place: { lat: 7, lng: 8, label: 'A', country: '' } },
       {
         ...LATE,
         id: 'zb',
         text: 'Cafe\n\n#21GiftsShop',
         createdAt: same,
-        place: { lat: 9, lng: 10, label: 'B' },
+        place: { lat: 9, lng: 10, label: 'B', country: 'PH' },
       },
     ]);
     const listed = await store.listPlaces(10);
@@ -2495,10 +2495,12 @@ describe('InMemoryMessageStore', () => {
       lat: 9,
       lng: 10,
       label: 'B',
+      country: 'PH',
       accountId: 'acc',
       shop: true,
     });
     expect(listed[1]?.shop).toBe(false);
+    expect(listed[1]).not.toHaveProperty('country');
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
   });
 
@@ -5611,6 +5613,7 @@ describe('PostgresMessageStore', () => {
         place_lat: '14.6',
         place_lng: 120.98,
         place_label: 'Happyland',
+        place_country: 'PH',
         deleted_at: new Date('2026-09-01T00:00:00.000Z'),
         deleted_by: 'staff',
       },
@@ -5624,6 +5627,7 @@ describe('PostgresMessageStore', () => {
         place_lat: 1,
         place_lng: 2,
         place_label: '',
+        place_country: '',
         deleted_at: new Date('2026-09-01T00:00:00.000Z'),
         deleted_by: 'staff',
       },
@@ -5642,7 +5646,12 @@ describe('PostgresMessageStore', () => {
       },
     ];
     const listed = await new PostgresMessageStore(sql).listHidden(10);
-    expect(listed[0]?.place).toEqual({ lat: 14.6, lng: 120.98, label: 'Happyland' });
+    expect(listed[0]?.place).toEqual({
+      lat: 14.6,
+      lng: 120.98,
+      label: 'Happyland',
+      country: 'PH',
+    });
     expect(listed[1]?.place).toEqual({ lat: 1, lng: 2, label: null });
     expect(listed[2]?.place).toBeNull();
   });

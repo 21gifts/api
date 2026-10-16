@@ -5896,7 +5896,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 9, lng: 10, label: 'B' },
+        place: { lat: 9, lng: 10, label: 'B', country: 'PH' },
       },
     ]);
     const res = await mount(await namedStore('Ada'), store).request('/messages/places', {
@@ -5925,6 +5925,7 @@ describe('GET /messages/places', () => {
       lat: 9,
       lng: 10,
       label: 'B',
+      country: 'PH',
       accountId: 'acc',
       shop: true,
     });
