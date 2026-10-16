@@ -179,8 +179,14 @@ renew, each of these members has one passkey for 21.gifts:
 
 ### Daily roster
 
-Spend's live list on 2026-10-16 (`gifts-debug spend --raw`): 16 recipients and
-6 moderators, every address on `walletofsatoshi.com`. The API's own rows
+The daily roster holds only payees with a fixed amount and the moderators. Of
+the 58 people paid from 2026-10-13 to 2026-10-15, 17 are on it (15 recipient
+rows and 6 moderator rows; 4 people are in both buckets). The other 41 are on
+no roster: they are paid the default amount, and the wallet release itself
+sends their payouts to `<username>@21.gifts`.
+
+Spend's live list on 2026-10-16 (`gifts-debug spend --raw`): 16 recipient rows
+and 6 moderator rows, every address on `walletofsatoshi.com`. The API's own rows
 (`gifts-debug db daily_roster_entry`), which the roster move works on (see
 [How a payout is triggered](#how-a-payout-is-triggered)), held exactly the same
 22 addresses, amounts and buckets on 2026-10-16. In `daily_roster` the roster
@@ -189,8 +195,9 @@ welcome gift) and `moderator_payments_enabled` (moderator stipends) were
 `true`; a switch that is off pays nothing on its path
 (`src/lib/spend-instruction.ts`). Amounts: recipients 9 × 3 USD, 3 × 2 USD,
 2 × 2.5 USD, 2 × 1 USD; moderators 6 × 5 USD. Matched against
-`account.lightning_address`: 15 recipients and all 6 moderators belong to an
-account with a username; 1 recipient address belongs to no account.
+`account.lightning_address`: 15 recipient rows and all 6 moderator rows belong
+to an account with a username. 1 recipient row belongs to no account; that
+address received 99 daily payouts from 2026-05-28 to 2026-09-28 and none since.
 
 ## First open of the new app
 
@@ -251,8 +258,8 @@ moderators would get no stipend.
 - A second boot changes nothing. The log line `daily_roster.wallet_move`
   carries the two counts only.
 
-If the API roster matches spend's live list of 2026-10-16, this rewrites 15
-recipients and 6 moderators and deletes 1 recipient.
+On the roster of 2026-10-16 this rewrites 15 recipient rows and 6 moderator
+rows and deletes 1 recipient row.
 
 ## Result
 
