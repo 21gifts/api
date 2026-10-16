@@ -80,6 +80,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
 import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
@@ -907,6 +908,48 @@ async function postedShopAccount(
 }
 
 /**
+ * Shop-with-pin completeness for create. A shop note without a pin stays
+ * allowed. Replies never carry a pin.
+ *
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level.
+ * @param place - Parsed pin, or `null`.
+ * @returns A fixed English error, or `null` when the note may be stored.
+ */
+function shopPinRegistrationProblem(
+  text: string,
+  parentId: string | null,
+  place: ForumPlace | null,
+): string | null {
+  if (parentId !== null || place === null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return null;
+  }
+  return shopPlaceProblem(place) ?? shopTextProblem(text, place);
+}
+
+/**
+ * Multipart structured address. All five fields blank means no address.
+ * Any present field requires all five (same `Place address is invalid`).
+ *
+ * @param form - Multipart body.
+ * @returns `undefined` when every field is blank, otherwise an object for
+ *   {@link normalizePlace}.
+ */
+function multipartPlaceAddress(form: FormData): unknown {
+  const street = form.get('placeStreet');
+  const houseNumber = form.get('placeHouseNumber');
+  const postalCode = form.get('placePostalCode');
+  const city = form.get('placeCity');
+  const country = form.get('placeCountry');
+  const blank = (raw: unknown): boolean =>
+    raw === null || (typeof raw === 'string' && raw.trim() === '');
+  if (blank(street) && blank(houseNumber) && blank(postalCode) && blank(city) && blank(country)) {
+    return undefined;
+  }
+  return { street, houseNumber, postalCode, city, country };
+}
+
+/**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor and except mention account ids on the
  * created row; no-op when the actor is the official platform account) for a
@@ -1165,7 +1208,6 @@ async function persistForumPost(
         text: published.text,
         parentId: published.parentId ?? null,
         place: published.place ?? null,
-        authorName: published.name,
         textHasHashtagToken,
       });
     }
@@ -1280,10 +1322,12 @@ async function postMultipartMessage(
     if (latMissing || lngMissing || latParsed === 'invalid' || lngParsed === 'invalid') {
       return c.json({ error: 'Place must be a latitude and longitude' }, 400);
     }
+    const address = multipartPlaceAddress(form);
     const parsedPlace = normalizePlace({
       lat: latParsed,
       lng: lngParsed,
       ...(placeLabel === null || placeLabel === '' ? {} : { label: placeLabel }),
+      ...(address === undefined ? {} : { address }),
     });
     if (!parsedPlace.ok) {
       return c.json({ error: parsedPlace.error }, 400);
@@ -1319,6 +1363,10 @@ async function postMultipartMessage(
   );
   if (!shopParsed.ok) {
     return c.json({ error: shopParsed.error }, shopParsed.status);
+  }
+  const shopProblem = shopPinRegistrationProblem(text, null, place);
+  if (shopProblem !== null) {
+    return c.json({ error: shopProblem }, 400);
   }
   return persistForumPost(
     deps,
@@ -1847,6 +1895,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!shopParsed.ok) {
         return c.json({ error: shopParsed.error }, shopParsed.status);
       }
+      const shopProblem = shopPinRegistrationProblem(text, parentId, place);
+      if (shopProblem !== null) {
+        return c.json({ error: shopProblem }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -2191,6 +2243,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
+        if (parsed.value !== null) {
+          const problem = shopPlaceProblem(parsed.value);
+          if (problem !== null) {
+            return c.json({ error: problem }, 400);
+          }
+        }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
           ? await deps.store.setPlace(id, parsed.value, {
@@ -2228,7 +2286,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             text: updated.text,
             parentId: updated.parentId ?? null,
             place: parsed.value,
-            authorName: updated.name,
             textHasHashtagToken,
           });
         } else {
@@ -2352,7 +2409,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             text: updated.text,
             parentId: updated.parentId ?? null,
             place: updated.place,
-            authorName: updated.name,
             textHasHashtagToken,
           });
         }
@@ -2420,6 +2476,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
+        if (row.place !== null && row.place !== undefined) {
+          const problem = shopTextProblem(ensured, row.place);
+          if (problem !== null) {
+            return c.json({ error: problem }, 400);
+          }
+        }
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
@@ -2464,6 +2526,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           messageId: id,
           accountId: account.id,
           role: account.role,
+        });
+        await syncShopOcpPlace({
+          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+          messageId: updated.id,
+          text: updated.text,
+          parentId: updated.parentId ?? null,
+          place: updated.place ?? null,
+          textHasHashtagToken,
         });
         return c.json(
           serializeMessage(
@@ -2683,6 +2753,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lat: row.lat,
               lng: row.lng,
               label: row.label,
+              address: row.address,
               shop: row.shop,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),

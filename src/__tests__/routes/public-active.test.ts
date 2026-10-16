@@ -373,7 +373,7 @@ describe('public active window', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
       sats: 1,
-      place: { lat: 1, lng: 2, label: 'Till' },
+      place: { lat: 1, lng: 2, label: 'Till', address: null },
     });
     await store.create({
       id: id(32),
@@ -385,7 +385,7 @@ describe('public active window', () => {
       ...unsignedNostrDefaults(),
       authorPubkey: 'ef'.repeat(32),
       sats: 1,
-      place: { lat: 3, lng: 4, label: 'Outside' },
+      place: { lat: 3, lng: 4, label: 'Outside', address: null },
     });
     const app = mount(auth, store);
     const page = await app.request('/messages?mode=active');
