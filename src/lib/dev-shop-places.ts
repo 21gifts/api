@@ -3,9 +3,10 @@
  *
  * Target is `https://dev.21.gifts` after trim and trailing-slash strip.
  * Idempotent via `ON CONFLICT (id) DO NOTHING`. The seeds have no
- * structured address and a description that is too short, so
- * `shopOcpPlaceInput` stays null and they stay off the map until name,
- * address and a description that satisfies `shopTextProblem` are all set.
+ * structured address, so `shopPlaceProblem` reports a problem and
+ * `shopOcpPlaceInput` stays null. They stay off the OpenCryptoPay map
+ * until name, address, and a description that satisfies `shopTextProblem`
+ * are all set.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -97,9 +98,10 @@ export function isDevShopSeedTarget(env: Record<string, string | undefined>): bo
  *
  * No-op when the public base URL is not the dev target or `sql` is omitted.
  * A failed insert logs `dev.shop.places.failed` and does not throw. The
- * seeds have no structured address and a description that is too short, so
- * `shopOcpPlaceInput` stays null and they stay off the map until name,
- * address and a description that satisfies `shopTextProblem` are all set.
+ * seeds have no structured address, so `shopPlaceProblem` reports a
+ * problem and `shopOcpPlaceInput` stays null. They stay off the
+ * OpenCryptoPay map until name, address, and a description that
+ * satisfies `shopTextProblem` are all set.
  *
  * @param opts - Environment slice and optional SQL client.
  * @returns Resolves after the insert or a no-op. Never rejects.

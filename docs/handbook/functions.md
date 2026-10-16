@@ -3386,7 +3386,7 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 
 ## Function: seedDevShopPlaces
 
-- **Purpose:** On the dev 21.gifts API only, insert four public shop pins into `message` with production message ids, `account_id` null, `nostr_publish_state` skipped, and `event_id` null. Idempotent via `ON CONFLICT (id) DO NOTHING`. Stored text is the public label or name plus `#21GiftsShop`, not the production note body. The seeds have no structured address and a description that is too short, so `shopOcpPlaceInput` stays null and they stay off the map until name, address and a description that satisfies `shopTextProblem` are all set. Does not create accounts and does not publish to Nostr.
+- **Purpose:** On the dev 21.gifts API only, insert four public shop pins into `message` with production message ids, `account_id` null, `nostr_publish_state` skipped, and `event_id` null. Idempotent via `ON CONFLICT (id) DO NOTHING`. Stored text is the public label or name plus `#21GiftsShop`, not the production note body. The seeds have no structured address, so `shopPlaceProblem` reports a problem and `shopOcpPlaceInput` stays null. They stay off the OpenCryptoPay map until name, address, and a description that satisfies `shopTextProblem` are all set. Does not create accounts and does not publish to Nostr.
 - **Inputs:** `{ env, sql? }`. Seeds only when `isDevShopSeedTarget(env)` is true and `sql` is set.
 - **Returns / side effects:** Resolves after one parameterised INSERT of all four rows, or immediately on a no-op. A failed insert logs `dev.shop.places.failed` and does not stop boot. Success does not log.
 - **Used by:** `src/index.ts`, awaited after `welcomeCatchUp` and before `publishExistingShopPlaces`.
