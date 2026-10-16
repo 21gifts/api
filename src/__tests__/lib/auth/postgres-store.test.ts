@@ -2209,3 +2209,74 @@ describe('PostgresAuthStore spark pubkey', () => {
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at/);
   });
 });
+
+describe('PostgresAuthStore setUsername', () => {
+  it('updates with FOR UPDATE and returns the previous username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: 'ada' }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: true,
+      previous: 'ada',
+    });
+    expect(sql.queries[0]?.text).toMatch(/UPDATE account AS a SET username = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING before\.previous/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'grace']);
+  });
+
+  it('returns previous null when the row had no username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: null }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('coalesces a missing previous column to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('returns frozen when the update matches no row and the account exists', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ spark_pubkey_verified_at: new Date(10) }]];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: false,
+      reason: 'frozen',
+    });
+    expect(sql.queries[1]?.text).toMatch(
+      /SELECT spark_pubkey_verified_at FROM account WHERE id = \$1/,
+    );
+    expect(sql.queries[1]?.params).toEqual(['acc']);
+  });
+
+  it('returns missing when the update matches no row and the account is gone', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], []];
+    expect(await new PostgresAuthStore(sql).setUsername('missing', 'ada')).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+  });
+
+  it('returns taken on unique violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(new PostgresAuthStore(sql).setUsername('acc', 'ada')).rejects.toThrow('boom');
+  });
+});

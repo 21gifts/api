@@ -23,6 +23,7 @@ import {
   type PasskeyCredential,
   type PasskeyRenewAttemptInput,
   type Session,
+  type SetUsernameResult,
 } from '@/lib/auth/store';
 import { parseNotificationLevel } from '@/lib/notification';
 
@@ -478,6 +479,35 @@ export class PostgresAuthStore implements AuthStore {
       }
       throw error;
     }
+  }
+
+  async setUsername(accountId: string, username: string): Promise<SetUsernameResult> {
+    try {
+      const rows = await this.#sql.query<{ previous: string | null }>(
+        `UPDATE account AS a SET username = $2
+           FROM (SELECT id, username AS previous FROM account WHERE id = $1 FOR UPDATE) AS before
+          WHERE a.id = before.id AND a.spark_pubkey_verified_at IS NULL
+          RETURNING before.previous`,
+        [accountId, username],
+      );
+      const row = rows[0];
+      if (row !== undefined) {
+        return { ok: true, previous: row.previous ?? null };
+      }
+    } catch (error: unknown) {
+      if (isUniqueViolation(error)) {
+        return { ok: false, reason: 'taken' };
+      }
+      throw error;
+    }
+    const existing = await this.#sql.query<{ spark_pubkey_verified_at: Date | string | null }>(
+      `SELECT spark_pubkey_verified_at FROM account WHERE id = $1`,
+      [accountId],
+    );
+    if (existing[0] === undefined) {
+      return { ok: false, reason: 'missing' };
+    }
+    return { ok: false, reason: 'frozen' };
   }
 
   async claimProfileMessageId(

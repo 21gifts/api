@@ -2544,3 +2544,63 @@ describe('InMemoryAuthStore spark pubkey', () => {
     expect(stored?.name).toBe('Changed');
   });
 });
+
+describe('InMemoryAuthStore setUsername', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+
+  async function account(
+    store: InMemoryAuthStore,
+    id: string,
+    opts: { username?: string | null; viewKey?: string } = {},
+  ): Promise<void> {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: opts.viewKey ?? `${id.replace(/-/g, '').padEnd(64, 'a').slice(0, 64)}`,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      ...(opts.username === undefined ? {} : { username: opts.username }),
+    });
+  }
+
+  it('returns previous null when no username was set', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc');
+    expect(await store.setUsername('acc', 'ada')).toEqual({ ok: true, previous: null });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns the previous username and stores the new one', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: true, previous: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+  });
+
+  it('returns frozen when the wallet is verified and leaves the username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: false, reason: 'frozen' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns taken when another account owns the username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await account(store, 'other', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: false, reason: 'taken' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns missing when the account does not exist', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.setUsername('missing', 'ada')).toEqual({ ok: false, reason: 'missing' });
+  });
+});

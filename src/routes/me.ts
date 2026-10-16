@@ -502,22 +502,17 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (owner !== undefined && owner.id !== current.id) {
         return c.json({ error: 'Username is already in use' }, 409);
       }
-      const latest = await storedAccount(deps, current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (latest === null) {
+      const result = await deps.store.setUsername(current.id, username);
+      if (!result.ok) {
+        if (result.reason === 'taken') {
+          return c.json({ error: 'Username is already in use' }, 409);
+        }
+        if (result.reason === 'frozen') {
+          return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
+        }
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      await deps.store.updateAccount({ ...latest, username });
-      const stored = await storedAccount(deps, current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (stored === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      /* v8 ignore next 3 -- unique-index race: update no-ops and the stored handle stays taken */
-      if ((stored.username ?? '').trim().toLowerCase() !== username) {
-        return c.json({ error: 'Username is already in use' }, 409);
-      }
-      const previous = (latest.username ?? '').trim().toLowerCase();
+      const previous = (result.previous ?? '').trim().toLowerCase();
       if (
         deps.dailyRoster !== undefined &&
         deps.lnurlServer !== undefined &&
@@ -531,20 +526,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         try {
           rename = await deps.dailyRoster.renameAddress(from, to);
         } catch (error) {
-          logEvent('daily_roster.address.rename_failed', { accountId: current.id });
-          // Put the previous username back so the roster rows still match it. The
-          // re-read below decides what to do when that write fails or is ignored.
-          await deps.store.updateAccount({ ...stored, username: previous }).catch(() => undefined);
-          const restored = await storedAccount(deps, current.id);
-          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-          if (restored === null) {
-            throw error;
-          }
-          // When the store kept the new username (the old one was taken meanwhile),
-          // move the roster once more so it follows the username that stayed.
-          if (restored.username === username) {
-            await deps.dailyRoster.renameAddress(from, to).catch(() => undefined);
-          }
+          logEvent('daily_roster.address.rename_failed', {
+            accountId: current.id,
+            from,
+            to,
+          });
           throw error;
         }
         if (rename.moved + rename.removed > 0) {
@@ -554,6 +540,11 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             removed: rename.removed,
           });
         }
+      }
+      const stored = await storedAccount(deps, current.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (stored === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
       }
       logEvent('account.username.set', { accountId: current.id });
       return c.json(await ownerJson(deps, stored), 200);

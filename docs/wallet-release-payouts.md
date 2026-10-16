@@ -258,11 +258,12 @@ moderators would get no stipend.
 - A second boot changes nothing. The log line `daily_roster.wallet_move`
   carries the two counts only.
 - Until the wallet is verified, a member may still change the username.
-  `POST /me/username` then moves the member's roster rows from
-  `<old>@<host>` to `<new>@<host>` (`renameAddress`, one statement), so
-  the fixed amount follows the new receiving address. If that move fails,
-  the previous username is stored again and the request fails; if the new
-  username stays stored instead, the move runs once more.
+  `POST /me/username` writes that change as one atomic step that reports
+  the replaced username, then moves the member's roster rows from
+  `<old>@<host>` to `<new>@<host>` (`renameAddress`, one statement) so
+  the fixed amount follows the new receiving address. If that second step
+  fails, the request fails with 500 and `daily_roster.address.rename_failed`
+  names both addresses so an operator can rename the roster row by hand.
 
 On the roster of 2026-10-16 this rewrites 15 recipient rows and 6 moderator
 rows and deletes 1 recipient row.

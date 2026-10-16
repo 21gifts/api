@@ -658,6 +658,104 @@ describe('PostgresAuthStore spark pubkey', () => {
   });
 });
 
+describe('PostgresAuthStore setUsername', () => {
+  test('ok, previous, frozen, taken, missing, and concurrent writes chain previous', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const original = `cas_orig_${stamp}`.slice(0, 32);
+      const firstNew = `cas_a_${stamp}`.slice(0, 32);
+      const secondNew = `cas_b_${stamp}`.slice(0, 32);
+      const takenName = `cas_taken_${stamp}`.slice(0, 32);
+      const id = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const frozenId = crypto.randomUUID();
+      const pubkey = `02${hex64()}`;
+
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      expect(await store.setUsername(id, original)).toEqual({ ok: true, previous: null });
+      expect(await store.setUsername(id, firstNew)).toEqual({ ok: true, previous: original });
+      expect((await store.getAccount(id))?.username).toBe(firstNew);
+
+      await store.createAccount({
+        id: otherId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: takenName,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now() + 1,
+        rulesAgreedAt: null,
+      });
+      expect(await store.setUsername(id, takenName)).toEqual({ ok: false, reason: 'taken' });
+      expect((await store.getAccount(id))?.username).toBe(firstNew);
+
+      await store.createAccount({
+        id: frozenId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `cas_frz_${stamp}`.slice(0, 32),
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now() + 2,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      const frozenName = (await store.getAccount(frozenId))?.username ?? '';
+      expect((await store.claimSparkPubkey(frozenId, pubkey))?.wrote).toBe(true);
+      expect(await store.markSparkPubkeyVerified(frozenId, pubkey, frozenName, Date.now())).toBe(
+        true,
+      );
+      expect(await store.setUsername(frozenId, secondNew)).toEqual({
+        ok: false,
+        reason: 'frozen',
+      });
+      expect((await store.getAccount(frozenId))?.username).toBe(frozenName);
+
+      expect(await store.setUsername(crypto.randomUUID(), original)).toEqual({
+        ok: false,
+        reason: 'missing',
+      });
+
+      await store.setUsername(id, original);
+      const [left, right] = await Promise.all([
+        store.setUsername(id, firstNew),
+        store.setUsername(id, secondNew),
+      ]);
+      expect(left.ok).toBe(true);
+      expect(right.ok).toBe(true);
+      if (!left.ok || !right.ok) {
+        throw new Error('expected both concurrent setUsername calls to succeed');
+      }
+      expect(new Set([left.previous, right.previous]).size).toBe(2);
+      expect([left.previous, right.previous].filter((value) => value === original)).toHaveLength(1);
+      const stored = await store.getAccount(id);
+      expect(stored?.username === firstNew || stored?.username === secondNew).toBe(true);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresSparkInvoiceStore', () => {
   test('issue, re-issue, list open, settle once, and db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

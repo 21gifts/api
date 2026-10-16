@@ -2001,14 +2001,15 @@ accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `"name" | "lightning-address"`). Same handle on the same account is
 idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
-When the account already had a username and the LNURL server is configured, a
-change moves every daily roster row (both buckets) on `<old>@<host>` to
-`<new>@<host>`, so a fixed amount or moderator stipend follows the new
-receiving address; a bucket that already holds the new address drops the old
-row. If that move fails, the previous username is stored again and the
-request fails with 500. If the new username stays stored (the previous one
-was taken in the meantime, or writing it back failed), the move runs once
-more so the roster follows it.
+The username change is one atomic `AuthStore.setUsername` step that reports
+the replaced username. When the account already had a username and the LNURL
+server is configured, a second statement then moves every daily roster row
+(both buckets) on `<old>@<host>` to `<new>@<host>`, so a fixed amount or
+moderator stipend follows the new receiving address; a bucket that already
+holds the new address drops the old row. If that second step fails, the
+request fails with 500 and `daily_roster.address.rename_failed` names both
+addresses so an operator can rename the roster row by hand; the new username
+stays stored.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -2032,8 +2033,7 @@ Wallet already verified → **Response** `409`:
 ```
 
 Another account owns the handle, including a unique-index race
-(re-read after `updateAccount`: if the stored username lower/trim is
-not the requested handle) → **Response** `409`:
+(`setUsername` returns `{ ok: false, reason: 'taken' }`) → **Response** `409`:
 
 ```json
 { "error": "Username is already in use" }
