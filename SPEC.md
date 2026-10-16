@@ -4554,7 +4554,7 @@ Success → **Response** `200`:
       "amountEur": null,
       "amountPhp": null,
       "payable": false,
-      "authorCanReceive": false,
+      "authorCanReceive": true,
       "hasPhoto": false,
       "photoCount": 0,
       "photoTakenAts": [],
@@ -5004,6 +5004,7 @@ Success → **Response** `200`:
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
   "payable": false,
+  "authorCanReceive": true,
   "hasPhoto": false,
   "photoCount": 0,
   "photoTakenAts": [],
@@ -5379,14 +5380,14 @@ photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and the author has a
 receiving address (see [Receiving address](#receiving-address)), and no `replyCount`. Items include `accountId` whenever
 the stored author id is non-null, with or without a session. External replies
-set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
+set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
 Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
 is **200** `{ "messages" }` from `listReplies(id, limit, true)` including
-hidden attributed children with hide stamps and `payable: false`, whether
+hidden attributed children with hide stamps `payable: false`, and `authorCanReceive: false`, whether
 the parent is live or hidden (live children stay live serialize).
 
 `:id` is not a UUID, the parent is missing, or (unsigned/non-staff) the
@@ -5415,6 +5416,7 @@ Success → **Response** `200`:
       "createdAt": "2026-08-28T12:01:00.000Z",
       "sats": 0,
       "payable": false,
+      "authorCanReceive": true,
       "hasPhoto": false,
       "photoCount": 0,
       "photoTakenAts": [],
@@ -5498,7 +5500,7 @@ Public list of live top-level notes for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
 200, newest first (`createdAt` desc, `id` desc). Each item includes
-`replyCount` of live attributed children, `payable` false, `via: "nostr"`,
+`replyCount` of live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`,
 and omits `role`. **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_posts.failed`). A serialize failure skips that row
 and still returns 200.
@@ -5509,7 +5511,7 @@ Public list of live, unassigned top-level `#21GiftsShop` notes for an external
 author. No Bearer. Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at 200,
 newest first (`createdAt` desc, `id` desc). Each item includes `replyCount` of
-live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
+live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits `role`.
 **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_shops.failed`). A serialize failure skips that row and
 still returns 200.
@@ -5520,7 +5522,7 @@ Public list of live top-level credit notes for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at 200,
 newest first (`createdAt` desc, `id` desc). Each item includes `replyCount` of
-live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
+live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits `role`.
 **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_credits.failed`). A serialize failure skips that row and
 still returns 200.
@@ -5531,7 +5533,7 @@ Public list of live public replies for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
 200, newest first (`createdAt` desc, `id` desc). Each item includes
-`parentId`, omits `replyCount`, `payable` false, `via: "nostr"`, and omits
+`parentId`, omits `replyCount`, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits
 `role`. A non-zapper author's list is empty. **503**
 `{ "error": "Messages are unavailable" }` (`messages.external_replies.failed`).
 A serialize failure skips that row and still returns 200.
@@ -5555,7 +5557,7 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` when a pin is stored and omitted when unset,
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
 stored and omitted when unset, even when `accountId` is omitted,
-`payable`, `hasPhoto`, `photoCount`
+`payable`, `authorCanReceive`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
@@ -5566,12 +5568,12 @@ session, and omits it for an external author. Live JSON also omits
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
 stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
 'moderator')`, no `forum.read`) of a hidden row is **200** public JSON plus
-`deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`, and
-`accountId` for 21gifts authors. A live reply with `accountId` null
+`deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`,
+`authorCanReceive: false`, and `accountId` for 21gifts authors. A live reply with `accountId` null
 returns **200** only when `authorPubkey` is set and that pubkey is a recorded
 zapper (checked via `isZapperPubkey` on every read, including during a
 `sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
-and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
+and sets `payable` and `authorCanReceive` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
 that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
 (same body as missing/hidden). A top-level note (parent id null), on both the
 live public body and the founder/moderator hidden body, includes `replyCount`
@@ -5623,6 +5625,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
   "payable": false,
+  "authorCanReceive": true,
   "hasPhoto": false,
   "photoCount": 0,
   "photoTakenAts": [],
@@ -6538,7 +6541,8 @@ status or the text:
   compose-target posting fee, conversation invoice, repayment, habit
   donation).
 
-Other 400s on the same routes (for example an unsigned note) carry no `code`.
+Other 400s on the same routes (for example an unsigned forum note on
+`POST /messages/:id/invoice`) carry no `code`.
 
 Spend lookups (`POST /invoices`, `GET /invoices/eligible`,
 `GET /invoices/passkey`, `GET /invoices/posted`) take the same address form
