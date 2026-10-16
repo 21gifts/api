@@ -19,8 +19,9 @@ what must be true on release day for that to hold.
   3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
      `NEXT_PUBLIC_BREEZ_API_KEY` (app) set.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
-     live list counted below, and both payment switches in `daily_roster` are
-     on. Both held on 2026-10-16; read them again on release day (see
+     live list counted below, both payment switches in `daily_roster` are
+     on, and its comment is not `Welcome`. All three held on 2026-10-16;
+     read them again on release day (see
      [Check again before release](#check-again-before-release)).
   5. Production runs exactly the released API and app heads: in each
      repository every production deploy run has completed, and the one that
@@ -286,9 +287,7 @@ they are eligible, on the in-app wallet only, when all of these hold:
    buckets as spend's live list in [Daily roster](#daily-roster). Every legacy
    row then belongs to an account with a username, except the one recipient
    without an account, and the move keeps every listed amount. A row that is
-   only in the API roster and belongs to no account would be deleted. Both
-   payment switches in `daily_roster` (`payments_enabled`,
-   `moderator_payments_enabled`) are on.
+   only in the API roster and belongs to no account would be deleted. Both payment switches in `daily_roster` (`payments_enabled`, `moderator_payments_enabled`) are on, and its comment is not `Welcome`, which would let a daily payout through on a welcome day and mark payments as welcome payments.
 5. Production runs the released heads: in each repository every
    `deploy-prd.yaml` run has status `completed`, and the run that finished
    last, whatever its result, succeeded and is on the `main` merge commit of
@@ -322,8 +321,7 @@ Read the API roster with `gifts-debug db daily_roster_entry` and compare it
 with `gifts-debug spend --raw`: same addresses, amounts and buckets, and every
 non-host address equal to an account's `lightning_address` with a username,
 except rows that belong to no account (on 2026-10-16 one recipient), which the
-roster move deletes. Read `gifts-debug db daily_roster`: both
-`payments_enabled` and `moderator_payments_enabled` must be `true`.
+roster move deletes. Read `gifts-debug db daily_roster`: both `payments_enabled` and `moderator_payments_enabled` must be `true`, and `comment` must not be `Welcome`.
 Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
 (role not `basis`, and `admitted`, or `trial` for that UTC day).
