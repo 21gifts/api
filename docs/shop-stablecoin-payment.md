@@ -561,9 +561,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
    `account-merge.ts`. The row lock serialises the creation with
-   `POST /pos`, also across the two containers of a deploy. The unique indexes
-   are the backstop. A lost insert (`23505`) does not insert again
-   blindly: under the same locks the api reads the row that won. When
+   `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A lost insert (`23505`), which
+   only the payment's indexes can raise because offers never do, does not
+   insert again blindly: under the same locks the api reads the row that won. When
    that row is the shop payment of this charge, or of this payer
    request, the api uses it, the fetch answers as for an open amount,
    and the background creation from `POST /pos` ends. When it is another
@@ -620,9 +620,12 @@ An Orchestra quote becomes an offer only when every check holds:
   20-byte deposit address, and the 32-byte amount, where the deposit
   address equals `depositAddress` and the amount equals `amountIn`;
 - the deposit address appears in no other offer, neither stored nor in
-  the same batch, so that one deposit address belongs to one offer; the
-  unique index `shop_offer_deposit_idx` enforces it, and a conflict is
-  this check failing;
+  the same batch, so that one deposit address belongs to one offer; the unique index `shop_offer_deposit_idx` enforces it. Offers are
+  inserted with `ON CONFLICT (deposit_address) DO NOTHING`, in the
+  creation and in a replacement, so a conflict drops only that offer and
+  logs `shop.alert.shared_deposit_address`; it never fails, replaces, or
+  deletes the payment or the quote, and the quote's `transferAmounts`
+  holds only the offers that were inserted;
 - `expiresAt` minus the funding margin is at least 45 s in the future;
 - the BOLT11 expires at least 600 s after `expiresAt`;
 - when the stored spot quote (`FxSpotStore.latest()` in
