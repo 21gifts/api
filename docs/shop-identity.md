@@ -28,21 +28,25 @@ A **listed shop** is a top-level forum note (`parent_id` null) that:
 - has the hashtag token `21GiftsShop` in its text, with the same token rule
   as `GET /shops/activity`;
 - has a place pin;
-- has `shop_account_id` set.
+- has `shop_account_id` set;
+- is complete under 21gifts/api#478: `shopPlaceProblem` (label, structured
+  address, label without the address) and `shopTextProblem` (description)
+  both return `null`. This is the same check `shopOcpPlaceInput` makes before
+  it sends a place to OpenCryptoPay.
 
 "Listed" is the single rule for everything in this document: which notes get
 a key, which kind 0 content a shop identity publishes (S2 publishes every
 identity, listed or not, with different content), which shops
 `GET /shops/:npub` serves with 200, and which shops are on the OpenCryptoPay
-map. A note that stops meeting any of the four
-conditions is no longer listed. It keeps its identity.
+map. A note that stops meeting any of the five conditions is no longer
+listed. It keeps its identity. An older shop note that is not complete gets
+no key until its owner completes it.
 
-The shop name is the pin label, otherwise the author's name, otherwise
-`Shop`: the same chain as today's map name (`shopOcpPlaceName`). The shop
-description is the note text without the `#21GiftsShop` token. Both follow
-the rules of 21gifts/api#478, which makes shops complete for the map and adds
-the structured pin address, once it is merged. This concept builds on that
-change.
+The shop name is the pin label, which a listed shop always has. The shop
+description is the note text without the `#21GiftsShop` token
+(`shopDescription`). Both come from 21gifts/api#478, which makes shops
+complete for the map and adds the structured pin address. This concept
+builds on that change.
 
 ## S1 Key per shop
 
@@ -123,7 +127,9 @@ not, in the same loop and with the same rules as account profiles
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
   `wss://purplepag.es`;
 - published only when the content differs from the in-memory cache;
-- `created_at` = `max(now, last + 1)`; a relay failure clears the cache entry.
+- `created_at` = `max(now, last + 1)`; a failure in the required write set
+  clears the cache entry, while the `wss://purplepag.es` copy stays best
+  effort, as for accounts.
 
 Kind 0 content of a listed shop:
 
@@ -159,7 +165,8 @@ is unchanged, so this spec adds no zap receipts for a shop key.
   app proxy).
 - The local part comes from `allocateNip05Local(shopName, messageId, taken)`,
   the same slug and the same collision suffix as accounts.
-- Accounts are allocated first, then shops by `nostr_key_created_at`. An
+- Accounts are allocated first, then shops by `nostr_key_created_at` and
+  then `message_id`, so the order is the same on every run. An
   account never loses its local part to a shop.
 - The local part follows the current shop name. A rename, or a new account
   that takes the slug, gives the shop a new local part, and its kind 0 is
@@ -212,20 +219,24 @@ The 410 body carries no name, so a hidden note's name is not served.
     }
   },
   "photos": [{ "url": "https://…/messages/:id/photo", "width": 1280, "height": 960 }],
-  "tillUsername": "…",
+  "payUsername": "…",
   "nip05": "…@21.gifts",
   "createdAt": "ISO-8601"
 }
 ```
 
 `lat` and `lng` as in `GET /messages/places`. `address` is `null` while the
-pin has none. `tillUsername` is `null` when the till account has no username.
-Photos are the note's photos in note order. `width` and `height` are the two
-integers of the `WxH` string from `imageDisplaySize`
-(`src/lib/nostr/image.ts`) on the stored bytes when the response is built,
-and are both `null` when it returns `null`. For a JPEG whose EXIF orientation
-is 5 to 8 the two are swapped, the same displayed size OpenCryptoPay
-reports; reading that orientation is new code next to `imageDisplaySize`.
+pin has none. `payUsername` is the till account's username when it has one
+and `GET /pay/:username` would answer for it, that is, a Lightning address is
+linked; otherwise `null`.
+Photos are the note's photos in note order. `width` and `height` come from a
+header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
+never decodes the image, so an unauthenticated request cannot make the api
+decode up to ten photos. It is new code next to `imageDisplaySize`
+(`src/lib/nostr/image.ts`), which decodes PNGs fully and stays as it is. Both
+values are `null` when the header cannot be read. For a JPEG whose EXIF
+orientation is 5 to 8 the two are swapped, the same displayed size
+OpenCryptoPay reports.
 
 ### Existing responses
 
@@ -246,7 +257,7 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
   page without a name. 503 → an error state with retry, never a blank page.
 - Content: photo gallery, name, description, address with a directions link,
   a small map with one pin, the pay link and QR of the till account
-  (`/pay/<tillUsername>`) when it exists, a link to the forum note
+  (`/pay/<payUsername>`) only when `payUsername` is not `null`, a link to the forum note
   (`/messages/<messageId>`), the npub with a copy button and the NIP-05.
 - The shops page (`/shops`) and the map link each shop to `/{npub}` instead
   of the note.
@@ -261,8 +272,8 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
   first through S1; if that fails, nothing is sent and the S1 backfill
   repeats the push later. A note that is not listed is never sent.
 - **Removal:** every change from listed to not listed sends
-  `DELETE /map/places`: pin removed, till account cleared, note deleted or
-  hidden. This includes `PATCH /messages/:id/shop-account` clearing the till,
+  `DELETE /map/places`: pin removed, till account cleared, shop no longer
+  complete, note deleted or hidden. This includes `PATCH /messages/:id/shop-account` clearing the till,
   which today still re-sends the place. Each removal also sets
   `ocp_photos_hash` to null, clears `ocp_photos_pending` and raises
   `ocp_photos_generation`, because OpenCryptoPay drops the photos with the
@@ -271,10 +282,11 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
   removal again for tagged pins that are not listed and for every
   `shop_identity` whose note is not listed, so a removal that failed is
   repeated.
-- **Account merge:** `src/lib/account-merge.ts` moves `shop_account_id` from
-  the merged account to the surviving one before it deletes the old account.
-  Today the foreign key sets it to null, which would unlist the shop without
-  any removal being sent.
+- **Account merge:** `mergeAccounts` already moves `message.shop_account_id`
+  to the surviving account through its generic rewrite of every
+  single-column foreign key to `account` (`src/lib/account-merge.ts:382-404`),
+  so a merge keeps the shop listed. The implementing change adds a regression
+  test for that column.
 - **Photos:** a successful place `PUT`, and `PATCH /messages/:id/photos` on
   a listed shop, set `ocp_photos_pending` and raise `ocp_photos_generation`.
   The worker takes at most 20 pending shops per tick (`WORKER_BATCH`),
