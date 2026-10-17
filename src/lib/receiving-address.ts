@@ -23,11 +23,12 @@ import { normalizeUsername } from '@/lib/username';
 export const WALLET_REQUIRED = 'wallet_required';
 
 /**
- * Machine-readable `code` on a 400 when the recipient cannot receive: no
- * member account, no verified wallet, or its wallet refuses the zap. On the
- * conversation invoice it also covers a counterpart whose profile note is not
- * signed yet or who has no Nostr key, and the habit donation sends it on its
- * 409. Clients decide by this field, not by status or text.
+ * Machine-readable `code` when the recipient cannot receive: no member
+ * account, no verified wallet, or its wallet refuses the zap. It comes on a
+ * 400 (the forum, conversation, and repayment invoices) or on a 409 (the habit
+ * donation). On the conversation invoice it also covers a counterpart whose
+ * profile note is not signed yet or who has no Nostr key. Clients decide by
+ * this field, not by status or text.
  */
 export const CANNOT_RECEIVE = 'cannot_receive';
 

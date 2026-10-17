@@ -1387,7 +1387,7 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 - **Purpose:** Public list of member habits. No bearer required. A valid bearer includes `notes` only on the caller's own habits. `notes` is omitted for everyone else. An invalid or unknown bearer is treated as signed out and still returns the public list. Periods run from `firstPeriod` through the latest ratable day or week and stop at `lastPeriod`. `logged` is false and `status` is null when the owner has not recorded that period.
 - **Inputs:** Optional `Authorization: Bearer`. No query and no body.
-- **Returns / side effects:** 200 `{ reviewWeek: { start }, habits }`. `reviewWeek.start` is the Manila review Monday. Each comment carries `canReceive`: true when its author has a receiving address (`receivingAddress`), false otherwise; each author is looked up once per request. No writes.
+- **Returns / side effects:** 200 `{ reviewWeek: { start }, habits }`. `reviewWeek.start` is the Manila review Monday. Each comment carries `canReceive`: true when its author has a receiving address (`receivingAddress`), false otherwise; all distinct comment authors are read in one bulk account lookup (`getAccounts`) per request. No writes.
 - **Errors:** 503 `{ error: 'Habits are unavailable' }` when the store throws (`habits.failed`). A bad bearer is not an error.
 - **Used by:** the habit tracker page.
 

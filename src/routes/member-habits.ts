@@ -186,23 +186,22 @@ function publicComments(
   }));
 }
 
-/** Whether each comment author can receive ({@link receivingAddress} non-null), one lookup per author. */
+/**
+ * Whether each comment author can receive ({@link receivingAddress} non-null),
+ * from one bulk account lookup for all distinct authors. An author the lookup
+ * does not return cannot receive.
+ */
 async function commentReceivers(
   habits: ReadonlyArray<{ comments: ReadonlyArray<{ accountId: string }> }>,
-  getAccount: (id: string) => Promise<ReceivingAccount | undefined>,
+  getAccounts: (ids: readonly string[]) => Promise<Array<{ id: string } & ReceivingAccount>>,
   lnurlServer: LnurlServerConfig | undefined,
 ): Promise<Map<string, boolean>> {
+  const ids = [
+    ...new Set(habits.flatMap((habit) => habit.comments.map((comment) => comment.accountId))),
+  ];
   const receivers = new Map<string, boolean>();
-  for (const habit of habits) {
-    for (const comment of habit.comments) {
-      if (!receivers.has(comment.accountId)) {
-        const author = await getAccount(comment.accountId);
-        receivers.set(
-          comment.accountId,
-          author !== undefined && receivingAddress(author, lnurlServer) !== null,
-        );
-      }
-    }
+  for (const author of await getAccounts(ids)) {
+    receivers.set(author.id, receivingAddress(author, lnurlServer) !== null);
   }
   return receivers;
 }
@@ -225,6 +224,7 @@ export function memberHabitRoutes(deps: {
         } & ReceivingAccount)
       | undefined
     >;
+    getAccounts(ids: readonly string[]): Promise<Array<{ id: string } & ReceivingAccount>>;
     getAccountByUsername: AuthStore['getAccountByUsername'];
   };
   now: () => number;
@@ -275,7 +275,7 @@ export function memberHabitRoutes(deps: {
       });
       const receivers = await commentReceivers(
         listed,
-        (id) => deps.authStore.getAccount(id),
+        (ids) => deps.authStore.getAccounts(ids),
         deps.lnurlServer,
       );
       const habits = listed.map((habit) => {

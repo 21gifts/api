@@ -168,6 +168,19 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[2]?.text).toMatch(/rules_agreed_at/);
   });
 
+  it('getAccounts reads the distinct ids in one uuid[] query and skips rows without a view key', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccounts([])).toEqual([]);
+    expect(sql.queries).toHaveLength(0);
+    sql.nextRows = [ACCOUNT_ROW, { ...ACCOUNT_ROW, id: 'acc-no-key', view_key: null }];
+    const found = await store.getAccounts(['acc', 'acc-no-key', 'acc']);
+    expect(found.map((row) => row.id)).toEqual(['acc']);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/WHERE id = ANY\(\$1::uuid\[\]\)/);
+    expect(sql.queries[0]?.params).toEqual(['{"acc","acc-no-key"}']);
+  });
+
   it('maps omitted skip timestamps to null', async () => {
     const sql = new MockSql();
     sql.nextRows = [

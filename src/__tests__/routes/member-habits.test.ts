@@ -112,6 +112,9 @@ function mount(opts: {
       async getAccount(id: string) {
         return accounts[id];
       },
+      async getAccounts(ids: readonly string[]) {
+        return ids.flatMap((id) => (accounts[id] === undefined ? [] : [accounts[id]]));
+      },
       async getAccountByUsername() {
         return undefined;
       },
@@ -761,7 +764,7 @@ describe('memberHabitRoutes', () => {
     expect(body.habits[0]?.comments[0]?.deletedAt).toBeUndefined();
   });
 
-  it('GET marks each comment author canReceive with one lookup per author', async () => {
+  it('GET marks each comment author canReceive from one bulk account lookup', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-recv', accountId: BASIS.id, role: 'basis' }));
     const comment = (id: string, accountId: string) => ({
@@ -779,6 +782,8 @@ describe('memberHabitRoutes', () => {
     await store.comment(comment('c-init', INITIATOR.id));
     await store.comment(comment('c-gone', 'acc-gone'));
     const lookups: string[] = [];
+    const bulk: string[][] = [];
+    const known: Record<string, AccountView> = { [ALICE.id]: ALICE, [INITIATOR.id]: INITIATOR };
     const app = memberHabitRoutes({
       store,
       now: () => NOW_OPEN,
@@ -788,7 +793,11 @@ describe('memberHabitRoutes', () => {
       authStore: {
         async getAccount(id: string) {
           lookups.push(id);
-          return { [ALICE.id]: ALICE, [INITIATOR.id]: INITIATOR }[id];
+          return known[id];
+        },
+        async getAccounts(ids: readonly string[]) {
+          bulk.push([...ids]);
+          return ids.flatMap((id) => (known[id] === undefined ? [] : [known[id]]));
         },
         async getAccountByUsername() {
           return undefined;
@@ -809,7 +818,9 @@ describe('memberHabitRoutes', () => {
       'c-init': false,
       'c-gone': false,
     });
-    expect(lookups.filter((id) => id === ALICE.id)).toHaveLength(1);
+    expect(lookups).toEqual([]);
+    expect(bulk).toHaveLength(1);
+    expect([...(bulk[0] ?? [])].sort()).toEqual([ALICE.id, INITIATOR.id, 'acc-gone'].sort());
   });
 
   it('sorts the same role by owner name and habit name, and keeps a moderator with everyone else', async () => {
@@ -1542,6 +1553,9 @@ describe('memberHabitRoutes', () => {
       authStore: {
         async getAccount() {
           return undefined;
+        },
+        async getAccounts() {
+          return [];
         },
         async getAccountByUsername() {
           return undefined;

@@ -80,6 +80,24 @@ describe('InMemoryAuthStore', () => {
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['acc-1']);
   });
 
+  it('getAccounts returns each known account once and skips unknown ids', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null,
+      role: 'basis' as const,
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      createdAt: 1,
+      rulesAgreedAt: null,
+    };
+    await store.createAccount({ ...base, id: 'acc-a', viewKey: 'a'.repeat(64) });
+    await store.createAccount({ ...base, id: 'acc-b', viewKey: 'b'.repeat(64) });
+    const found = await store.getAccounts(['acc-b', 'acc-gone', 'acc-a', 'acc-b']);
+    expect(found.map((row) => row.id)).toEqual(['acc-b', 'acc-a']);
+    expect(await store.getAccounts([])).toEqual([]);
+  });
+
   it('stores an account and finds it by id and by linkingKey', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({

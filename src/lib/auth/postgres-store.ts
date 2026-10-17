@@ -26,6 +26,7 @@ import {
   type SetUsernameResult,
 } from '@/lib/auth/store';
 import { parseNotificationLevel } from '@/lib/notification';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
 /** Row shape of `account`. */
 interface AccountRow {
@@ -534,6 +535,35 @@ export class PostgresAuthStore implements AuthStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
+  }
+
+  /**
+   * Accounts for `ids` in one query (`WHERE id = ANY($1::uuid[])`). The driver
+   * does not encode a JavaScript array for `uuid[]`, so the ids travel as one
+   * array-literal string ({@link postgresTextArrayLiteral}).
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once (a row without a view key is left
+   *   out, as in `listAccounts`); `[]` without a query for no ids.
+   */
+  async getAccounts(ids: readonly string[]): Promise<Account[]> {
+    const unique = [...new Set(ids)];
+    if (unique.length === 0) {
+      return [];
+    }
+    const rows = await this.#sql.query<AccountRow>(
+      `SELECT ${ACCOUNT_SELECT_COLUMNS}
+       FROM account WHERE id = ANY($1::uuid[])`,
+      [postgresTextArrayLiteral(unique)],
+    );
+    const accounts: Account[] = [];
+    for (const row of rows) {
+      const mapped = mapAccount(row);
+      if (mapped !== undefined) {
+        accounts.push(mapped);
+      }
+    }
+    return accounts;
   }
 
   /**

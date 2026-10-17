@@ -1461,6 +1461,46 @@ describe('PostgresAuthStore stored external address', () => {
   });
 });
 
+describe('PostgresAuthStore getAccounts', () => {
+  test('binds the ids as one uuid[] literal and returns each known account once', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const first = crypto.randomUUID();
+      const second = crypto.randomUUID();
+      for (const [id, suffix] of [
+        [first, 'a'],
+        [second, 'b'],
+      ] as const) {
+        await store.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `bulk_${suffix}_${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const unknown = crypto.randomUUID();
+      const found = await store.getAccounts([first, unknown, second, first]);
+      expect(found.map((row) => row.id).sort()).toEqual([first, second].sort());
+      expect(await store.getAccounts([])).toEqual([]);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore wallet intro seen', () => {
   test('defaults false, a write raises it, a stale write keeps it, and db_change logs it', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
