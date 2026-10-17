@@ -1107,6 +1107,10 @@ absolute time in milliseconds.
   `sourceAddress`: it is optional for a deposit address of one quote, and
   for an ERC-4337 payer the transfer's `from` is not the transaction's
   sender, which Orchestra may treat as a mismatch.
+  Orchestra requires `sourceAddress` only on a shared deposit address;
+  the api offers no deposit address it has seen on another offer
+  ([Offer checks](#offer-checks)), and release check 11 confirms that
+  Orchestra's EVM deposit addresses belong to one quote.
   - HTTP 200 with `orderId`: the proof gets that order, and the returned
     `status` is stored as its `order_status`.
   - HTTP 400 with `error.code` `xchain_deposit_mismatch` (a transaction
@@ -1691,6 +1695,9 @@ records each result in the pull request that turns the feature on.
    bundle hash.
 10. History with the payment's BOLT11 as `address` lists the orders of
     that payment's quotes.
+11. Two staging quotes for the same pair, created one after the other,
+    return two different EVM deposit addresses, and a submit without
+    `sourceAddress` for a deposit to one of them returns its order.
 
 ## Unchanged
 
