@@ -6009,7 +6009,7 @@ last-read. `accountId` is the
 counterpart 21.gifts account. It is omitted for Damus-only counterparts
 (never JSON `null`). `canReceive` is always present: true when that
 counterpart has a receiving address (see [Receiving address](#receiving-address)),
-false for a Damus-only counterpart, a missing account, and the moderator group.
+false for a counterpart without a 21.gifts account, a missing account, and the moderator group.
 The same row shape is returned by `POST /conversations` and
 `GET /conversations/moderator-group`.
 

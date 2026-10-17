@@ -766,7 +766,7 @@
 
 ## Endpoint: GET /conversations/moderator-group
 
-- **Purpose:** Bearer required. Closed moderator-group tool, not the member inbox. At least moderator (`isModeratorGroupMember`: `roleAtLeast` `moderator` and not the platform account): `ensureModeratorGroup` then `{ conversation }` via `publicThread` (`kind: 'moderator_group'`, name `Moderators`, `unread` / `unreadMessageCount` from `countUnread`). Verified, basis and the platform account → 404 `{ error: 'Not found' }` (same as `canAccess`, no existence leak). Missing platform or store failure → 503 (`conversations.moderator_group.failed`). Unauthenticated 401. Registered before `GET /:id`.
+- **Purpose:** Bearer required. Closed moderator-group tool, not the member inbox. At least moderator (`isModeratorGroupMember`: `roleAtLeast` `moderator` and not the platform account): `ensureModeratorGroup` then `{ conversation }` via `publicThread` (`kind: 'moderator_group'`, name `Moderators`, `unread` / `unreadMessageCount` from `countUnread`, `canReceive: false` because the group has no counterpart). Verified, basis and the platform account → 404 `{ error: 'Not found' }` (same as `canAccess`, no existence leak). Missing platform or store failure → 503 (`conversations.moderator_group.failed`). Unauthenticated 401. Registered before `GET /:id`.
 - **Errors:** 401 Unauthorized; 404 Not found; 503 `{ error: 'Conversations are unavailable' }` (`conversations.moderator_group.failed`). 403 `{ error: 'SUNDAY_REST' }` when `Time-Zone` names an IANA zone that is Sunday on the server clock (a missing, blank, or invalid zone does not refuse). Ordinary private threads, pay links, the till, and contact are not this error.
 - **Used by:** App moderator-group tool.
 - **Auth:** `Authorization: Bearer` session.

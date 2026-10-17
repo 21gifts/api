@@ -373,7 +373,7 @@ function counterpartAccountId(
  *
  * @param thread - Stored thread.
  * @param otherId - Counterpart id from {@link counterpartAccountId}.
- * @param other - Counterpart account, or `undefined` (group, Damus-only, or missing).
+ * @param other - Counterpart account, or `undefined` (group, no 21.gifts account, or missing).
  */
 function counterpartName(
   thread: ConversationThread,
