@@ -6,6 +6,8 @@ import type { ActivityPing } from '@/lib/ocp-activity';
 import type { MapFetch } from '@/lib/ocp-place';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
+import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
 import {
@@ -352,6 +354,7 @@ describe('POS routes', () => {
         findChargeForPayment: (ref) => base.findChargeForPayment(ref),
         listWatched: (sinceMs) => base.listWatched(sinceMs),
         markPaid: (chargeId, paidAtMs) => base.markPaid(chargeId, paidAtMs),
+        deleteInvoice: (paymentHash) => base.deleteInvoice(paymentHash),
       };
       return new Hono().route(
         '/pos',
@@ -717,7 +720,10 @@ describe('GET /pos paid confirmation', () => {
       paidAt: new Date(nowMs + 10_000).toISOString(),
     };
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
-    expect(await read(app)).toEqual({ charge: paidJson, history: [paidJson] });
+    expect(await read(app)).toEqual({
+      charge: { ...paidJson, shopPayment: null },
+      history: [paidJson],
+    });
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS;
     expect(await read(app)).toEqual({ charge: null, history: [paidJson] });
   });
@@ -743,5 +749,138 @@ describe('GET /pos paid confirmation', () => {
       charge: null,
       history: [],
     });
+  });
+});
+
+describe('POS with shop payments', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  async function shopApp(
+    store: PosStore,
+    shopPayments: ShopPayments,
+  ): Promise<{ app: Hono; auth: InMemoryAuthStore }> {
+    const auth = await readyStore();
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store,
+        authStore: auth,
+        now,
+        fetchImpl: lnurlFetch(),
+        lnurlServer: LNURL_SERVER,
+        shopPayments,
+      }),
+    );
+    return { app, auth };
+  }
+
+  function realShop(store: InMemoryPosStore, auth: InMemoryAuthStore): ShopPayments {
+    return new ShopPayments({
+      store: new InMemoryShopPaymentStore(store),
+      auth,
+      lnurlServer: LNURL_SERVER,
+      config: null,
+      orchestra: null,
+      fetchImpl: lnurlFetch(),
+      now,
+    });
+  }
+
+  it('creates, shows, and cancels a charge through the shop payment service', async () => {
+    const pos = new InMemoryPosStore();
+    const auth = await readyStore();
+    const shop = realShop(pos, auth);
+    const createCharge = vi.spyOn(shop, 'createCharge');
+    const cancelCharge = vi.spyOn(shop, 'cancelCharge');
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store: pos,
+        authStore: auth,
+        now,
+        fetchImpl: lnurlFetch(),
+        lnurlServer: LNURL_SERVER,
+        shopPayments: shop,
+      }),
+    );
+    expect(await (await app.request('/pos', { headers: AUTH })).json()).toEqual({
+      charge: null,
+      history: [],
+    });
+    const created = await app.request('/pos', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(created.status).toBe(201);
+    const body = (await created.json()) as { charge: { id: string; amountSats: number } };
+    expect(body.charge.amountSats).toBe(21);
+    expect(createCharge).toHaveBeenCalledTimes(1);
+    const stored = await pos.currentPending('acc', nowMs);
+    expect(stored?.id).toBe(body.charge.id);
+
+    const listed = (await (await app.request('/pos', { headers: AUTH })).json()) as {
+      charge: { id: string; shopPayment: unknown };
+    };
+    expect(listed.charge.id).toBe(body.charge.id);
+    expect(listed.charge.shopPayment).toBeNull();
+
+    const removed = await app.request('/pos', { method: 'DELETE', headers: AUTH });
+    expect(removed.status).toBe(200);
+    expect(cancelCharge).toHaveBeenCalledWith('acc', nowMs);
+    expect(await pos.currentPending('acc', nowMs)).toBeNull();
+    const gone = await app.request('/pos', { method: 'DELETE', headers: AUTH });
+    expect(gone.status).toBe(404);
+    expect(await gone.json()).toEqual({ error: 'No open payment' });
+  });
+
+  it('shows the charge shop payment id and status', async () => {
+    const pos = new InMemoryPosStore();
+    const charge: PosCharge = {
+      id: 'c1',
+      accountId: 'acc',
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
+      paidAt: null,
+      sparkInvoice: null,
+    };
+    await pos.create(charge);
+    const shopPaymentOfCharge = vi.fn(async () => ({ id: 'p1', status: 'accepted' as const }));
+    const { app } = await shopApp(pos, { shopPaymentOfCharge } as unknown as ShopPayments);
+    const body = (await (await app.request('/pos', { headers: AUTH })).json()) as {
+      charge: { id: string; shopPayment: unknown };
+      history: Array<Record<string, unknown>>;
+    };
+    expect(body.charge.shopPayment).toEqual({ id: 'p1', status: 'accepted' });
+    expect(shopPaymentOfCharge).toHaveBeenCalledWith('c1');
+    expect(body.history[0]).not.toHaveProperty('shopPayment');
+  });
+
+  it('answers 409 when the service finds a pending charge at insert time', async () => {
+    const pos = new InMemoryPosStore();
+    const createCharge = vi.fn(async () => false);
+    const { app } = await shopApp(pos, { createCharge } as unknown as ShopPayments);
+    const res = await app.request('/pos', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'A payment is already open' });
+    expect(createCharge).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'acc' }),
+      expect.objectContaining({ accountId: 'acc', amountSats: 21, status: 'pending' }),
+    );
+    expect(await pos.currentPending('acc', nowMs)).toBeNull();
   });
 });

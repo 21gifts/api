@@ -154,7 +154,7 @@ function extractEndpoints() {
     'debug-passkey-renew.ts': '/debug/passkey-renew',
     'debug-trust.ts': '/debug/trust-edges',
     'debug-catalog.ts': '/debug/dump',
-    'debug-logins.ts': '/debug',
+    'debug-shop-proofs.ts': '/debug/shop-proofs',
     'well-known.ts': '/.well-known',
     'spend-instruction-route.ts': '/spend',
     'lnurl-server.ts': '',

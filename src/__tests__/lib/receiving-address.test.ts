@@ -178,4 +178,25 @@ describe('lnurlServerFetch', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(routed(new URL('https://21.gifts/lnurlp/alice'))).rejects.toThrow(TypeError);
   });
+
+  it('hands the LNURL server call the time left until a deadline', async () => {
+    const fetchImpl = vi.fn(async () => new Response('{"pr":"lnbc1"}', { status: 200 }));
+    let clock = 1_000;
+    const routed = lnurlServerFetch(config, fetchImpl, accounts, {
+      deadlineMs: 5_000,
+      now: () => clock,
+    });
+    const response = await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000');
+    expect(response.status).toBe(200);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    clock = 5_000;
+    await expect(routed('https://21.gifts/lnurlp/alice/invoice?amount=1000')).rejects.toThrow(
+      'LNURL server request failed',
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(1);
+    // Other hosts ignore the deadline.
+    expect((await routed('https://example.com/x')).status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+  });
 });

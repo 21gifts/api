@@ -2,7 +2,7 @@ import { Hono, type Context } from 'hono';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
-import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
+import { inspectBolt11, invoiceStillOpen, isNip57Invoice } from '@/lib/bolt11';
 import {
   dueDayCount,
   formatCents,
@@ -35,23 +35,6 @@ import { isSundayRestHeader } from '@/lib/sunday-rest';
 import { bearerToken } from '@/routes/me';
 
 const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const DEFAULT_INVOICE_EXPIRY_MS = 3_600_000;
-
-/**
- * Whether a stored BOLT11 can still be paid. An invoice that does not decode
- * uses the one-hour default.
- *
- * @param pr - Stored invoice.
- * @param createdAtMs - When the attempt was recorded.
- * @param nowMs - Clock.
- * @returns False once the invoice has expired.
- */
-function invoiceStillOpen(pr: string, createdAtMs: number, nowMs: number): boolean {
-  const seconds = inspectBolt11(pr)?.expirySeconds;
-  const expiryMs = typeof seconds === 'number' ? seconds * 1000 : DEFAULT_INVOICE_EXPIRY_MS;
-  return nowMs < createdAtMs + expiryMs;
-}
-
 /** What repayment needs from the forum routes. */
 export interface RepaymentDeps {
   store: MessageStore;

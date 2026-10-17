@@ -26,6 +26,7 @@ import { logEvent } from '@/lib/log';
 import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import type { ShopPayments } from '@/lib/shop-payment';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import { normalizeUsername } from '@/lib/username';
 
@@ -44,7 +45,15 @@ interface PayRouteDeps {
   freePayments?: boolean;
   /** Random bytes for the Spark invoice id; default `crypto.getRandomValues`. */
   randomBytes?: (length: number) => Uint8Array;
+  /** Shop payments in USDT and USDC (`POST /:username/payment`); omitted → that route answers 404. */
+  shopPayments?: ShopPayments;
 }
+
+/** `POST /pay/:username/payment` 503 body (orders 6, 7, and 9). */
+const STABLECOIN_UNAVAILABLE = {
+  error: 'Stablecoin payment is unavailable',
+  code: 'stablecoin_unavailable',
+} as const;
 
 type PayLookup =
   | {
@@ -271,12 +280,54 @@ function memberSparkInvoice(
 }
 
 /**
+ * Read the `{ amountSats, comment? }` body both payment routes take.
+ *
+ * @param request - Incoming request.
+ * @returns The integer amount and the unchecked comment, or `null` when the
+ *   body is not JSON or `amountSats` is not an integer.
+ */
+async function readAmountBody(
+  request: Request,
+): Promise<{ amountSats: number; comment: unknown } | null> {
+  let body: unknown;
+  try {
+    body = await request.json();
+  } catch {
+    return null;
+  }
+  const parsed = z
+    .object({ amountSats: z.number().int(), comment: z.unknown().optional() })
+    .safeParse(body);
+  return parsed.success ? { amountSats: parsed.data.amountSats, comment: parsed.data.comment } : null;
+}
+
+/**
+ * Whether an amount lies inside the pay request's minimum and maximum, in
+ * sats and in millisats (the check `POST /:username/invoice` applies).
+ *
+ * @param lookup - Resolved account and bounds.
+ * @param amountSats - Requested sats.
+ * @returns `true` when the amount is accepted.
+ */
+function withinPayRange(
+  lookup: Extract<PayLookup, { ok: true }>,
+  amountSats: number,
+): boolean {
+  const amountMsat = amountSats * 1000;
+  const outsideSat = amountSats < lookup.minSats || amountSats > lookup.maxSats;
+  const belowMsat = amountMsat < lookup.metadata.minSendable;
+  const aboveMsat = amountMsat > lookup.metadata.maxSendable;
+  return ((outsideSat ? 1 : 0) | (belowMsat ? 1 : 0) | (aboveMsat ? 1 : 0)) === 0;
+}
+
+/**
  * Build the `/pay` route group.
  *
  * @param deps - Auth store, fetch, POS store, and clock (required), the
  *   optional LNURL server (omitted when it is off), `freePayments` (Spark
  *   invoices), and optional randomness.
- * @returns Hono app with `GET /:username` and `POST /:username/invoice`.
+ * @returns Hono app with `GET /:username`, `POST /:username/invoice`, and
+ *   `POST /:username/payment`.
  */
 export function payRoutes(deps: PayRouteDeps): Hono {
   return new Hono()
@@ -298,25 +349,14 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       if (!lookup.ok) {
         return c.json({ error: lookup.error }, lookup.status);
       }
-      let body: unknown;
-      try {
-        body = await c.req.json();
-      } catch {
+      const parsed = await readAmountBody(c.req.raw);
+      if (parsed === null) {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
-      const parsed = z
-        .object({ amountSats: z.number().int(), comment: z.unknown().optional() })
-        .safeParse(body);
-      if (!parsed.success) {
-        return c.json({ error: 'Enter a whole number of sats' }, 400);
-      }
-      const amountSats = parsed.data.amountSats;
+      const amountSats = parsed.amountSats;
       const amountMsat = amountSats * 1000;
-      const { minSats, maxSats, metadata, address, username } = lookup;
-      const outsideSat = amountSats < minSats || amountSats > maxSats;
-      const belowMsat = amountMsat < metadata.minSendable;
-      const aboveMsat = amountMsat > metadata.maxSendable;
-      if (((outsideSat ? 1 : 0) | (belowMsat ? 1 : 0) | (aboveMsat ? 1 : 0)) !== 0) {
+      const { metadata, address, username } = lookup;
+      if (!withinPayRange(lookup, amountSats)) {
         return c.json({ error: 'Enter a whole number of sats' }, 400);
       }
       const issuedAtMs = deps.now();
@@ -341,7 +381,7 @@ export function payRoutes(deps: PayRouteDeps): Hono {
               deps,
               lookup.sparkPubkey,
               amountSats,
-              parsed.data.comment,
+              parsed.comment,
               metadata.commentAllowed,
               issuedAtMs,
             )
@@ -354,5 +394,49 @@ export function payRoutes(deps: PayRouteDeps): Hono {
             );
       logEvent('pay.invoice', { username, amountSats });
       return c.json({ pr: invoice.pr, amountSats, sparkInvoice });
+    })
+    .post('/:username/payment', async (c) => {
+      const shop = deps.shopPayments;
+      const lookup = await lookupPayAccount(c.req.param('username'), deps);
+      if (!lookup.ok) {
+        return c.json({ error: lookup.error }, lookup.status);
+      }
+      /* v8 ignore next 3 -- the route group gets the service whenever the LNURL server resolves */
+      if (shop === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const parsed = await readAmountBody(c.req.raw);
+      if (parsed === null || parsed.amountSats < 1) {
+        return c.json({ error: 'Enter a whole number of sats' }, 400);
+      }
+      if (lookup.pending !== null) {
+        return c.json({ error: 'A payment is already open', code: 'payment_open' }, 409);
+      }
+      if (!withinPayRange(lookup, parsed.amountSats)) {
+        return c.json({ error: 'Enter a whole number of sats' }, 400);
+      }
+      if (!shop.offersStablecoins(lookup.username)) {
+        return c.json(STABLECOIN_UNAVAILABLE, 503);
+      }
+      const account = await deps.auth.getAccountByUsername(lookup.username);
+      /* v8 ignore next 3 -- lookupPayAccount just read this account */
+      if (account === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const created = await shop.createForPayer(account, lookup.username, parsed.amountSats);
+      switch (created.kind) {
+        case 'payment':
+          return c.json(
+            { payment: created.payment.id, expiresAt: created.payment.windowEndsAt.toISOString() },
+            200,
+          );
+        case 'pending_charge':
+          return c.json({ error: 'A payment is already open', code: 'payment_open' }, 409);
+        case 'mint_failed':
+          logEvent('pay.invoice_failed', { username: lookup.username });
+          return c.json({ error: 'Lightning Address could not be resolved' }, 502);
+        default:
+          return c.json(STABLECOIN_UNAVAILABLE, 503);
+      }
     });
 }

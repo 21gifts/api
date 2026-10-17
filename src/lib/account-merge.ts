@@ -25,7 +25,10 @@ type MergeInput = { from: string; into: string; verify: 'from' | 'into' };
 
 type MergeResult =
   | { ok: true; messages: number }
-  | { ok: false; error: 'not_found' | 'same_account' | 'platform' | 'both_grants' };
+  | {
+      ok: false;
+      error: 'not_found' | 'same_account' | 'platform' | 'both_grants' | 'shop_payment_open';
+    };
 
 interface LockedAccountRow {
   id: string;
@@ -91,6 +94,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     );
     if (grants.length >= 2) {
       return { ok: false, error: 'both_grants' };
+    }
+
+    // A shop payment's BOLT11 pays the merged account's wallet, which the merge
+    // does not carry over: wait until every such payment is paid or closed.
+    const shopPayments = await tx.query<{ id: string }>(
+      `SELECT id FROM shop_payment
+       WHERE account_id = $1 AND status <> 'paid' AND closed_at IS NULL
+       LIMIT 1`,
+      [input.from],
+    );
+    if (shopPayments.length > 0) {
+      return { ok: false, error: 'shop_payment_open' };
     }
 
     const counts = await tx.query<{ n: number }>(
@@ -367,6 +382,17 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       `DELETE FROM account_image AS src
        USING account_image AS dst
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
+      accountParams,
+    );
+    // `pos_charge_invoice.charge_id` has no cascade: drop the deleted charge's hashes first.
+    await tx.query(
+      `DELETE FROM pos_charge_invoice
+       WHERE charge_id IN (
+         SELECT id FROM pos_charge
+         WHERE account_id = $1 AND status = 'pending' AND EXISTS (
+           SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'
+         )
+       )`,
       accountParams,
     );
     await tx.query(

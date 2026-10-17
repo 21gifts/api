@@ -415,6 +415,18 @@ describe('InMemoryPosStore paid tracking', () => {
     paid?.paidAt?.setTime(0);
     expect((await store.listLatest(1))[0]?.paidAt).toEqual(new Date(T0 + 5_000));
   });
+
+  it('deleteInvoice removes a recorded hash and ignores an unknown one', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    expect(await store.recordInvoice('c1', 'h1', T0)).toBe(true);
+    expect(await store.recordInvoice('c1', 'h2', T0)).toBe(true);
+    await store.deleteInvoice('h1');
+    await store.deleteInvoice('unknown');
+    expect(await store.findChargeForPayment({ paymentHash: 'h1' })).toBeUndefined();
+    expect((await store.findChargeForPayment({ paymentHash: 'h2' }))?.id).toBe('c1');
+    expect(await store.recordInvoice('c1', 'h1', T0)).toBe(true);
+  });
 });
 
 describe('PostgresPosStore', () => {
@@ -795,5 +807,13 @@ describe('PostgresPosStore', () => {
       'create boom',
     );
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.create')).toBe(false);
+  });
+
+  it('deleteInvoice runs one DELETE bound to the payment hash', async () => {
+    const sql = new MockSql();
+    await new PostgresPosStore(sql).deleteInvoice('h1');
+    expect(sql.executes).toEqual([
+      { text: 'DELETE FROM pos_charge_invoice WHERE payment_hash = $1', params: ['h1'] },
+    ]);
   });
 });

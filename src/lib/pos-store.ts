@@ -9,6 +9,7 @@
 import type { SqlClient } from '@/lib/auth/sql';
 import { logEvent } from '@/lib/log';
 import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
+import { UUID_PATTERN } from '@/lib/uuid';
 
 /** POS charge used to mark an account as active on a UTC day. */
 export type PosChargeRef = { accountId: string; createdAtMs: number };
@@ -134,6 +135,15 @@ export interface PosStore {
    * @returns The paid row, or `null` when this call did not change it.
    */
   markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null>;
+
+  /**
+   * Delete the `pos_charge_invoice` row of a payment hash. A hash that is not
+   * recorded is left as is.
+   *
+   * @param paymentHash - Payment hash of the BOLT11 (64 lower-case hex).
+   * @returns Resolves when the row is gone.
+   */
+  deleteInvoice(paymentHash: string): Promise<void>;
 }
 
 /**
@@ -479,6 +489,20 @@ export class InMemoryPosStore implements PosStore {
     logEvent('pos.paid', { accountId: row.accountId });
     return Promise.resolve(copyCharge(row));
   }
+
+  /**
+   * Remove the recorded payment hash, if any.
+   *
+   * @param paymentHash - BOLT11 payment hash.
+   * @returns Resolves when the entry is gone.
+   */
+  deleteInvoice(paymentHash: string): Promise<void> {
+    const index = this.#invoices.findIndex((invoice) => invoice.paymentHash === paymentHash);
+    if (index !== -1) {
+      this.#invoices.splice(index, 1);
+    }
+    return Promise.resolve();
+  }
 }
 
 /** Row shape selected from `pos_charge`. */
@@ -496,8 +520,6 @@ interface PosSqlRow {
 /** Columns selected into {@link PosSqlRow}. */
 const POS_COLUMNS =
   'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice';
-
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Coerce Postgres timestamps; copy so callers cannot mutate driver dates. */
 function asDate(value: Date | string): Date {
@@ -747,7 +769,7 @@ RETURNING payment_hash`,
   async findChargeForPayment(
     ref: { paymentHash: string } | { chargeId: string },
   ): Promise<PosCharge | undefined> {
-    if ('chargeId' in ref && !UUID.test(ref.chargeId)) {
+    if ('chargeId' in ref && !UUID_PATTERN.test(ref.chargeId)) {
       return undefined;
     }
     const rows =
@@ -823,5 +845,17 @@ RETURNING ${POS_COLUMNS}`,
     const paid = mapPosRow(row);
     logEvent('pos.paid', { accountId: paid.accountId });
     return paid;
+  }
+
+  /**
+   * One `DELETE FROM pos_charge_invoice WHERE payment_hash = $1`.
+   *
+   * @param paymentHash - BOLT11 payment hash (`$1`).
+   * @returns Resolves when the statement has run.
+   */
+  async deleteInvoice(paymentHash: string): Promise<void> {
+    await this.#sql.execute(`DELETE FROM pos_charge_invoice WHERE payment_hash = $1`, [
+      paymentHash,
+    ]);
   }
 }

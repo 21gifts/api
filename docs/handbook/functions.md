@@ -5,6 +5,7 @@
 - **Purpose:** Hono routes `GET /pos`, `POST /pos`, and `DELETE /pos` for one open point-of-sale amount in whole sats. Pins nothing itself; the well-known route reads the store. `GET /pos` returns the pending charge as `charge`, or else the newest row when it is `paid` with `paidAt` less than `POS_PAID_SHOW_MS` (60 s) ago, so the till can show the confirmation after a late poll.
 - **Inputs:** `PosRouteDeps` (`store`, `authStore`, `now`, and `fetchImpl` required; optional `messageStore` with `listLiveAssignedShops`, optional `activity`, optional `lnurlServer`). The LNURL `fetchImpl` is not the map fetch. `POST /pos` checks the amount against the member's receiving address (`receivingAddress`; a verified wallet through `lnurlServerFetch`).
 - **Returns / side effects:** A Hono app. Writes charges through `PosStore`. The paid status is set by `runPosPaidTick`, not by these routes. After a successful `POST /pos` `store.create`, when both optional collaborators are set, lists live assigned shop notes and best-effort POSTs each matching `#21GiftsShop` note for this account to the OpenCryptoPay map (`pingShopActivity`). GET and DELETE do not ping. A map failure logs `ocp.activity.failed` and does not change 201.
+- **Shop payment:** With optional `shopPayments`, `POST /pos` writes through `ShopPayments.createCharge` (charge insert and end of the account's `open` shop payment in one transaction under the account row lock, then the background creation; `false` is the existing 409), `DELETE /pos` through `ShopPayments.cancelCharge` (also ends the charge's `open` shop payment with `cancelled`), and `GET /pos` adds `charge.shopPayment` (`shopPaymentOfCharge`: `{ id, status }` or `null`).
 - **Used by:** `createApp`.
 
 ## Function: activeShopDays
@@ -62,6 +63,7 @@
 - **Inputs:** None.
 - **Returns / side effects:** Pending, cancel, expire, list, and paid-tracking methods. Mutates its private arrays. `create` throws `A payment is already open` when one is already open.
 - **Payment lookup:** `findChargeForPayment({ paymentHash })` returns the charge whose recorded BOLT11 hash matches, and `findChargeForPayment({ chargeId })` the charge with that id; `undefined` otherwise. Used by `walletPaymentClassifier` for the `shop` category.
+- **deleteInvoice:** `deleteInvoice(paymentHash)` removes the recorded BOLT11 payment hash, if present; an unknown hash is a no-op and the charge itself is unchanged. `InMemoryShopPaymentStore` delegates `ShopTx.deleteChargeInvoice` to it.
 - **Used by:** `createApp` default and unit tests.
 
 ## Function: PostgresPosStore
@@ -70,6 +72,7 @@
 - **Inputs:** A `SqlClient`.
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. A concurrent second pending insert raises unique violation `23505` for the route to map to 409. `markPaid` logs `pos.paid` only when it changed the row. Every write lands in `db_change` through `trg_db_change`.
 - **Payment lookup:** `findChargeForPayment({ paymentHash })` joins `pos_charge_invoice` to `pos_charge` on the recorded hash; `findChargeForPayment({ chargeId })` reads one charge by id, and a non-UUID id answers `undefined` without a query (no uuid cast error). Used by `walletPaymentClassifier` for the `shop` category.
+- **deleteInvoice:** `deleteInvoice(paymentHash)` runs `DELETE FROM pos_charge_invoice WHERE payment_hash = $1`; a hash that is not recorded deletes nothing. The delete lands in `db_change`. `PostgresShopPaymentStore` calls it on the transaction connection (`ShopTx.deleteChargeInvoice`). The `UUID` shape check is `UUID_PATTERN` from `src/lib/uuid.ts`.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
 ## Function: buildGiftDay
@@ -575,9 +578,9 @@
 
 ## Function: openBootStores
 
-- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX tables, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `PostgresFiatStore`, `migrateFxSpotSchema`, `PostgresFxSpotStore`, `migrateMessageSchema`, `PostgresMessageStore`, `PostgresTranslationStore` (forum `message_translation`) plus a second `PostgresTranslationStore` aimed at `conversation_message_translation` (`conversationTranslationStore`; never the forum store instance), `migrateContactSchema`, `PostgresContactStore`, `migrateMemberHabitSchema`, `PostgresMemberHabitStore`, `migratePosSchema`, `PostgresPosStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateTrustSchema`, `migrateFundingSchema`, `migrateDailyRosterSchema`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresDailyRosterStore`, `migrateApiLogSchema`, `PostgresApiLogStore`, `PostgresDebugDbStore`, `migrateBannerSchema`, `PostgresBannerStore`, `migrateDiagnosticSchema`, `PostgresDiagnosticStore`, `migrateSparkInvoiceSchema`, `PostgresSparkInvoiceStore` (`sparkInvoiceStore`), `migrateLoginGateSchema`, `PostgresLoginGateStore` (`loginGateStore`), `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`memberHabitStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`sparkInvoiceStore`/`loginGateStore` undefined, a fresh `InMemoryDailyRosterStore` as `rosterStore`, `nostrKek` undefined, empty `InMemoryBtcUsdStore`, and empty `InMemoryFiatStore` when unset.
-- **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, frankfurterUrl, now, nostrQuerier, zapRelayUrls, nostrRelayTimeoutMs, lnurlServer }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`; `frankfurterUrl` defaults via `resolveFrankfurterUrl(process.env)`; `nostrQuerier`, `zapRelayUrls` and `nostrRelayTimeoutMs` feed `backfillExternalZappers` and default to a `WebsocketNostrQuerier`, `resolveZapRelays(process.env)` and a 5000 ms per-relay timeout; `lnurlServer` defaults via `resolveLnurlServerConfig(process.env)`, and `null` turns `moveDailyRosterToWalletAddresses` off). SQL path reads `process.env.NOSTR_NSEC_KEK`. Optional fourth argument `transactions` (`MergeDb`) is passed to `PostgresFundingStore` for the locked admission count.
-- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, fxSpotStore, messageStore, translationStore, conversationTranslationStore, contactStore, memberHabitStore, posStore, conversationStore, notificationStore, pushStore, trustStore, fundingStore, rosterStore, bannerStore, apiLogStore, diagnosticStore, nostrKek, listDbChange, debugDbStore, sparkInvoiceStore, loginGateStore }` (`sparkInvoiceStore` is a `PostgresSparkInvoiceStore` on SQL boots after `migrateSparkInvoiceSchema` ran before the `db_change` migrate, `undefined` on memory boots). `fxSpotStore` is a `PostgresFxSpotStore` on SQL boots and an empty `InMemoryFxSpotStore` on memory boots. Migrates `btc_usd_daily` then `usd_fiat_daily`, then `btc_fiat_spot` (via `migrateFxSpotSchema`, before the `db_change` migrate so `trg_db_change` attaches), `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`), `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `funding_grant` (via `migrateFundingSchema`), then `daily_roster` (via `migrateDailyRosterSchema`), then `api_log` (via `migrateApiLogSchema`), then `account_image` (via `migrateBannerSchema`), then `diagnostic_event` (via `migrateDiagnosticSchema`), then `spark_invoice` (via `migrateSparkInvoiceSchema`); the diagnostic sink is installed on that store before the FX fill and the zap backfills, immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, `funding_grant`, `daily_roster`, `daily_roster_entry`, `api_log`, `account_image`, `diagnostic_event`, and `spark_invoice`, then `db_change` after auth migrate; after the `db_change` migrate and `repairGiftKind`, when `fx.lnurlServer` (default `resolveLnurlServerConfig(process.env)`) is not null, `moveDailyRosterToWalletAddresses` runs on its host, so `trg_db_change` records each DELETE and UPDATE, and one `daily_roster.wallet_move` log line follows; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore` (forum) plus a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresMemberHabitStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresDailyRosterStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, `PostgresDebugDbStore`, and `PostgresSparkInvoiceStore`; memory path returns `giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`memberHabitStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`sparkInvoiceStore`/`nostrKek` undefined, returns a fresh `InMemoryPosStore` as `posStore`, a fresh `InMemoryDailyRosterStore` as `rosterStore`, and skips migrates including `migrateMemberHabitSchema` / `migratePosSchema` / `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateFundingSchema` / `migrateDailyRosterSchema` / `migrateApiLogSchema` / `migrateBannerSchema` / `migrateDiagnosticSchema` / `migrateSparkInvoiceSchema` / `migrateDbChangeSchema`. SQL path calls `migrateMemberHabitSchema` for `member_habit` before `PostgresMemberHabitStore`, and `migratePosSchema` for `pos_charge` before `PostgresPosStore`. SQL boots also run `migrateLoginGateSchema` after `migrateMemberEventSchema` and before `migrateDbChangeSchema`, so `trg_db_change` attaches to `app_setting` and `login_allowlist`, and return `loginGateStore` (`PostgresLoginGateStore`); memory boots return `loginGateStore: undefined`.
+- **Purpose:** Shared `DATABASE_URL` wiring: one `SqlClient` for durable auth, FX tables, `QueryGiftStore`, `SqlGiftRecorder`, `PostgresBtcUsdStore`, `PostgresFiatStore`, `migrateFxSpotSchema`, `PostgresFxSpotStore`, `migrateMessageSchema`, `PostgresMessageStore`, `PostgresTranslationStore` (forum `message_translation`) plus a second `PostgresTranslationStore` aimed at `conversation_message_translation` (`conversationTranslationStore`; never the forum store instance), `migrateContactSchema`, `PostgresContactStore`, `migrateMemberHabitSchema`, `PostgresMemberHabitStore`, `migratePosSchema`, `PostgresPosStore`, `migrateConversationSchema`, `PostgresConversationStore`, `migratePushSchema`, `PostgresPushStore`, `migrateNotificationSchema`, `PostgresNotificationStore`, `migrateTrustSchema`, `migrateFundingSchema`, `migrateDailyRosterSchema`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresDailyRosterStore`, `migrateApiLogSchema`, `PostgresApiLogStore`, `PostgresDebugDbStore`, `migrateBannerSchema`, `PostgresBannerStore`, `migrateDiagnosticSchema`, `PostgresDiagnosticStore`, `migrateSparkInvoiceSchema`, `PostgresSparkInvoiceStore` (`sparkInvoiceStore`), `migrateDbChangeSchema`, and parsed `NOSTR_NSEC_KEK`; or in-memory auth, `giftStore`/`giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`memberHabitStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`sparkInvoiceStore` undefined, a fresh `InMemoryDailyRosterStore` as `rosterStore`, `nostrKek` undefined, empty `InMemoryBtcUsdStore`, and empty `InMemoryFiatStore` when unset.
+- **Inputs:** `databaseUrl`; optional `createClient` (required when URL set); optional `fx: { fetchImpl, candlesUrl, frankfurterUrl, now, nostrQuerier, zapRelayUrls, nostrRelayTimeoutMs, lnurlServer }` so tests avoid the network (`candlesUrl` defaults via `resolveCandlesUrl(process.env)`; `frankfurterUrl` defaults via `resolveFrankfurterUrl(process.env)`; `nostrQuerier`, `zapRelayUrls` and `nostrRelayTimeoutMs` feed `backfillExternalZappers` and default to a `WebsocketNostrQuerier`, `resolveZapRelays(process.env)` and a 5000 ms per-relay timeout; `lnurlServer` defaults via `resolveLnurlServerConfig(process.env)`, and `null` turns `moveDailyRosterToWalletAddresses` off). SQL path reads `process.env.NOSTR_NSEC_KEK`.
+- **Returns / side effects:** `{ authStore, giftStore, giftRecorder, btcUsdRates, fiatRates, fxSpotStore, messageStore, translationStore, conversationTranslationStore, contactStore, memberHabitStore, posStore, conversationStore, notificationStore, pushStore, trustStore, fundingStore, rosterStore, bannerStore, apiLogStore, diagnosticStore, nostrKek, listDbChange, debugDbStore, sparkInvoiceStore }` (`sparkInvoiceStore` is a `PostgresSparkInvoiceStore` on SQL boots after `migrateSparkInvoiceSchema` ran before the `db_change` migrate, `undefined` on memory boots). `fxSpotStore` is a `PostgresFxSpotStore` on SQL boots and an empty `InMemoryFxSpotStore` on memory boots. Migrates `btc_usd_daily` then `usd_fiat_daily`, then `btc_fiat_spot` (via `migrateFxSpotSchema`, before the `db_change` migrate so `trg_db_change` attaches), `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`), `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation` (via `migrateConversationSchema`), `push_subscription`/`push_outbox` (via `migratePushSchema`), `notification` (via `migrateNotificationSchema` after push before `db_change`), then `trust_edge` (via `migrateTrustSchema`) after notification, then `funding_grant` (via `migrateFundingSchema`), then `daily_roster` (via `migrateDailyRosterSchema`), then `api_log` (via `migrateApiLogSchema`), then `account_image` (via `migrateBannerSchema`), then `diagnostic_event` (via `migrateDiagnosticSchema`), then `spark_invoice` (via `migrateSparkInvoiceSchema`); `shop_payment`, `shop_quote`, `shop_offer`, `shop_proof`, and `shop_proof_lookup` are migrated by `migrateShopPaymentSchema` right after `migratePosSchema`, also before `migrateDbChangeSchema`; the diagnostic sink is installed on that store before the FX fill and the zap backfills, immediately before `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`, `funding_grant`, `daily_roster`, `daily_roster_entry`, `api_log`, `account_image`, `diagnostic_event`, and `spark_invoice`, then `db_change` after auth migrate; after the `db_change` migrate and `repairGiftKind`, when `fx.lnurlServer` (default `resolveLnurlServerConfig(process.env)`) is not null, `moveDailyRosterToWalletAddresses` runs on its host, so `trg_db_change` records each DELETE and UPDATE, and one `daily_roster.wallet_move` log line follows; best-effort `fillRatesForGiftRange` logs `gifts.fx.boot_fill.failed` and does not throw; best-effort `fillFiatRatesForGiftRange` logs `gifts.fx.fiat_boot_fill.failed` and does not throw. Throws if the URL is set without a factory, or if the SQL path has a missing/malformed KEK. SQL path returns `SqlGiftRecorder`, `PostgresMessageStore`, `PostgresTranslationStore` (forum) plus a second `PostgresTranslationStore` on `conversation_message_translation`, `PostgresContactStore`, `PostgresMemberHabitStore`, `PostgresPosStore`, `PostgresConversationStore`, `PostgresNotificationStore`, `PostgresPushStore`, `PostgresFiatStore`, `PostgresTrustStore`, `PostgresFundingStore`, `PostgresDailyRosterStore`, `PostgresBannerStore`, `PostgresApiLogStore`, `PostgresDiagnosticStore`, `PostgresDebugDbStore`, and `PostgresSparkInvoiceStore`; memory path returns `giftRecorder`/`messageStore`/`translationStore`/`conversationTranslationStore`/`contactStore`/`memberHabitStore`/`conversationStore`/`notificationStore`/`pushStore`/`trustStore`/`fundingStore`/`bannerStore`/`apiLogStore`/`diagnosticStore`/`listDbChange`/`debugDbStore`/`sparkInvoiceStore`/`nostrKek` undefined, returns a fresh `InMemoryPosStore` as `posStore`, a fresh `InMemoryDailyRosterStore` as `rosterStore`, and skips migrates including `migrateMemberHabitSchema` / `migratePosSchema` / `migrateConversationSchema` / `migratePushSchema` / `migrateNotificationSchema` / `migrateTrustSchema` / `migrateFundingSchema` / `migrateDailyRosterSchema` / `migrateApiLogSchema` / `migrateBannerSchema` / `migrateDiagnosticSchema` / `migrateSparkInvoiceSchema` / `migrateDbChangeSchema`. SQL path calls `migrateMemberHabitSchema` for `member_habit` before `PostgresMemberHabitStore`, and `migratePosSchema` for `pos_charge` before `PostgresPosStore`.
 - **Payment and external-zapper backfills:** Only after `migrateDbChangeSchema` has attached `trg_db_change` to every public table (so the payment backfill's `nostr_zap_payment` inserts are logged), constructs `PostgresMessageStore`, runs `backfillZapPayments`, and immediately runs `backfillExternalZappers` before constructing the remaining Postgres stores and returning. The external-zapper backfill pages through unattributed receipts with a 10,000-row ceiling and logs `nostr.zapper.backfill.done` with its aggregate counts; a failure logs `nostr.zapper.backfill.failed` and boot continues. Payment-backfill failures still propagate. In-memory boots call neither backfill.
 - **Member data:** A SQL boot runs `migrateWalletSchema` and then `migrateMemberEventSchema` after `migrateSparkInvoiceSchema` and before `migrateDbChangeSchema`, so `trg_db_change` attaches to `wallet_balance_snapshot`, `wallet_payment`, and `member_event`, and returns `walletStore: PostgresWalletStore` and `memberEventStore: PostgresMemberEventStore`. A memory boot returns `undefined` for both, and `createApp` falls back to the in-memory stores.
 - **Used by:** `src/index.ts` boot.
@@ -621,15 +624,16 @@
 
 - **Purpose:** Fold account `from` into account `into` on one reserved transaction (`MergeDb.begin`). Moves every single-column foreign key that the catalog says references `public.account(id)`, keeps one verify edge, copies the earlier join time and the consent that must not get worse onto the survivor, and deletes `from`. Clears `first_post_free` on the source note before the move when the survivor already has a free first post, so the per-account unique index holds. The same id returns before a transaction is opened. Name, username, location, and in-app wallet key (`spark_pubkey`, `spark_pubkey_verified_at`) of the survivor are not written.
 - **Inputs:** `MergeDb` and `{ from, into, verify }` where `verify` is `'from'` or `'into'`.
-- **Returns / side effects:** `{ ok: true, messages }` with the source message count, or `{ ok: false, error }` of `not_found`, `same_account`, `platform`, or `both_grants`. Does not catch driver errors, so a throw rolls the transaction back. Does not log tokens, text, or keys.
+- **Returns / side effects:** `{ ok: true, messages }` with the source message count, or `{ ok: false, error }` of `not_found`, `same_account`, `platform`, `both_grants`, or `shop_payment_open` (checked after `both_grants`: the source account has a `shop_payment` row that is neither `paid` nor closed, whose BOLT11 still pays the source wallet; nothing changes). Does not catch driver errors, so a throw rolls the transaction back. Does not log tokens, text, or keys.
 - **Wallet data:** Before the catalog repoint, deletes each source `wallet_payment` row whose `payment_id` the survivor already has (the primary key is `(account_id, payment_id)`), then sets `counterparty_account_id` to `NULL` on payments of either account whose counterparty is one of the two, so no payment ends up with its own account as counterparty.
+- **Till rows:** Before deleting the source's pending charge because the survivor has one, deletes that charge's `pos_charge_invoice` rows (their `charge_id` has no cascade). Paid and closed shop payments of the source move with the catalog repoint like every other row.
 - **Used by:** `POST /debug/accounts/merge` in `debugRoutes`.
 
 ## Function: debugRoutes
 
 - **Purpose:** Operator listing, provisioning, role assignment, official platform-flag retarget, session-refusal (`sessionRefused`), and minting a member bearer via `POST /:id/session`. `POST /merge` folds one account into another.
 - **Inputs:** `DebugRouteDeps`: store, optional debugToken, optional `lnurlServer` (account JSON `lightningAddress` is the wallet-backed receiving address), optional `conversationStore` (`PATCH platform: true` calls `retargetMemberPlatform`), optional `messageStore`, `pushStore`, and `notificationStore` (POST provision calls `ensureProfileMessage` when `messageStore` is set), optional `now` for minted debug sessions, optional `mergeDb`.
-- **Returns / side effects:** Hono app (`GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/session`, `POST /merge`). A body that is not `{ from, into }` is 400; when `mergeDb` is omitted the valid body is 503 `{ error: 'Merge is unavailable' }`. Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` via `serializeDebugAccount` (includes `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields) logs `debug.accounts.listed` with count. GET `/:id` 200 `serializeDebugAccountDetail` or 404. POST body `{ accounts: [{ name, username? }] }` (strict rows; a `lightningAddress` key is 400) → 400 invalid body (including C0/DEL names or an invalid username; no row is written); with `username`, an existing account with that username gets only its `name` updated (`updateAccount`, created false), otherwise a new `basis` row with that username is created; without `username`, every row creates a new `basis` row with a derived username (`provisionUsername`); 500 `{ error: 'Could not save the account' }` when a created row cannot be read back; when `messageStore` is set, POST then calls `ensureProfileMessage` (optional `pushStore` and `notificationStore`; no note without a verified wallet); returns `{ accounts: [{ name, username, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH strict body `{ role }` and/or `{ platform: true|false }` and/or `{ sessionRefused: true|false }` → 400 unknown key or missing; 404 missing account; 200 `serializeDebugAccount` of the updated row (includes `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields); role changes log `debug.accounts.role_set` with account id and role; `platform: true` uniquely retargets (store clears any other `isPlatform`), points every member→platform thread at the new account via `retargetMemberPlatform` when `conversationStore` is set, and logs `debug.accounts.platform_set`; `sessionRefused` is written only via `setSessionRefused` (not `updateAccount`) and logs `debug.accounts.session_refused_set`. POST `/:id/session` 404 unknown id; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true or `tryCreateSession` writes no row, with no `debug.accounts.session_minted` and no member bearer; otherwise 200 `{ token }` and `debug.accounts.session_minted`. Never logs the token.
+- **Returns / side effects:** Hono app (`GET /`, `GET /:id`, `POST /`, `PATCH /:id`, `POST /:id/session`, `POST /merge`). A body that is not `{ from, into }` is 400; when `mergeDb` is omitted the valid body is 503 `{ error: 'Merge is unavailable' }`; a `shop_payment_open` merge result is 409 `{ error: 'A payment is already open' }`. Shared 503 if token unset; 401 if bearer mismatches. GET 200 `{ accounts }` via `serializeDebugAccount` (includes `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields) logs `debug.accounts.listed` with count. GET `/:id` 200 `serializeDebugAccountDetail` or 404. POST body `{ accounts: [{ name, username? }] }` (strict rows; a `lightningAddress` key is 400) → 400 invalid body (including C0/DEL names or an invalid username; no row is written); with `username`, an existing account with that username gets only its `name` updated (`updateAccount`, created false), otherwise a new `basis` row with that username is created; without `username`, every row creates a new `basis` row with a derived username (`provisionUsername`); 500 `{ error: 'Could not save the account' }` when a created row cannot be read back; when `messageStore` is set, POST then calls `ensureProfileMessage` (optional `pushStore` and `notificationStore`; no note without a verified wallet); returns `{ accounts: [{ name, username, viewKey, created }] }`; logs `debug.accounts.provisioned` with created/updated counts (never viewKeys or the token). PATCH strict body `{ role }` and/or `{ platform: true|false }` and/or `{ sessionRefused: true|false }` → 400 unknown key or missing; 404 missing account; 200 `serializeDebugAccount` of the updated row (includes `isPlatform`, `sessionRefused`, `viewKey`, `walletRequired`, `walletBackupSeenAt`, and Nostr debug fields); role changes log `debug.accounts.role_set` with account id and role; `platform: true` uniquely retargets (store clears any other `isPlatform`), points every member→platform thread at the new account via `retargetMemberPlatform` when `conversationStore` is set, and logs `debug.accounts.platform_set`; `sessionRefused` is written only via `setSessionRefused` (not `updateAccount`) and logs `debug.accounts.session_refused_set`. POST `/:id/session` 404 unknown id; 403 `{ error: 'You signed in with the wrong account. Please try again with the correct account.' }` when `sessionRefused` is true or `tryCreateSession` writes no row, with no `debug.accounts.session_minted` and no member bearer; otherwise 200 `{ token }` and `debug.accounts.session_minted`. Never logs the token.
 - **Used by:** `createApp` at `/debug/accounts`.
 
 ## Function: debugContactsRoutes
@@ -653,6 +657,13 @@
 - **Returns / side effects:** Hono app. 503 if token unset; 401 if bearer mismatches; 200 `{ invoices }` on `GET /invoices`, `{ receiptId, messageId, amountSats, resumed }` on `POST /invoices/settle`, `{ ingests }` on `GET /zap-ingests`, and on `POST /spend-ping` either 202 `{ messageId, status: 'accepted' }`, 200 `{ messageId, status: 'skipped', reason }` when that post day is skipped, 409 `{ error: 'Message is not from today' }` when the post UTC day is after the clock, or 503 when `pingOnDay` is missing, the ping fails, or a collaborator throws (the address is the member's verified wallet, `409 { error: 'No Lightning address' }` without one; never returns the address). Manual settle accepts `{ paymentHash, note, preimage? }` and delegates to `settleInvoiceManually`; store throws, including the direct ingest write, map to 503. Listing is newest-first (cap 200). Logs list/settle/spend-ping results without token, note, preimage, nsec, or Lightning address.
 - **Used by:** `createApp` at `/debug`.
 
+## Function: debugShopProofsRoutes
+
+- **Purpose:** Operator route group mounted at `/debug/shop-proofs` when the LNURL server resolves: `POST /:id/retry` moves a `stuck` shop payment proof back to unresolved through `retryStuckProof`.
+- **Inputs:** `{ shop: ShopPayments, debugToken }`.
+- **Returns / side effects:** Hono app. 503 `{ error: 'Debug is not configured' }` when the token is unset or blank; 401 `{ error: 'Unauthorized' }` on a Bearer mismatch; 404 `{ error: 'Not found' }` for a non-UUID or unknown id; 409 `{ error: 'The proof is not stuck' }`; 200 `{ id, result: null }`.
+- **Used by:** `createApp`.
+
 ## Function: inspectBolt11
 
 - **Purpose:** Decode BOLT11 payment hash, amount, plaintext description, description_hash, and expiry for operator debug (does not change `decodeBolt11`).
@@ -667,6 +678,20 @@
 - **Returns / side effects:** boolean.
 - **Used by:** `POST /messages/:id/invoice` for the NIP-57 gate (reject before returning `pr`); `POST /messages/:id/repayment` and `POST /messages/:id/repayment/due` for the same gate.
 
+## Function: bolt11ExpiresAtMs
+
+- **Purpose:** When a BOLT11 stops being payable: the given issue time plus its `expiry` tag, or plus `DEFAULT_INVOICE_EXPIRY_MS` (3 600 000 ms, the BOLT11 default) when the tag is absent or the invoice does not decode (`inspectBolt11`). Callers pass the time they requested the invoice, so the result is at or before the real expiry. `DEFAULT_INVOICE_EXPIRY_MS` moved here from `src/routes/repayment.ts`.
+- **Inputs:** BOLT11 string and the issue time (epoch ms).
+- **Returns / side effects:** Expiry instant (epoch ms). No I/O.
+- **Used by:** `invoiceStillOpen` and the shop payment mint (`shop_payment.bolt11_expires_at`).
+
+## Function: invoiceStillOpen
+
+- **Purpose:** Whether a stored BOLT11 can still be paid, so repayment and the shop payment compute an invoice's expiry one way. Moved from `src/routes/repayment.ts`.
+- **Inputs:** Stored invoice, the time the attempt was recorded, and the clock (epoch ms).
+- **Returns / side effects:** `nowMs < bolt11ExpiresAtMs(pr, createdAtMs)`. No I/O.
+- **Used by:** `src/routes/repayment.ts` (whether an outstanding repayment bill can still be paid).
+
 ## Function: resolveVapidConfig
 
 - **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing or unusable.
@@ -680,6 +705,13 @@
 - **Inputs:** `env` record (`LNURL_SERVER_URL`, `PUBLIC_BASE_URL`).
 - **Returns / side effects:** `{ baseUrl, publicBaseUrl, host }` (`host` is `new URL(publicBaseUrl).host`) or `null`. No I/O. Not a secret.
 - **Used by:** `createApp`.
+
+## Function: resolveShopPaymentConfig
+
+- **Purpose:** Resolve the shop payment configuration from the environment, following `resolveLnurlServerConfig`: any missing or invalid value turns the stablecoin rows off and the process still boots. `ORCHESTRA_BASE_URL` must be an absolute `https` origin without path, query, fragment, or user info (one trailing `/` is trimmed); `ORCHESTRA_API_KEY` a server key starting `fn_` (a client key `fnp_…` is refused); `SHOP_EVM_RPC` a non-empty JSON object from a decimal chain id (no sign, no leading zero) to an absolute `https` URL without user info; `SHOP_REFUND_ADDRESS` `0x` and 40 hexadecimal characters. Values are trimmed. Never logs a value.
+- **Inputs:** `env` record.
+- **Returns / side effects:** `{ orchestraBaseUrl (origin), orchestraApiKey, evmRpc: Map<chainId, url>, refundAddress (lowercase) }` or `null`. No I/O.
+- **Used by:** `createApp` and `src/index.ts`.
 
 ## Function: IpRateLimiter
 
@@ -1270,9 +1302,9 @@ Sets an account's username and moves its daily roster rows from `<previous>@<hos
 ## Function: requestGiftInvoice
 
 - **Purpose:** LNURL-pay fetch for gift amounts: comment optional, amount not raised to minSendable.
-- **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl.
+- **Inputs:** Normalised address, amountMsat, optional comment, fetchImpl, optional `deadlineMs` (absolute epoch ms for both calls, the pay-request resolve and the callback; each call is aborted at the time left, and a call at or after it fails like an unreachable provider) and optional `now` (default `Date.now`).
 - **Returns / side effects:** `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
-- **Used by:** `POST /invoices`.
+- **Used by:** `POST /invoices`, `POST /pay/:username/invoice`, and the shop payment mint (`ShopPayments`, 4 s deadline).
 
 ## Function: authRoutes
 
@@ -1302,6 +1334,7 @@ Sets an account's username and moves its daily roster rows from `<previous>@<hos
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot. Builds one `LoginGate` from `loginGateStore` (default `InMemoryLoginGateStore`) and `resolveLoginsOpenDefault(env)`, passes it with `resolveRequiredAppBuild(env)` to `authRoutes`, and mounts `debugLoginsRoutes` at `/debug`. An unknown `LOGINS_OPEN_DEFAULT` throws before routes mount.
 - **Used by:** Boot path and every HTTP test.
 - **Daily roster:** Optional `rosterStore` defaults to a fresh `InMemoryDailyRosterStore`. The same instance is passed to `fundingRoutes`, `spendInstructionRoutes`, `meRoutes` (as `dailyRoster`, for the `POST /me/username` roster rewrite), and the default `resolveSpendPing`. When `mergeDb` is also set and the LNURL server resolves (`lnurlServer`), `POST /me/username` runs `setUsernameWithRoster` instead of `setUsername` then `renameAddress`. `HttpDailyRoster` is not built. `SPEND_URL` is the ping POST base. Until the roster store has been written, it is also the base of `GET /daily-roster`.
+- **Shop payment:** When `resolveLnurlServerConfig` resolves, `createApp` uses `AppDeps.shopPayments` or builds one `ShopPayments` over an `InMemoryShopPaymentStore` on `posStore`, with `resolveShopPaymentConfig(env)` and an `OrchestraClient` when that resolves (`null` otherwise). It passes the service to `/pos`, `lnurlServerRoutes`, `/pay`, `/.well-known`, and mounts `debugShopProofsRoutes` at `/debug/shop-proofs`. Boot (`src/index.ts`) builds the service with `PostgresShopPaymentStore` when `DATABASE_URL` is set and shares it with `startPosPaidWorker`.
 - **Member data:** Optional `walletStore` (default `InMemoryWalletStore`) and `memberEventStore` (default `InMemoryMemberEventStore`); SQL boot injects `PostgresWalletStore` and `PostgresMemberEventStore`. Mounts `walletReportRoutes` (`POST /me/wallet/report`, with the message store, POS store, and LNURL server config when it resolves), `walletHeartRoutes` (`POST /me/wallet/hearts`, with the message store), and `memberEventRoutes` (`POST /me/events`) at `/`.
 - **Free in-app payments:** When `resolveLnurlServerConfig` resolves, `lnurlServer` is passed to `/auth`, `/me`, `/view`, `/members`, `/messages`, `/conversations`, `/funding`, `/habits`, `/trust`, `/invoices`, `/pay`, `/pos`, `GET /me/loans` (`myLoansRoutes`), `/debug/accounts`, the debug payment routes, and `/debug/dump`, so each resolves the member's receiving address. When `resolveFreePaymentsConfig` also resolves, `sparkInvoices` (`AppDeps.sparkInvoiceStore`, default `InMemorySparkInvoiceStore`) is passed to `/messages` and `/conversations`, and `/pay` gets `freePayments: true`, so `POST /pay/:username/invoice` returns a Spark invoice for an open till, or without a charge one for the posted amount; otherwise every invoice response has `sparkInvoice: null`.
 
@@ -2232,9 +2265,9 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 ## Function: lnurlServerFetch
 
 - **Purpose:** Keeps LNURL traffic for wallet-backed addresses inside the deployment. A request whose URL host equals the host of `PUBLIC_BASE_URL` (the LUD-16 document of `<username>@<host>` and its pay callback) is sent as a `GET` to the LNURL server through `callLnurlServer` (path segments and query kept, fixed `Host`, 15 s timeout) instead of over the public URL. Any other host goes to the wrapped fetch unchanged. A LUD-16 document request for a username without a verified wallet also goes to the wrapped fetch, like the public `GET /.well-known/lnurlp/:username`, which answers it with 404.
-- **Inputs:** `LnurlServerConfig` or `undefined`, the fetch to wrap, and a username lookup (`getAccountByUsername`).
+- **Inputs:** `LnurlServerConfig` or `undefined`, the fetch to wrap, a username lookup (`getAccountByUsername`), and an optional `{ deadlineMs, now }`: each LNURL server call then gets the time left until `deadlineMs` instead of the 15 s default, and a call at or after it rejects without a request.
 - **Returns / side effects:** A `FetchFn`. With `undefined` config it is the wrapped fetch itself. A refused path segment or an unreachable LNURL server rejects like a failed `fetch`, which the LNURL helpers already map to `unreachable`.
-- **Used by:** The same routes as `receivingAddress` and the receipt ingest provider lookup.
+- **Used by:** The same routes as `receivingAddress`, the receipt ingest provider lookup, and the shop payment mint (with the deadline).
 
 ## Function: resolveFreePaymentsConfig
 
@@ -2364,8 +2397,8 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: runPosPaidTick
 
-- **Purpose:** One pass of the point-of-sale paid watcher. Lists the charges still watched (`listWatched` from `now − POS_PAID_WATCH_MS`, ten minutes: pending, or expired within that window; paid and cancelled charges are never listed). With `operatorUrl`, asks the Spark coordinator (`querySparkInvoices`, batches of up to 100) about every stored charge Spark invoice; `finalized` marks that charge paid. Then, for each charge still unpaid, calls the LNURL server's LUD-21 `GET /verify/<paymentHash>` (5 s) for each recorded BOLT11 hash in order; a 200 JSON body with `settled: true` marks the charge paid and its remaining hashes are skipped. Marking paid goes through `markPaid` with the current clock, which changes a row once only. No zap receipt, gift, or message is written.
-- **Inputs:** `PosPaidWorkerDeps` (`store`, `lnurlServer`, optional `operatorUrl`, `fetchImpl`, `now`).
+- **Purpose:** One pass of the point-of-sale paid watcher. Lists the charges still watched (`listWatched` from `now − POS_PAID_WATCH_MS`, ten minutes: pending, or expired within that window; paid and cancelled charges are never listed). With `operatorUrl`, asks the Spark coordinator (`querySparkInvoices`, batches of up to 100) about every stored charge Spark invoice; `finalized` marks that charge paid. Then, for each charge still unpaid, calls the LNURL server's LUD-21 `GET /verify/<paymentHash>` (5 s) for each recorded BOLT11 hash in order; a 200 JSON body with `settled: true` marks the charge paid and its remaining hashes are skipped. Marking paid goes through `markPaid` with the current clock, which changes a row once only; with `shop` it goes through `ShopPayments.chargePaid` instead, which marks the charge paid and settles its shop payment in one transaction under the account row lock (the payment's own hash → `paid`; the Spark invoice or another BOLT11 → an `open` payment ends with `charge_paid`). The LUD-21 read is `verifyLightningPayment`. No zap receipt, gift, or message is written.
+- **Inputs:** `PosPaidWorkerDeps` (`store`, `lnurlServer`, optional `operatorUrl`, `fetchImpl`, `now`, optional `shop`).
 - **Returns / side effects:** Resolves when every watched charge is checked. A failed Spark batch logs `pos.spark.query_failed` (`reason`, `grpcStatus`) and the next batch runs. Unreachable, non-200, or unreadable verify answers are counted and logged once per tick as `pos.verify.failed` (`failures`). `markPaid` logs `pos.paid` with the account id. Store failures propagate.
 - **Used by:** `startPosPaidWorker`.
 
@@ -2373,8 +2406,15 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** Run `runPosPaidTick` once immediately and then on the same 2 s cadence as the Spark invoice worker (`SPARK_WORKER_INTERVAL_MS`). A tick does not start while the previous one is still running.
 - **Inputs:** `PosPaidWorkerDeps` and an optional interval in milliseconds.
-- **Returns / side effects:** `{ stop }`, which clears the interval. A rejecting tick logs `pos.worker.tick.failed` with the error fields.
+- **Returns / side effects:** `{ stop }`, which clears the interval and stops the shop payment tick. With `deps.shop`, also starts `startShopPaymentWorker`, a separate tick, so a slow shop call never delays a till confirmation. A rejecting tick logs `pos.worker.tick.failed` with the error fields.
 - **Used by:** The entry point when `resolveLnurlServerConfig` resolves; `operatorUrl` is passed only when `resolveFreePaymentsConfig` resolves too, so Spark invoices are polled only when they are issued.
+
+## Function: verifyLightningPayment
+
+- **Purpose:** Ask the LNURL server whether one payment hash has settled (LUD-21 `GET /verify/<paymentHash>`), the one read the charge watch and the shop payment settlement share.
+- **Inputs:** LNURL server config, fetch, payment hash (64 lowercase hex), optional timeout (default `LNURL_PAY_REQUEST_TIMEOUT_MS`, 5 s).
+- **Returns / side effects:** `settled` when the 200 JSON body says `settled: true`, `open` for any other 200 JSON body, otherwise `failed`. No store writes.
+- **Used by:** `runPosPaidTick` and the settlement duty of `runShopPaymentTick`.
 
 ## Function: ingestZapReceipt
 
@@ -3311,6 +3351,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Hono `GET /nostr.json` (NIP-05, CORS `*`) and `GET /lnurlp/:username` (LUD-16 payRequest). A member receives only on their verified in-app wallet, so only the wallet-backed branch serves a pay request; there is no pass-through to another provider. While an unexpired pending point-of-sale charge exists, both `minSendable` and `maxSendable` become that amount in millisats. `GET /lnurlp/:username` is `Cache-Control: no-store`; `GET /nostr.json` keeps `Cache-Control: public, max-age=60`. When `lnurlServer` is set and the account has a verified wallet key, a wallet-backed branch uses `callLnurlServer` and `walletPayRequest` to serve the pay request.
 - **Inputs:** auth store, env, optional fetchImpl (default `globalThis.fetch`; used for the LNURL server), optional posStore (default empty in-memory store), optional now (default `Date.now`). Optional `lnurlServer` (`LnurlServerConfig`, omitted when the feature is off) enables the wallet-backed branch.
 - **Returns / side effects:** Hono app mounted at `/.well-known`. LNURL-pay 404 when the username is invalid or unknown, the account has no verified wallet, or `lnurlServer` is omitted; 502 when the store throws. A wallet-backed upstream 404 returns 404, an over-limit request returns 429, and an unreachable LNURL server or invalid document returns 503.
+- **Shop payment:** With optional `shopPayments`, the wallet-backed branch hands the resolved pay request's `metadata` and the query (`timeout`, `method`, `asset`, repeated `quote`/`method`/`asset`) to `ShopPayments.payLink`: a full response (the OpenCryptoPay pay request, the simplified-flow detail, or the 404 `noPendingPaymentBody`) is returned as is; otherwise today's pay request is returned, pinned to the charge amount when `payLink` says so. Without it the pin comes from `currentPending`. Every error body on `GET /lnurlp/:username` is `shopErrorBody`.
 - **Used by:** `createApp`.
 
 ## Function: lnurlServerRoutes
@@ -3318,6 +3359,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Forwarded LNURL routes mounted at `/` only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve: `POST /lnurlpay/:pubkey` (register; marks verified on upstream 2xx; body forwarded as parsed JSON re-serialised; `body.username` must consist only of printable ASCII characters, otherwise the gate returns 404 and the LNURL server is not contacted; another key that equals `username` after NFKC normalisation and lower-casing (for example `Username`) fails the gate; 409 when upstream accepted but the account is not verified on that key afterwards), `POST /lnurlpay/:pubkey/recover` (raw body), `GET /lnurlpay/:pubkey/metadata`, `GET /lnurlp/:username/invoice`, `GET /verify/:paymentHash` (LUD-21). Each route has an `IpRateLimiter`. A `HEAD` request is answered 404 and the LNURL server is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits. Store gates refuse with 404 before contacting upstream (except verify). Path segments are only `A-Z a-z 0-9 . _ ~ -`, never `.` or `..`; a refused segment is 404 without an unreachable log. Registration acceptance is the proof of the key; only an account's own wallet can take that account's username. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted.
 - **Inputs:** `LnurlServerRouteDeps` (`auth`, `config`, `fetchImpl`, `now`, `posStore`). On `GET /lnurlp/:username/invoice` the account's open point-of-sale charge is read before the upstream call; after an upstream 2xx, a `pr` that decodes to exactly that charge's millisat amount is recorded against it with the pre-mint issue time (`recordInvoice`), so an invoice never lands on a charge opened during the mint. A store failure logs `pos.invoice.record_failed` and the invoice is still returned unchanged.
 - **Returns / side effects:** Hono app. Over limit → 429; refused segment → 404; unreachable, store throw, or an unexpected upstream status → 503 `{ error: 'Lightning address service is unavailable' }` (registration: any status outside 2xx and 4xx, for example 5xx; recover / metadata / invoice / verify: any status other than 2xx and 404, so other 4xx and 5xx). Upstream 2xx passed through with its status, body and only the `content-type` / `cache-control` headers (a 204 stays a 204); upstream 404 → 404 (registration passes 4xx body/status through without verifying). Registration that is not confirmed on the account → 409 `{ error: 'Wallet registration could not be confirmed' }`. Logs `account.wallet.verified`, `account.wallet.unconfirmed`, `lnurl_server.failed`, `lnurl_server.unreachable` without query/body/signature fields.
+- **Shop payment:** With optional `shopPayments`, also registers, after the invoice forward, `GET /lnurlp/cb/:username` (`ShopPayments.callback`), `GET /lnurlp/tx/:username` (`handleShopProof`), and `GET /lnurlp/wait/:payment` (`ShopPayments.wait`, hold limit `waitTimeoutMs`, default `WAIT_SATS_TIMEOUT_MS`), each with its own 120/min `IpRateLimiter`. The callback and proof gate on a normalised username that is not `invoice` with a verified wallet (404 `Not found`); the callback answers 503 and the wait route 429 `Too many requests` over the limit; the proof route hands the over-limit flag to `handleShopProof`. A `HEAD` request is 404. All bodies are `shopResponse` / `shopError`.
 - **Used by:** `createApp` when the LNURL server config resolves.
 
 ## Function: lnurlRoutes
@@ -3353,6 +3395,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Hono sub-app for the public pay link: `GET /:username` (name, username, minSats, maxSats, and charge) and `POST /:username/invoice` (one BOLT11 via `requestGiftInvoice`; rejects any other amount while a charge is open). `charge` is `null`, or `{ amountSats, expiresAt }` when an unexpired pending point-of-sale charge exists; then both sat bounds are that amount. Mounted at `/pay`. No auth and no extra CORS headers.
 - **Inputs:** `{ auth: AuthStore, fetchImpl: FetchFn, posStore: PosStore, now: () => number, lnurlServer?, freePayments?, randomBytes? }`. The first four are required; there is no default store and no default clock inside `payRoutes`. `createApp` passes the same `posStore` and `now` already used by `/.well-known` and `/pos`, the shared LNURL-pay fetch as `fetchImpl`, and `freePayments: true` when free in-app payments are on (the same condition that issues Spark invoices for gifts). `randomBytes` defaults to `crypto.getRandomValues`.
 - **Returns / side effects:** Hono app. The invoice response is `{ pr, amountSats, sparkInvoice }`. While a charge is open, the minted BOLT11's payment hash is recorded against it with the issue time taken before the mint, and with `freePayments` the charge's Spark invoice (`encodeSparkInvoice` to the shop's verified wallet key, the charge amount, memo `pos:<chargeId>`, id `uuidV7`) is issued once and returned again on later calls, and `comment` is ignored. Without an open charge and with `freePayments`, a Spark invoice for exactly the posted amount to the member's verified wallet key (id `uuidV7`) is minted after `pr` and not stored; its memo is the trimmed `comment` cut to the member's `commentAllowed` characters (missing is 0) and then to 120 UTF-8 bytes on a character boundary, and a blank, non-string, or not-allowed comment leaves the memo out. Without `freePayments` `sparkInvoice` is `null`. Logs `pay.unknown`, `pay.unreachable`, `pay.failed`, `pay.invoice_failed`, `pay.invoice`, `pos.invoice.record_failed`, and `pos.spark_invoice.issue_failed` (a store failure never fails the BOLT11 response). Resolves the member with `receivingAddress`: a verified wallet (with `lnurlServer`) is resolved and invoiced through the LNURL server internally via `lnurlServerFetch`, never over the public URL; a member without a verified wallet is not found.
+- **Shop payment:** `POST /:username/payment` opens a shop payment for a payer's amount: same lookup (404 / 502), body `{ amountSats }` (400 `Enter a whole number of sats` unless an integer ≥ 1), 409 `{ error: 'A payment is already open', code: 'payment_open' }` while a charge is pending, the range check (400), then `ShopPayments.offersStablecoins` (503 `stablecoin_unavailable`) and `createForPayer`: 200 `{ payment, expiresAt }`, 409 `payment_open`, 502 `Lightning Address could not be resolved` on a failed mint (logs `pay.invoice_failed`), or 503 `{ error: 'Stablecoin payment is unavailable', code: 'stablecoin_unavailable' }`. Without optional `shopPayments` the lookup already answers 404.
 - **Used by:** `createApp`.
 
 ## Function: writeForumVideo
@@ -4141,3 +4184,524 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 - **Inputs:** One string: a wallet detail field, a payment id, a decoded event path, or an event prop value.
 - **Returns / side effects:** `true` when anything visible or encoded looks like secret material. Pure; never logs. A raw 32-byte value is not screened by shape (it looks like the hashes, ids and NIP-57 zap requests that are collected).
 - **Used by:** `parseWalletReport` (payment id and detail fields) and `parseMemberEventBatch` (path and prop strings).
+
+## Function: normalizeUuid
+
+- **Purpose:** Shape check for ids from `crypto.randomUUID()` (`src/lib/uuid.ts`), shared by stores and routes that must not hand a malformed id to a Postgres `uuid` cast. `UUID_PATTERN` (eight-four-four-four-twelve hexadecimal characters, any letter case) moved here from `src/lib/pos-store.ts`.
+- **Inputs:** A candidate id, for example a path or query parameter.
+- **Returns / side effects:** The lowercase id when it has the UUID shape, otherwise `null`. No I/O.
+- **Used by:** `GET /lnurlp/wait/:payment`, `POST /debug/shop-proofs/:id/retry`, `handleShopProof` (the `quote` value), `retryStuckProof`; `UUID_PATTERN` by `PostgresPosStore` and `PostgresShopPaymentStore`.
+
+## Function: shopPairOrder
+
+- **Purpose:** Request order of the shop payment method table (`SHOP_METHODS`: `Ethereum` 1, `Arbitrum` 42161, `Optimism` 10, `Polygon` 137, `Base` 8453, `BinanceSmartChain` 56; USDT and USDC contracts in lowercase; 6 decimals, 18 on `BinanceSmartChain`). USDT on `Ethereum`, `Arbitrum`, and `Polygon` come first, because Tether Wallet 1.11.0 pays those, then the remaining pairs in table order, USDT before USDC.
+- **Inputs:** None.
+- **Returns / side effects:** Every `{ method, asset }` pair of the table, in that order. No I/O.
+- **Used by:** `candidatePairs`.
+
+## Function: shopMethodByName
+
+- **Purpose:** Find the method table row of an OpenCryptoPay method name, matched without regard to case, as DFX matches requests.
+- **Inputs:** Method name from a request.
+- **Returns / side effects:** The `ShopMethod` row, or `undefined`. No I/O.
+- **Used by:** `handleShopProof` and the lookup duty of the shop payment watcher.
+
+## Function: candidatePairs
+
+- **Purpose:** Select the pairs a quote may request: in the table, named by Orchestra's route list (`chain` equals the row's `sourceChain`, `asset` the asset) with `exactOutTo` admitting `lightning:BTC`, the table contract and decimals, and an RPC endpoint for the chain. A route-list pair whose contract or decimals differ from the table is skipped and logs `shop.route.mismatch` (`method`, `asset`).
+- **Inputs:** Orchestra route assets and the configured RPC endpoints by chain id.
+- **Returns / side effects:** Candidate pairs in `shopPairOrder` order. Logs only.
+- **Used by:** The creation procedure and the quote replacement in `ShopPayments`.
+
+## Function: decimalAmount
+
+- **Purpose:** Write `units / 10^decimals` as a plain decimal string built from integers: no exponent, no trailing zero after the point, and no point for a whole number.
+- **Inputs:** A non-negative `bigint` amount in base units and the decimal places.
+- **Returns / side effects:** For example `0.00001`, `1.5`, or `12`. No I/O.
+- **Used by:** `btcAmount` and `transferAmountsFor` (stablecoin `amount` from `amountIn` and the token decimals).
+
+## Function: btcAmount
+
+- **Purpose:** Bitcoin amount of a whole sat count (`sats / 100000000`) as a plain decimal string.
+- **Inputs:** Whole sats.
+- **Returns / side effects:** `decimalAmount(BigInt(sats), 8)`, for example `0.00001`. No I/O.
+- **Used by:** `lightningTransferAmount` and `shopPayRequest` (`requestedAmount.amount`).
+
+## Function: PlainJsonNumber
+
+- **Purpose:** Marker class for a JSON number that must be written in plain notation, never `1e-8`, which `JSON.stringify` would write for a small number.
+- **Inputs:** Constructor `text`: the digits in plain notation, for example `0.00000001`.
+- **Returns / side effects:** An object with the read-only `text`. `shopJson` replaces it with the bare digits.
+- **Used by:** `shopPayRequest` for `requestedAmount.amount`.
+
+## Function: shopJson
+
+- **Purpose:** Serialise a shop response body. Every `PlainJsonNumber` becomes a JSON number written as its plain digits; everything else is `JSON.stringify` output.
+- **Inputs:** Any JSON-serialisable body.
+- **Returns / side effects:** JSON text. No I/O.
+- **Used by:** `shopResponse`.
+
+## Function: shopResponse
+
+- **Purpose:** JSON response of the pay link's shop answers and the LNURL shop routes, with the shop headers `SHOP_LNURL_HEADERS`: `Access-Control-Allow-Origin: *`, `Access-Control-Allow-Methods: GET, OPTIONS`, `Cache-Control: no-store`, plus `Content-Type: application/json`.
+- **Inputs:** Body and HTTP status.
+- **Returns / side effects:** A `Response` whose body is `shopJson(body)`.
+- **Used by:** `ShopPayments` (pay link, callback), `shopError`, `proofResponse`, `GET /lnurlp/wait/:payment`.
+
+## Function: shopErrorBody
+
+- **Purpose:** The one error body of the callback, proof, and wait routes and of every pay-link error, readable by LUD-06 wallets (`status`, `reason`), DFX-built wallets (`statusCode`, `message`), Tether Wallet (`message`), and this repository's clients (`error`).
+- **Inputs:** HTTP status and the error text.
+- **Returns / side effects:** `{ statusCode, message: text, error: text, status: 'ERROR', reason: text }`. No I/O.
+- **Used by:** `shopError` and `wellKnownRoutes` (`GET /lnurlp/:username` errors).
+
+## Function: shopError
+
+- **Purpose:** Error response with the shared shop error body and the shop headers.
+- **Inputs:** HTTP status and the error text.
+- **Returns / side effects:** `shopResponse(shopErrorBody(status, text), status)`.
+- **Used by:** `ShopPayments.callback`, `handleShopProof`, `proofResponse`, and the callback, proof, and wait routes in `lnurlServerRoutes`.
+
+## Function: noPendingPaymentBody
+
+- **Purpose:** The OpenCryptoPay standard's 404 body for "no pending payment". Tether Wallet reads a 404 as "nothing is waiting" only when `standard` is `OpenCryptoPay` or `possibleStandards` contains it.
+- **Inputs:** Pay-link username and shop name.
+- **Returns / side effects:** `{ id, displayName, standard: 'OpenCryptoPay', possibleStandards: ['OpenCryptoPay'], displayQr: false, recipient: { name }, statusCode: 404, message: 'No pending payment found', error: 'Not Found', status: 'ERROR', reason: 'No pending payment found' }`.
+- **Used by:** `ShopPayments.payLink` (`timeout` with nothing waiting, `method` without an open amount).
+
+## Function: isExcludedShopUsername
+
+- **Purpose:** Usernames that never get stablecoin rows: `invoice` collides with the invoice forward `GET /lnurlp/:username/invoice`, `cb` with Tether Wallet's `cb` → `tx` path rewrite, and a final `.` is cut off a hint URL by Tether Wallet.
+- **Inputs:** Stored username.
+- **Returns / side effects:** `true` for `invoice`, `cb`, or a name ending in `.`. No I/O.
+- **Used by:** `ShopPayments.offersStablecoins`.
+
+## Function: lightningTransferAmount
+
+- **Purpose:** The Lightning entry of a quote's `transferAmounts`.
+- **Inputs:** Payment sats.
+- **Returns / side effects:** `{ method: 'Lightning', minFee: 0, assets: [{ asset: 'BTC', amount: btcAmount(sats) }], available: true }`.
+- **Used by:** `transferAmountsFor` and the first and Lightning-only quote rows in `ShopPayments`.
+
+## Function: transferAmountsFor
+
+- **Purpose:** Build the `transferAmounts` array a quote serves and stores (`shop_quote.transfer_amounts`): Lightning first, then each offered method in method-table order, with one asset per offer, USDT before USDC.
+- **Inputs:** Payment sats and the offers stored on the quote.
+- **Returns / side effects:** The array. A stablecoin entry's `minFee` is the first offer's `min_fee` in wei as a number; each `amount` is `decimalAmount(amountIn, decimals)`; `available` is true. No I/O.
+- **Used by:** `ShopPayments` when it inserts a quote.
+
+## Function: quoteExpiration
+
+- **Purpose:** Compute `quote.expiration`: the earliest of `window_ends_at` and every offer's `expiresAt` minus the 30 s funding margin (`SHOP_FUNDING_MARGIN_MS`); a quote without offers ends at `window_ends_at`.
+- **Inputs:** Window end and the quote's offers.
+- **Returns / side effects:** The expiry `Date`. No I/O.
+- **Used by:** `ShopPayments` when it inserts a quote.
+
+## Function: offerUri
+
+- **Purpose:** The EIP-681 ERC-20 transfer URI of an offer's detail. `BinanceSmartChain` also uses `ethereum:` with chain id 56, as the standard states.
+- **Inputs:** A stored offer.
+- **Returns / side effects:** `ethereum:<token>@<chainId>/transfer?address=<deposit>&uint256=<amountIn>` with the lowercase contract and deposit address and decimal values.
+- **Used by:** `offerDetail`.
+
+## Function: proofUrl
+
+- **Purpose:** The proof URL of a username, named in the detail's hint so that Tether Wallet finds it without the `cb` rewrite.
+- **Inputs:** `PUBLIC_BASE_URL` without a trailing slash and the username.
+- **Returns / side effects:** `<PUBLIC_BASE_URL>/lnurlp/tx/<username>`. No I/O.
+- **Used by:** `offerDetail`.
+
+## Function: offerDetail
+
+- **Purpose:** The stablecoin detail of one offer, the four fields the standard and DFX return for an EVM chain.
+- **Inputs:** Offer, its quote, `PUBLIC_BASE_URL`, and the username.
+- **Returns / side effects:** `{ expiryDate: <quote expiry>, blockchain: <method>, uri: offerUri(offer), hint }`, where the hint reads `Pay this URI. Then send the transaction hash as tx, or the signed raw transaction as hex, with quote and method, to <proof URL>` with no punctuation after the URL.
+- **Used by:** `ShopPayments.callback`.
+
+## Function: shopPayRequest
+
+- **Purpose:** The OpenCryptoPay pay request of an open amount; the contract's table is the complete body (no `commentAllowed`, `allowsNostr`, `nostrPubkey`, or `payerData`).
+- **Inputs:** `ShopPayRequestInput`: username, shop name, today's metadata, `PUBLIC_BASE_URL`, the open payment, and its current quote.
+- **Returns / side effects:** `{ id, tag: 'payRequest', callback: <base>/lnurlp/cb/<username>, minSendable, maxSendable (both sats × 1000), metadata, displayName, standard: 'OpenCryptoPay', possibleStandards, displayQr: false, recipient: { name }, quote: { id, expiration, payment }, requestedAmount: { asset: 'BTC', amount: PlainJsonNumber }, transferAmounts }`. Serialise it with `shopJson`.
+- **Used by:** `ShopPayments.payLink`.
+
+## Function: shopName
+
+- **Purpose:** Shop display name, the same rule as `GET /pay/:username`.
+- **Inputs:** The account (its `name`) and its username.
+- **Returns / side effects:** The trimmed account name, or the username when the name is blank or missing.
+- **Used by:** `ShopPayments.payLink` (`displayName`, `recipient.name`, the 404 body).
+
+## Function: checkOffer
+
+- **Purpose:** Apply the contract's offer checks to one committed Orchestra quote, in this order: `target` (`targetAmountOut` equals the sats), `amount` (`amountIn` a positive integer string), `bounds` (`amountIn` within `requiredAmountIn` and `maxAcceptedAmountIn` when present), `chain` (calldata present and `transaction.chainId` equals the table), `token` (`transaction.to` equals the table contract, lowercase), `value` (zero), `data` (exactly `transfer(depositAddress, amountIn)`, 68 bytes), `deposit_shared` (deposit address already used in the batch), `expiry` (`expiresAt` minus 30 s at least 45 s ahead), `bolt11_margin` (BOLT11 at least 600 s after `expiresAt`), `price` (with a spot under 10 minutes old, `amountIn` in USD at most 5 % above the sats' value).
+- **Inputs:** `OfferCheckInput`: pair, Orchestra quote, sats, BOLT11 expiry, batch deposit addresses, USD per BTC or `null`, clock.
+- **Returns / side effects:** `null` when every check holds, otherwise the name of the failed check. No I/O.
+- **Used by:** `ShopPayments` (creation and replacement), which logs `shop.offer.rejected` with the check name.
+
+## Function: proofWithinBounds
+
+- **Purpose:** Whether a proof's transferred value lies within its offer's bounds: `requiredAmountIn` (or `amountIn`) up to `maxAcceptedAmountIn` (or `amountIn`). A dust transfer to a public deposit address therefore cannot take acceptance away from the payer.
+- **Inputs:** Stored proof and its offer.
+- **Returns / side effects:** `false` while the value is unknown; otherwise the bound check. No I/O.
+- **Used by:** `evaluateProof`.
+
+## Function: evaluateProof
+
+- **Purpose:** Re-evaluate one proof after its order status, value, or payment changed (the contract's proof state table), inside a transaction whose caller locked the payment's account. A final order status maps to a result: `completed` → `accepted` (a previously accepted proof of the payment moves to `superseded` first), `refunded` → `refunded`, `failed` and `fallback_delivered` → `failed` (`shop.alert.order_failed`), `expired` → `refused` with `expired_order`. A progressing status (`ORCHESTRA_PROGRESSING_STATUSES`) on an unresolved, `refused`, or `stuck` proof makes it `late` after the payment closed (`shop.alert.late_deposit`), leaves it held while the payment is `paid` or the value is unknown or out of bounds, and otherwise makes it `accepted`, or `superseded` when another proof of the payment is accepted.
+- **Inputs:** `ShopTx`, proof id, clock.
+- **Returns / side effects:** The proof as it is now, or `null` when it does not exist. Acceptance moves the payment from `open` or `ended` (not closed) to `accepted` (`shop.payment.accepted`). An accepted proof that becomes `refunded`, `failed`, or `refused` lets another eligible proof take its place, else ends the `accepted` payment with `orchestra_refunded`, `orchestra_failed`, or `proof_refused`. Logs `shop.proof.<result>`.
+- **Used by:** `recordProofOrder`, the proof module's fill and merge steps, and itself (another proof taking the place).
+
+## Function: refuseProof
+
+- **Purpose:** Record a proof `refused`, because its `hex` transaction was rejected or reverted (`hex_rejected`) or Orchestra refused the submit with `xchain_deposit_mismatch` (`mismatch`). Moves only from the results the States table allows for `refused` (unresolved, `accepted`, `superseded`, `late`, or `stuck`); any other result leaves the proof unchanged. An `accepted` proof that is refused lets another eligible proof of the payment take its place, otherwise the `accepted` payment ends with `proof_refused`.
+- **Inputs:** `ShopTx` (the payment's account locked), proof id, refusal (`mismatch` or `hex_rejected`), clock.
+- **Returns / side effects:** The refused proof (`refusal`, `resolved_at` set, next submit cleared), the unchanged proof when its result does not allow the move, or `null` when it does not exist. Logs `shop.proof.refused` with the refusal.
+- **Used by:** `refuseHexProof` and `submitProofAttempt` in `src/lib/shop-proof.ts`.
+
+## Function: recordProofOrder
+
+- **Purpose:** Store an Orchestra order on a proof (`provider_order`, `order_status`, the submits stop) and re-evaluate the proof with `evaluateProof`. A proof without an order also gets `order_found_at` and its first status read 10 s ahead; a final status (`completed`, `refunded`, `failed`, `fallback_delivered`, `expired`) clears `next_status_at`. A status that is neither final, progressing, `refunding`, nor `unfulfilled` logs `shop.orchestra.error` with `reason: unknown_status` once per order per process.
+- **Inputs:** `ShopTx` (account locked), proof id, `{ orderId, status }`, clock.
+- **Returns / side effects:** The proof after `evaluateProof`, `null` when it does not exist, or `'conflict'` when another row already holds that order id (nothing changed; the caller merges).
+- **Used by:** `applyProofOrder`.
+
+## Function: dfxPaymentStatus
+
+- **Purpose:** Map a shop payment to DFX's `PaymentLinkPaymentStatus`. As at DFX, every status except `Pending` is final.
+- **Inputs:** A stored payment.
+- **Returns / side effects:** `Completed` when `paid`; for an `ended` payment with `closed_at` set, `Cancelled` when `end_reason` is `superseded`, `replaced`, or `cancelled`, otherwise `Expired`; else `Pending`.
+- **Used by:** `waitBody` and `ShopPayments.wait`.
+
+## Function: waitBody
+
+- **Purpose:** Body of `GET /lnurlp/wait/:payment`.
+- **Inputs:** A stored payment.
+- **Returns / side effects:** `{ status: dfxPaymentStatus(payment), paymentStatus: payment.status, invoiceExpiresAt: <BOLT11 expiry, ISO> }`. No I/O.
+- **Used by:** `ShopPayments.wait`.
+
+## Function: ShopPayments
+
+- **Purpose:** Shop payment service in USDT and USDC, one instance per process, built when the LNURL server resolves (`createApp`, `src/index.ts`). Holds the per-account in-process creation locks, the two creation counters (`IpRateLimiter`: 60 per minute for the api under one fixed key, asked first, then 10 per minute per account), the 60 s no-pair waits, the cached route list (reused for Orchestra's `validForMs`, fetched with a 1 s timeout), and the count of waiting pay-link requests (at most 50). Every row change goes through `ShopPaymentStore.transaction`; every external call (LNURL server, Orchestra, EVM RPC) runs outside a transaction.
+- **Inputs:** `ShopPaymentsDeps`: `store`, `auth`, `lnurlServer`, `config` (`resolveShopPaymentConfig` or `null`), `orchestra` (`OrchestraClient` or `null`), optional `fxSpot` (no price check without it), `fetchImpl`, `now`, optional `newId` (default `crypto.randomUUID`) and `sleep`.
+- **Creation:** `createForCharge(account, username, charge)` and `createForPayer(account, username, amountSats)` run the procedure under the account lock: end a lapsed `open` payment (`window`); a charge with a shop payment returns it, a charge no longer pending is `skipped`, a payer with a pending charge is `pending_charge`; `offersStablecoins`, the no-pair wait, and the counters give `unavailable`; the route list (a failed fetch → `unavailable` without the wait) and `candidatePairs` (none → `unavailable` and the 60 s wait); one mint with `requestGiftInvoice` and a 4 s deadline (`mint_failed` on failure, another amount, or a payment hash a shop payment already holds, `shop.alert.duplicate_invoice`); for a charge `recordChargeInvoice` (a hash of another charge → `mint_failed`, no row → `skipped`); gas prices and Orchestra quotes in parallel within 3 s for as many pairs as `quoteBudgetLeft()` allows, kept by `checkOffer` and a readable gas price (`minFee` = `recommendedMinFee`); none → `unavailable` and the 60 s wait; then one transaction under the account row lock (and the charge row lock) that ends the account's `open` payment (`window`, `superseded`, or `replaced`), inserts the payment (window = charge `expiresAt`, or five minutes for a payer), its first quote, and its offers (`ON CONFLICT (deposit_address)` drops an offer and logs `shop.alert.shared_deposit_address`), and resolves a lost insert on the payment hash. `startForCharge` runs the charge creation in the background (`shop.creation.failed` on a throw). Logs `shop.payment.opened`, `shop.mint.failed`.
+- **Pay link and quotes:** `payLink(account, username, metadata, query)` applies the `timeout` wait (digits only, at most 10 s, every `WAIT_SATS_POLL_MS`), starts or joins the creation for a pending charge without a shop payment and waits until 8 s after the request, and answers `{ kind: 'response' }` (pay request, simplified-flow detail, or 404 `noPendingPaymentBody`) or `{ kind: 'today', pinSats }`. `currentQuote` replaces a quote under the creation lock (stablecoin entry, under 45 s left, at least 45 s of window left, fewer than 4 replacements; route list and quotes within 4 s; one conditional `replacements` increment, then the quote, Lightning-only when no offer passes) and inserts a Lightning-only quote row for an expired quote. `callback` serves `GET /lnurlp/cb/:username` (amount path and detail table; a `quote` that is not a UUID is 404 `Quote expired`; first detail sets `detail_issued_at` and, when unset, `next_history_at` 10 s ahead). `wait` serves `GET /lnurlp/wait/:payment`. `offersStablecoins(username)` is true when config and Orchestra are set and the username is not excluded.
+- **Till and settlement:** `createCharge` (`POST /pos`; `false` when a pending charge exists), `cancelCharge` (`DELETE /pos`), `chargePaid` (charge watch: the payment's own hash → `markPaymentPaid`; Spark or another BOLT11 → an `open` payment ends `charge_paid`), and `shopPaymentOfCharge` (`GET /pos`) run under the account row lock. `applySettlement(paymentId, settled, nowMs)` applies one settlement read: settled → `paid` and `markPaid` of the charge; unpaid at or after the final read (10 minutes after the BOLT11 expiry) → closed (`accepted` ends `expired_unpaid` with `shop.alert.accepted_unpaid`, `open` ends `window`, `shop.payment.closed`); otherwise the next read in 5 s during the first 15 minutes, then 30 s, never past the final read. Getters `store` and `deps` and `newId()` serve the proof and watcher modules.
+- **Used by:** `createApp`, `src/index.ts`, `wellKnownRoutes`, `lnurlServerRoutes`, `payRoutes`, `posRoutes`, `debugShopProofsRoutes`, `runPosPaidTick`, `startShopPaymentWorker`, and `src/lib/shop-proof.ts`.
+
+## Function: endPayment
+
+- **Purpose:** End an `open` shop payment with a reason, as one conditional update on `status = 'open'`.
+- **Inputs:** `ShopTx`, the payment, the end reason (`window`, `superseded`, `replaced`, `cancelled`, `charge_paid`, …), clock.
+- **Returns / side effects:** The ended row (`ended_at`, `end_reason` set), or `null` when it was no longer `open`. Logs `shop.payment.ended` with the reason when it changed the row.
+- **Used by:** `ShopPayments` (creation, `createCharge`, `cancelCharge`, `chargePaid`).
+
+## Function: markPaymentPaid
+
+- **Purpose:** Move a shop payment to `paid` because its BOLT11 settled: one conditional update from `open`, `ended`, or `accepted` on a payment that is not closed, clearing `ended_at`, `end_reason`, and `next_settle_at`.
+- **Inputs:** `ShopTx` (account locked), the payment, clock, and `settleCharge` (`false` when the charge watch already marked the charge paid in this transaction).
+- **Returns / side effects:** Logs `shop.payment.paid`. With `settleCharge` and a charge: locks the charge; a `cancelled` charge logs `shop.alert.cancelled_settled` and stays cancelled; an already `paid` charge logs `shop.alert.double_settled`; otherwise `markChargePaid`.
+- **Used by:** `ShopPayments.chargePaid` and `ShopPayments.applySettlement`.
+
+## Function: migrateShopPaymentSchema
+
+- **Purpose:** Apply the idempotent `SHOP_PAYMENT_SCHEMA_SQL` in order: `shop_payment` (one row per shop BOLT11, with the status, end-reason, and timestamp checks of the contract), its partial unique index `shop_payment_account_open_idx` (one `open` payment per account) and the history and settle watch indexes; `shop_quote` with `transfer_amounts jsonb` and its `(payment_id, created_at)` index; `shop_offer` with `numeric(78, 0)` amounts, `UNIQUE (quote_id, method, asset)` and the unique `shop_offer_deposit_idx`; `shop_proof` with its source/result checks, the unique `shop_proof_log_idx`, `shop_proof_unlogged_idx`, `shop_proof_order_idx`, and `shop_proof_payment_accepted_idx`, plus the user-operation and watcher indexes; and `shop_proof_lookup` with `UNIQUE (chain_id, hash, quote_id)` and its due index. Every statement is `CREATE … IF NOT EXISTS`; `docs/schema/shop_payment.sql` mirrors the DDL byte for byte apart from its header comment.
+- **Inputs:** A `SqlClient`. `account` and `pos_charge` must exist first (`migrateAuthSchema`, `migratePosSchema`).
+- **Returns / side effects:** Resolves when every statement has run. Runs before `migrateDbChangeSchema`, so `trg_db_change` covers the five new tables and every write lands in `db_change`. No column holds a secret.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set, and the Postgres driver test.
+
+## Function: InMemoryShopPaymentStore
+
+- **Purpose:** Process-local `ShopPaymentStore` for unit tests and boots without `DATABASE_URL`. Always starts empty. `transaction` runs whole callbacks one at a time in call order (a promise chain), so locks are not needed and `lockAccount` is a no-op; a rejected callback restores all five shop tables to the snapshot taken before it ran and rethrows. Charge calls delegate to the given `PosStore`: `pendingCharge` → `currentPending`, `insertCharge` → `create` (its `A payment is already open` refusal becomes `false`, other failures propagate), `cancelPendingCharge` → `cancelPending`, `markChargePaid` → `markPaid`, `recordChargeInvoice` → `recordInvoice`, `chargeIdForInvoice` and `lockCharge` → `findChargeForPayment`, `deleteChargeInvoice` → `deleteInvoice`. Charge changes are not undone by a rollback.
+- **Inputs:** A `PosStore` (the boot's in-memory charge store).
+- **Unique rules:** Enforces the same unique indexes as the DDL: `insertPayment`, `insertProof`, and `insertLookup` answer `false` on a duplicate id, `payment_hash`, `pos_charge_id`, second `open` payment of an account, proof log / unlogged / order / accepted-per-payment index, or `(chain_id, hash, quote_id)`; `insertOffers` drops an offer whose deposit address is taken; `updateProof` answers `'conflict'` and changes nothing when the patch would hit a proof index. `insertQuote`, a duplicate `(quote_id, method, asset)` offer, and an `updatePayment` that would open a second payment of the account throw an error with code `23505`, as Postgres does.
+- **Returns / side effects:** Every row handed out or stored is a `structuredClone` copy (dates and `transferAmounts` included). Lists order as the Postgres store does: quotes, proofs, offers, and unsettled payments by `createdAt` then `id`; duty scans by their own next-try column then `id` (settlement puts `accepted`, then charge-backed payments first). Calling `transaction` inside a transaction never resolves.
+- **Used by:** `openBootStores` without `DATABASE_URL`, `createApp` defaults, and unit tests.
+
+## Function: PostgresShopPaymentStore
+
+- **Purpose:** Durable `ShopPaymentStore` on the five shop tables. `transaction` is one `MergeDb.begin` (a reserved connection, `sql.begin` in Bun); every `ShopTx` call runs on that connection, and a rejected callback rolls the whole transaction back. Charge calls run through a `PostgresPosStore` bound to the same connection, so expire-due, `pos.create` / `pos.expired` / `pos.cancel` / `pos.paid` logging and the conditional statements are exactly those of the till store; `lockCharge` first takes `SELECT id FROM pos_charge … FOR UPDATE`.
+- **Inputs:** The boot's `SqlClient` (unused by the store; kept for boot symmetry) and the `MergeDb` transaction port.
+- **Locks and conflicts:** `lockAccount`, `lockCharge`, `lockPayment`, and `lockQuote` use `SELECT … FOR UPDATE`, held until the transaction ends. `insertPayment`, `insertProof`, and `insertLookup` are `INSERT … ON CONFLICT DO NOTHING RETURNING id` (`false` when nothing was inserted); `insertOffers` runs one `INSERT … ON CONFLICT (deposit_address) DO NOTHING` per offer and returns the inserted ones in input order. `updateProof` and `insertCharge` run under `SAVEPOINT shop_store_guard`: a unique violation (`isUniqueViolation`) rolls back to it and answers `'conflict'` / `false`, so a lost race never aborts the transaction; any other error propagates.
+- **Updates:** `updatePayment`, `updateProof`, and `updateLookup` are one `UPDATE … WHERE id = $1 AND <conditions> RETURNING …` that writes only the patch keys that are present (from a fixed key-to-column map; an explicit `null` writes `NULL`, an empty patch writes `id = id`). `statuses` and `results` bind one text-array literal (`= ANY($n::text[])`, with `result IS NULL OR …` when `null` is listed). `updateQuote` replaces `expires_at` and `transfer_amounts`; `endLapsedWindows` ends lapsed `open` payments in one statement.
+- **Returns / side effects:** `numeric(78, 0)` columns map to decimal strings, integer columns to numbers, `transfer_amounts` to the array (parsed jsonb or JSON text), timestamps to fresh `Date`s; instants are bound as ISO strings. A malformed UUID passed to a get, lock, find, list, or update method answers `null`, `[]`, `0`, or `false` without a query (`UUID_PATTERN`); an upper-case UUID is accepted. `offersOf` orders by `created_at, id` (the table has no insertion-sequence column). Every write lands in `db_change` through `trg_db_change`.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: OrchestraClient
+
+- **Purpose:** Client for the Orchestra calls of the shop stablecoin payment (`src/lib/orchestra.ts`): `routes` (`GET /v2/orchestration/routes`), `quote` (`POST /v1/orchestration/quote`, exact out to the payment's BOLT11), `submit` (`POST /v1/orchestration/submit` with `{ quoteId, txHash }` only), `history` (`GET /v1/orchestration/history?address=<BOLT11>&limit=200&offset=…`, one page per call), and `status` (`GET /v1/orchestration/status?id=<orderId>`). It also exports the budgets (`ORCHESTRA_QUOTES_PER_MINUTE` 240, `ORCHESTRA_SUBMITS_PER_MINUTE` 30, `ORCHESTRA_PROOF_SUBMITS_PER_MINUTE` 20, `ORCHESTRA_STATUS_READS_PER_MINUTE` 50) and the status sets `ORCHESTRA_FINAL_STATUSES` (`completed`, `refunded`, `failed`, `fallback_delivered`, `expired`) and `ORCHESTRA_PROGRESSING_STATUSES` (`processing`, `confirming`, `awaiting_approval`, `swapping`, `bridging`, `delivering`).
+- **Inputs:** `OrchestraClientDeps` (`baseUrl` = `ORCHESTRA_BASE_URL` origin, `apiKey` = `ORCHESTRA_API_KEY`, `fetchImpl`, `now`). Every call sends `Authorization: Bearer <apiKey>`, uses `redirect: 'error'`, and aborts after its timeout; `quote` and `submit` add `Content-Type: application/json` and `X-Idempotency-Key`. The quote body is `sourceChain`, `sourceAsset`, `destinationChain` `lightning`, `destinationAsset` `BTC`, `amount` (sats as an integer string), `amountMode` `exact_out`, `recipientAddress` (BOLT11), `tag`, `refundAddress`, and `includeCalldata` true, without `slippageBps`. `quote` takes an absolute `deadlineMs`; each attempt's timeout is the time left. `submit` takes the caller (`proof-first`, `proof-repeat`, or `watcher`).
+- **Returns / side effects:** `routes` → `{ ok, assets, validForMs }` (`exactOutToLightning` true for `all`, an array with `lightning:BTC`, or `{ except }` without it; contract addresses lowercase; ill-typed assets left out) or `{ ok: false }`. `quote` → the flat quote with lowercase `depositAddress`, `transaction.to`, and `transaction.data`, or `refused` / `unavailable` / `budget` / `paused`. `submit` → `order` (200 with `orderId`; `status` `''` when missing), `mismatch` (400 `xchain_deposit_mismatch`), `quote_expired` (409 `quote_expired`), `budget`, or `unresolved` for everything else; `unresolved` carries `retryable`, true for a transport error or timeout, any 5xx, HTTP 429, and HTTP 409 `idempotency_in_progress` (the same key may be sent again), false for a 2xx without `orderId` and every other answer. `history` → `{ orders, full }` (`full` when the page had 200 entries) or `budget` / `error`. `status` → the order, `order: null` for 404 `not_found`, or `budget` / `error`. Logs `shop.orchestra.error` (`endpoint`, `status`), `shop.orchestra.rate_limited`, `shop.orchestra.budget_exhausted`, and `shop.alert.orchestra_request` (`endpoint`, `status`, `code`); never the key, a URL, a body, or a BOLT11.
+- **Used by:** the shop payment creation, quote, and proof code and the shop watcher duties (orders, submits, order status).
+
+Retries follow Orchestra's key rule. A quote is retried once, with the same key and body, after a transport error or timeout, HTTP 429, HTTP 409 `idempotency_in_progress`, or any 5xx, and only while the deadline has not passed. Any other answer refuses the pair. `submit`, `history`, and `status` never retry; the caller decides the next attempt.
+
+Budgets are in-process sliding 60 s windows per endpoint group, and every attempt sent counts, retries included. Quotes have 240; `quoteBudgetLeft()` tells a creation or replacement how many quote calls are still allowed, and is 0 while quotes are paused. Status and history share 50. Submits have 30: proof requests together use at most 20, and the watcher may use whatever the window has left, so it always keeps at least 10. A first submit of a new proof goes before a repeat: a `proof-repeat` is sent only while fewer than 19 proof submits and fewer than 29 submits in all are in the window, so a first submit still finds a slot after it. Routes have no budget. A call its budget refuses is not sent and logs `shop.orchestra.budget_exhausted`.
+
+An HTTP 429 pauses its endpoint group until `Retry-After` (seconds) or else `X-RateLimit-Reset` (absolute epoch ms) and logs `shop.orchestra.rate_limited`; while paused, calls are not sent (`paused` for a quote, `budget` for submit, history, and status, `{ ok: false }` for routes). A 429 with neither usable header does not pause. HTTP 401 and 403, and a 400 other than `xchain_deposit_mismatch` on submit, also log `shop.alert.orchestra_request`, because they point at a key or request problem.
+
+## Function: evmGetTransactionReceipt
+
+- **Purpose:** Read an EVM transaction receipt with `eth_getTransactionReceipt` for the `tx` proof.
+- **Inputs:** JSON-RPC URL (secret), fetch implementation, transaction hash, timeout in milliseconds.
+- **Returns / side effects:** `{ ok: true, value }` with `transactionHash`, `status` (`0x1` / `0x0`, or `null` when absent) and the logs in lowercase, `value: null` when the node knows no receipt; `transport` or `rpc` on failure.
+- **Used by:** Shop stablecoin proof (`GET /lnurlp/tx/:username`) and its watcher.
+
+The call is one JSON-RPC 2.0 POST (`Content-Type: application/json`, `redirect: 'error'`, AbortSignal timeout). A thrown fetch, a non-2xx status, a body that is not JSON, a body with neither `result` nor `error`, and a result of the wrong shape are all `transport`; a JSON-RPC `error` object is `rpc` with its message. The URL may hold a provider key and is never logged or returned.
+
+## Function: evmGetUserOperationReceipt
+
+- **Purpose:** Read an ERC-4337 user operation receipt with `eth_getUserOperationReceipt` when no transaction receipt exists for the hash the wallet sent.
+- **Inputs:** JSON-RPC URL (secret), fetch implementation, user operation hash, timeout in milliseconds.
+- **Returns / side effects:** `success` (`null` when absent), the bundle hash from `receipt.transactionHash`, and the user operation's own top-level `logs`; `value: null` when unknown.
+- **Used by:** Shop stablecoin proof, step 1 of the verification of `tx`.
+
+A node that does not implement the bundler method answers with a JSON-RPC error, which is returned as `rpc` like any other error. The nested bundle `status` is not read, because a bundle can succeed while one of its user operations fails. Transport and error mapping are the same as for `evmGetTransactionReceipt`.
+
+## Function: evmGetTransactionByHash
+
+- **Purpose:** Check whether the node knows a transaction (`eth_getTransactionByHash`).
+- **Inputs:** JSON-RPC URL (secret), fetch implementation, transaction hash, timeout in milliseconds.
+- **Returns / side effects:** `true` when the result is an object, `false` when it is `null`, `transport` for any other result.
+- **Used by:** The `hex` proof after an `already known` or `nonce too low` broadcast error.
+
+Only presence is reported; the transaction fields are not parsed. Transport and error mapping are the same as for the other EVM JSON-RPC calls.
+
+## Function: evmGasPrice
+
+- **Purpose:** Read the node's gas price with `eth_gasPrice`.
+- **Inputs:** JSON-RPC URL (secret), fetch implementation, timeout in milliseconds.
+- **Returns / side effects:** The gas price in wei as a `bigint`; a result that is not a `0x` hex quantity is `transport`.
+- **Used by:** Quote creation (`minFee`) and the fee check of the `hex` proof, through `recommendedMinFee`.
+
+The params array is empty. Transport and error mapping are the same as for the other EVM JSON-RPC calls.
+
+## Function: evmSendRawTransaction
+
+- **Purpose:** Broadcast a signed transaction from a `hex` proof with `eth_sendRawTransaction`.
+- **Inputs:** JSON-RPC URL (secret), fetch implementation, signed bytes as hex without `0x`, timeout in milliseconds.
+- **Returns / side effects:** The transaction hash the node returns, lowercase; a result that is not a 32-byte hash is `transport`. The transaction is broadcast.
+- **Used by:** The `hex` proof route and the watcher's resubmission.
+
+The call sends `0x` plus the given hex as the single param. A JSON-RPC error is returned as `rpc` with its message, so the caller can tell `already known`, `nonce too low`, `insufficient funds`, `invalid`, and `intrinsic gas` apart as the shop stablecoin document requires.
+
+## Function: normalizeEvmAddress
+
+- **Purpose:** Accept an EVM address in any case.
+- **Inputs:** A string.
+- **Returns / side effects:** The lowercase address when the input is exactly `0x` plus 40 hexadecimal characters, otherwise `null`.
+- **Used by:** `erc20TransferData`, `decodeTransferLog`, and the shop payment configuration and offer checks.
+
+No whitespace is trimmed and no EIP-55 checksum is checked; a mixed-case address is accepted as is and lowercased.
+
+## Function: erc20TransferData
+
+- **Purpose:** Build the calldata of an ERC-20 `transfer(recipient, amount)`.
+- **Inputs:** Recipient address (any case) and the amount in base units.
+- **Returns / side effects:** 68 bytes as lowercase hex: `0xa9059cbb`, 12 zero bytes, the 20-byte recipient, and the 32-byte amount. Throws `RangeError` for a malformed recipient or an amount outside `0 … 2^256 − 1`.
+- **Used by:** Offer checks (Orchestra `transaction.data`) and the `hex` proof, which compares the signed transaction's data byte for byte.
+
+The output is deterministic, so two encodings of the same transfer compare equal as strings.
+
+## Function: parseErc20TransferData
+
+- **Purpose:** Read the recipient and amount from ERC-20 `transfer` calldata.
+- **Inputs:** Calldata hex with `0x`, any case.
+- **Returns / side effects:** `{ recipient, amount }` with a lowercase recipient, or `null` unless the data is exactly 68 bytes with selector `a9059cbb` and 12 zero padding bytes before the address.
+- **Used by:** Offer checks on the Orchestra quote transaction.
+
+It is the inverse of `erc20TransferData`. Data with extra bytes, another selector, or a non-zero padding byte is refused, as the offer check requires exactly 68 bytes.
+
+## Function: decodeTransferLog
+
+- **Purpose:** Decode an ERC-20 `Transfer` event log from a receipt.
+- **Inputs:** One `EvmLog`.
+- **Returns / side effects:** `{ token, from, to, value, logIndex }` in lowercase, or `null` unless topic 0 is `ERC20_TRANSFER_TOPIC`, there are exactly three topics whose address topics carry 12 zero bytes, and the data is one 32-byte word.
+- **Used by:** Step 4 of the verification of `tx`, which matches the token contract and the deposit address of an offer.
+
+The three-topic rule excludes ERC-721 `Transfer` logs, which index the token id as a fourth topic.
+
+## Function: decodeSignedEvmTransaction
+
+- **Purpose:** Decode the signed EVM transaction of a `hex` proof.
+- **Inputs:** Signed transaction bytes as hex without `0x`, any case.
+- **Returns / side effects:** `hash` (`0x` + Keccak-256 of the signed bytes), `type` (`legacy`, `eip2930`, `eip1559`), `chainId` (`null` for a legacy transaction without EIP-155), `to`, `value`, `data`, and the fee fields; `null` for anything else.
+- **Used by:** Verification of `hex` (step 1 and 2) before the api stores and broadcasts the transaction.
+
+Unsigned transactions, a zero `r` or `s`, EIP-4844 and EIP-7702 envelopes, malformed RLP, and encodings that do not re-encode to the same bytes (non-canonical integers, trailing bytes) give `null`, so the hash always belongs to exactly the decoded fields. The sender is not recovered; the node checks the signature on broadcast. A fee field that is absent in the encoding is `0n`; fields that do not belong to the type are `null`.
+
+## Function: recommendedMinFee
+
+- **Purpose:** Compute DFX's recommended gas price, the `minFee` of a stablecoin method.
+- **Inputs:** The `eth_gasPrice` result `g` in wei and the method's chain id.
+- **Returns / side effects:** `floor(g × 12 / 10)`; on chain 56 (BNB Smart Chain) `floor(floor(g × 12 / 10) × 20 / 12)`.
+- **Used by:** Quote creation (`transferAmounts[].minFee`) and the fee check of the `hex` proof.
+
+Integer arithmetic on `bigint` performs the floors exactly.
+
+## Function: hexFeeReaches
+
+- **Purpose:** Check that a signed transaction's fee reaches an offer's `minFee` the way DFX checks it.
+- **Inputs:** The decoded transaction, the offer's `minFee`, and `recommendedMinFee` of the current `eth_gasPrice`.
+- **Returns / side effects:** `true` when the effective fee is at least `minFee`.
+- **Used by:** Verification of `hex`, step 2.
+
+For a legacy or EIP-2930 transaction the effective fee is its gas price. For EIP-1559 it is the lower of `maxFeePerGas` and the current recommended gas price plus `maxPriorityFeePerGas`. A missing fee field counts as 0.
+
+## Function: proofResponse
+
+- **Purpose:** Turn a stored proof into the response the proof route sends, following the response table in the "Storing and submitting" section of `docs/shop-stablecoin-payment.md`.
+- **Inputs:** One `ShopProof` row.
+- **Returns / side effects:** `accepted` → **200** `{ "txId": <tx_hash> }`. `superseded` → **400** `Another transfer is paying this payment`. `late` → **400** `Invoice expired`. `refunded` → **400** `The transfer was refunded`. `failed` → **400** `The transfer was not completed`. `refused` → **400** `Transaction already used` when `refusal` is `tx_used`, otherwise `Payment was not accepted`. Unresolved, held, or `stuck` → **503** `Payment is being confirmed`. It writes nothing.
+- **Used by:** `handleShopProof`.
+
+The 400 and 503 bodies use the shared OpenCryptoPay error body (`shopError`), and the 200 uses `shopResponse`, so CORS and `Cache-Control: no-store` are always set.
+
+## Function: shopProofContext
+
+- **Purpose:** Read one quote with its payment and every offer of it in one store transaction.
+- **Inputs:** `ShopPayments` and a lowercase quote id.
+- **Returns / side effects:** `{ quote, payment, offers }`, or `null` when the quote does not exist. It is read-only.
+- **Used by:** `handleShopProof`, which also checks that the payment belongs to the username's account, and the lookups duty of `runShopPaymentTick`.
+
+The offers are listed in insertion order, so the method's offers are matched in the same order the quote served them.
+
+## Function: verifyTxProof
+
+- **Purpose:** Run the "Verification of `tx`" steps for one hash: read `eth_getTransactionReceipt`. When it returns null, read `eth_getUserOperationReceipt` with the same hash. Then select the ERC-20 `Transfer` log to an offer's deposit address.
+- **Inputs:** `ShopPayments`; the quote's offers; the method's table row; the requested asset or `null`; the RPC endpoint; the normalised hash; an absolute deadline; and the per-call limit.
+- **Returns / side effects:** `found` with the offer, the bundle or transaction hash, the log index, the transferred value, and the user-operation hash (only when the user-operation receipt was used). `not_found` when neither receipt exists, an RPC call failed, or the deadline passed before the user-operation read. `failed` when the transfer did not succeed (`status` other than `0x1`, or `success` other than `true`). `no_log` when no log reaches an offer of this method (and asset). `used` when every matching log is held by a proof of another quote. It writes nothing.
+- **Used by:** `handleShopProof` (3 s calls) and the lookups duty of `runShopPaymentTick` (5 s calls).
+
+A log whose value equals the offer's `amountIn` is preferred. Otherwise the first matching log is used, because only Orchestra can fill or refund a different amount.
+
+## Function: verifyHexProof
+
+- **Purpose:** Run step 2 of "Verification of `hex`" on a decoded signed transaction before anything is stored or broadcast.
+- **Inputs:** `ShopPayments`, the quote's offers, the method's table row, the requested asset or `null`, the RPC endpoint, the decoded transaction (`decodeSignedEvmTransaction`), and the request deadline.
+- **Returns / side effects:** `valid` with the offer when all of these hold: the chain id equals the method's, `to` is an offer contract of this method, the asset (when given) matches, the value is zero, the data equals `erc20TransferData(deposit, amountIn)` byte for byte, and the fee reaches the offer's `minFee` (`hexFeeReaches`). `invalid` otherwise. `unavailable` when an EIP-1559 transaction needs the current `eth_gasPrice` and that read fails.
+- **Used by:** `handleShopProof`.
+
+A legacy or EIP-2930 transaction needs no RPC call. An EIP-1559 transaction compares the lower of `maxFeePerGas` and the current recommended gas price plus `maxPriorityFeePerGas`.
+
+## Function: applyProofOrder
+
+- **Purpose:** Record an Orchestra order on a proof (`recordProofOrder`) and handle the case where another row already holds that order id.
+- **Inputs:** An open store transaction in which the payment's account is locked, the proof, `{ orderId, status }`, and the clock.
+- **Returns / side effects:** The proof after `evaluateProof`, or the row it was merged into. When the order id is taken, a row of the same offer merges with this proof. A row of another offer leaves this proof `refused` with `tx_used`.
+- **Used by:** `storeProof`, `submitProofAttempt`, the orders duty (an order recovered from one a proof holds), and the order-status duty of `runShopPaymentTick`.
+
+The first order found sets `order_found_at` and the first status read 10 s later.
+
+## Function: followProofOrder
+
+- **Purpose:** Follow `supersededByOperationId` from an Orchestra status read, so that the proof watches the successor order instead.
+- **Inputs:** An open store transaction in which the account is locked, the proof, the successor order id, and the clock.
+- **Returns / side effects:** The proof with `provider_order` set to the successor and its next status read due now. The stored `order_status` stays until the successor is read. When another row already holds the successor, the two rows merge, or the proof is refused with `tx_used`, as in `applyProofOrder`.
+- **Used by:** The order-status duty of `runShopPaymentTick`.
+
+The old order's final status, for example `failed` after a supersede, is never applied to the proof.
+
+## Function: storeProof
+
+- **Purpose:** The one storing step of "Storing and submitting" (steps 1, 3 and 4), shared by the proof route, the lookups duty, and the orders duty.
+- **Inputs:** `ShopPayments` and a candidate: offer, payment id, source (`tx`, `hex`, `detected`), transaction hash, log index or `null`, user-operation hash, raw hex, transferred value, and the order the orders duty found, or `null`.
+- **Returns / side effects:** `{ proof, created }`. Under the account row lock it reuses a row that already holds the order, or a row of the same offer and transaction. It fills in a missing log index, value, user-operation hash, or order and re-evaluates the row (`evaluateProof`). Otherwise it inserts a row with `give_up_at` 24 h ahead, the first watcher submit after 10 s (no submit for `hex` until it is sent, and none for a row with an order), and the first receipt read after 30 s when the log index is unknown. It logs `shop.proof.stored` or `shop.proof.detected`. A lost insert answers from the winning row.
+- **Used by:** `handleShopProof` and `runShopPaymentTick`.
+
+When a fill collides with another row on the log index or order index, the rows are one deposit. A row of another offer leaves the filled row `refused` with `tx_used`. A row of the same offer is merged: the kept row is the `accepted` one, else the one with an order, else the older one. The other row is deleted before the values are written. The submit itself (step 2) is the caller's.
+
+## Function: submitProofAttempt
+
+- **Purpose:** One Orchestra submit of a proof (`POST /v1/orchestration/submit` with the offer's `provider_ref` and the proof's `tx_hash`), following the key rule and the answer mapping in "Orchestra › Calls".
+- **Inputs:** `ShopPayments`, the proof id, the caller (`proof-first`, `proof-repeat`, or `watcher`), and an absolute deadline. The call's timeout is the time left, at most 10 s.
+- **Returns / side effects:** `{ proof, sent }`. It submits only an unresolved proof: no result, no order, not stopped, and for `hex` already sent. It first claims the 2 s slot with a conditional update of `last_submit_at`. A budget refusal returns `sent: false`. An order is recorded through `applyProofOrder`. `xchain_deposit_mismatch` refuses the proof through `refuseProof` (`mismatch`) and gives it a new idempotency key. `409 quote_expired` makes it `late`, sets `submit_stopped`, and logs `shop.alert.late_deposit`. Any other answer leaves the proof unresolved (`shop.proof.unresolved`), and an answer with `retryable: false` gives it a new idempotency key (the key rule); a retryable one (timeout, 5xx, 429, `409 idempotency_in_progress`) keeps the key. Every sent submit logs `shop.proof.submitted`.
+- **Used by:** `submitProof` and the submits duty of `runShopPaymentTick`.
+
+When a proof changes while its submit is in flight (it gets an order, a result, or is merged away), the answer does not overwrite that change.
+
+## Function: submitProof
+
+- **Purpose:** Submit a proof once and return only the row (`submitProofAttempt` without the `sent` flag).
+- **Inputs:** `ShopPayments`, the proof id, the caller (`proof-first`, `proof-repeat`, `watcher`), and the deadline.
+- **Returns / side effects:** The proof after the attempt, or `null` when it does not exist. Its side effects are those of `submitProofAttempt`.
+- **Used by:** The proof route's first submit and its repeat resubmit.
+
+A proof request that gets no submit call answers **503** and leaves the submit to the watcher.
+
+## Function: refuseHexProof
+
+- **Purpose:** Record a `hex` transaction that the node rejected, that reverted, or that is still unknown 10 minutes after its first send.
+- **Inputs:** `ShopPayments` and the proof id.
+- **Returns / side effects:** The proof afterwards, or `null` when it does not exist. Through `refuseProof`, the proof becomes `refused` with `hex_rejected` from any result the States table allows (`accepted`, `superseded`, `late`, `stuck`, or unresolved). An `accepted` proof's payment ends with `proof_refused` unless another proof takes its place. `refuseProof` clears the next submit and logs `shop.proof.refused`; this function also clears the next receipt read. A `refunded` or `failed` proof is left unchanged.
+- **Used by:** `sendHexProof`, `readProofReceipt`, and the receipts duty of `runShopPaymentTick`.
+
+It runs under the account row lock of the proof's payment.
+
+## Function: sendHexProof
+
+- **Purpose:** Broadcast a stored `hex` proof with `eth_sendRawTransaction`.
+- **Inputs:** `ShopPayments`, the stored proof, the RPC endpoint of its chain, and the per-call timeout.
+- **Returns / side effects:** `sent`, `rejected`, or `retry`. An error whose message contains `already known` or `nonce too low` counts as sent only when `eth_getTransactionByHash` then finds the hash. `insufficient funds`, `invalid`, or `intrinsic gas` refuse the proof (`refuseHexProof`). Any other error, and a transport error, is `retry`. The first successful send sets `sent_at` and the next receipt read (30 s), and, for an unresolved proof, the first watcher submit (10 s).
+- **Used by:** `handleShopProof` (first send and the repeat path) and the receipts duty of `runShopPaymentTick` (send again).
+
+Only transactions that passed `verifyHexProof` are ever stored, so the api does not act as an open relay.
+
+## Function: readProofReceipt
+
+- **Purpose:** Read the receipt of a proof without a log index (a `hex` or `detected` proof) and fill in its log index and value.
+- **Inputs:** `ShopPayments`, the proof, the RPC endpoint of its chain, and the call timeout.
+- **Returns / side effects:** Possible outcomes:
+  - `filled`: the log was written. The row is re-evaluated, and it merges with another row of the same deposit when the log index clashes.
+  - `pending`: no receipt yet.
+  - `error`: the RPC call failed.
+  - `failed`: a reverted `hex` transaction, which is refused.
+  - `mismatch`: a failed receipt, or a successful one without a transfer to the offer's deposit address. The proof stays held, its receipt reads stop, and `shop.alert.detected_mismatch` is logged.
+- **Used by:** The repeat path of `handleShopProof` (one read) and the receipts duty of `runShopPaymentTick`.
+
+The log whose value equals the offer's `amountIn` is preferred. Otherwise the first log to the deposit address is used.
+
+## Function: handleShopProof
+
+- **Purpose:** Serve `GET /lnurlp/tx/:username` after the route has checked the username and account and counted the 120-per-minute limit. It verifies a wallet's `tx` (transaction or ERC-4337 user-operation hash) or `hex` (signed raw transaction), stores it as a `shop_proof` row, and submits it to Orchestra, all within 18 s (`SHOP_PROOF_BUDGET_MS`).
+- **Inputs:** `ShopPayments`, the username's account, the username, the parsed query (`quote`, `method`, `asset`, `tx`, `hex`, `repeated`), and `overLimit` (true when the limiter refused the request).
+- **Returns / side effects:** A repeated key is **400** `Payment was not accepted`. A quote that does not belong to a shop payment of this account (malformed, unknown, or foreign) is **404** `Quote expired`. A missing or unknown method, or a missing or malformed `tx`/`hex`, is **400**. A stored proof of this quote's offers with the same hash is a repeat: the request reads its missing receipt once, sends an unsent `hex`, resubmits it when it is unresolved (at most once per 2 s slot and five times per minute), and answers from the row (`proofResponse`). Otherwise `tx` reads the receipt, with the user-operation receipt as fallback. When neither is found it stores a lookup row (at most 4 per quote) and answers **503** `Transfer not found yet`. A failed transfer or a transfer without a matching log is **400**, and a log that a proof of another quote already holds is **400** `Transaction already used`. `hex` checks the chain, contract, value, data and fee; it stores the row with `raw_hex`, broadcasts it, and refuses it (**400**) when the node rejects it. Over the limit, only a stored row answers; anything else is **503** `Too many requests`. Without shop config, or without an RPC endpoint for the chain, a stored row answers as it stands and a new proof is **404** `Quote expired`.
+- **Used by:** `GET /lnurlp/tx/:username` in `src/routes/lnurl-server.ts`.
+
+Each RPC call times out after 3 s (`SHOP_RPC_TIMEOUT_MS`), and the Orchestra submit gets at most 10 s (`SHOP_PROOF_ORCHESTRA_MS`). A new proof is submitted as `proof-first`, and a repeat's resubmit as `proof-repeat`. Every event carries the payment, proof and offer ids. No key, RPC URL, raw hex or BOLT11 is logged.
+
+## Function: retryStuckProof
+
+- **Purpose:** Run the operator retry behind `POST /debug/shop-proofs/:id/retry`.
+- **Inputs:** `ShopPayments` and the proof id (any letter case; a malformed id is unknown).
+- **Returns / side effects:** `retried`, `not_stuck`, or `not_found`. A `stuck` proof moves back to unresolved (result `null`), `give_up_at` moves 24 h ahead, the watcher tries counter is reset, and `shop.proof.retried` is logged. The next watcher submit is due now. For a `hex` proof that was never sent, the next receipt-duty send is due now instead.
+- **Used by:** `debugShopProofsRoutes` (**404** for `not_found`, **409** for `not_stuck`).
+
+The change is one conditional update on `result = 'stuck'` under the account row lock, so a concurrent change wins cleanly.
+
+## Function: runShopPaymentTick
+
+- **Purpose:** Run the eight watcher duties of `docs/shop-stablecoin-payment.md` once, in order, each with its own budget of calls per tick. Every external call times out after 5 s (`SHOP_WORKER_CALL_TIMEOUT_MS`).
+- **Inputs:** `ShopPayments` and the tick number. Odd ticks read Orchestra history (duty 3), and even ticks read order status (duty 8).
+- **Returns / side effects:** The eight duties:
+  - (1) Ends `open` payments whose window passed, logging `shop.payment.ended`.
+  - (2) Runs up to 8 LUD-21 settlement reads in parallel and applies each with `applySettlement` (settled → paid, open → the next read, failed → retried). It logs `shop.alert.accepted_long` once per payment per process when a payment has been `accepted` for more than an hour.
+  - (3) Reads one history page of a payment whose `next_history_at` is due. It stores unknown orders as `detected` proofs through `storeProof`, moves a proof to an order recovered from its own, pages on a full page, and stops after the order watch of the last offer with an issued detail.
+  - (4) Handles up to 4 lookup rows: reads after 10 s, 30 s and 60 s, then every 2 min, and expires a row after one hour (`shop.proof.lookup_expired`).
+  - (5) Handles up to 4 receipt rows: sends unsent `hex` transactions, resends unmined ones, refuses one still unknown 10 minutes after its first send, and fills log indexes, for at most 24 h.
+  - (6) Makes one watcher submit: after 10 s, 30 s and 60 s, then every 5 min.
+  - (7) Marks unresolved proofs past `give_up_at` as `stuck` (`shop.alert.proof_stuck`).
+  - (8) Makes one status read of a non-final order: every 10 s for 10 min, then every 60 s. It follows `supersededByOperationId` and stops after a final status, or after 24 h (`shop.alert.order_stuck`).
+- **Used by:** `startShopPaymentWorker`.
+
+A duty whose Orchestra call the budget refused leaves its row for the next tick. Duties 3, 6, and 8 do nothing without an Orchestra client. A store failure rejects the tick.
+
+## Function: startShopPaymentWorker
+
+- **Purpose:** Run `runShopPaymentTick` once at once and then every 2 s (`SHOP_WORKER_INTERVAL_MS`), separate from the charge watch's tick, so that a slow shop call never delays a till confirmation.
+- **Inputs:** `ShopPayments` and an optional interval in milliseconds.
+- **Returns / side effects:** `{ stop }`, which clears the interval. A tick does not start while the previous one is still running. Ticks are numbered from 1 in the order they start, so duty 3 and duty 8 alternate. A rejecting tick logs `shop.worker.tick.failed` with the error fields (`errorLogFields`).
+- **Used by:** `startPosPaidWorker` when it is given a `ShopPayments` service.
+
+The two containers of a deploy each run their own ticks. Their per-process Orchestra budgets together stay below Orchestra's limits.

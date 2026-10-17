@@ -6,6 +6,8 @@ import { Hono } from 'hono';
 import { payRoutes } from '@/routes/pay';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
+import { ShopPayments, type ShopCreation } from '@/lib/shop-payment';
+import { InMemoryShopPaymentStore, type ShopPayment } from '@/lib/shop-payment-store';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import {
   LNURL_SERVER,
@@ -1017,5 +1019,299 @@ describe('till payments on POST /pay/:username/invoice', () => {
     });
     const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
     expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
+  });
+});
+
+describe('POST /pay/:username/payment', () => {
+  const NOW_MS = 1_700_000_000_000;
+  const PAYMENT_ID = '99999999-9999-4999-8999-999999999999';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function events(): string[] {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => (JSON.parse(arg) as { event: string }).event);
+  }
+
+  interface StubShop {
+    offersStablecoins: ReturnType<typeof vi.fn>;
+    createForPayer: ReturnType<typeof vi.fn>;
+  }
+
+  function stubShop(creation: ShopCreation = { kind: 'unavailable' }, offers = true): StubShop {
+    return {
+      offersStablecoins: vi.fn(() => offers),
+      createForPayer: vi.fn(async () => creation),
+    };
+  }
+
+  async function paymentApp(
+    opts: {
+      shop?: StubShop | ShopPayments;
+      posStore?: PosStore;
+      wallet?: boolean;
+      lnurlServer?: boolean;
+      fetchImpl?: (input: string | URL | Request) => Promise<Response>;
+      maxSendable?: number;
+      account?: boolean;
+    } = {},
+  ): Promise<{ app: Hono; auth: InMemoryAuthStore; urls: string[] }> {
+    const auth = new InMemoryAuthStore();
+    if (opts.account !== false) {
+      await auth.createAccount(createAccount());
+      if (opts.wallet !== false) {
+        await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+        await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+      }
+    }
+    const urls: string[] = [];
+    const fetchImpl =
+      opts.fetchImpl ??
+      (async (input: string | URL | Request): Promise<Response> => {
+        urls.push(String(input));
+        return String(input).includes('/.well-known/lnurlp/')
+          ? metadataResponse(1000, opts.maxSendable ?? 1_000_000)
+          : invoiceResponse();
+      });
+    const shop = opts.shop ?? stubShop();
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: opts.posStore ?? new InMemoryPosStore(),
+        now: () => NOW_MS,
+        ...(opts.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
+        shopPayments: shop as unknown as ShopPayments,
+      }),
+    );
+    return { app, auth, urls };
+  }
+
+  async function post(app: Hono, body: unknown, username = 'ada'): Promise<Response> {
+    return app.request(`/pay/${username}/payment`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    });
+  }
+
+  function pendingCharge(amountSats: number): PosCharge {
+    return {
+      id: '77777777-7777-4777-8777-777777777777',
+      accountId: ADA_ID,
+      amountSats,
+      status: 'pending',
+      createdAt: new Date(NOW_MS),
+      expiresAt: new Date(NOW_MS + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
+    };
+  }
+
+  const STABLECOIN_UNAVAILABLE = {
+    error: 'Stablecoin payment is unavailable',
+    code: 'stablecoin_unavailable',
+  };
+  const PAYMENT_OPEN = { error: 'A payment is already open', code: 'payment_open' };
+  const WHOLE_SATS = { error: 'Enter a whole number of sats' };
+
+  it('order 1: 404 for an invalid username, an unknown account, no verified wallet, or no LNURL server', async () => {
+    const cases: Array<{ app: Hono; username: string; shop: StubShop }> = [];
+    for (const opts of [
+      { username: '_' },
+      { username: 'ada', account: false },
+      { username: 'ada', wallet: false },
+      { username: 'ada', lnurlServer: false },
+    ]) {
+      const shop = stubShop();
+      const { app } = await paymentApp({ ...opts, shop });
+      cases.push({ app, username: opts.username, shop });
+    }
+    for (const { app, username, shop } of cases) {
+      const res = await post(app, { amountSats: 21 }, username);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect(shop.createForPayer).not.toHaveBeenCalled();
+    }
+  });
+
+  it('order 2: 502 when the pay request cannot be resolved', async () => {
+    const shop = stubShop();
+    const { app } = await paymentApp({
+      shop,
+      fetchImpl: async () => new Response('down', { status: 500 }),
+    });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(shop.createForPayer).not.toHaveBeenCalled();
+  });
+
+  it('order 3: 400 for a body that is not a positive whole number of sats', async () => {
+    const shop = stubShop();
+    const { app } = await paymentApp({ shop });
+    for (const body of [
+      'not json',
+      { amountSats: 1.5 },
+      { amountSats: '21' },
+      {},
+      { amountSats: 0 },
+      { amountSats: -5 },
+    ]) {
+      const res = await post(app, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual(WHOLE_SATS);
+    }
+    expect(shop.createForPayer).not.toHaveBeenCalled();
+  });
+
+  it('order 3 runs before order 4: a bad body with a pending charge is 400', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge(21));
+    const { app } = await paymentApp({ posStore });
+    const res = await post(app, { amountSats: 0 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(WHOLE_SATS);
+  });
+
+  it('order 4: 409 payment_open for a pending till charge, before the range check', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge(21));
+    const shop = stubShop();
+    const { app } = await paymentApp({ posStore, shop });
+    // 500 sats is outside the range the pending charge pins (21..21).
+    const res = await post(app, { amountSats: 500 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(PAYMENT_OPEN);
+    expect(shop.offersStablecoins).not.toHaveBeenCalled();
+    expect(shop.createForPayer).not.toHaveBeenCalled();
+  });
+
+  it('order 5: 400 when the amount is outside the pay request range', async () => {
+    const shop = stubShop();
+    const { app } = await paymentApp({ shop, maxSendable: 1_000_000 });
+    const res = await post(app, { amountSats: 1001 });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual(WHOLE_SATS);
+    expect(shop.offersStablecoins).not.toHaveBeenCalled();
+  });
+
+  it('order 6: 503 stablecoin_unavailable when the username gets no stablecoin rows', async () => {
+    const shop = stubShop({ kind: 'unavailable' }, false);
+    const { app } = await paymentApp({ shop });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+    expect(shop.offersStablecoins).toHaveBeenCalledWith('ada');
+    expect(shop.createForPayer).not.toHaveBeenCalled();
+  });
+
+  it('order 6 with a real service: 503 while the shop payment config is off', async () => {
+    const auth = new InMemoryAuthStore();
+    const posStore = new InMemoryPosStore();
+    const shop = new ShopPayments({
+      store: new InMemoryShopPaymentStore(posStore),
+      auth,
+      lnurlServer: LNURL_SERVER,
+      config: null,
+      orchestra: null,
+      fetchImpl: async () => new Response('unexpected', { status: 500 }),
+      now: () => NOW_MS,
+    });
+    const created = vi.spyOn(shop, 'createForPayer');
+    const { app } = await paymentApp({ shop, posStore });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+    expect(created).not.toHaveBeenCalled();
+  });
+
+  it('answers 503 through createApp, which builds the service when the LNURL server resolves', async () => {
+    const { app } = await seededApp({
+      env: {
+        ORCHESTRA_BASE_URL: '',
+        ORCHESTRA_API_KEY: '',
+        SHOP_EVM_RPC: '',
+        SHOP_REFUND_ADDRESS: '',
+      },
+    });
+    const res = await post(app as unknown as Hono, { amountSats: 21 });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+  });
+
+  it('returns the payment id and window end when the creation opens a payment', async () => {
+    const payment = {
+      id: PAYMENT_ID,
+      windowEndsAt: new Date(NOW_MS + 300_000),
+    } as unknown as ShopPayment;
+    const shop = stubShop({ kind: 'payment', payment });
+    const { app } = await paymentApp({ shop });
+    const res = await post(app, { amountSats: 21, comment: 'ignored' });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      payment: PAYMENT_ID,
+      expiresAt: new Date(NOW_MS + 300_000).toISOString(),
+    });
+    expect(shop.createForPayer).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ADA_ID, username: 'ada' }),
+      'ada',
+      21,
+    );
+  });
+
+  it('order 4 under the creation lock: 409 payment_open when a charge appeared meanwhile', async () => {
+    const shop = stubShop({ kind: 'pending_charge' });
+    const { app } = await paymentApp({ shop });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual(PAYMENT_OPEN);
+  });
+
+  it('order 8: 502 and pay.invoice_failed when the mint fails', async () => {
+    const shop = stubShop({ kind: 'mint_failed' });
+    const { app } = await paymentApp({ shop });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(events()).toContain('pay.invoice_failed');
+  });
+
+  it('orders 7 and 9: 503 stablecoin_unavailable when the creation is refused or commits no pair', async () => {
+    for (const creation of [{ kind: 'unavailable' }, { kind: 'skipped' }] as ShopCreation[]) {
+      const { app } = await paymentApp({ shop: stubShop(creation) });
+      const res = await post(app, { amountSats: 21 });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual(STABLECOIN_UNAVAILABLE);
+    }
+  });
+
+  it('keeps POST /pay/:username/invoice on the shared body and range checks', async () => {
+    const { app, urls } = await paymentApp({ maxSendable: WIDE_MAX_SENDABLE });
+    const bad = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{',
+    });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual(WHOLE_SATS);
+    const ok = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(urls.some((url) => url.includes('/lnurlp/ada/invoice?'))).toBe(true);
   });
 });

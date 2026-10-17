@@ -109,18 +109,17 @@ bun run e2e             # Playwright against bun src/index.ts
 
 ## Documentation
 
-| Doc                                                                    | Purpose                                                                                                                                         |
-| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`docs/shop-identity.md`](./docs/shop-identity.md)                     | Every shop gets its own NOSTR identity and page `/{npub}`, shared with OpenCryptoPay (concept only, not implemented)                            |
-| [`CONCEPT.md`](./CONCEPT.md)                                           | Project vision, architecture, principles, decisions                                                                                             |
-| [`SPEC.md`](./SPEC.md)                                                 | Implemented HTTP surface (request/response contracts)                                                                                           |
-| [`FLOWS.md`](./FLOWS.md)                                               | Core UI journeys (sign-in → profile → donate → recurring → message)                                                                             |
-| [`docs/social-recovery.md`](./docs/social-recovery.md)                 | Optional securing of the account by choosing two people (concept only, not implemented)                                                         |
-| [`docs/shop-stablecoin-payment.md`](./docs/shop-stablecoin-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC on fixed EVM chains goes to Orchestra, which pays one BOLT11 to the shop (specified, not implemented) |
-| [`docs/wallet-release-payouts.md`](./docs/wallet-release-payouts.md)   | Daily payouts across the in-app wallet release: who is paid today, why each keeps being paid on the wallet only, and what release day needs     |
-| [`docs/handbook/`](./docs/handbook/)                                   | Mandatory: every function and HTTP endpoint                                                                                                     |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                                 | Dev setup, conventions, workflow                                                                                                                |
-| [`SECURITY.md`](./SECURITY.md)                                         | Reporting vulnerabilities                                                                                                                       |
+| Doc                                                                    | Purpose                                                                                                                                                                                             |
+| ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`CONCEPT.md`](./CONCEPT.md)                                           | Project vision, architecture, principles, decisions                                                                                                                                                 |
+| [`SPEC.md`](./SPEC.md)                                                 | Implemented HTTP surface (request/response contracts)                                                                                                                                               |
+| [`FLOWS.md`](./FLOWS.md)                                               | Core UI journeys (sign-in → profile → donate → recurring → message)                                                                                                                                 |
+| [`docs/social-recovery.md`](./docs/social-recovery.md)                 | Optional securing of the account by choosing two people (concept only, not implemented)                                                                                                             |
+| [`docs/shop-stablecoin-payment.md`](./docs/shop-stablecoin-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC on fixed EVM chains goes to Orchestra, which pays one BOLT11 to the shop (implemented; stablecoin rows only when the four shop payment variables resolve) |
+| [`docs/wallet-release-payouts.md`](./docs/wallet-release-payouts.md)   | Daily payouts across the in-app wallet release: who is paid today, why each keeps being paid on the wallet only, and what release day needs                                                         |
+| [`docs/handbook/`](./docs/handbook/)                                   | Mandatory: every function and HTTP endpoint                                                                                                                                                         |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                                 | Dev setup, conventions, workflow                                                                                                                                                                    |
+| [`SECURITY.md`](./SECURITY.md)                                         | Reporting vulnerabilities                                                                                                                                                                           |
 
 ## License
 

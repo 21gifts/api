@@ -1,10 +1,12 @@
 # Shop payment in USDT and USDC
 
-Status: **specified, not implemented**. Decided 2026-10-01. Revised
+Status: **implemented** (2026-10-17). Decided 2026-10-01. Revised
 2026-10-14: this text replaces every earlier version of this document,
-which was `docs/shop-spark-payment.md`. Nothing here is mounted, and
-`SPEC.md` does not list these routes. Nothing here changes runtime
-behaviour.
+which was `docs/shop-spark-payment.md`. The routes and cases below are
+mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, and
+`SPEC.md` lists them. Stablecoin rows are offered only when
+`ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and
+`SHOP_REFUND_ADDRESS` resolve too.
 
 A payer settles a shop payment in USDT or USDC. Orchestra (Flashnet)
 takes the stablecoin and pays one BOLT11 for the shop's sats. That
