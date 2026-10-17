@@ -175,7 +175,7 @@
 - **Errors:** 503 `{ error: 'Debug is not configured' }` only when `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` are both empty after trim; 401 `{ error: 'Unauthorized' }` when the bearer matches no configured token; 503 `{ error: 'Database is not configured' }` when this process has no SQL client; 404 `{ error: 'Not found' }` when `table` is not an ordinary public table; 400 `{ error: 'Invalid cursor' }` when `cursor` is present without `table` or does not match the table key; 503 `{ error: 'Database is unavailable' }` if the store throws (`debug.db.failed`).
 - **Wallet and interaction tables:** Lists `wallet_balance_snapshot`, `wallet_payment`, and `member_event` like any other table, unredacted (columns and `category` values in SPEC `GET /debug/db`). A payment between two members has two `wallet_payment` rows, the payer's `out` row and the payee's `in` row, with possibly different `payment_id` values but, when the apps reported it, the same `payment_hash` or Spark `invoice`; a total over all members must keep one row per payment (for example by deduplicating on `payment_hash` or `invoice`), since summing every row counts it twice.
 - **Used by:** Operators reading the whole database (`gifts-debug db`).
-- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`. `DEBUG_READ_TOKEN` applies only to GET and HEAD `/debug/db`. HEAD is the same GET handler. Not an end-user session.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`. `DEBUG_READ_TOKEN` applies to GET and HEAD `/debug/db` and otherwise only to `GET /funding/goal`. HEAD is the same GET handler. Not an end-user session.
 
 ## Endpoint: GET /debug/api-log
 
@@ -1054,10 +1054,10 @@
 
 ## Endpoint: GET /funding/goal
 
-- **Purpose:** Bearer session, any role including `basis`. How many shops had at least one till charge on each of the last 7 UTC days ending today (oldest first, zeros included), and how many of those shops had a charge on at least 5 of those days. A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops. The 5 days need not be consecutive. This is not `GET /shops/activity`. JSON `{ days: [{ day, shopCount }], qualifyingShops }`.
-- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer session or with an unknown bearer. 503 `{ error: 'Funding goal is unavailable' }` (`funding.goal.failed`, keys `event` and `ts` only).
-- **Used by:** The signed-in grant goals page.
-- **Auth:** `Authorization: Bearer` session. Any signed-in role. Not `DEBUG_TOKEN`.
+- **Purpose:** Bearer session, any role including `basis`, or the operator `DEBUG_TOKEN` / `DEBUG_READ_TOKEN`. How many shops had at least one till charge on each of the last 7 UTC days ending today (oldest first, zeros included), and how many of those shops had a charge on at least 5 of those days. A shop is a live top-level forum note whose text contains `#21GiftsShop` (case-insensitive token; the next character must not be a letter, digit, or underscore) and whose `shop_account_id` is set. It counts on a UTC day when that currently assigned account has at least one `pos_charge` with `created_at` on that UTC day. Any status (`pending`, `cancelled`, `expired`) counts; creating the charge is the till use. There is no paid status. One account assigned to two qualifying notes counts as two shops. The 5 days need not be consecutive. This is not `GET /shops/activity`. JSON `{ days: [{ day, shopCount }], qualifyingShops }`.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a bearer or with a bearer that is neither an operator token nor a session. 503 `{ error: 'Funding goal is unavailable' }` (`funding.goal.failed`, keys `event` and `ts` only).
+- **Used by:** The signed-in grant goals page; operators via `gifts-debug funding-goal`.
+- **Auth:** `Authorization: Bearer` session (any signed-in role), or `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` without a session. The body holds only counts, no account, note, or charge ids.
 
 ## Endpoint: GET /funding/payout-days
 
