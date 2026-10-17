@@ -376,6 +376,15 @@ The shop does not hold USDT or USDC. The 12-word seed that wallet uses is
 the phrase the phone already derives and never sends. Specified in
 [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md). Not implemented.
 
+### Shop identity (concept)
+
+Every listed shop gets its own custodial NOSTR identity, generated, held and
+published by the api exactly like an account's. Its page is
+`https://21.gifts/{npub}`. OpenCryptoPay requires that same public key for
+every shop on its map and uses it as the shop's id; it holds no keys and
+maintains no profiles. Specified in
+[`docs/shop-identity.md`](./docs/shop-identity.md). Not implemented.
+
 ### Communication
 
 Every "message" the user writes in the UI is a NOSTR event. (v1 note: NOSTR
@@ -1024,6 +1033,7 @@ repository — they're intentionally not part of this project's scope.
 | 2026-10-01 | A shop's OpenCryptoPay QR stays the same link. USDT or USDC paid through it settles as bitcoin on the shop's own Breez Spark wallet. The shop does not hold USDT or USDC. The till is paid only when those sats have arrived. The wallet seed is the 12-word phrase the app already derives (`mnemonicFromPrfFirst`); the api already records that seed passkey (`POST /auth/passkey/seed/begin` and `/finish`). Specified in docs/shop-spark-payment.md. Not implemented. Today's Lightning pay link is unchanged.                                                                                                                                                   |
 | 2026-10-01 | Opening a forum note, translating it, or opening Notifications stamps the matching unread in-app rows and tells the account's other devices to close those banners. `POST /notifications/read-by-message` stamps unread forum_post, forum_reply, forum_mention, and zap whose parent or reply id is that note. Read-all and a freshly stamped single read do the same for the rows they mark. `moderator_proposal` stays unread and is not dismissed. Private-message pushes are not dismissed.                                                                                                                                                                       |
 | 2026-10-02 | One forum note notifies each recipient once. The marked account keeps only `forum_mention`; everyone else keeps the single `forum_post` or `forum_reply`. `POST /messages` excludes mention account ids from the post/reply fan-out. `GET /notifications` drops and deletes a stored generic row when the scan also has `forum_mention` for the same `replyId`. Zaps stay a separate event. **Supersedes** the extra mention-on-top-of-post fan-out.                                                                                                                                                                                                                  |
+| 2026-10-17 | Every listed shop (live top-level `#21GiftsShop` note with a pin and a till account) gets its own custodial NOSTR key, stored and published like an account key, page `https://21.gifts/{npub}`. The same public key is sent to OpenCryptoPay, which requires one per shop, uses it as the shop id and maintains no profile. The shop note stays signed by its author. Specified in docs/shop-identity.md. Not implemented.                                                                                                                                                                                                                                           |
 
 ## Next Steps
 
