@@ -85,5 +85,7 @@ describe('LoginGate', () => {
     await expect(gate.admits({ id: ID, isPlatform: true })).resolves.toBe(true);
     await store.addToAllowlist(ID, 1);
     await expect(gate.admits({ id: ID })).resolves.toBe(true);
+    await expect(gate.admits({ id: '00000000-0000-4000-8000-000000000002' })).resolves.toBe(false);
+    await expect(gate.admits(null)).resolves.toBe(false);
   });
 });

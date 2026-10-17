@@ -2117,8 +2117,15 @@ describe('PostgresLoginGateStore and session wipe', () => {
       const changes = await client.query<{ table_name: string; op: string }>(
         `SELECT table_name, op
          FROM db_change
-         WHERE table_name IN ('app_setting', 'login_allowlist', 'auth_session')
-           AND at > now() - interval '5 minutes'`,
+         WHERE (table_name = 'app_setting'
+                AND COALESCE(after->>'key', before->>'key') = 'logins_open'
+                AND COALESCE(after->>'value', '') = 'open'
+                AND COALESCE(before->>'value', '') = 'closed')
+            OR (table_name = 'login_allowlist'
+                AND COALESCE(after->>'account_id', before->>'account_id') = $1)
+            OR (table_name = 'auth_session'
+                AND COALESCE(after->>'account_id', before->>'account_id') = $2)`,
+        [accountId, sessionOwner],
       );
       const seen = new Set(changes.map((row) => `${row.table_name}:${row.op}`));
       expect(seen.has('app_setting:UPDATE')).toBe(true);

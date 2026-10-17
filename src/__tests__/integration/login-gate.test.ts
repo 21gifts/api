@@ -149,9 +149,10 @@ describe('login gate via createApp', () => {
     });
 
     it('closed refuses register and login, and keeps existing sessions', async () => {
-      const { app } = harness();
+      const { app, store } = harness();
       const registered = await register(app);
       await setLogins(app, false);
+      const credentialsBefore = await store.listPasskeyCredentials();
 
       const begin = await post(app, '/auth/passkey/register/begin');
       expect(begin.status).toBe(503);
@@ -162,6 +163,9 @@ describe('login gate via createApp', () => {
       const refused = await login(app);
       expect(refused.status).toBe(503);
       expect(await refused.json()).toEqual(LOGINS_CLOSED);
+      expect(await store.listPasskeyCredentials()).toEqual(credentialsBefore);
+      expect((await store.listSessions()).map((row) => row.token)).toEqual([registered.token]);
+      expect(await store.listAccounts()).toHaveLength(1);
 
       expect((await me(app, registered.token as string)).status).toBe(200);
     });
@@ -202,6 +206,10 @@ describe('login gate via createApp', () => {
       expect(res.status).toBe(200);
       expect(((await res.json()) as { account: { id: string } }).account.id).toBe(accountId);
       expect(await store.getAccount(accountId)).toBeDefined();
+      await provision(store);
+      const otherClaim = await post(app, '/auth/passkey/register/begin', { viewKey: VIEW_KEY });
+      expect(otherClaim.status).toBe(503);
+      expect((await post(app, '/auth/passkey/register/begin')).status).toBe(503);
     });
 
     it('always lets the platform account log in while closed', async () => {

@@ -334,7 +334,7 @@
 
 - **Purpose:** Operator end of every member session: deletes every `auth_session` row and returns `{ deleted }` (row count). Every bearer that held one answers 401 from then on, so the app falls back to signed out; members sign in again (subject to the login switch). Operators authenticate with `DEBUG_TOKEN`, not a session, so no row is kept. Each deleted row is logged in `db_change` with the token hashed. Logs `debug.sessions.deleted` with the count.
 - **Errors:** 503 Debug is not configured; 401 Unauthorized.
-- **Used by:** Operators after a release that must sign every member out; `scripts/gifts-debug.sh end-sessions`.
+- **Used by:** Operators after a release that must sign every member out; `scripts/gifts-debug.sh end-sessions yes`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
 ## Endpoint: POST /debug/passkey-renew/reopen

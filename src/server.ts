@@ -606,7 +606,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       await next();
       return;
     }
-    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone'];
+    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone', 'X-App-Build'];
     if (lnurlServer !== null && c.req.path.startsWith('/lnurlpay/')) {
       allowHeaders.push('X-Breez-Signature', 'X-Breez-Timestamp');
     }
