@@ -126,25 +126,16 @@ So the reference never dangles and the identity is never deleted.
 rows and the mentions update in separate statements today, and an extra photo
 that fails calls `deleteById` and ignores its result. The backfill could see
 the committed row in between and mint a key, which would keep a half-written
-note. The implementing change therefore writes all three in one transaction
-on one reserved connection, the pattern of the account merge
-(`src/lib/account-merge.ts`); a failure rolls the note back instead of
-calling `deleteById`. The video file's path depends only on the note id, so
-attempts with the same id are serialized: the reserved connection takes a
-session advisory lock on the note id (`pg_advisory_lock`) before the video
-is written and releases it only after the cleanup below. The duplicate
-handling of today stays: after a unique violation the transaction is rolled
-back first, then the existing lookups (`getById` for a retry with the same
-id, `findLiveByAccountContent` for the same content) run and return the
-stored row as today. After any failure and its rollback, still under the
-lock, the video file of the new id is removed with `removeForumVideo` unless
-`getById` returns a row with that same id, so a committed same-id note keeps
-its video and a duplicate upload leaves no file behind. Regression tests fail
-an extra photo insert while the backfill runs and check that neither the
-note nor a `shop_identity` row is left; a same-id retry keeps the video, also
-when the first attempt fails at the mentions update while the retry waits;
-and a duplicate video upload removes the new id's file and keeps the
-existing one.
+note. The implementing change therefore writes the row with its mentions,
+and its extra photos, in one statement: a data-modifying CTE, as
+`deleteById` already uses, whose photo rows insert from the note insert's
+`RETURNING`, so a reply whose parent check inserts no row writes no photos
+either. A failure of that statement leaves nothing behind, and the existing
+error path of `create` runs unchanged (the unique-violation lookups and
+`removeForumVideo`); the separate extra-photo loop with its `deleteById`
+goes away. A regression test fails the statement on an extra photo while
+the backfill runs and checks that neither the note nor a `shop_identity`
+row is left.
 
 ### Encryption at rest
 
