@@ -1219,8 +1219,8 @@
 
 ## Function: walletFeatures
 
-- **Purpose:** Resolves the in-app wallet flags once at `createApp`, with the same resolvers that mount the wallet routes. `lnurlServer`: `resolveLnurlServerConfig` is not null. `zapSigning`: `resolveFreePaymentsConfig` is not null (`LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s)). `freePayments`: both. `passkey`: `normalizeWebAuthnRpId` is not null.
-- **Inputs:** `env` (the slice `createApp` uses) and the raw WebAuthn RP ID.
+- **Purpose:** Resolves the in-app wallet flags once at `createApp`, with the same resolvers that mount the wallet routes. `lnurlServer`: `resolveLnurlServerConfig` is not null. `zapSigning`: `resolveFreePaymentsConfig` is not null (`LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s)). `freePayments`: both. `passkey`: `resolveWebAuthnConfig` over the RP ID and the CORS origins is not null, the same check the passkey routes make (false when the RP ID is unknown or no allowed origin matches it).
+- **Inputs:** `env` (the slice `createApp` uses), the raw WebAuthn RP ID, and the allowed CORS origins the auth routes get.
 - **Returns / side effects:** `{ lnurlServer, zapSigning, freePayments, passkey }`, booleans only. No env value, key, or URL is returned. No I/O.
 - **Used by:** `createApp` for `GET /healthz`.
 

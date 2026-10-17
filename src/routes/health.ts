@@ -1,8 +1,8 @@
 import { Hono } from 'hono';
 import {
-  normalizeWebAuthnRpId,
   resolveFreePaymentsConfig,
   resolveLnurlServerConfig,
+  resolveWebAuthnConfig,
 } from '@/lib/config';
 import { SERVICE_NAME, SERVICE_VERSION } from '@/lib/meta';
 
@@ -18,7 +18,10 @@ export interface WalletFeatures {
   zapSigning: boolean;
   /** Both of the above: free in-app payments between members are on. */
   freePayments: boolean;
-  /** `WEBAUTHN_RP_ID` is a known RP ID; the wallet phrase is bound to the passkey. */
+  /**
+   * `WEBAUTHN_RP_ID` and the CORS origins resolve through `resolveWebAuthnConfig`, the
+   * same check the passkey routes make; the wallet phrase is bound to the passkey.
+   */
   passkey: boolean;
 }
 
@@ -39,16 +42,19 @@ export interface HealthResponse {
 /**
  * Resolve the wallet feature flags once from the environment.
  *
- * Uses the same resolvers that decide whether the wallet routes are mounted,
- * so the flags match what the process serves.
+ * Uses the same resolvers that decide whether the wallet routes are mounted
+ * or the passkey routes answer, so the flags match what the process serves.
+ * Every input is fixed at boot, so no request is needed.
  *
  * @param env - Environment slice (the same one `createApp` mounts routes from).
  * @param webAuthnRpId - Raw WebAuthn RP ID the auth routes use.
+ * @param allowedOrigins - CORS origins the auth routes use.
  * @returns The wallet feature flags.
  */
 export function walletFeatures(
   env: Record<string, string | undefined>,
   webAuthnRpId: string | undefined,
+  allowedOrigins: string[],
 ): WalletFeatures {
   const lnurlServer = resolveLnurlServerConfig(env) !== null;
   const zapSigning = resolveFreePaymentsConfig(env) !== null;
@@ -56,7 +62,7 @@ export function walletFeatures(
     lnurlServer,
     zapSigning,
     freePayments: lnurlServer && zapSigning,
-    passkey: normalizeWebAuthnRpId(webAuthnRpId) !== null,
+    passkey: resolveWebAuthnConfig({ WEBAUTHN_RP_ID: webAuthnRpId }, allowedOrigins) !== null,
   };
 }
 

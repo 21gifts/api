@@ -628,7 +628,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
     }),
   );
-  app.route('/healthz', healthRoute(walletFeatures(env, webAuthnRpId)));
+  app.route('/healthz', healthRoute(walletFeatures(env, webAuthnRpId, allowedOrigins)));
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route(

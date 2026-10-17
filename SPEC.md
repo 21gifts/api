@@ -310,12 +310,12 @@ Liveness probe. No I/O; always succeeds when the process is up.
 Each field is a boolean resolved once at boot; the response never contains an
 env value, key, or URL, and `wallet` never changes `status` or the HTTP code.
 
-| Field          | `true` when                                                                                    |
-| -------------- | ---------------------------------------------------------------------------------------------- |
-| `lnurlServer`  | `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` are http(s) URLs (`resolveLnurlServerConfig`)         |
-| `zapSigning`   | `LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s) |
-| `freePayments` | `lnurlServer` and `zapSigning`: free in-app payments between members are on                    |
-| `passkey`      | `WEBAUTHN_RP_ID` is a known RP ID; the in-app wallet phrase is bound to the passkey            |
+| Field          | `true` when                                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lnurlServer`  | `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` are http(s) URLs (`resolveLnurlServerConfig`)                                                                                  |
+| `zapSigning`   | `LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s)                                                                          |
+| `freePayments` | `lnurlServer` and `zapSigning`: free in-app payments between members are on                                                                                             |
+| `passkey`      | `WEBAUTHN_RP_ID` is a known RP ID and an allowed CORS origin matches it (`resolveWebAuthnConfig`, the check the passkey routes make); otherwise those routes answer 500 |
 
 ### `GET /info`
 
