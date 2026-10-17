@@ -263,8 +263,10 @@ OpenCryptoPay reports.
   shop name,
   description, `og:image` = first photo or `/og.png`, canonical
   `https://21.gifts/{npub}`.
-- 404 → the existing not-found page. 410 → a "this shop is no longer listed"
-  page without a name. 503 → the error text and retry button pattern of
+- 404 → the existing not-found page (`src/app/not-found.tsx`). 410 → a "this
+  shop is no longer listed" page without a name: unlike the not-found page,
+  it tells the visitor that this shop existed, so a shared link does not look
+  broken. 503 → the error text and retry button pattern of
   `ExternalAuthorProfile` (`forum.error`, `view.retry`), never a blank page.
 - Content: name, description, address as text, a link to the forum note
   (`/messages/<messageId>`) and the NIP-05. The page reuses these
