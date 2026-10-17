@@ -584,10 +584,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    stays for other callers. Decode the BOLT11 with `decodeBolt11` and
    check the amount, and compute its expiry as [Lifetimes](#lifetimes)
    states, first. A wrong amount stops the procedure, and nothing is recorded. A
-   payment hash that a shop payment already holds stops it the same way,
-   as a failed mint (order 8), and logs `shop.alert.duplicate_invoice`,
-   so that another payment's invoice is never recorded against a
-   charge.
+   payment hash that another charge's or a payer's shop payment already
+   holds stops it the same way, as a failed mint (order 8), and logs
+   `shop.alert.duplicate_invoice`, so that another payment's invoice is
+   never recorded against a charge. When the charge's own shop payment
+   holds it, the api uses that payment, as step 8 states for a conflict.
    Only then, and only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. When `recordInvoice`
