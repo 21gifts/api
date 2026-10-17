@@ -170,6 +170,11 @@ Kind 0 content of a listed shop:
 | `nip05`        | `<local>@<domain>`, see below                                          |
 | `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none |
 
+Without a public origin, the shop profile does what an account profile does
+today (`publishProfiles`): when `nip05Domain` (`src/lib/nip05.ts`) gives
+`null`, `nip05` is left out, and when `resolvePublicApiBase`
+(`src/lib/nostr/relays.ts`) is empty, `picture` and `banner` are left out.
+
 Kind 0 of a shop that is no longer listed:
 
 - `name` and `display_name`: `profile_name`, the name it had when it was last
@@ -263,6 +268,10 @@ account's username when the account has a username and a non-empty linked
 Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does
 today.
+`nip05` is `null` when the shop has no NIP-05 entry, the same case in which
+its kind 0 leaves the field out. A photo `url` is absolute from
+`resolvePublicApiBase`; when that is empty, it is the path alone
+(`/messages/:id/photo`).
 Photos are the note's photos in note order. `width` and `height` come from a
 header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
 never decodes the image, so an unauthenticated request cannot make the api
@@ -503,6 +512,12 @@ off the list. While the second release rolls out, every instance queues
 and no old instance pushes. The start-up pass of the second release queues
 every row, which covers the changes the old instances did not queue. Until
 the second release is live, 21.gifts shops are off the OpenCryptoPay list.
+An old push that is still in flight at the cutover, which OpenCryptoPay may
+apply after the client here gave up (`src/lib/ocp-place.ts` aborts after
+5 s), cannot undo a newer write: once a shop has a stored revision,
+OpenCryptoPay refuses a write without one with 409 `Stale revision` (R8). A
+late old push that lands before the first revisioned write is overwritten by
+that write.
 
 ## Order of work
 
