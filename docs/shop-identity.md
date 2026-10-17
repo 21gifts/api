@@ -84,6 +84,7 @@ New table `shop_identity`. The key columns have the same names as on
 | `profile_name`          | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed |
 | `ocp_photos_hash`       | `text NULL`            | SHA-256 of the photo set last answered by S5     |
 | `ocp_photos_pending`    | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)        |
+| `ocp_photos_generation` | `integer NOT NULL`     | Default `0`; raised by every S5 trigger          |
 
 Shop notes are only soft-deleted, so the reference never dangles.
 
@@ -214,9 +215,12 @@ The 410 body carries no name, so a hidden note's name is not served.
 
 `lat` and `lng` as in `GET /messages/places`. `address` is `null` while the
 pin has none. `tillUsername` is `null` when the till account has no username.
-Photos are the note's photos in note order. `width` and `height` come from
-`imageDisplaySize` (`src/lib/nostr/image.ts`) on the stored bytes when the
-response is built, and are both `null` when it cannot read them.
+Photos are the note's photos in note order. `width` and `height` are the two
+integers of the `WxH` string from `imageDisplaySize`
+(`src/lib/nostr/image.ts`) on the stored bytes when the response is built,
+and are both `null` when it returns `null`. For a JPEG whose EXIF orientation
+is 5 to 8 the two are swapped, the same displayed size OpenCryptoPay
+reports; reading that orientation is new code next to `imageDisplaySize`.
 
 ### Existing responses
 
@@ -254,7 +258,8 @@ response is built, and are both `null` when it cannot read them.
   `DELETE /map/places`: pin removed, till account cleared, note deleted or
   hidden. This includes `PATCH /messages/:id/shop-account` clearing the till,
   which today still re-sends the place. Each removal also sets
-  `ocp_photos_hash` to null, because OpenCryptoPay drops the photos with the
+  `ocp_photos_hash` to null, clears `ocp_photos_pending` and raises
+  `ocp_photos_generation`, because OpenCryptoPay drops the photos with the
   place, so a shop that is listed again sends its photos again.
   `publishExistingShopPlaces` at start-up sends listed shops and deletes
   tagged pins that are not listed.
@@ -263,19 +268,33 @@ response is built, and are both `null` when it cannot read them.
   Today the foreign key sets it to null, which would unlist the shop without
   any removal being sent.
 - **Photos:** a successful place `PUT`, and `PATCH /messages/:id/photos` on
-  a listed shop, set `ocp_photos_pending`. The worker takes at most 20 pending
-  shops per tick, outside the request path:
+  a listed shop, set `ocp_photos_pending` and raise `ocp_photos_generation`.
+  The worker takes at most 20 pending shops per tick (`WORKER_BATCH`),
+  outside the request path:
+  - It reads the generation `g` with the row. A shop that is not listed any
+    more gets its flag cleared and nothing is sent.
   - It computes the SHA-256 over the photo set. If it equals
     `ocp_photos_hash`, it clears the flag and sends nothing.
-  - Otherwise it sends up to 10 photos, in note order, as
-    `{ nostrPubkey, photos: [{ contentType, data }] }` with `data` the stored
-    bytes in base64, under the 15 MiB body limit of that route, with its own
-    30 s timeout. An empty set is sent as an empty list.
+  - Otherwise it sends up to 10 photos, in note order, with
+    `PUT /map/places/photos` as `{ nostrPubkey, photos: [{ contentType, data }] }`,
+    `data` being the stored bytes in base64. 21.gifts allows at most 10
+    photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
+    body limit. An empty set is sent as an empty list.
+  - It uses its own 30 s timeout instead of the 5 s timeout of the place
+    push (`src/lib/ocp-place.ts:356`), because the body can reach 15 MiB
+    while a place body is a few fields of text.
+  - Every write after the answer is conditional on
+    `ocp_photos_generation = g`. If a trigger or a removal ran while the push
+    was in flight, the write does nothing and the flag stays as that change
+    left it, so the newer state wins.
   - On 200 it stores the hash and clears the flag. OpenCryptoPay may skip
     single photos it does not accept and lists them in its answer; those are
     logged as `ocp.photos.skipped` and not retried for this set.
-  - On 400, 404 or 413 it also stores the hash and clears the flag, and logs
+  - On 400 or 413 it also stores the hash and clears the flag, and logs
     `ocp.photos.rejected`. The same set is not sent again.
+  - On 404 (OpenCryptoPay does not know the place yet, for example because
+    the place `PUT` failed) it sets the hash to null and clears the flag. The
+    next successful place `PUT` sets the flag again and the photos follow.
   - On a network error, a timeout or a 5xx it logs `ocp.photos.failed` and
     keeps the flag, so the next tick retries.
 - **Rollout:** OpenCryptoPay first accepts `nostrPubkey` and lists only shops
