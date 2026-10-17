@@ -164,7 +164,7 @@ Kind 0 content of a listed shop:
 | `name`         | shop name                                                                   |
 | `display_name` | shop name                                                                   |
 | `about`        | shop description                                                            |
-| `picture`      | absolute URL of `/messages/:id/photo`, otherwise `KIND0_PICTURE_URL`        |
+| `picture`      | absolute URL of `/messages/:id/photo.<ext>`, otherwise `KIND0_PICTURE_URL`  |
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
 | `website`      | `https://21.gifts/{npub}`                                                   |
 | `nip05`        | `<local>@<domain>`, see below                                               |
@@ -265,7 +265,7 @@ today.
       "country": "CH"
     }
   },
-  "photos": [{ "url": "https://…/messages/:id/photo", "width": 1280, "height": 960 }],
+  "photos": [{ "url": "https://…/messages/:id/photo.jpg", "width": 1280, "height": 960 }],
   "payUsername": "…",
   "nip05": "…@21.gifts",
   "createdAt": "ISO-8601"
@@ -279,10 +279,10 @@ Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does
 today.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
-its kind 0 leaves the field out. Photo 1 is `/messages/:id/photo` and photo
-n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumExtraPhotoUrl`
-in `src/lib/nostr/event.ts` uses), absolute from `resolvePublicApiBase`, or
-the path alone when that is empty.
+its kind 0 leaves the field out. Photo 1 is `/messages/:id/photo.<ext>` and
+photo n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumPhotoUrl`
+and `forumExtraPhotoUrl` in `src/lib/nostr/event.ts` use), absolute from
+`resolvePublicApiBase`, or the path alone when that is empty.
 Photos are the note's photos in note order. `width` and `height` come from a
 header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
 never decodes the image, so an unauthenticated request cannot make the api
