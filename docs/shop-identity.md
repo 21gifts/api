@@ -315,8 +315,9 @@ goes through a durable outbox on `shop_identity`, so a failed request is
 repeated and this side never has two requests for one shop in flight.
 OpenCryptoPay may still apply a request late, after the timeout here
 dropped it; the start-up pass, which queues every row again on each deploy,
-and the next change of the shop repair that, photos included (a `PUT` that
-recreates the place resets the photo hash). The
+and the next change of the shop repair the place; a `PUT` that recreates
+the place also repairs its photos. A photo request applied late after a
+newer set was confirmed stays until the photo set changes again. The
 fire-and-forget place push of today (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logs and swallows
 failures) is replaced by it.
@@ -365,8 +366,9 @@ Rules for every claim:
   (staff hide or author delete) and the cascade hide of an external author
   in `blockPubkeyAndHideRows`. That function's statement already selects
   the hidden ids but returns only their count today; the implementing change
-  makes it return the ids, or queues the affected `shop_identity` rows
-  inside the same statement. S1 queues a shop when it creates its key.
+  makes it return the ids and queues the affected `shop_identity` rows in a
+  following statement of the same transaction, so that it sees a key insert
+  that committed meanwhile. S1 queues a shop when it creates its key.
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
@@ -380,13 +382,16 @@ Rules for every claim:
   photos again. It keeps the 5 s
   timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
 - **Results.**
-  - `PUT` 2xx: in one conditional statement, clear the pending flag and
-    queue the photo push (set `ocp_photos_pending`, raise
+  - `PUT` 2xx: in one statement, clear the pending flag (conditional on
+    `g`) and queue the photo push (set `ocp_photos_pending`, raise
     `ocp_photos_generation`), so a crash cannot confirm the place without
-    queueing its photos. On 201, which OpenCryptoPay answers when this
-    request created the place, the same statement also sets
-    `ocp_photos_hash` to null: the place had no photos there, for example
-    after a `DELETE` that OpenCryptoPay applied late.
+    queueing its photos.
+  - `PUT` 201, which OpenCryptoPay answers when this request created the
+    place (for example after a `DELETE` it applied late): the place had no
+    photos there, so the worker sets `ocp_photos_hash` to null, raises
+    `ocp_photos_generation` and sets `ocp_photos_pending`, conditional only
+    on the token `c`, like the reset before a `DELETE`. Only the clearing of
+    the place flag still depends on `g`.
   - `DELETE` 2xx: clear the pending flag; the photo state was already reset
     before sending.
   - 400 or 409: log `ocp.place.rejected` with the message id and clear the
