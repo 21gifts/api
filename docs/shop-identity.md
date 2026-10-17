@@ -55,7 +55,7 @@ builds on that change.
 - The key is created after the commit of any write that makes a note a
   listed shop for the first time: today `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
-  `PATCH /messages/:id/shop-account`, `PATCH /me` (the profile note's
+  `PATCH /messages/:id/shop-account`, `PUT /me/about` (the profile note's
   text) and the staff restore `POST /debug/messages/:id/restore`.
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
@@ -116,11 +116,11 @@ New table `shop_identity`. The key columns have the same names as on
 `MessageStore.deleteById` can hard-delete a top-level note, for example when
 its video file is missing. It deletes nothing for a note that has a
 `shop_identity` row, the same way it already keeps a credit note with sats,
-and its callers treat that note like any other kept row. It checks for that
-row in its own statement, after it has locked the note and inside the same
-transaction, so a key insert that commits while the delete waits is still
-seen. So the reference
-never dangles and the identity is never deleted.
+and its callers treat that note like any other kept row. `deleteById` is a
+single statement today; the implementing change wraps it in a transaction
+that locks the note, checks for that row in its own statement and then
+deletes, so a key insert that commits while the delete waits is still seen.
+So the reference never dangles and the identity is never deleted.
 
 ### Encryption at rest
 
@@ -380,9 +380,9 @@ Rules for every claim:
   (staff hide or author delete) and the cascade hide of an external author
   in `blockPubkeyAndHideRows`. That function's statement already selects
   the hidden ids but returns only their count today; the implementing change
-  makes it return the ids and queues the affected `shop_identity` rows in a
-  following statement of the same transaction, so that it sees a key insert
-  that committed meanwhile. S1 queues a shop when it creates its key.
+  makes it return the ids and wraps it in a transaction that queues the
+  affected `shop_identity` rows in a following statement, so that it sees a
+  key insert that committed meanwhile. S1 queues a shop when it creates its key.
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
