@@ -316,6 +316,33 @@ describe('GET /conversations', () => {
     expect(body.conversations[0]?.unread).toBe(false);
   });
 
+  it('marks the counterpart canReceive only with a verified wallet', async () => {
+    const auth = await seeded();
+    await withOther(auth);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.openMemberMember('acc', 'other', new Date(now()));
+    await conversations.appendMessage({
+      id: 'm1',
+      conversationId: thread.id,
+      text: 'hi',
+      createdAt: new Date(now()),
+      senderAccountId: 'acc',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'pending',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    type Body = { conversations: Array<{ canReceive: boolean }> };
+    const before = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(((await before.json()) as Body).conversations[0]?.canReceive).toBe(false);
+    await verifyWallet(auth, 'other', 'bob', OTHER_PUBKEY);
+    const after = await mount(auth, conversations).request('/conversations', { headers: AUTH });
+    expect(((await after.json()) as Body).conversations[0]?.canReceive).toBe(true);
+  });
+
   it('lists a member thread when the last row is gift-only', async () => {
     const auth = await seeded();
     await withOther(auth);
@@ -2754,6 +2781,7 @@ describe('moderator_group', () => {
     };
     expect(body.conversation.kind).toBe('moderator_group');
     expect(body.conversation.name).toBe('Moderators');
+    expect((body.conversation as { canReceive?: boolean }).canReceive).toBe(false);
     expect(body.conversation.lastText).toBe('');
     expect(body.conversation.lastFromMe).toBe(false);
     expect(body.conversation.unread).toBe(false);
@@ -4447,6 +4475,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -4487,6 +4516,7 @@ describe('POST /conversations/:id/invoice', () => {
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const attempt = (await messages.listInvoiceAttempts(5))[0];
     expect(attempt?.result).toBe('no_key');

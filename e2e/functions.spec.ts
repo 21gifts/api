@@ -971,6 +971,24 @@ test('Function: serializeMessage — GET /messages without bearer is 401', async
   expect(res.status()).toBe(401);
 });
 
+test('Function: messagePay — GET /messages marks no author able to receive while the LNURL server is off', async ({
+  request,
+}) => {
+  test.setTimeout(30_000);
+  const session = await memberSession(request);
+  const headers = { authorization: session.authorization };
+  expect((await request.post('/me/rules-agreement', { headers })).status()).toBe(200);
+  const res = await request.get('/messages', { headers });
+  expect(res.status()).toBe(200);
+  const body = (await res.json()) as {
+    messages: Array<{ payable: boolean; authorCanReceive: boolean }>;
+  };
+  for (const message of body.messages) {
+    expect(message.authorCanReceive).toBe(false);
+    expect(message.payable).toBe(false);
+  }
+});
+
 test('Function: attachHeartStats — GET /messages without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages');
   expect(res.status()).toBe(401);
