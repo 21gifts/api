@@ -112,6 +112,7 @@ bun run e2e             # Playwright against bun src/index.ts
 | [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                      |
 | [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                  |
 | [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC pays out as bitcoin on the shop's Spark wallet (concept only, not implemented) |
+| [`docs/shop-identity.md`](./docs/shop-identity.md)           | Every shop gets its own NOSTR identity and page `/{npub}`, shared with OpenCryptoPay (concept only, not implemented)     |
 | [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                              |
 | [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                         |
 | [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                |
