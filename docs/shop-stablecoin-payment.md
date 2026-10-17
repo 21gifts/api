@@ -623,12 +623,15 @@ One procedure creates a shop payment, for a charge or for a payer:
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
    `account-merge.ts`. The row lock serialises the creation with
    `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
-   means the LNURL server returned an invoice that another payment
-   already holds: the procedure stops as after a failed mint (order 8)
-   and logs `shop.alert.duplicate_invoice`. This is the race step 4's check cannot see. For a charge it also deletes the `pos_charge_invoice` row for that
-   hash when step 4's `recordInvoice` inserted it (returned `true`),
-   unless the payment that holds the hash is this charge's own; a row
-   this attempt did not insert stays, whichever charge it belongs to. It writes nothing
+   reads the payment that holds the hash. When it is this charge's own
+   shop payment, the conflict is handled like the lost insert below: the
+   api uses that payment. Otherwise the LNURL server returned an invoice
+   that another payment already holds: the procedure stops as after a
+   failed mint (order 8) and logs `shop.alert.duplicate_invoice`. This is
+   the race step 4's check cannot see. For a charge it then also deletes
+   the `pos_charge_invoice` row for that hash when step 4's
+   `recordInvoice` inserted it (returned `true`); a row this attempt did
+   not insert stays, whichever charge it belongs to. It writes nothing
    else. Any
    other lost insert (`23505`), which only the payment's indexes can
    raise because offers never do, does not insert again blindly: under the same locks the api reads the row that won. When
