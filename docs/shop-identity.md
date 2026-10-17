@@ -189,8 +189,11 @@ Kind 0 of a shop that is no longer listed:
 `buildKind0Content` (`src/lib/nostr/event.ts`) always writes
 `website: 'https://21.gifts'` and both images, so it gains two optional
 arguments: a `website` that replaces the fixed value, and a flag that leaves
-out `picture` and `banner` for a shop that is no longer listed. Accounts call
-it without them and keep today's content.
+out `picture` and `banner` for a shop that is no longer listed.
+`buildKind0Event`, which builds the content again for the event it signs,
+gains the same two arguments and passes them on, so the signed event and the
+cached content match; a test checks the content of a signed shop event.
+Accounts call both without them and keep today's content.
 
 Kind 10002 lists the same write relays as an account's.
 
