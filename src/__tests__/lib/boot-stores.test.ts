@@ -290,6 +290,19 @@ describe('openBootStores', () => {
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
     expect(executes.some((q) => q.includes('pos_charge'))).toBe(true);
     expect(executes.some((q) => q.includes('conversation'))).toBe(true);
+    const posChargeIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS pos_charge_invoice/i.test(q),
+    );
+    const shopPaymentIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS shop_payment \(/i.test(q),
+    );
+    const conversationIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS conversation \(/i.test(q),
+    );
+    // Shop payment tables reference pos_charge, so they migrate right after it.
+    expect(posChargeIdx).toBeGreaterThanOrEqual(0);
+    expect(shopPaymentIdx).toBeGreaterThan(posChargeIdx);
+    expect(conversationIdx).toBeGreaterThan(shopPaymentIdx);
     expect(executes.some((q) => q.includes('push_subscription'))).toBe(true);
     expect(executes.some((q) => q.includes('notification'))).toBe(true);
     expect(executes.some((q) => q.includes('trust_edge'))).toBe(true);

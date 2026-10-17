@@ -264,3 +264,111 @@ export function resolveFreePaymentsConfig(
   }
   return { zapNsec: Uint8Array.from(Buffer.from(nsecHex, 'hex')), operatorUrl };
 }
+
+/** Resolved configuration of the shop payment in USDT and USDC (`docs/shop-stablecoin-payment.md`). */
+export interface ShopPaymentConfig {
+  /** Orchestra origin (`ORCHESTRA_BASE_URL`), absolute `https`, no path, no trailing slash. */
+  orchestraBaseUrl: string;
+  /** Orchestra server key (`ORCHESTRA_API_KEY`, `fn_…`). Never logged. */
+  orchestraApiKey: string;
+  /** JSON-RPC URL per EVM chain id (`SHOP_EVM_RPC`). Never logged. */
+  evmRpc: ReadonlyMap<number, string>;
+  /** Refund address sent on every quote (`SHOP_REFUND_ADDRESS`), lowercase `0x` + 40 hex. */
+  refundAddress: string;
+}
+
+/**
+ * Whether `value` is an absolute `https:` URL without user info.
+ *
+ * @param value - Candidate URL.
+ * @returns The parsed URL, or `null`.
+ */
+function parseHttpsUrl(value: string): URL | null {
+  const parsed = parseHttpUrl(value);
+  if (
+    parsed === null ||
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
+    return null;
+  }
+  return parsed;
+}
+
+/**
+ * Parse `SHOP_EVM_RPC`: a JSON object from decimal chain id (no sign, no
+ * leading zero) to an absolute `https` URL.
+ *
+ * @param raw - Raw env value.
+ * @returns The endpoints by chain id, or `null` when the value is missing,
+ *   blank, not such an object, or has no entry.
+ */
+function parseEvmRpc(raw: string | undefined): ReadonlyMap<number, string> | null {
+  if (raw === undefined || raw.trim() === '') {
+    return null;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const endpoints = new Map<number, string>();
+  for (const [key, value] of Object.entries(parsed)) {
+    const chainId = Number(key);
+    if (!/^[1-9][0-9]*$/.test(key) || !Number.isSafeInteger(chainId)) {
+      return null;
+    }
+    if (typeof value !== 'string' || parseHttpsUrl(value.trim()) === null) {
+      return null;
+    }
+    endpoints.set(chainId, value.trim());
+  }
+  return endpoints.size === 0 ? null : endpoints;
+}
+
+/**
+ * Resolve the shop payment configuration from the environment.
+ *
+ * Returns `null`, so no stablecoin is offered and the process still boots,
+ * when any of the four values is missing or invalid: `ORCHESTRA_BASE_URL`
+ * must be an absolute `https` origin without path, query, or user info;
+ * `ORCHESTRA_API_KEY` must be a server key (`fn_…`; a client key `fnp_…` is
+ * refused); `SHOP_EVM_RPC` must be a non-empty JSON object from decimal chain
+ * id to an absolute `https` URL; `SHOP_REFUND_ADDRESS` must be `0x` and 40
+ * hexadecimal characters. Never logs a value.
+ *
+ * @param env - Environment slice.
+ * @returns The resolved config, or `null` when the feature is off.
+ */
+export function resolveShopPaymentConfig(
+  env: Record<string, string | undefined>,
+): ShopPaymentConfig | null {
+  const baseRaw = trimBaseUrl(env['ORCHESTRA_BASE_URL'] ?? '');
+  const base = parseHttpsUrl(baseRaw);
+  if (base === null || base.pathname !== '/' || base.search !== '' || base.hash !== '') {
+    return null;
+  }
+  const apiKey = (env['ORCHESTRA_API_KEY'] ?? '').trim();
+  if (!apiKey.startsWith('fn_') || apiKey.length <= 'fn_'.length) {
+    return null;
+  }
+  const evmRpc = parseEvmRpc(env['SHOP_EVM_RPC']);
+  if (evmRpc === null) {
+    return null;
+  }
+  const refund = (env['SHOP_REFUND_ADDRESS'] ?? '').trim();
+  if (!/^0x[0-9a-fA-F]{40}$/.test(refund)) {
+    return null;
+  }
+  return {
+    orchestraBaseUrl: base.origin,
+    orchestraApiKey: apiKey,
+    evmRpc,
+    refundAddress: refund.toLowerCase(),
+  };
+}

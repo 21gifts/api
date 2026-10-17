@@ -6,6 +6,7 @@ import {
   resolveAllowedOrigins,
   resolveFreePaymentsConfig,
   resolveLnurlServerConfig,
+  resolveShopPaymentConfig,
   resolveWebAuthnConfig,
 } from '@/lib/config';
 
@@ -248,5 +249,99 @@ describe('resolveFreePaymentsConfig', () => {
     expect(
       resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: NSEC, SPARK_OPERATOR_URL: 'not a url' }),
     ).toBeNull();
+  });
+});
+
+describe('resolveShopPaymentConfig', () => {
+  const REFUND = `0x${'Ab'.repeat(20)}`;
+  const VALID = {
+    ORCHESTRA_BASE_URL: 'https://orchestra.example/',
+    ORCHESTRA_API_KEY: ' fn_server ',
+    SHOP_EVM_RPC: JSON.stringify({
+      '1': ' https://eth.rpc.example/key ',
+      '137': 'https://pol.example',
+    }),
+    SHOP_REFUND_ADDRESS: ` ${REFUND} `,
+  };
+
+  function withEnv(over: Record<string, string | undefined>) {
+    return resolveShopPaymentConfig({ ...VALID, ...over });
+  }
+
+  it('resolves all four values, trimmed, with the origin and a lowercase refund address', () => {
+    const config = resolveShopPaymentConfig(VALID);
+    expect(config).toEqual({
+      orchestraBaseUrl: 'https://orchestra.example',
+      orchestraApiKey: 'fn_server',
+      evmRpc: new Map([
+        [1, 'https://eth.rpc.example/key'],
+        [137, 'https://pol.example'],
+      ]),
+      refundAddress: REFUND.toLowerCase(),
+    });
+  });
+
+  it('is off when ORCHESTRA_BASE_URL is missing or not an https origin', () => {
+    for (const value of [
+      undefined,
+      '',
+      'not a url',
+      'ftp://orchestra.example',
+      'http://orchestra.example',
+      'https://user:pw@orchestra.example',
+      'https://user@orchestra.example',
+      'https://:pw@orchestra.example',
+      'https://orchestra.example/v1',
+      'https://orchestra.example?x=1',
+      'https://orchestra.example#frag',
+    ]) {
+      expect(withEnv({ ORCHESTRA_BASE_URL: value })).toBeNull();
+    }
+  });
+
+  it('is off without a server key (fn_…); a client key fnp_… is refused', () => {
+    for (const value of [undefined, '', '   ', 'fn_', ' fn_ ', 'fnp_client', 'sk_live']) {
+      expect(withEnv({ ORCHESTRA_API_KEY: value })).toBeNull();
+    }
+  });
+
+  it('is off when SHOP_EVM_RPC is missing, blank, or not a chain-id-to-https object', () => {
+    for (const value of [
+      undefined,
+      '',
+      '  ',
+      '{not json',
+      'null',
+      '[]',
+      '42',
+      '"https://x.example"',
+      '{}',
+      JSON.stringify({ '01': 'https://x.example' }),
+      JSON.stringify({ '0': 'https://x.example' }),
+      JSON.stringify({ '-1': 'https://x.example' }),
+      JSON.stringify({ '1.5': 'https://x.example' }),
+      JSON.stringify({ eth: 'https://x.example' }),
+      JSON.stringify({ '99999999999999999999': 'https://x.example' }),
+      JSON.stringify({ '1': 42 }),
+      JSON.stringify({ '1': 'http://x.example' }),
+      JSON.stringify({ '1': 'https://user:pw@x.example' }),
+      JSON.stringify({ '1': 'not a url' }),
+      JSON.stringify({ '1': 'https://x.example', '137': 'http://y.example' }),
+    ]) {
+      expect(withEnv({ SHOP_EVM_RPC: value })).toBeNull();
+    }
+  });
+
+  it('is off without a 0x + 40 hex refund address', () => {
+    for (const value of [
+      undefined,
+      '',
+      `0x${'a'.repeat(39)}`,
+      `0x${'a'.repeat(41)}`,
+      `${'a'.repeat(42)}`,
+      `0x${'g'.repeat(40)}`,
+    ]) {
+      expect(withEnv({ SHOP_REFUND_ADDRESS: value })).toBeNull();
+    }
   });
 });
