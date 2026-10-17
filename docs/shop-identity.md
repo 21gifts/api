@@ -345,9 +345,10 @@ Rules for every claim:
   between that check and the request starting, so a request that runs to
   its full timeout still ends before another worker can claim the row. For
   photos the bytes are read before this check.
-- Results that change state are also conditional on the generation `g`; if
-  a newer change was queued meanwhile, the worker only releases the claim,
-  and the newer change is sent next.
+- Every write after a claim that clears a pending flag or stores a hash is
+  also conditional on the generation `g`, including the writes of the paths
+  that send nothing; if a newer change was queued meanwhile, the worker only
+  releases the claim, and the newer change is sent next.
 
 ### Place outbox
 
@@ -358,8 +359,10 @@ Rules for every claim:
   row, so it sees a `shop_identity` row that a concurrent key insert has
   just committed. That covers the writes named in S1, `DELETE /messages/:id`
   (staff hide or author delete) and the cascade hide of an external author
-  in `blockPubkeyAndHideRows`, which already returns the hidden ids. S1
-  queues a shop when it creates its key.
+  in `blockPubkeyAndHideRows`. That function's statement already selects
+  the hidden ids but returns only their count today; the implementing change
+  makes it return the ids, or queues the affected `shop_identity` rows
+  inside the same statement. S1 queues a shop when it creates its key.
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
@@ -373,8 +376,10 @@ Rules for every claim:
   photos again. It keeps the 5 s
   timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
 - **Results.**
-  - `PUT` 2xx: clear the pending flag, then queue the photo push (set
-    `ocp_photos_pending`, raise `ocp_photos_generation`).
+  - `PUT` 2xx: in one conditional statement, clear the pending flag and
+    queue the photo push (set `ocp_photos_pending`, raise
+    `ocp_photos_generation`), so a crash cannot confirm the place without
+    queueing its photos.
   - `DELETE` 2xx: clear the pending flag; the photo state was already reset
     before sending.
   - 400 or 409: log `ocp.place.rejected` with the message id and clear the
@@ -401,10 +406,14 @@ Rules for every claim:
 ### Photo push
 
 - **Queueing.** A successful place `PUT` (above) sets `ocp_photos_pending`
-  and raises `ocp_photos_generation`. `PATCH /messages/:id/photos` does the
-  same inside the `replacePhotos` transaction, after it has locked the
-  message row and only when the note is listed, so a crash cannot lose the
-  change and the worker never reads the old set under the new generation.
+  and raises `ocp_photos_generation`. Every store write that changes the
+  photos of a listed note does the same: `replacePhotos`
+  (`PATCH /messages/:id/photos`) and `updatePhoto` (the profile note's
+  first photo, `src/routes/me.ts`). Both are single statements today; the
+  implementing change wraps each in a transaction that locks the message
+  row, writes the photos and queues, only when the note is listed. A crash
+  then cannot lose the change, and the worker never reads the old set under
+  the new generation.
 - **Claiming.** As above, with `ocp_photos_claimed_until` and
   `ocp_photos_claim`. A row whose place is still pending is skipped, so
   photos only follow a confirmed place.
@@ -445,20 +454,27 @@ Rules for every claim:
 OpenCryptoPay first accepts `nostrPubkey` and lists only shops that have one
 (its step 1a), then adds the photo route (step 2), and only then rejects
 writes without a key (step 1b). This change deploys after 1a and 2 and before
-1b, in two releases: the first sets `SHOP_PLACE_PUSH_ENABLED`
-(`src/lib/shop-place-push-enabled.ts`) to `false`, so no running instance
-pushes outside the outbox; the second brings the outbox. During a rolling
-deploy of the second release no old instance writes to OpenCryptoPay any
-more. Until it is live, 21.gifts shops are off the OpenCryptoPay list.
+1b, in two releases:
+
+1. The first sets `SHOP_PLACE_PUSH_ENABLED`
+   (`src/lib/shop-place-push-enabled.ts`) to `false`, so no instance pushes
+   outside the outbox, and adds the outbox columns and every queueing write
+   of this section, including the queue on key insert, but no sender.
+2. The second adds the two senders and the start-up pass.
+
+During the rolling deploy of either release, old and new instances both
+either queue or do not push at all, so no change is lost and nothing is
+sent outside the outbox. The start-up pass of the second release then
+sends what the first release queued. Until it is live, 21.gifts shops are off the OpenCryptoPay list.
 
 ## Order of work
 
 0. 21gifts/api#478: complete shops with a structured address.
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
-3. S5 in two releases: first `SHOP_PLACE_PUSH_ENABLED` off, then the place
-   outbox with `nostrPubkey`, PUT or DELETE decided at send time, paged
-   start-up and the photo push.
+3. S5 in two releases: first `SHOP_PLACE_PUSH_ENABLED` off with the outbox
+   columns and all queueing writes, then the senders (place `PUT` or
+   `DELETE` decided at send time, photo push) and the paged start-up.
 4. S4 in `21gifts/app`.
 
 Each step is one pull request with the handbook, e2e tests and the coverage
