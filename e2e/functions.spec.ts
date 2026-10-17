@@ -2866,6 +2866,10 @@ test('Function: moveDailyRosterToWalletAddresses — default boot has no DATABAS
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
+test('Function: setUsernameWithRoster — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: normalizeDailyRosterComment — POST /funding/daily-roster/comment without bearer is 401', async ({
   request,
 }) => {

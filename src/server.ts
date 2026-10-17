@@ -163,9 +163,9 @@ export interface AppDeps {
    */
   debugReadToken?: string;
   /**
-   * Reserved-connection transaction port for `POST /debug/accounts/merge`.
-   * Omitted on a memory boot. A valid body then returns 503. An invalid body
-   * is still 400.
+   * Reserved-connection transaction port for `POST /debug/accounts/merge`
+   * and `POST /me/username`. Omitted on a memory boot. A valid merge body
+   * then returns 503. An invalid body is still 400.
    */
   mergeDb?: MergeDb;
   /**
@@ -404,7 +404,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
  *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
  *   equal to debugToken after trim throws before routes mount),
- *   mergeDb, gift store,
+ *   mergeDb (also `POST /me/username`), gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
@@ -694,6 +694,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       dailyRoster: rosterStore,
       ...receivingDeps,
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
   app.route(

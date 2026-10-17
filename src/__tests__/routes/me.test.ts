@@ -6,7 +6,12 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
+import type { MergeDb } from '@/lib/account-merge';
+import {
+  InMemoryDailyRosterStore,
+  type DailyRosterStore,
+  type UsernameRosterResult,
+} from '@/lib/daily-roster-store';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerToken, meRoutes } from '@/routes/me';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
@@ -41,6 +46,7 @@ interface MountOpts {
   notificationStore?: InMemoryNotificationStore;
   walletEnabled?: boolean;
   dailyRoster?: DailyRosterStore;
+  mergeDb?: MergeDb;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -56,6 +62,7 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
         : { notificationStore: opts.notificationStore }),
       ...(opts.walletEnabled === true ? { lnurlServer: LNURL_SERVER } : {}),
       ...(opts.dailyRoster === undefined ? {} : { dailyRoster: opts.dailyRoster }),
+      ...(opts.mergeDb === undefined ? {} : { mergeDb: opts.mergeDb }),
     }),
   );
 }
@@ -2208,6 +2215,199 @@ describe('POST /me/username', () => {
         (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
       ),
     ).toBe(true);
+  });
+
+  function stubMergeDb(
+    result: UsernameRosterResult,
+    store?: InMemoryAuthStore,
+    nextUsername?: string,
+  ): MergeDb {
+    return {
+      async begin<T>(): Promise<T> {
+        if (result.ok && store !== undefined && nextUsername !== undefined) {
+          const acc = await store.getAccount('acc');
+          if (acc !== undefined) {
+            await store.updateAccount({ ...acc, username: nextUsername });
+          }
+        }
+        return result as unknown as T;
+      },
+    };
+  }
+
+  it('uses mergeDb to set the username and logs a rename only when rows moved', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const mergeDb = stubMergeDb(
+      { ok: true, previous: 'oldname', moved: 2, removed: 0 },
+      store,
+      'newname',
+    );
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { username: string }).username).toBe('newname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'oldname@example.test', amountUsd: 3 }],
+    });
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'daily_roster.address.renamed' &&
+          e['accountId'] === 'acc' &&
+          e['moved'] === 2 &&
+          e['removed'] === 0,
+      ),
+    ).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.username.set' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.rename_failed'),
+    ).toBe(false);
+  });
+
+  it('does not log a mergeDb rename that touches no row', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const mergeDb = stubMergeDb(
+      { ok: true, previous: 'oldname', moved: 0, removed: 0 },
+      store,
+      'newname',
+    );
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.renamed')).toBe(
+      false,
+    );
+  });
+
+  it('returns 409 when mergeDb reports the username taken', async () => {
+    const store = await seededStore();
+    vi.spyOn(store, 'getAccountByUsername').mockResolvedValue(undefined);
+    const mergeDb = stubMergeDb({ ok: false, reason: 'taken' });
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'ada' }),
+      },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Username is already in use' });
+  });
+
+  it('returns 409 when mergeDb reports the username frozen', async () => {
+    const store = await seededStore();
+    const mergeDb = stubMergeDb({ ok: false, reason: 'frozen' });
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'ada' }),
+      },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Username is fixed once the wallet is connected',
+    });
+  });
+
+  it('returns 401 when mergeDb reports the account missing', async () => {
+    const store = await seededStore();
+    const mergeDb = stubMergeDb({ ok: false, reason: 'missing' });
+    const roster = rosterAt('oldname@example.test');
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'ada' }),
+      },
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('fails the request without rename_failed when mergeDb throws', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const mergeDb: MergeDb = {
+      async begin(): Promise<never> {
+        throw new Error('db down');
+      },
+    };
+    const res = await mount(store, { walletEnabled: true, dailyRoster: roster, mergeDb }).request(
+      '/me/username',
+      {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'newname' }),
+      },
+    );
+    expect(res.status).toBe(500);
+    expect((await store.getAccount('acc'))?.username).toBe('oldname');
+    expect(
+      parsedEvents(warn).some((e) => e['event'] === 'daily_roster.address.rename_failed'),
+    ).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.username.set')).toBe(false);
+  });
+
+  it('keeps setUsername when mergeDb is set without a daily roster', async () => {
+    const store = await storeWithUsername('oldname');
+    const mergeDb: MergeDb = {
+      async begin(): Promise<never> {
+        throw new Error('mergeDb.begin must not run');
+      },
+    };
+    const res = await mount(store, { walletEnabled: true, mergeDb }).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'newname' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await store.getAccount('acc'))?.username).toBe('newname');
+  });
+
+  it('keeps setUsername when mergeDb is set without lnurlServer', async () => {
+    const store = await storeWithUsername('oldname');
+    const roster = rosterAt('oldname@example.test');
+    const mergeDb: MergeDb = {
+      async begin(): Promise<never> {
+        throw new Error('mergeDb.begin must not run');
+      },
+    };
+    const res = await mount(store, { dailyRoster: roster, mergeDb }).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'newname' }),
+    });
+    expect(res.status).toBe(200);
+    expect((await store.getAccount('acc'))?.username).toBe('newname');
+    expect(await roster.get()).toMatchObject({
+      recipients: [{ address: 'oldname@example.test', amountUsd: 2 }],
+      moderators: [{ address: 'oldname@example.test', amountUsd: 3 }],
+    });
   });
 });
 

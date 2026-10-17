@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   DAILY_ROSTER_ADDRESS_LISTED,
@@ -17,6 +18,7 @@ import {
   DAILY_ROSTER_RENAME_SQL,
   migrateDailyRosterSchema,
   moveDailyRosterToWalletAddresses,
+  setUsernameWithRoster,
 } from '@/lib/daily-roster-store';
 
 class MockSql implements SqlClient {
@@ -105,6 +107,185 @@ describe('moveDailyRosterToWalletAddresses', () => {
     expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/DELETE FROM daily_roster_entry d/);
     expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/UPDATE daily_roster_entry u/);
     expect(DAILY_ROSTER_WALLET_MOVE_SQL).not.toMatch(/;/);
+  });
+});
+
+interface UsernameRosterLock {
+  username: string | null;
+  spark_pubkey_verified_at: Date | string | null;
+}
+
+interface UsernameRosterFake {
+  lock?: UsernameRosterLock | null;
+  taken?: boolean;
+  rename?: { moved: number | string; removed: number | string };
+  beginError?: unknown;
+  queryError?: unknown;
+}
+
+function usernameRosterDb(options: UsernameRosterFake = {}): {
+  db: MergeDb;
+  queries: { text: string; params: readonly unknown[] }[];
+} {
+  const queries: { text: string; params: readonly unknown[] }[] = [];
+  const db: MergeDb = {
+    async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
+      if (options.beginError !== undefined) {
+        throw options.beginError;
+      }
+      return run({
+        async query<R>(text: string, params: readonly unknown[] = []): Promise<R[]> {
+          queries.push({ text, params });
+          if (options.queryError !== undefined && text.includes('UPDATE account SET username')) {
+            throw options.queryError;
+          }
+          if (text.includes('FOR UPDATE')) {
+            if (options.lock === null || options.lock === undefined) {
+              return [] as unknown as R[];
+            }
+            return [options.lock] as unknown as R[];
+          }
+          if (text.includes('id <> $1')) {
+            return (options.taken === true ? [{ 1: 1 }] : []) as unknown as R[];
+          }
+          if (text.includes('UPDATE account SET username')) {
+            return [] as unknown as R[];
+          }
+          if (text === DAILY_ROSTER_RENAME_SQL) {
+            return (options.rename === undefined ? [] : [options.rename]) as unknown as R[];
+          }
+          throw new Error(`unexpected query: ${text}`);
+        },
+      });
+    },
+  };
+  return { db, queries };
+}
+
+describe('setUsernameWithRoster', () => {
+  const accountId = 'acc-1';
+  const host = 'Example.TEST';
+
+  it('maps a unique-violation from begin to taken', async () => {
+    const { db } = usernameRosterDb({ beginError: uniqueError() });
+    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('rethrows a non-unique begin error', async () => {
+    const { db } = usernameRosterDb({ beginError: new Error('connection lost') });
+    await expect(setUsernameWithRoster(db, accountId, 'ada', host)).rejects.toThrow(
+      'connection lost',
+    );
+  });
+
+  it('maps a unique-violation from the username UPDATE to taken', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      queryError: uniqueError(),
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+    expect(queries.some((item) => item.text.includes('UPDATE account SET username'))).toBe(true);
+  });
+
+  it('returns missing when the locked account row is absent', async () => {
+    const { db, queries } = usernameRosterDb({ lock: null });
+    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.text).toMatch(/FOR UPDATE/);
+  });
+
+  it('returns frozen when spark_pubkey_verified_at is set', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'ada', spark_pubkey_verified_at: '2026-01-01T00:00:00.000Z' },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'ada2', host)).toEqual({
+      ok: false,
+      reason: 'frozen',
+    });
+    expect(queries).toHaveLength(1);
+  });
+
+  it('returns taken when another account already holds the username', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      taken: true,
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'takenname', host)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[1]?.params).toEqual([accountId, 'takenname']);
+  });
+
+  it('updates the username and moves roster rows in separate statements', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'OldName', spark_pubkey_verified_at: null },
+      rename: { moved: '2', removed: '1' },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: 'OldName',
+      moved: 2,
+      removed: 1,
+    });
+    expect(queries.map((item) => item.text)).toEqual([
+      'SELECT username, spark_pubkey_verified_at FROM account WHERE id = $1 FOR UPDATE',
+      `SELECT 1 FROM account WHERE id <> $1 AND username IS NOT NULL
+          AND lower(trim(username)) = lower(trim($2)) LIMIT 1`,
+      'UPDATE account SET username = $2 WHERE id = $1',
+      DAILY_ROSTER_RENAME_SQL,
+    ]);
+    expect(queries[3]?.params).toEqual(['oldname@example.test', 'newname@example.test']);
+  });
+
+  it('reads zero rename counts when the rename statement returns no row', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: 'oldname',
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('skips the roster move when the previous username is null', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: null, spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: null,
+      moved: 0,
+      removed: 0,
+    });
+    expect(queries).toHaveLength(3);
+    expect(queries.some((item) => item.text === DAILY_ROSTER_RENAME_SQL)).toBe(false);
+  });
+
+  it('skips the roster move when the username is unchanged after normalize', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: '  Ada  ', spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
+      ok: true,
+      previous: '  Ada  ',
+      moved: 0,
+      removed: 0,
+    });
+    expect(queries).toHaveLength(3);
+    expect(queries.some((item) => item.text === DAILY_ROSTER_RENAME_SQL)).toBe(false);
   });
 });
 

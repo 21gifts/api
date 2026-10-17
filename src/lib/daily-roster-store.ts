@@ -8,6 +8,7 @@
  * {@link DAILY_ROSTER_DEFAULT_AMOUNT_USD}.
  */
 
+import type { MergeDb } from '@/lib/account-merge';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   DAILY_ROSTER_ADDRESS_LISTED,
@@ -201,6 +202,11 @@ export interface DailyRosterWalletMove {
   removed: number;
 }
 
+/** Result of {@link setUsernameWithRoster}. */
+export type UsernameRosterResult =
+  | { ok: true; previous: string | null; moved: number; removed: number }
+  | { ok: false; reason: 'frozen' | 'taken' | 'missing' };
+
 /**
  * One statement that points every listed row at the member's in-app wallet
  * address (see {@link moveDailyRosterToWalletAddresses}). `$1` is the host,
@@ -301,6 +307,79 @@ moved AS (
 )
 SELECT (SELECT count(*) FROM moved)::int AS moved,
        (SELECT count(*) FROM removed)::int AS removed`;
+
+/**
+ * Set an account's username and move its daily roster rows from
+ * `<previous>@<host>` to `<username>@<host>` in one transaction that holds the
+ * account row lock, so a concurrent rename of the same account waits and then
+ * sees both the new username and the moved rows. A missing account, a verified
+ * wallet, or another account already holding the username leaves the rows
+ * unchanged. A unique-index race on `account_username_uidx` is `'taken'`.
+ * Each step is its own SQL statement so READ COMMITTED sees a fresh snapshot
+ * after the lock. The rename statement is {@link DAILY_ROSTER_RENAME_SQL}.
+ *
+ * @param db - Transaction port ({@link MergeDb.begin}).
+ * @param accountId - Account id.
+ * @param username - Normalized username (see `normalizeUsername`).
+ * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`).
+ * @returns `{ ok: true, previous, moved, removed }` on success (`previous` is
+ *   the replaced username, `null` when none was set); `{ ok: false, reason }`
+ *   with `'frozen'`, `'taken'`, or `'missing'`.
+ * @throws Unexpected driver errors other than unique violation `23505`.
+ */
+export async function setUsernameWithRoster(
+  db: MergeDb,
+  accountId: string,
+  username: string,
+  host: string,
+): Promise<UsernameRosterResult> {
+  try {
+    return await db.begin(async (tx) => {
+      const locked = await tx.query<{
+        username: string | null;
+        spark_pubkey_verified_at: Date | string | null;
+      }>(`SELECT username, spark_pubkey_verified_at FROM account WHERE id = $1 FOR UPDATE`, [
+        accountId,
+      ]);
+      const row = locked[0];
+      if (row === undefined) {
+        return { ok: false, reason: 'missing' };
+      }
+      if (row.spark_pubkey_verified_at !== null) {
+        return { ok: false, reason: 'frozen' };
+      }
+      const taken = await tx.query<Record<string, unknown>>(
+        `SELECT 1 FROM account WHERE id <> $1 AND username IS NOT NULL
+          AND lower(trim(username)) = lower(trim($2)) LIMIT 1`,
+        [accountId, username],
+      );
+      if (taken[0] !== undefined) {
+        return { ok: false, reason: 'taken' };
+      }
+      await tx.query(`UPDATE account SET username = $2 WHERE id = $1`, [accountId, username]);
+      const previous = (row.username ?? '').trim().toLowerCase();
+      let moved = 0;
+      let removed = 0;
+      if (previous !== '' && previous !== username) {
+        const h = host.toLowerCase();
+        const from = `${previous}@${h}`.trim().toLowerCase();
+        const to = `${username}@${h}`.trim().toLowerCase();
+        const [rename] = await tx.query<{ moved: number | string; removed: number | string }>(
+          DAILY_ROSTER_RENAME_SQL,
+          [from, to],
+        );
+        moved = Number(rename?.moved ?? 0);
+        removed = Number(rename?.removed ?? 0);
+      }
+      return { ok: true, previous: row.username ?? null, moved, removed };
+    });
+  } catch (error: unknown) {
+    if (isUniqueViolation(error)) {
+      return { ok: false, reason: 'taken' };
+    }
+    throw error;
+  }
+}
 
 /**
  * Process-local {@link DailyRosterStore}. Used in tests and when no database
