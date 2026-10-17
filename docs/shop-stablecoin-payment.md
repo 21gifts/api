@@ -789,7 +789,9 @@ runs out, the response is **503** and the work continues in the
 ### Accepted forms
 
 - `tx`: `0x` and 64 hexadecimal characters, or the 64 characters without
-  `0x`. It is normalised to `0x` plus lowercase. It is the hash of a
+  `0x`. After an optional `0x` is removed, `normalizeHex32`
+  (`src/lib/proof.ts`) checks and lowercases the 64 characters, and the
+  stored form is `0x` plus that result. It is the hash of a
   transaction the wallet already published, or the hash of an ERC-4337
   user operation.
 - `hex`: an optional `0x`, then an even number of hexadecimal characters,
@@ -1304,8 +1306,9 @@ fills it in. A `late` proof may lack an order when its submit answered
 winning row.
 
 Ids come from `crypto.randomUUID()`, the same form as `pos_charge.id`:
-lowercase, eight-four-four-four-twelve. A `quote` or `:payment` value
-that is not that form, compared in lowercase, is unknown. Addresses and
+lowercase, eight-four-four-four-twelve. A `quote` or `:payment` value that is not that form is unknown; the
+shape check is the `UUID` pattern of `src/lib/pos-store.ts`, moved to a
+shared helper, and a matching value is lowercased before the lookup. Addresses and
 hashes are stored in lowercase with `0x`. `shop_quote.transfer_amounts`
 is the exact array that quote served, so a later price cannot rewrite
 it.
@@ -1557,6 +1560,8 @@ The implementing change adds:
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;
+- the `UUID` pattern of `src/lib/pos-store.ts` moved to a shared helper
+  that the shop payment routes use too;
 - a deadline parameter on `requestGiftInvoice` that covers both of its
   calls;
 - `invoiceStillOpen` and `DEFAULT_INVOICE_EXPIRY_MS` moved from
