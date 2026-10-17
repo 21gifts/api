@@ -2243,6 +2243,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (problem !== null) {
             return c.json({ error: problem }, 400);
           }
+          const textProblem = shopTextProblem(row.text, parsed.value);
+          if (textProblem !== null) {
+            return c.json({ error: textProblem }, 400);
+          }
         }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
@@ -2471,7 +2475,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
-        if (row.place !== null && row.place !== undefined) {
+        if (row.place !== null && row.place !== undefined && shopPlaceProblem(row.place) === null) {
           const problem = shopTextProblem(ensured, row.place);
           if (problem !== null) {
             return c.json({ error: problem }, 400);
