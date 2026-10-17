@@ -192,13 +192,19 @@ gets the 404 body and headers below.
 | npub of a listed shop                    | **200** `{ "shop": Shop }`                                                |
 | 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                |
 | npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`            |
-| anything else, including an unknown npub | **404** `{ "error": "Shop not found" }`                                   |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                        |
 | store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` |
 
 `Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
 `Cache-Control: no-store` on 503.
 
 The 410 body carries no name, so a hidden note's name is not served.
+
+Error texts: the 404 reuses `Not found`, as `GET /pay/:username` does. The 503
+gets its own `Shops are unavailable`, following the per-route rule that each
+route names its own resource (`Shop activity is unavailable`,
+`Messages are unavailable`). The 410 text is new because no route answers 410
+today.
 
 `Shop`:
 
@@ -305,8 +311,9 @@ OpenCryptoPay reports.
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
     body limit. An empty set is sent as an empty list.
   - It uses its own 30 s timeout instead of the 5 s timeout of the place
-    push (`src/lib/ocp-place.ts:356`), because the body can reach about 13.3 MiB
-    while a place body is a few fields of text.
+    push (the `AbortSignal.timeout` in `mapPlacesRequest`,
+    `src/lib/ocp-place.ts`), because the body can reach about 13.3 MiB while
+    a place body is a few fields of text.
   - Every write the worker makes, including the two early flag clears
     above, is conditional on `ocp_photos_generation = g`. If a trigger or a
     removal ran in the meantime, the write does nothing and the flag stays
