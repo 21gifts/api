@@ -227,10 +227,10 @@ The 410 body carries no name, so a hidden note's name is not served.
 }
 ```
 
-`lat` and `lng` as in `GET /messages/places`. `address` is always
-present, because a listed shop is complete under #478. `payUsername` is the till account's username when it has one
-and `GET /pay/:username` would answer for it, that is, a Lightning address is
-linked; otherwise `null`.
+`lat` and `lng` as in `GET /messages/places`. `address` is always present,
+because a listed shop is complete under #478. `payUsername` is the till
+account's username when it has one and `GET /pay/:username` would answer for
+it, that is, a Lightning address is linked; otherwise `null`.
 Photos are the note's photos in note order. `width` and `height` come from a
 header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
 never decodes the image, so an unauthenticated request cannot make the api
