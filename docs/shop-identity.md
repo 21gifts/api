@@ -324,7 +324,8 @@ OpenCryptoPay reports.
   (`AbortSignal.timeout(2500)` in `src/lib/public-message-og.ts`), `title` =
   shop name,
   description, `og:image` = first photo or `/og.png`, canonical
-  `/{npub}`, relative to `metadataBase` as the app's other pages set it.
+  `/{npub}`, relative to the root `metadataBase` (`https://21.gifts`), as
+  the marketing page sets `/`.
 - 404 → the existing not-found page (`src/app/not-found.tsx`). 410 → a "this
   shop is no longer listed" page without a name: unlike the not-found page,
   it tells the visitor that this shop existed, so a shared link does not look
