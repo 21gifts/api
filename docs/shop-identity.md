@@ -274,8 +274,10 @@ OpenCryptoPay reports.
     shop's marker; without a maps key the page shows no map, and the
     address text stays. `PlacesMapScreen` itself is not embedded because it
     loads every place;
-  - pay QR: `QrCode`, with the pay link `/pay/<payUsername>`, shown only when
-    `payUsername` is not `null`;
+  - pay QR: `QrCode` with `openCryptoPayQrValue(payUsername)`
+    (`src/lib/gifts-address.ts`), the same OpenCryptoPay
+    `/pl/?lightning=…` link the app already shows for a shop; shown only
+    when `payUsername` is not `null`;
   - npub copy button: the copy control of `ExternalAuthorProfile`.
 - The shops page (`/shops`) and the map link each shop to `/{npub}` instead
   of the note.
