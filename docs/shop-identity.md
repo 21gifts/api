@@ -59,9 +59,10 @@ builds on that change.
   `POST /debug/messages/:id/restore`.
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
-    backfill below. A concurrent edit of that note therefore either commits
-    first, and the new key's first push carries it, or waits and then finds
-    the `shop_identity` row and queues itself (S5).
+    backfill below, and then checks the five conditions again. If the note
+    is no longer listed, no key is created. A concurrent edit of that note
+    therefore either commits first, and the check and the new key's first
+    push see it, or waits and then queues itself (S5).
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
@@ -307,8 +308,11 @@ OpenCryptoPay reports.
 ## S5 OpenCryptoPay push
 
 "Listed" is the only rule for what is on the OpenCryptoPay map. Every push
-goes through a durable outbox on `shop_identity`, so a failed or late request
-is repeated and requests for one shop never overtake each other. The
+goes through a durable outbox on `shop_identity`, so a failed request is
+repeated and this side never has two requests for one shop in flight.
+OpenCryptoPay may still apply a request late, after the timeout here
+dropped it; the start-up pass, which queues every row again on each deploy,
+and the next change of the shop repair that. The
 fire-and-forget place push of today (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logs and swallows
 failures) is replaced by it.
@@ -350,7 +354,9 @@ Rules for every claim:
 - **Queueing.** Every store write that changes the text, pin, till account
   or `deleted_at` of a note that has a `shop_identity` row also sets
   `ocp_place_pending` and raises `ocp_place_generation` in the same
-  transaction. That covers the writes named in S1, `DELETE /messages/:id`
+  transaction, as its own statement after the write has locked the message
+  row, so it sees a `shop_identity` row that a concurrent key insert has
+  just committed. That covers the writes named in S1, `DELETE /messages/:id`
   (staff hide or author delete) and the cascade hide of an external author
   in `blockPubkeyAndHideRows`, which already returns the hidden ids. S1
   queues a shop when it creates its key.
@@ -358,16 +364,18 @@ Rules for every claim:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
   stored, so a stale queue entry cannot remove a listed shop. Before it
-  sends a `DELETE`, it sets `ocp_photos_hash` to null, conditional only on
-  the token `c`: OpenCryptoPay may drop the photos even when the answer is
+  sends a `DELETE`, it sets `ocp_photos_hash` to null, clears
+  `ocp_photos_pending` and raises `ocp_photos_generation`, conditional only
+  on the token `c`, so a photo push still in flight fails its generation
+  check and cannot store a hash afterwards: OpenCryptoPay may drop the photos even when the answer is
   lost or a newer change makes the result write a no-op, and a null hash
   makes the next confirmed `PUT` send the photos again. It keeps the 5 s
   timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
 - **Results.**
   - `PUT` 2xx: clear the pending flag, then queue the photo push (set
     `ocp_photos_pending`, raise `ocp_photos_generation`).
-  - `DELETE` 2xx: clear the pending flag, clear `ocp_photos_pending` and
-    raise `ocp_photos_generation`; the hash is already null.
+  - `DELETE` 2xx: clear the pending flag; the photo state was already reset
+    before sending.
   - 400 or 409: log `ocp.place.rejected` with the message id and clear the
     flag. It is sent again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
@@ -391,9 +399,11 @@ Rules for every claim:
 
 ### Photo push
 
-- **Queueing.** A successful place `PUT` (above), and
-  `PATCH /messages/:id/photos` on a listed shop, set `ocp_photos_pending`
-  and raise `ocp_photos_generation`.
+- **Queueing.** A successful place `PUT` (above) sets `ocp_photos_pending`
+  and raises `ocp_photos_generation`. `PATCH /messages/:id/photos` does the
+  same inside the `replacePhotos` transaction, after it has locked the
+  message row and only when the note is listed, so a crash cannot lose the
+  change and the worker never reads the old set under the new generation.
 - **Claiming.** As above, with `ocp_photos_claimed_until` and
   `ocp_photos_claim`. A row whose place is still pending is skipped, so
   photos only follow a confirmed place.
