@@ -81,7 +81,9 @@ it. What 21.gifts does with such a refund is outside this document.
    EIP-681 ERC-20 transfer to Orchestra's deposit address.
 5. The wallet pays and sends a proof: the transaction hash (`tx`) or the
    signed raw transaction (`hex`).
-6. The api verifies the transfer on chain and submits it to Orchestra.
+6. The api checks the transfer on chain and submits it to Orchestra: a
+   `tx` after its receipt succeeded, a `hex` after it validated and sent
+   the transaction; a `hex` whose receipt later fails is refused.
    An Orchestra order for that transfer is **accepted**. The wallet is
    told the payment succeeded, and the sticker is free again. The api
    also finds orders that Orchestra created without a proof.
@@ -813,7 +815,10 @@ times per minute for one proof, under the rules of
 deposit Orchestra detected first still gets its **200** within its
 quick retries. A hash that only proofs of other quotes hold is
 not a repeat: one ERC-4337 bundle can carry the transfers of several
-payers, so the request goes on to verification.
+payers, so the request goes on to verification. A second transfer to
+another offer of the same quote in the same transaction is not stored by
+a repeat; its Orchestra order reaches the api through the orders duty of
+the [Watcher](#watcher), which stores it as a `detected` proof.
 
 ### Verification of `tx`
 
@@ -826,7 +831,9 @@ payers, so the request goes on to verification.
 2. Neither receipt is found: store a lookup row (`shop_proof_lookup`) and
    answer **503**, reason `Transfer not found yet`. The wallet retries,
    and the [Watcher](#watcher) keeps looking. A quote holds at most 4
-   lookup rows. Past that, the answer is the same **503** without a row;
+   lookup rows: the count and the insert run in one transaction that first
+   locks the quote's `shop_quote` row (`FOR UPDATE`), so two containers
+   cannot pass the count together. Past that, the answer is the same **503** without a row;
    the wallet's retries and Orchestra's own detection still apply.
 3. The transfer did not succeed: **400**, reason
    `Payment was not accepted`. Nothing is stored. For a transaction
@@ -1264,6 +1271,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS shop_proof_order_idx
   ON shop_proof (provider_order) WHERE provider_order IS NOT NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS shop_proof_payment_accepted_idx
   ON shop_proof (payment_id) WHERE result = 'accepted';
+CREATE INDEX IF NOT EXISTS shop_proof_user_op_idx
+  ON shop_proof (chain_id, user_op_hash) WHERE user_op_hash IS NOT NULL;
 CREATE INDEX IF NOT EXISTS shop_proof_submit_idx ON shop_proof (next_submit_at);
 CREATE INDEX IF NOT EXISTS shop_proof_receipt_idx ON shop_proof (next_receipt_at);
 CREATE INDEX IF NOT EXISTS shop_proof_status_idx ON shop_proof (next_status_at);
