@@ -813,6 +813,46 @@ describe('setUsernameWithRoster', () => {
     }
   });
 
+  test('two accounts racing for one username: one wins, the other gets taken', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const wanted = `w${stamp}`;
+    const store = new PostgresAuthStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      for (const [index, id] of ids.entries()) {
+        await store.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: 'Race',
+          username: `r${index}${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: viewKey(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const results = await Promise.all(
+        ids.map((id) => setUsernameWithRoster(mergeDb, id, wanted, host)),
+      );
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.ok)).toEqual([{ ok: false, reason: 'taken' }]);
+      const holders = (await Promise.all(ids.map((id) => store.getAccount(id)))).filter(
+        (account) => account?.username === wanted,
+      );
+      expect(holders).toHaveLength(1);
+    } finally {
+      for (const id of ids) {
+        await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+
   test('a write from a snapshot taken before the rename keeps the new username', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
