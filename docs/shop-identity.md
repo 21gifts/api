@@ -55,8 +55,8 @@ builds on that change.
 - The key is created after the commit of any write that makes a note a
   listed shop for the first time: today `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
-  `PATCH /messages/:id/shop-account` and the staff restore
-  `POST /debug/messages/:id/restore`.
+  `PATCH /messages/:id/shop-account`, `PATCH /me` (the profile note's
+  text) and the staff restore `POST /debug/messages/:id/restore`.
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
     backfill below, and then checks the five conditions again. If the note
@@ -73,7 +73,10 @@ builds on that change.
     note can therefore never hold the slot of a listed shop behind it.
     After it creates a key, it queues the OpenCryptoPay place push of S5
     for that shop, so a failed mint at the write is repaired without another
-    edit.
+    edit. That queueing, on the write path and in the backfill, arrives with
+    the outbox columns in step 3 (first S5 release); until then a new key
+    queues nothing, and the start-up pass of the second S5 release covers
+    those keys.
 - The identity belongs to the note. It is never deleted and never moved to
   another note:
   - A note that stops being listed and is listed again gets the same npub
@@ -308,16 +311,20 @@ OpenCryptoPay reports.
     same OpenCryptoPay `/pl/?lightning=…` link the app already shows for a
     shop; shown only when `payUsername` is not `null`;
   - npub copy button: the copy control of `ExternalAuthorProfile`.
-- The shops page (`/shops`) and the map link each shop to `/{npub}` instead
-  of the note. While `shopNpub` is `null` (a listed shop whose key is not
-  created yet), the link stays `/messages/<messageId>`.
+- The map's link from a pin to its note (`/messages/<id>` in
+  `PlacesMapScreen`, 21gifts/app) points to `/{npub}` instead, for a shop
+  note. While `shopNpub` is `null` (a listed shop whose key is not created
+  yet), it stays `/messages/<messageId>`. The `/shops` table keeps its link
+  to `/map?pin=…`.
 - All visible text goes through the existing translations.
 
 ## S5 OpenCryptoPay push
 
 "Listed" is the only rule for what is on the OpenCryptoPay map. Every push
 goes through a durable outbox on `shop_identity`, so a failed request is
-repeated and this side never has two requests for one shop in flight.
+repeated and this side never has two place requests, or two photo
+requests, for one shop in flight; a place and a photo request can overlap,
+and the revision below orders them.
 Every request carries a `revision` (OpenCryptoPay R8) from one counter per
 shop, so a request that OpenCryptoPay applies late, after the timeout here
 dropped it, is refused there instead of overwriting newer state. The
@@ -448,7 +455,8 @@ Rules for every claim:
     the token `c`, so an answer that is lost or loses the generation check
     leaves no hash that could hide a different set on OpenCryptoPay. Then it
     sends up to 10 photos, in note order, with
-    `PUT /map/places/photos` as `{ nostrPubkey, photos: [{ contentType, data }] }`,
+    `PUT /map/places/photos` as
+    `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
     body limit. An empty set is sent as an empty list.
