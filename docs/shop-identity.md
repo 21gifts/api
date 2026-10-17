@@ -57,6 +57,11 @@ builds on that change.
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
   `PATCH /messages/:id/shop-account` and the staff restore
   `POST /debug/messages/:id/restore`.
+  - The insert runs in a transaction that first locks the note
+    (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
+    backfill below. A concurrent edit of that note therefore either commits
+    first, and the new key's first push carries it, or waits and then finds
+    the `shop_identity` row and queues itself (S5).
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
@@ -313,18 +318,29 @@ failures) is replaced by it.
 Both outboxes claim like the existing worker claims (`claimUnsigned` in
 `src/lib/conversation-store.ts`): at most `WORKER_BATCH` rows per tick, a
 lease of `WORKER_LEASE_MS` (`src/lib/nostr/worker.ts`) on a `claimed_until`
-column, `SELECT … FOR UPDATE SKIP LOCKED`. In addition, every claim raises
-its counter (`ocp_place_claim`, `ocp_photos_claim`) and returns it as the
-claim token `c`, together with the generation `g`. The existing claims have
-no token because their writes are idempotent; here a request that outlived
-its lease could otherwise overwrite newer state on OpenCryptoPay.
+column, `SELECT … FOR UPDATE SKIP LOCKED`. Two things differ, because two
+requests for one shop must never be in flight at once:
+
+- The lease is set and compared with the database clock
+  (`claimed_until = now() + WORKER_LEASE_MS`, claimable when it is null or
+  `<= now()`), not with each instance's own clock as `claimUnsigned` does.
+  Instances whose clocks differ then still agree on when a lease ends.
+- Every claim raises its counter (`ocp_place_claim`, `ocp_photos_claim`) and
+  returns it as the claim token `c`, together with the generation `g`. The
+  existing claims need no token because their writes are idempotent; here a
+  request that outlived its lease could otherwise overwrite newer state on
+  OpenCryptoPay.
+
+Rules for every claim:
 
 - Every write after a claim, including releasing it, is conditional on the
   token `c`. A worker whose lease was taken over writes nothing.
-- Right before sending, the worker checks by the database clock that the
+- Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
-  releases the claim and skips the row this tick. For photos the bytes are
-  read before this check.
+  releases the claim and skips the row this tick. The 10 s cover the time
+  between that check and the request starting, so a request that runs to
+  its full timeout still ends before another worker can claim the row. For
+  photos the bytes are read before this check.
 - Results that change state are also conditional on the generation `g`; if
   a newer change was queued meanwhile, the worker only releases the claim,
   and the newer change is sent next.
@@ -341,15 +357,17 @@ its lease could otherwise overwrite newer state on OpenCryptoPay.
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
-  stored, so a stale queue entry cannot remove a listed shop. It keeps the
-  5 s timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
+  stored, so a stale queue entry cannot remove a listed shop. Before it
+  sends a `DELETE`, it sets `ocp_photos_hash` to null, conditional only on
+  the token `c`: OpenCryptoPay may drop the photos even when the answer is
+  lost or a newer change makes the result write a no-op, and a null hash
+  makes the next confirmed `PUT` send the photos again. It keeps the 5 s
+  timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
 - **Results.**
   - `PUT` 2xx: clear the pending flag, then queue the photo push (set
     `ocp_photos_pending`, raise `ocp_photos_generation`).
-  - `DELETE` 2xx: clear the pending flag, and, because OpenCryptoPay drops
-    the photos with the place, set `ocp_photos_hash` to null, clear
-    `ocp_photos_pending` and raise `ocp_photos_generation`. A shop that is
-    listed again therefore sends its photos again.
+  - `DELETE` 2xx: clear the pending flag, clear `ocp_photos_pending` and
+    raise `ocp_photos_generation`; the hash is already null.
   - 400 or 409: log `ocp.place.rejected` with the message id and clear the
     flag. It is sent again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
@@ -384,7 +402,10 @@ its lease could otherwise overwrite newer state on OpenCryptoPay.
     sent.
   - It computes the SHA-256 over the photo set. If it equals
     `ocp_photos_hash`, it clears the flag and sends nothing.
-  - Otherwise it sends up to 10 photos, in note order, with
+  - Otherwise it first sets `ocp_photos_hash` to null, conditional only on
+    the token `c`, so an answer that is lost or loses the generation check
+    leaves no hash that could hide a different set on OpenCryptoPay. Then it
+    sends up to 10 photos, in note order, with
     `PUT /map/places/photos` as `{ nostrPubkey, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
@@ -393,11 +414,14 @@ its lease could otherwise overwrite newer state on OpenCryptoPay.
     the body can reach about 13.3 MiB while a place body is a few fields of
     text.
 - **Results.**
-  - 200: store the hash and clear the flag. OpenCryptoPay may skip single
+  - 200: store the sent hash and clear the flag, both only while `g` still
+    matches; otherwise the hash stays null and the next pass sends again.
+    OpenCryptoPay may skip single
     photos it does not accept and lists them in its answer; those are logged
     as `ocp.photos.skipped` and not retried for this set.
-  - 400 or 413: store the hash, clear the flag and log
-    `ocp.photos.rejected`. The same set is not sent again.
+  - 400 or 413: store the sent hash, clear the flag (both only while `g`
+    still matches) and log `ocp.photos.rejected`. The same set is not sent
+    again.
   - 404 (OpenCryptoPay does not know the place): set the hash to null, clear
     the flag, and, if the shop is still listed, queue the place (set
     `ocp_place_pending`, raise `ocp_place_generation`). The confirmed place
@@ -410,15 +434,20 @@ its lease could otherwise overwrite newer state on OpenCryptoPay.
 OpenCryptoPay first accepts `nostrPubkey` and lists only shops that have one
 (its step 1a), then adds the photo route (step 2), and only then rejects
 writes without a key (step 1b). This change deploys after 1a and 2 and before
-1b. Until it is live, 21.gifts shops are off the OpenCryptoPay list.
+1b, in two releases: the first sets `SHOP_PLACE_PUSH_ENABLED`
+(`src/lib/shop-place-push-enabled.ts`) to `false`, so no running instance
+pushes outside the outbox; the second brings the outbox. During a rolling
+deploy of the second release no old instance writes to OpenCryptoPay any
+more. Until it is live, 21.gifts shops are off the OpenCryptoPay list.
 
 ## Order of work
 
 0. 21gifts/api#478: complete shops with a structured address.
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
-3. S5: place outbox with `nostrPubkey`, PUT or DELETE decided at send time,
-   paged start-up, photo push.
+3. S5 in two releases: first `SHOP_PLACE_PUSH_ENABLED` off, then the place
+   outbox with `nostrPubkey`, PUT or DELETE decided at send time, paged
+   start-up and the photo push.
 4. S4 in `21gifts/app`.
 
 Each step is one pull request with the handbook, e2e tests and the coverage
