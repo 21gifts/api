@@ -132,12 +132,14 @@ on one reserved connection, the pattern of the account merge
 calling `deleteById`. The duplicate handling of today stays: after a unique
 violation the transaction is rolled back first, then the existing lookups
 (`getById` for a retry with the same id, `findLiveByAccountContent` for the
-same content) run on the pool and return the stored row as today. The video
-file, stored under the new id, is removed with `removeForumVideo` unless
-`getById` returns a row with that same id, so a same-id retry keeps the live
-note's video and a duplicate upload leaves no file behind. Regression tests
-fail an extra photo insert while the backfill runs and check that neither the
-note nor a `shop_identity` row is left; a same-id retry keeps the video, and a
+same content) run on the pool and return the stored row as today. After any
+failure and its rollback, the video file, stored under the new id, is
+removed with `removeForumVideo` unless `getById` on the pool returns a row
+with that same id, so a same-id retry that committed keeps its video and a
+duplicate upload leaves no file behind. Regression tests fail an extra photo
+insert while the backfill runs and check that neither the note nor a
+`shop_identity` row is left; a same-id retry keeps the video, also when the
+first attempt fails at the mentions update while the retry waits; and a
 duplicate video upload removes the new id's file and keeps the existing one.
 
 ### Encryption at rest
