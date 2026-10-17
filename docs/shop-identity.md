@@ -170,8 +170,9 @@ resolves a shop by its NOSTR identity, the id that OpenCryptoPay, NIP-05 and
 the shop page use, and answers for a shop that is no longer listed with 410.
 
 No session; a missing or invalid bearer gets the same answer. Registered
-after `GET /shops/activity`; it only matches a parameter that is an npub or 64
-lowercase hex, so `activity` is never captured.
+after `GET /shops/activity`, so `activity` keeps its own handler. It takes any
+single path segment and validates it inside the handler, so every other value
+gets the 404 body and headers below.
 
 | Request                                  | Response                                                                  |
 | ---------------------------------------- | ------------------------------------------------------------------------- |
@@ -281,12 +282,11 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
     body limit. An empty set is sent as an empty list.
   - It uses its own 30 s timeout instead of the 5 s timeout of the place
-    push (`src/lib/ocp-place.ts:356`), because the body can reach 15 MiB
-    while a place body is a few fields of text.
-  - Every write after the answer is conditional on
-    `ocp_photos_generation = g`. If a trigger or a removal ran while the push
-    was in flight, the write does nothing and the flag stays as that change
-    left it, so the newer state wins.
+    push (`src/lib/ocp-place.ts:356`), because the body can reach about 13.3 MiB while a place body is a few fields of text.
+  - Every write the worker makes, including the two early flag clears
+    above, is conditional on `ocp_photos_generation = g`. If a trigger or a
+    removal ran in the meantime, the write does nothing and the flag stays
+    as that change left it, so the newer state wins.
   - On 200 it stores the hash and clears the flag. OpenCryptoPay may skip
     single photos it does not accept and lists them in its answer; those are
     logged as `ocp.photos.skipped` and not retried for this set.
