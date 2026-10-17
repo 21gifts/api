@@ -179,9 +179,9 @@ today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
 `<site origin>` is `PUBLIC_BASE_URL` without a trailing slash, as
 `notePageUrl` (`src/lib/nostr/event.ts`) builds note links, so a dev or
 staging shop links to its own site; when it is empty, `https://21.gifts`.
-Until the shop page is live (step 4), `website` is the site origin alone, as
-for accounts, so no profile links to a missing page; step 5 switches it to
-`<site origin>/{npub}`.
+Until the shop page is live (step 4), `website` is the site origin alone
+(accounts keep the fixed `https://21.gifts`), so no profile links to a
+missing page; step 5 switches it to `<site origin>/{npub}`.
 
 Kind 0 of a shop that is no longer listed:
 
