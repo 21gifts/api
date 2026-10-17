@@ -1397,15 +1397,18 @@ page.
   `POST /pay/:username/invoice`.
 - With an entered amount it calls `POST /pay/:username/payment` instead
   of `POST /pay/:username/invoice`. On **409** `payment_open` it reloads
-  and shows the till charge. On **503** `stablecoin_unavailable` and on any other 4xx answer it
-  falls back to `POST /pay/:username/invoice`, which is today's
-  Lightning-only path. On a timeout, a transport error, or another 5xx
-  it does not know whether a payment was opened, so it repeats the same
-  call once; a new payer amount replaces any payment the lost answer
-  opened, so at most one stays open. When the repeat fails that way
-  too, it shows "This payment could not be started. Try again." with a
-  button that repeats the call, and it does not mint with
-  `POST /pay/:username/invoice`.
+  and shows the till charge. When the first call answers
+  **503** `stablecoin_unavailable` or another 4xx, it falls back to
+  `POST /pay/:username/invoice`, which is today's Lightning-only path.
+  When the first call ends in a timeout, a transport error, or another
+  5xx, the page does not know whether a payment was opened. From then on
+  it never mints with `POST /pay/:username/invoice` for that amount,
+  whatever a later call answers, because an open payment it cannot see
+  could be paid next to a second invoice. It repeats the same call once;
+  a new payer amount replaces any payment the lost answer opened, so at
+  most one stays open. When the repeat does not return a payment, it
+  shows "This payment could not be started. Try again." with a button
+  that repeats the call.
   After a success it fetches the pay link and checks that `quote.payment`
   is the payment it opened. When it is not, another payer replaced the amount, and the page shows
   "Another payer entered an amount first. Enter yours again." and the
