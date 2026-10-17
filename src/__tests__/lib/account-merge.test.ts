@@ -27,6 +27,7 @@ interface FakeCatalogColumn {
 interface FakeDatabaseOptions {
   platform?: boolean;
   bothGrants?: boolean;
+  shopPayments?: readonly { id: string }[];
   lock?: readonly FakeLockRow[];
   fromRole?: string;
   intoRole?: string;
@@ -73,6 +74,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           }
           if (text.includes('SELECT account_id FROM funding_grant')) {
             return (options.bothGrants ? [{ account_id: FROM }, { account_id: INTO }] : []) as T[];
+          }
+          if (text.includes('FROM shop_payment')) {
+            return (options.shopPayments ?? []) as T[];
           }
           if (text.includes('count(*)')) {
             return (options.messageCount ?? [{ n: 1 }]) as T[];
@@ -267,6 +271,49 @@ describe('mergeAccounts', () => {
       error: 'both_grants',
     });
     expect(queries.some((query) => query.text.includes('DELETE FROM account'))).toBe(false);
+  });
+
+  it('refuses while the merged account has a shop payment that is neither paid nor closed', async () => {
+    const { db, queries } = fakeDatabase({ shopPayments: [{ id: 'sp-open' }] });
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'shop_payment_open',
+    });
+    const check = queries.find((query) => query.text.includes('FROM shop_payment'));
+    expect(check?.params).toEqual([FROM]);
+    expect(check?.text).toContain("status <> 'paid' AND closed_at IS NULL");
+    expect(queries.at(-1)).toBe(check);
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
+  });
+
+  it('moves paid or closed shop payments with the account', async () => {
+    const { db, queries } = fakeDatabase();
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+    const check = queries.findIndex((query) => query.text.includes('FROM shop_payment'));
+    const grants = queries.findIndex((query) =>
+      query.text.includes('SELECT account_id FROM funding_grant'),
+    );
+    expect(check).toBeGreaterThan(grants);
+    expect(queries.findIndex((query) => query.text.includes('count(*)'))).toBeGreaterThan(check);
+  });
+
+  it('deletes the pos_charge_invoice rows of the deleted pending charge before the charge', async () => {
+    const { db, queries } = fakeDatabase();
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+    const invoices = queries.findIndex((query) =>
+      query.text.includes('DELETE FROM pos_charge_invoice'),
+    );
+    const charge = queries.findIndex((query) => /DELETE FROM pos_charge\s+WHERE/.test(query.text));
+    expect(invoices).toBeGreaterThanOrEqual(0);
+    expect(charge).toBe(invoices + 1);
+    expect(queries[invoices]?.params).toEqual([FROM, INTO]);
+    expect(queries[invoices]?.text).toContain('SELECT id FROM pos_charge');
+    expect(queries[invoices]?.text).toContain(
+      "SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'",
+    );
   });
 
   it('rejects a composite account foreign key before deleting the source', async () => {

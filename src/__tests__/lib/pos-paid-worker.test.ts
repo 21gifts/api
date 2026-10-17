@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { LnurlServerConfig } from '@/lib/config';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
-import { POS_PAID_WATCH_MS, runPosPaidTick, startPosPaidWorker } from '@/lib/pos-paid-worker';
+import {
+  POS_PAID_WATCH_MS,
+  runPosPaidTick,
+  startPosPaidWorker,
+  verifyLightningPayment,
+} from '@/lib/pos-paid-worker';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
+import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
+import * as shopWorker from '@/lib/shop-payment-worker';
+import type { AuthStore } from '@/lib/auth/store';
 import { concatBytes, decodeProto, protoBytesField, protoVarintField } from '@/lib/protobuf';
 import { SPARK_QUERY_LIMIT } from '@/lib/spark-operator';
 import { SPARK_WORKER_INTERVAL_MS } from '@/lib/spark-worker';
@@ -352,6 +361,94 @@ describe('runPosPaidTick', () => {
   });
 });
 
+describe('runPosPaidTick with the shop payment service', () => {
+  beforeEach(() => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function stubShop(): { shop: ShopPayments; chargePaid: ReturnType<typeof vi.fn> } {
+    const chargePaid = vi.fn(async () => null);
+    return { shop: { chargePaid } as unknown as ShopPayments, chargePaid };
+  }
+
+  it('settles through chargePaid with null for the Spark invoice', async () => {
+    const store = new InMemoryPosStore();
+    const row = charge('c1', { sparkInvoice: 'spark1one' });
+    await store.create(row);
+    const net = network(new Map([['spark1one', 2]]), new Map());
+    const { shop, chargePaid } = stubShop();
+    await runPosPaidTick({
+      store,
+      lnurlServer: LNURL,
+      operatorUrl: OPERATOR_URL,
+      fetchImpl: net.fetchImpl,
+      now: () => NOW,
+      shop,
+    });
+    expect(chargePaid).toHaveBeenCalledTimes(1);
+    expect(chargePaid).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), null, NOW);
+    // The service owns the write: the store itself was not marked paid.
+    expect((await store.listLatest(5)).find((r) => r.id === 'c1')?.status).toBe('pending');
+  });
+
+  it('settles through chargePaid with the settled payment hash', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge('c1'));
+    await store.recordInvoice('c1', HASH_A, NOW);
+    const net = network(new Map(), new Map([[HASH_A, settled]]));
+    const { shop, chargePaid } = stubShop();
+    await runPosPaidTick({
+      store,
+      lnurlServer: LNURL,
+      fetchImpl: net.fetchImpl,
+      now: () => NOW,
+      shop,
+    });
+    expect(chargePaid).toHaveBeenCalledWith(expect.objectContaining({ id: 'c1' }), HASH_A, NOW);
+  });
+
+  it('marks the charge paid through a real service over the same pos store', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge('c1'));
+    await store.recordInvoice('c1', HASH_A, NOW);
+    const net = network(new Map(), new Map([[HASH_A, settled]]));
+    const shop = new ShopPayments({
+      store: new InMemoryShopPaymentStore(store),
+      auth: {} as AuthStore,
+      lnurlServer: LNURL,
+      config: null,
+      orchestra: null,
+      fetchImpl: net.fetchImpl,
+      now: () => NOW,
+    });
+    await runPosPaidTick({
+      store,
+      lnurlServer: LNURL,
+      fetchImpl: net.fetchImpl,
+      now: () => NOW,
+      shop,
+    });
+    const row = (await store.listLatest(5)).find((r) => r.id === 'c1');
+    expect(row?.status).toBe('paid');
+    expect(row?.paidAt?.getTime()).toBe(NOW);
+  });
+});
+
+describe('verifyLightningPayment', () => {
+  it('reads one LUD-21 verify answer with an explicit timeout', async () => {
+    const net = network(new Map(), new Map([[HASH_A, settled]]));
+    await expect(verifyLightningPayment(LNURL, net.fetchImpl, HASH_A, 1_000)).resolves.toBe(
+      'settled',
+    );
+    await expect(verifyLightningPayment(LNURL, net.fetchImpl, HASH_B, 1_000)).resolves.toBe('open');
+    expect(net.verified).toEqual([HASH_A, HASH_B]);
+  });
+});
+
 describe('startPosPaidWorker', () => {
   afterEach(() => {
     vi.useRealTimers();
@@ -388,6 +485,41 @@ describe('startPosPaidWorker', () => {
     release?.();
     await vi.advanceTimersByTimeAsync(SPARK_WORKER_INTERVAL_MS * 3);
     expect(listWatched).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts and stops the shop payment tick with the service', async () => {
+    vi.useFakeTimers();
+    const stopShop = vi.fn();
+    const start = vi
+      .spyOn(shopWorker, 'startShopPaymentWorker')
+      .mockReturnValue({ stop: stopShop });
+    const shop = {} as ShopPayments;
+    const handle = startPosPaidWorker({
+      store: blockingStore(vi.fn(async () => [])),
+      lnurlServer: LNURL,
+      fetchImpl: vi.fn(),
+      now: () => NOW,
+      shop,
+    });
+    expect(start).toHaveBeenCalledWith(shop);
+    expect(stopShop).not.toHaveBeenCalled();
+    handle.stop();
+    expect(stopShop).toHaveBeenCalledTimes(1);
+    start.mockRestore();
+  });
+
+  it('starts no shop payment tick without the service', () => {
+    vi.useFakeTimers();
+    const start = vi.spyOn(shopWorker, 'startShopPaymentWorker');
+    const handle = startPosPaidWorker({
+      store: blockingStore(vi.fn(async () => [])),
+      lnurlServer: LNURL,
+      fetchImpl: vi.fn(),
+      now: () => NOW,
+    });
+    handle.stop();
+    expect(start).not.toHaveBeenCalled();
+    start.mockRestore();
   });
 
   it('logs a failed tick and keeps running', async () => {

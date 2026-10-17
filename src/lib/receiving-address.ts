@@ -121,12 +121,16 @@ export async function accountByReceivingAddress(
  * @param lnurlServer - LNURL server config, or `undefined` (returns `fetchImpl`).
  * @param fetchImpl - Fetch for every other host and for the LNURL server itself.
  * @param accounts - Username lookup that tells a wallet-backed username apart.
+ * @param deadline - Optional absolute deadline: each LNURL server call gets
+ *   the time left until `deadlineMs` instead of {@link LNURL_SERVER_TIMEOUT_MS},
+ *   and a call at or after it rejects without a request.
  * @returns A fetch with the same signature.
  */
 export function lnurlServerFetch(
   lnurlServer: LnurlServerConfig | undefined,
   fetchImpl: FetchFn,
   accounts: Pick<AuthStore, 'getAccountByUsername'>,
+  deadline?: { deadlineMs: number; now: () => number },
 ): FetchFn {
   if (lnurlServer === undefined) {
     return fetchImpl;
@@ -144,11 +148,16 @@ export function lnurlServerFetch(
         return fetchImpl(input, init);
       }
     }
+    const timeoutMs =
+      deadline === undefined ? LNURL_SERVER_TIMEOUT_MS : deadline.deadlineMs - deadline.now();
+    if (timeoutMs <= 0) {
+      throw new TypeError('LNURL server request failed');
+    }
     const result = await callLnurlServer(lnurlServer, fetchImpl, {
       method: 'GET',
       segments,
       search: url.search,
-      timeoutMs: LNURL_SERVER_TIMEOUT_MS,
+      timeoutMs,
     });
     if (!result.ok) {
       throw new TypeError('LNURL server request failed');

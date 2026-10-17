@@ -27,6 +27,7 @@ import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { buildNostrJson } from '@/lib/nip05';
 import { logEvent } from '@/lib/log';
 import { readClientRequestMeta } from '@/lib/request-meta';
+import { shopErrorBody, type ShopPayments } from '@/lib/shop-payment';
 import { normalizeUsername } from '@/lib/username';
 
 /** Collaborators for the well-known routes. */
@@ -43,6 +44,8 @@ export interface WellKnownRouteDeps {
   now?: () => number;
   /** LNURL server configuration; omitted when the feature is off. */
   lnurlServer?: LnurlServerConfig;
+  /** Shop payments in USDT and USDC; omitted when the LNURL server is off. */
+  shopPayments?: ShopPayments;
 }
 
 const WELL_KNOWN_CORS = {
@@ -56,6 +59,23 @@ const LNURLP_HEADERS = {
   ...WELL_KNOWN_CORS,
   'Cache-Control': 'no-store',
 };
+
+/** The pay link's 503 when the wallet's pay request cannot be resolved. */
+const UNRESOLVED_503 = shopErrorBody(503, 'Lightning Address could not be resolved');
+
+/**
+ * Today's wallet pay request, with both sendable bounds pinned to a waiting
+ * charge's amount when one applies.
+ *
+ * @param doc - The validated wallet pay request.
+ * @param pinSats - The charge amount, or `null` for no pin.
+ * @returns The response body.
+ */
+function pinned(doc: Record<string, unknown>, pinSats: number | null): Record<string, unknown> {
+  return pinSats === null
+    ? doc
+    : { ...doc, minSendable: pinSats * 1000, maxSendable: pinSats * 1000 };
+}
 
 /**
  * Build the `/.well-known` route group.
@@ -85,7 +105,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
     .get('/lnurlp/:username', async (c) => {
       const username = normalizeUsername(c.req.param('username'));
       if (username === null) {
-        return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
+        return c.json(shopErrorBody(404, 'Not found'), 404, LNURLP_HEADERS);
       }
       try {
         const account = await deps.auth.getAccountByUsername(username);
@@ -96,7 +116,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
         ) {
           const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
           if (!walletPayLimiter.allow(clientIp, now())) {
-            return c.json({ error: 'Too many requests' }, 429, LNURLP_HEADERS);
+            return c.json(shopErrorBody(429, 'Too many requests'), 429, LNURLP_HEADERS);
           }
           const config = deps.lnurlServer;
           const result = await callLnurlServer(config, fetchImpl, {
@@ -105,57 +125,53 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
             timeoutMs: LNURL_PAY_REQUEST_TIMEOUT_MS,
           });
           if (result.ok && result.status === 404) {
-            return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
+            return c.json(shopErrorBody(404, 'Not found'), 404, LNURLP_HEADERS);
           }
           if (!result.ok || result.status < 200 || result.status >= 300) {
             logEvent('lnurlp.unreachable', { username });
-            return c.json(
-              { error: 'Lightning Address could not be resolved' },
-              503,
-              LNURLP_HEADERS,
-            );
+            return c.json(UNRESOLVED_503, 503, LNURLP_HEADERS);
           }
           let parsed: unknown;
           try {
             parsed = JSON.parse(result.body);
           } catch {
             logEvent('lnurlp.unreachable', { username });
-            return c.json(
-              { error: 'Lightning Address could not be resolved' },
-              503,
-              LNURLP_HEADERS,
-            );
+            return c.json(UNRESOLVED_503, 503, LNURLP_HEADERS);
           }
           const expectedCallback = `${config.publicBaseUrl}/lnurlp/${username}/invoice`;
           const doc = walletPayRequest(parsed, expectedCallback);
           if (doc === null) {
             logEvent('lnurlp.unreachable', { username });
-            return c.json(
-              { error: 'Lightning Address could not be resolved' },
-              503,
-              LNURLP_HEADERS,
-            );
+            return c.json(UNRESOLVED_503, 503, LNURLP_HEADERS);
           }
           logEvent('lnurlp.resolved', { username });
-          const pending = await posStore.currentPending(account.id, now());
-          if (pending !== null) {
-            return c.json(
-              {
-                ...doc,
-                minSendable: pending.amountSats * 1000,
-                maxSendable: pending.amountSats * 1000,
-              },
-              200,
-              LNURLP_HEADERS,
-            );
+          const shop = deps.shopPayments;
+          if (shop !== undefined) {
+            const answer = await shop.payLink(account, username, String(doc['metadata']), {
+              timeout: c.req.query('timeout') ?? null,
+              method: c.req.query('method') ?? null,
+              asset: c.req.query('asset') ?? null,
+              repeated: ['quote', 'method', 'asset'].some(
+                (key) => (c.req.queries(key) ?? []).length > 1,
+              ),
+            });
+            if (answer.kind === 'response') {
+              return answer.response;
+            }
+            return c.json(pinned(doc, answer.pinSats), 200, LNURLP_HEADERS);
           }
-          return c.json(doc, 200, LNURLP_HEADERS);
+          const pending = await posStore.currentPending(account.id, now());
+          return c.json(pinned(doc, pending?.amountSats ?? null), 200, LNURLP_HEADERS);
         }
         logEvent('lnurlp.unknown', { username });
-        return c.json({ error: 'Not found' }, 404, LNURLP_HEADERS);
+        return c.json(shopErrorBody(404, 'Not found'), 404, LNURLP_HEADERS);
       } catch {
         logEvent('lnurlp.failed', { username });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 502, LNURLP_HEADERS);
+        return c.json(
+          shopErrorBody(502, 'Lightning Address could not be resolved'),
+          502,
+          LNURLP_HEADERS,
+        );
       }
     });
 }

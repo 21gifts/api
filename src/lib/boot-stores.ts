@@ -22,6 +22,7 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import { migrateShopPaymentSchema } from '@/lib/shop-payment-store';
 import {
   InMemoryFxSpotStore,
   PostgresFxSpotStore,
@@ -379,6 +380,7 @@ export async function openBootStores(
   };
   await migrateMemberHabitSchema(habitSql);
   await migratePosSchema(sqlClient);
+  await migrateShopPaymentSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);

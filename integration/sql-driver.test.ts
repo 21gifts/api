@@ -20,6 +20,14 @@ import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store'
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
+import {
+  migrateShopPaymentSchema,
+  PostgresShopPaymentStore,
+  type ShopOffer,
+  type ShopPayment,
+  type ShopProof,
+  type ShopProofLookup,
+} from '@/lib/shop-payment-store';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { parseWalletReport } from '@/lib/wallet-report';
@@ -2223,6 +2231,478 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
         await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresShopPaymentStore', () => {
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+  const hex40 = (): string => `0x${hex64().slice(0, 40)}`;
+
+  const setup = async (): Promise<{
+    client: SqlClient;
+    sql: SQL;
+    store: PostgresShopPaymentStore;
+    newAccount: () => Promise<string>;
+  }> => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    await migrateAuthSchema(client);
+    await migratePosSchema(client);
+    await migrateShopPaymentSchema(client);
+    await migrateShopPaymentSchema(client);
+    await migrateDbChangeSchema(client);
+    const auth = new PostgresAuthStore(client);
+    const newAccount = async (): Promise<string> => {
+      const id = crypto.randomUUID();
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `shop_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      return id;
+    };
+    return { client, sql, store: new PostgresShopPaymentStore(client, mergeDb), newAccount };
+  };
+
+  function shopPayment(
+    accountId: string,
+    now: number,
+    partial: Partial<ShopPayment> = {},
+  ): ShopPayment {
+    return {
+      id: crypto.randomUUID(),
+      accountId,
+      amountSats: 2100,
+      posChargeId: null,
+      bolt11: 'lnbc21',
+      paymentHash: hex64(),
+      bolt11ExpiresAt: new Date(now + 600_000),
+      status: 'open',
+      endReason: null,
+      windowEndsAt: new Date(now + 300_000),
+      replacements: 0,
+      nextSettleAt: new Date(now),
+      nextHistoryAt: null,
+      historyOffset: 0,
+      createdAt: new Date(now),
+      acceptedAt: null,
+      paidAt: null,
+      endedAt: null,
+      closedAt: null,
+      ...partial,
+    };
+  }
+
+  function shopOffer(quoteId: string, now: number, partial: Partial<ShopOffer> = {}): ShopOffer {
+    return {
+      id: crypto.randomUUID(),
+      quoteId,
+      method: 'Ethereum',
+      chainId: 1,
+      asset: 'USDT',
+      tokenAddress: hex40(),
+      depositAddress: hex40(),
+      amountIn: '123456789012345678901234567890',
+      requiredAmountIn: '1',
+      maxAcceptedAmountIn: null,
+      decimals: 6,
+      minFee: '1000000000',
+      providerRef: 'quote-1',
+      idempotencyKey: crypto.randomUUID(),
+      expiresAt: new Date(now + 120_000),
+      detailIssuedAt: null,
+      createdAt: new Date(now),
+      ...partial,
+    };
+  }
+
+  function shopProof(
+    offer: ShopOffer,
+    paymentId: string,
+    now: number,
+    partial: Partial<ShopProof> = {},
+  ): ShopProof {
+    return {
+      id: crypto.randomUUID(),
+      offerId: offer.id,
+      paymentId,
+      source: 'tx',
+      chainId: 1,
+      txHash: `0x${hex64()}`,
+      logIndex: 0,
+      userOpHash: null,
+      rawHex: null,
+      transferAmount: '1500000',
+      idempotencyKey: crypto.randomUUID(),
+      result: null,
+      providerOrder: null,
+      orderStatus: null,
+      orderFoundAt: null,
+      refusal: null,
+      submitStopped: false,
+      sentAt: null,
+      lastSubmitAt: null,
+      giveUpAt: new Date(now + 86_400_000),
+      nextSubmitAt: new Date(now),
+      nextReceiptAt: null,
+      nextStatusAt: null,
+      tries: 0,
+      resolvedAt: null,
+      createdAt: new Date(now),
+      ...partial,
+    };
+  }
+
+  test('every ShopTx method on real Postgres, with conflicts that keep the transaction alive', async () => {
+    const { client, sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      const charge = {
+        id: chargeId,
+        accountId,
+        amountSats: 2100,
+        status: 'pending' as const,
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+      };
+      const payment = shopPayment(accountId, now, { posChargeId: chargeId });
+      const quoteId = crypto.randomUUID();
+      const amounts = [
+        {
+          method: 'Ethereum',
+          minFee: 1,
+          assets: [{ asset: 'USDT', amount: '0.21' }],
+          available: true,
+        },
+      ];
+      const offerA = shopOffer(quoteId, now);
+      const offerB = shopOffer(quoteId, now, {
+        asset: 'USDC',
+        depositAddress: offerA.depositAddress,
+      });
+      const offerC = shopOffer(quoteId, now + 1, { method: 'Polygon', chainId: 137 });
+
+      await store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        expect(await tx.lockCharge(chargeId)).toBeNull();
+        expect(await tx.insertCharge(charge)).toBe(true);
+        // A second pending charge hits the unique index; the transaction goes on.
+        expect(await tx.insertCharge({ ...charge, id: crypto.randomUUID() })).toBe(false);
+        expect((await tx.pendingCharge(accountId, now))?.id).toBe(chargeId);
+        expect((await tx.lockCharge(chargeId))?.status).toBe('pending');
+        expect(await tx.recordChargeInvoice(chargeId, payment.paymentHash, now)).toBe(true);
+        expect(await tx.chargeIdForInvoice(payment.paymentHash)).toBe(chargeId);
+
+        expect(await tx.insertPayment(payment)).toBe(true);
+        expect(await tx.insertPayment({ ...payment, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.insertPayment(shopPayment(accountId, now))).toBe(false);
+        expect(
+          await tx.insertPayment(
+            shopPayment(accountId, now, {
+              status: 'paid',
+              paidAt: new Date(now),
+              posChargeId: chargeId,
+            }),
+          ),
+        ).toBe(false);
+        expect(await tx.getPayment(payment.id)).toEqual(payment);
+        expect(await tx.lockPayment(payment.id.toUpperCase())).toEqual(payment);
+        expect((await tx.openPayment(accountId))?.id).toBe(payment.id);
+        expect((await tx.paymentForCharge(chargeId))?.id).toBe(payment.id);
+        expect((await tx.paymentForHash(payment.paymentHash))?.id).toBe(payment.id);
+        expect(await tx.getPayment('not-a-uuid')).toBeNull();
+
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        const replaced = await tx.updateQuote(quoteId, {
+          expiresAt: new Date(now + 60_000),
+          transferAmounts: amounts,
+        });
+        expect(replaced).toEqual({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 60_000),
+          transferAmounts: amounts,
+          createdAt: new Date(now),
+        });
+        expect(await tx.lockQuote(quoteId)).toEqual(replaced);
+        expect(await tx.quotesOf(payment.id)).toEqual([replaced!]);
+        expect(
+          await tx.updateQuote(crypto.randomUUID(), {
+            expiresAt: new Date(now),
+            transferAmounts: [],
+          }),
+        ).toBeNull();
+
+        const inserted = await tx.insertOffers([offerA, offerB, offerC]);
+        expect(inserted.map((row) => row.id)).toEqual([offerA.id, offerC.id]);
+        expect(await tx.getOffer(offerA.id)).toEqual(offerA);
+        expect((await tx.offersOf(quoteId)).map((row) => row.id)).toEqual([offerA.id, offerC.id]);
+        expect(await tx.markDetailIssued(offerA.id, now + 5)).toBe(true);
+        expect(await tx.markDetailIssued(offerA.id, now + 6)).toBe(false);
+        expect((await tx.getOffer(offerA.id))?.detailIssuedAt).toEqual(new Date(now + 5));
+
+        const proofA = shopProof(offerA, payment.id, now, { userOpHash: `0x${hex64()}` });
+        const proofB = shopProof(offerA, payment.id, now + 1, {
+          txHash: proofA.txHash,
+          logIndex: 1,
+        });
+        expect(await tx.insertProof(proofA)).toBe(true);
+        expect(await tx.insertProof({ ...proofA, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.insertProof(proofB)).toBe(true);
+        expect(await tx.getProof(proofA.id)).toEqual(proofA);
+        expect((await tx.proofsOf(payment.id)).map((row) => row.id)).toEqual([
+          proofA.id,
+          proofB.id,
+        ]);
+        expect(
+          (await tx.findProofs({ chainId: 1, txHash: proofA.txHash })).map((row) => row.id),
+        ).toEqual([proofA.id, proofB.id]);
+        expect(
+          (await tx.findProofs({ chainId: 1, userOpHash: proofA.userOpHash ?? '' })).map(
+            (row) => row.id,
+          ),
+        ).toEqual([proofA.id]);
+        const order = `order-${crypto.randomUUID()}`;
+        const accepted = await tx.updateProof(
+          proofA.id,
+          { results: [null], lastSubmitAtOrBefore: new Date(now) },
+          {
+            result: 'accepted',
+            providerOrder: order,
+            orderStatus: 'completed',
+            resolvedAt: new Date(now + 7),
+          },
+        );
+        expect(accepted).toEqual({
+          ...proofA,
+          result: 'accepted',
+          providerOrder: order,
+          orderStatus: 'completed',
+          resolvedAt: new Date(now + 7),
+        });
+        expect((await tx.findProofs({ providerOrder: order })).map((row) => row.id)).toEqual([
+          proofA.id,
+        ]);
+        // Unique violations inside a savepoint: the transaction stays usable.
+        expect(await tx.updateProof(proofB.id, {}, { providerOrder: order })).toBe('conflict');
+        expect(await tx.updateProof(proofB.id, {}, { logIndex: 0 })).toBe('conflict');
+        expect(await tx.updateProof(proofB.id, { results: ['late'] }, { tries: 1 })).toBeNull();
+        expect(
+          await tx.updateProof(
+            proofB.id,
+            { results: [null, 'late'] },
+            { tries: 2, lastSubmitAt: new Date(now) },
+          ),
+        ).toMatchObject({ tries: 2 });
+        expect(
+          await tx.updateProof(
+            proofB.id,
+            { lastSubmitAtOrBefore: new Date(now - 1) },
+            { tries: 3 },
+          ),
+        ).toBeNull();
+        expect(
+          (await tx.dueProofs('submit', now + 1, 100_000)).some((row) => row.id === proofB.id),
+        ).toBe(true);
+        expect(
+          (await tx.dueProofs('submit', now + 1, 100_000)).some((row) => row.id === proofA.id),
+        ).toBe(false);
+        expect(
+          (await tx.dueProofs('stuck', now + 86_400_001, 100_000)).some(
+            (row) => row.id === proofB.id,
+          ),
+        ).toBe(true);
+        expect(await tx.updateProof(proofA.id, {}, { nextStatusAt: new Date(now) })).not.toBeNull();
+        expect(
+          (await tx.dueProofs('status', now, 100_000)).some((row) => row.id === proofA.id),
+        ).toBe(true);
+        expect(
+          await tx.updateProof(proofB.id, {}, { nextReceiptAt: new Date(now) }),
+        ).not.toBeNull();
+        expect(
+          (await tx.dueProofs('receipt', now, 100_000)).some((row) => row.id === proofB.id),
+        ).toBe(true);
+        await tx.deleteProof(proofB.id);
+        expect(await tx.getProof(proofB.id)).toBeNull();
+
+        const lookup: ShopProofLookup = {
+          id: crypto.randomUUID(),
+          quoteId,
+          method: 'Ethereum',
+          asset: 'USDT',
+          chainId: 1,
+          hash: `0x${hex64()}`,
+          nextTryAt: new Date(now),
+          tries: 0,
+          doneAt: null,
+          createdAt: new Date(now),
+        };
+        expect(await tx.insertLookup(lookup)).toBe(true);
+        expect(await tx.insertLookup({ ...lookup, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.countOpenLookups(quoteId)).toBe(1);
+        expect(await tx.findLookup(1, lookup.hash, quoteId)).toEqual(lookup);
+        expect((await tx.dueLookups(now, 100_000)).some((row) => row.id === lookup.id)).toBe(true);
+        expect(await tx.updateLookup(lookup.id, { tries: 1, doneAt: new Date(now) })).toEqual({
+          ...lookup,
+          tries: 1,
+          doneAt: new Date(now),
+        });
+        expect(await tx.countOpenLookups(quoteId)).toBe(0);
+
+        expect(
+          await tx.updatePayment(payment.id, { statuses: ['accepted'] }, { replacements: 1 }),
+        ).toBeNull();
+        expect(
+          await tx.updatePayment(
+            payment.id,
+            { windowEndsAfter: new Date(now + 300_000) },
+            { replacements: 1 },
+          ),
+        ).toBeNull();
+        const bumped = await tx.updatePayment(
+          payment.id,
+          { statuses: ['open'], replacements: 0, windowEndsAfter: new Date(now), notClosed: true },
+          { replacements: 1, nextHistoryAt: new Date(now), historyOffset: 20 },
+        );
+        expect(bumped).toEqual({
+          ...payment,
+          replacements: 1,
+          nextHistoryAt: new Date(now),
+          historyOffset: 20,
+        });
+        const settle = (await tx.duePayments('settle', now, 100_000)).map((row) => row.id);
+        expect(settle).toContain(payment.id);
+        expect((await tx.duePayments('history', now, 100_000)).map((row) => row.id)).toContain(
+          payment.id,
+        );
+        expect((await tx.unsettledPayments(accountId)).map((row) => row.id)).toEqual([payment.id]);
+        const ended = await tx.endLapsedWindows(now + 300_000);
+        expect(ended.find((row) => row.id === payment.id)).toEqual({
+          ...bumped!,
+          status: 'ended',
+          endReason: 'window',
+          endedAt: new Date(now + 300_000),
+        });
+
+        await tx.deleteChargeInvoice(payment.paymentHash);
+        expect(await tx.chargeIdForInvoice(payment.paymentHash)).toBeNull();
+        expect((await tx.cancelPendingCharge(accountId, now + 1))?.id).toBe(chargeId);
+        expect(await tx.markChargePaid(chargeId, now + 2)).toBeNull();
+      });
+
+      const changes = await client.query<{ table_name: string; op: string }>(
+        `SELECT table_name, op FROM db_change
+         WHERE table_name LIKE 'shop_%' AND (after ->> 'id' = ANY($1::text[]) OR before ->> 'id' = ANY($1::text[]))
+         ORDER BY id ASC`,
+        [postgresTextArrayLiteral([payment.id, quoteId, offerA.id])],
+      );
+      expect(
+        changes.filter((row) => row.table_name === 'shop_payment').map((row) => row.op),
+      ).toEqual(['INSERT', 'UPDATE', 'UPDATE']);
+      expect(changes.some((row) => row.table_name === 'shop_quote' && row.op === 'UPDATE')).toBe(
+        true,
+      );
+      expect(changes.some((row) => row.table_name === 'shop_offer' && row.op === 'UPDATE')).toBe(
+        true,
+      );
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a thrown callback rolls back every write, including writes after a caught conflict', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      await expect(
+        store.transaction(async (tx) => {
+          expect(await tx.insertPayment(payment)).toBe(true);
+          expect(await tx.insertPayment(shopPayment(accountId, now))).toBe(false);
+          await tx.insertQuote({
+            id: crypto.randomUUID(),
+            paymentId: payment.id,
+            expiresAt: new Date(now),
+            transferAmounts: [],
+            createdAt: new Date(now),
+          });
+          throw new Error('rollback');
+        }),
+      ).rejects.toThrow('rollback');
+      expect(await store.transaction((tx) => tx.getPayment(payment.id))).toBeNull();
+      expect(await store.transaction((tx) => tx.insertPayment(payment))).toBe(true);
+      // An update that would open a second payment of the account fails the transaction.
+      const second = shopPayment(accountId, now, {
+        status: 'ended',
+        endReason: 'window',
+        endedAt: new Date(now),
+      });
+      expect(await store.transaction((tx) => tx.insertPayment(second))).toBe(true);
+      let refused: unknown;
+      try {
+        await store.transaction((tx) =>
+          tx.updatePayment(second.id, {}, { status: 'open', endReason: null, endedAt: null }),
+        );
+      } catch (error) {
+        refused = error;
+      }
+      expect(sqlState(refused)).toBe('23505');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('lockAccount and lockPayment hold FOR UPDATE locks until the transaction ends', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      expect(await store.transaction((tx) => tx.insertPayment(payment))).toBe(true);
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const firstLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const first = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        await tx.lockPayment(payment.id);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.updatePayment(payment.id, {}, { replacements: 1 });
+        events.push('first:commit');
+      });
+      await firstLocked;
+      const second = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        events.push('second:account');
+        const row = await tx.lockPayment(payment.id);
+        events.push(`second:replacements=${row?.replacements}`);
+      });
+      await Promise.all([first, second]);
+      expect(events).toEqual(['first:commit', 'second:account', 'second:replacements=1']);
+    } finally {
       await closeIfPossible(sql);
     }
   });

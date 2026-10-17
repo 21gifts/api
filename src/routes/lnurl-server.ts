@@ -9,7 +9,7 @@
  */
 
 import { Hono } from 'hono';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -25,8 +25,12 @@ import {
 import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { readClientRequestMeta } from '@/lib/request-meta';
+import { shopError, shopResponse, type ShopPayments } from '@/lib/shop-payment';
+import { handleShopProof } from '@/lib/shop-proof';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername } from '@/lib/username';
+import { normalizeUuid } from '@/lib/uuid';
+import { WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
 
 /** Collaborators for the forwarded LNURL routes. */
 export interface LnurlServerRouteDeps {
@@ -40,6 +44,10 @@ export interface LnurlServerRouteDeps {
   now: () => number;
   /** Point-of-sale charges; a minted BOLT11 at the open charge amount is recorded. */
   posStore: PosStore;
+  /** Shop payments in USDT and USDC (callback, proof, and wait routes); omitted → not mounted. */
+  shopPayments?: ShopPayments;
+  /** Hold limit of `GET /lnurlp/wait/:payment` (default {@link WAIT_SATS_TIMEOUT_MS}). */
+  waitTimeoutMs?: number;
 }
 
 /** Stable 404 body when a gate fails or the upstream returns 404. */
@@ -169,10 +177,46 @@ async function recordPosInvoice(
 }
 
 /**
- * Build the forwarded LNURL route group.
+ * Whether any of `keys` appears more than once in the request query.
  *
- * @param deps - Auth store, LNURL config, fetch, clock, and POS store.
- * @returns A Hono app with the five forwarded routes.
+ * @param queries - All values per key (`c.req.queries()`).
+ * @param keys - Keys to check.
+ * @returns `true` when a key is repeated.
+ */
+function repeatedKey(queries: Record<string, string[]>, keys: readonly string[]): boolean {
+  return keys.some((key) => (queries[key] ?? []).length > 1);
+}
+
+/**
+ * The shop account of a username: a verified wallet and a username that is
+ * not `invoice` (the invoice forward keeps that path segment).
+ *
+ * @param deps - Route collaborators.
+ * @param raw - Path parameter.
+ * @returns The account and its username, or `null`.
+ */
+async function shopAccount(
+  deps: LnurlServerRouteDeps,
+  raw: string,
+): Promise<{ account: Account; username: string } | null> {
+  const username = normalizeUsername(raw);
+  if (username === null || username === 'invoice') {
+    return null;
+  }
+  const account = await deps.auth.getAccountByUsername(username);
+  if (account === undefined || typeof account.sparkPubkeyVerifiedAt !== 'number') {
+    return null;
+  }
+  return { account, username };
+}
+
+/**
+ * Build the forwarded LNURL route group, plus the shop payment callback,
+ * proof, and wait routes when {@link LnurlServerRouteDeps.shopPayments} is set.
+ *
+ * @param deps - Auth store, LNURL config, fetch, clock, POS store, and the
+ *   optional shop payment service.
+ * @returns A Hono app with the five forwarded routes and the shop routes.
  */
 export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
   const registerLimiter = new IpRateLimiter(30);
@@ -180,8 +224,11 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
   const metadataLimiter = new IpRateLimiter(120);
   const invoiceLimiter = new IpRateLimiter(20);
   const verifyLimiter = new IpRateLimiter(120);
+  const callbackLimiter = new IpRateLimiter(120);
+  const proofLimiter = new IpRateLimiter(120);
+  const waitLimiter = new IpRateLimiter(120);
 
-  return new Hono()
+  const app = new Hono()
     .post('/lnurlpay/:pubkey', async (c) => {
       const route: LnurlServerRouteName = 'register';
       try {
@@ -386,5 +433,76 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         logEvent('lnurl_server.failed', { route });
         return c.json(UNAVAILABLE, 503);
       }
+    });
+  const shop = deps.shopPayments;
+  if (shop === undefined) {
+    return app;
+  }
+  // Registered after `/lnurlp/:username/invoice`, which keeps the literal
+  // segment `invoice` (`/lnurlp/cb/invoice` stays the forward of user `cb`).
+  return app
+    .get('/lnurlp/cb/:username', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
+      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      if (!callbackLimiter.allow(clientIp, deps.now())) {
+        return shopError(503, 'Too many requests');
+      }
+      const found = await shopAccount(deps, c.req.param('username'));
+      if (found === null) {
+        return shopError(404, 'Not found');
+      }
+      return shop.callback(found.account, found.username, {
+        amount: c.req.query('amount') ?? null,
+        quote: c.req.query('quote') ?? null,
+        method: c.req.query('method') ?? null,
+        asset: c.req.query('asset') ?? null,
+        repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'amount']),
+      });
+    })
+    .get('/lnurlp/tx/:username', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
+      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      const overLimit = !proofLimiter.allow(clientIp, deps.now());
+      const found = await shopAccount(deps, c.req.param('username'));
+      if (found === null) {
+        return overLimit ? shopError(503, 'Too many requests') : shopError(404, 'Not found');
+      }
+      return handleShopProof(
+        shop,
+        found.account,
+        found.username,
+        {
+          quote: c.req.query('quote') ?? null,
+          method: c.req.query('method') ?? null,
+          asset: c.req.query('asset') ?? null,
+          tx: c.req.query('tx') ?? null,
+          hex: c.req.query('hex') ?? null,
+          repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'tx', 'hex']),
+        },
+        overLimit,
+      );
+    })
+    .get('/lnurlp/wait/:payment', async (c) => {
+      if (c.req.method !== 'GET') {
+        return c.notFound();
+      }
+      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      if (!waitLimiter.allow(clientIp, deps.now())) {
+        return shopError(429, 'Too many requests');
+      }
+      const paymentId = normalizeUuid(c.req.param('payment'));
+      const body =
+        paymentId === null
+          ? null
+          : await shop.wait(
+              paymentId,
+              c.req.query('since') ?? null,
+              deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS,
+            );
+      return body === null ? shopError(404, 'Not found') : shopResponse(body, 200);
     });
 }

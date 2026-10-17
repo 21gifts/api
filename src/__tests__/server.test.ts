@@ -10,6 +10,7 @@ import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store'
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
+import type { ShopPayments } from '@/lib/shop-payment';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
@@ -1422,5 +1423,116 @@ describe('free in-app payments wiring', () => {
     );
     expect(status).toBe(400);
     expect(await store.listOpen(new Date(0))).toEqual([]);
+  });
+});
+
+describe('createApp shop payments in USDT and USDC', () => {
+  const SHOP_ENV = {
+    LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+    PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+    ORCHESTRA_BASE_URL: 'https://orchestra.example',
+    ORCHESTRA_API_KEY: 'fn_server',
+    SHOP_EVM_RPC: JSON.stringify({ '137': 'https://polygon.rpc.example' }),
+    SHOP_REFUND_ADDRESS: `0x${'ab'.repeat(20)}`,
+  };
+  const SHOP_PATHS = [
+    'GET /lnurlp/cb/:username',
+    'GET /lnurlp/tx/:username',
+    'GET /lnurlp/wait/:payment',
+    'POST /debug/shop-proofs/:id/retry',
+  ];
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function routeKeys(app: ReturnType<typeof createApp>): string[] {
+    return app.routes.map((route) => `${route.method} ${route.path}`);
+  }
+
+  async function postPayment(app: ReturnType<typeof createApp>): Promise<Response> {
+    return app.request('/pay/wally/payment', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+    });
+  }
+
+  it('mounts no shop route without the LNURL server', () => {
+    const app = createApp({ env: {}, debugToken: 'debug-token' });
+    const keys = routeKeys(app);
+    for (const path of SHOP_PATHS) {
+      expect(keys).not.toContain(path);
+    }
+  });
+
+  it('builds the service without Orchestra when the shop variables are unset', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = createApp({
+      env: { LNURL_SERVER_URL: LNURL_SERVER.baseUrl, PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl },
+      authStore,
+      fetchImpl,
+      debugToken: 'debug-token',
+    });
+    expect(routeKeys(app)).toEqual(expect.arrayContaining(SHOP_PATHS));
+    const res = await postPayment(app);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({
+      error: 'Stablecoin payment is unavailable',
+      code: 'stablecoin_unavailable',
+    });
+    expect(seen.some((request) => request.url.startsWith('https://orchestra.example'))).toBe(false);
+    const retry = await app.request(
+      '/debug/shop-proofs/00000000-0000-4000-8000-000000000001/retry',
+      { method: 'POST', headers: { authorization: 'Bearer debug-token' } },
+    );
+    expect(retry.status).toBe(404);
+    expect(await retry.json()).toEqual({ error: 'Not found' });
+    const wait = await app.request('/lnurlp/wait/00000000-0000-4000-8000-000000000001');
+    expect(wait.status).toBe(404);
+  });
+
+  it('asks Orchestra when the shop variables resolve', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally');
+    const app = createApp({ env: SHOP_ENV, authStore, fetchImpl });
+    const res = await postPayment(app);
+    // The fake Orchestra answers 500, so no pair commits (order 9).
+    expect(res.status).toBe(503);
+    expect(seen.some((request) => request.url.startsWith('https://orchestra.example/'))).toBe(true);
+  });
+
+  it('uses an injected service for every shop route', async () => {
+    const authStore = new InMemoryAuthStore();
+    await createWalletAccount(authStore, 'wal-shop', 'wally');
+    const { fetchImpl } = walletLnurlFetch('wally');
+    const offersStablecoins = vi.fn(() => false);
+    const wait = vi.fn(async () => null);
+    const shopPayments = { offersStablecoins, wait } as unknown as ShopPayments;
+    const app = createApp({ env: SHOP_ENV, authStore, fetchImpl, shopPayments });
+    expect((await postPayment(app)).status).toBe(503);
+    expect(offersStablecoins).toHaveBeenCalledWith('wally');
+    const id = '00000000-0000-4000-8000-000000000002';
+    expect((await app.request(`/lnurlp/wait/${id}`)).status).toBe(404);
+    expect(wait).toHaveBeenCalledWith(id, null, expect.any(Number));
+  });
+
+  it('ignores an injected service while the LNURL server is off', async () => {
+    const offersStablecoins = vi.fn(() => true);
+    const app = createApp({
+      env: {},
+      shopPayments: { offersStablecoins } as unknown as ShopPayments,
+    });
+    expect(routeKeys(app)).not.toContain('GET /lnurlp/cb/:username');
+    expect((await postPayment(app)).status).toBe(404);
+    expect(offersStablecoins).not.toHaveBeenCalled();
   });
 });

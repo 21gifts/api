@@ -204,4 +204,94 @@ describe('requestGiftInvoice', () => {
       reason: 'unreachable',
     });
   });
+
+  describe('with a deadline', () => {
+    interface Seen {
+      url: string;
+      init: RequestInit | undefined;
+    }
+
+    function provider(seen: Seen[], onCall?: () => void): FetchFn {
+      return async (input, init) => {
+        seen.push({ url: String(input), init });
+        onCall?.();
+        if (String(input).includes('/.well-known/lnurlp/')) {
+          return jsonResponse({
+            callback: 'https://example.com/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: MAX_SENDABLE,
+          });
+        }
+        return jsonResponse({ pr: PR });
+      };
+    }
+
+    it('hands both calls an abort signal and keeps their other options', async () => {
+      const seen: Seen[] = [];
+      const result = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen),
+        deadlineMs: 10_000,
+        now: () => 1_000,
+      });
+      expect(result).toEqual({ ok: true, pr: PR });
+      expect(seen).toHaveLength(2);
+      for (const call of seen) {
+        expect(call.init?.signal).toBeInstanceOf(AbortSignal);
+        expect(call.init?.signal?.aborted).toBe(false);
+        expect(call.init?.redirect).toBe('error');
+      }
+    });
+
+    it('fails like an unreachable provider without a request once the deadline passed', async () => {
+      const seen: Seen[] = [];
+      const result = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen),
+        deadlineMs: 1_000,
+        now: () => 1_000,
+      });
+      expect(result).toEqual({ ok: false, reason: 'unreachable' });
+      expect(seen).toHaveLength(0);
+    });
+
+    it('skips the callback when the resolve used up the time', async () => {
+      const seen: Seen[] = [];
+      let clock = 1_000;
+      const result = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen, () => {
+          clock = 5_000;
+        }),
+        deadlineMs: 5_000,
+        now: () => clock,
+      });
+      expect(result).toEqual({ ok: false, reason: 'unreachable' });
+      expect(seen.map((call) => call.url)).toEqual([
+        'https://example.com/.well-known/lnurlp/alice',
+      ]);
+    });
+
+    it('defaults the clock to Date.now', async () => {
+      const seen: Seen[] = [];
+      const ok = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen),
+        deadlineMs: Date.now() + 60_000,
+      });
+      expect(ok).toEqual({ ok: true, pr: PR });
+      const late = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen),
+        deadlineMs: Date.now() - 1,
+      });
+      expect(late).toEqual({ ok: false, reason: 'unreachable' });
+      expect(seen).toHaveLength(2);
+    });
+  });
 });
