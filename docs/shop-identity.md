@@ -159,16 +159,16 @@ not, in the same loop and with the same rules as account profiles
 
 Kind 0 content of a listed shop:
 
-| Field          | Value                                                                  |
-| -------------- | ---------------------------------------------------------------------- |
-| `name`         | shop name                                                              |
-| `display_name` | shop name                                                              |
-| `about`        | shop description                                                       |
-| `picture`      | absolute URL of `/messages/:id/photo`, otherwise the account fallback  |
-| `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `/og.png`     |
-| `website`      | `https://21.gifts/{npub}`                                              |
-| `nip05`        | `<local>@<domain>`, see below                                          |
-| `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none |
+| Field          | Value                                                                       |
+| -------------- | --------------------------------------------------------------------------- |
+| `name`         | shop name                                                                   |
+| `display_name` | shop name                                                                   |
+| `about`        | shop description                                                            |
+| `picture`      | absolute URL of `/messages/:id/photo`, otherwise `KIND0_PICTURE_URL`        |
+| `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
+| `website`      | `https://21.gifts/{npub}`                                                   |
+| `nip05`        | `<local>@<domain>`, see below                                               |
+| `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none      |
 
 Without a public origin, the shop profile does what an account profile does
 today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
@@ -270,9 +270,10 @@ Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does
 today.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
-its kind 0 leaves the field out. A photo `url` is absolute from
-`resolvePublicApiBase`; when that is empty, it is the path alone
-(`/messages/:id/photo`).
+its kind 0 leaves the field out. Photo 1 is `/messages/:id/photo` and photo
+n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumExtraPhotoUrl`
+in `src/lib/nostr/event.ts` uses), absolute from `resolvePublicApiBase`, or
+the path alone when that is empty.
 Photos are the note's photos in note order. `width` and `height` come from a
 header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
 never decodes the image, so an unauthenticated request cannot make the api
