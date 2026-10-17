@@ -10565,6 +10565,9 @@ describe('PATCH /messages/:id/place', () => {
   };
   const PIN = { lat: 47.1234567, lng: 8.5, label: 'Cafe', address: ADDRESS };
   const STORED = { lat: 47.123457, lng: 8.5, label: 'Cafe', address: ADDRESS };
+  const SHOP_TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+  const DESCRIPTION_ERROR =
+    'Shop description must be 20 to 1000 characters and longer than the shop name';
 
   it('returns 401 without a session', async () => {
     const res = await mount(await seededStore()).request('/messages/' + SHOP_ID + '/place', {
@@ -10628,7 +10631,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -10676,7 +10679,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -10695,7 +10698,7 @@ describe('PATCH /messages/:id/place', () => {
     expect(json).toHaveProperty('replyCount');
     const stored = await messages.getById(SHOP_ID);
     expect(stored?.eventId).toBe('ee'.repeat(32));
-    expect(stored?.text).toBe('Shop #21GiftsShop');
+    expect(stored?.text).toBe(SHOP_TEXT);
     expect((await messages.listPlaces(10)).map((row) => row.id)).toContain(SHOP_ID);
     const publicRes = await mount(new InMemoryAuthStore(), messages).request(
       '/messages/' + SHOP_ID,
@@ -10714,7 +10717,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -10822,6 +10825,102 @@ describe('PATCH /messages/:id/place', () => {
     expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
   });
 
+  it('returns 400 when a complete pin name is not shorter than the stored description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Coffee roasted on site.\n\n#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const existing = { lat: 46.1, lng: 7.1, label: 'Old', address: null };
+    await messages.setPlace(SHOP_ID, existing);
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        place: {
+          lat: 47.1,
+          lng: 8.5,
+          label: 'Neighborhood Espresso House',
+          address: ADDRESS,
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: DESCRIPTION_ERROR });
+    expect((await messages.getById(SHOP_ID))?.place).toEqual(existing);
+  });
+
+  it('returns 400 when a complete pin is set on a shop whose description is under 20 characters', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: PIN }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: DESCRIPTION_ERROR });
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
+  it('returns 200 when a complete pin is set on a shop with a valid stored description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: SHOP_TEXT,
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: PIN }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { place: unknown }).place).toEqual(STORED);
+  });
+
+  it('returns 200 when place null clears a shop with a short description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setPlace(SHOP_ID, STORED);
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    expect(res.status).toBe(200);
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
   it('returns 200 when the text is #21giftsshop', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
@@ -10829,7 +10928,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: '#21giftsshop',
+      text: 'Coffee roasted on site and served at the bar every morning.\n\n#21giftsshop',
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11027,7 +11126,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11064,7 +11163,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11095,7 +11194,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11134,7 +11233,7 @@ describe('PATCH /messages/:id/place', () => {
       id: DAMUS_ID,
       accountId: null,
       name: 'aabbccdd…8899',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       hasVideo: false,
@@ -11161,7 +11260,7 @@ describe('PATCH /messages/:id/place', () => {
       id: GHOST_ID,
       accountId: 'gone',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -12273,6 +12372,45 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
   });
 
+  it('lets a short shop text stay when the stored place is incomplete', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Neighborhood Espresso House',
+      address: null,
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
+  });
+
+  it('returns 400 when a pinned shop description is not longer than the name', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Neighborhood Espresso House',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Coffee roasted on site.' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+  });
+
   it('puts the map pin after a real shop text write', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const auth = await staffStore('Ada');
@@ -12735,7 +12873,9 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
   it('records a place or shop-account change once and skips an identical save', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
-    await shopNote(messages);
+    await shopNote(messages, {
+      text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+    });
     const pin = {
       lat: 47.1,
       lng: 8.5,

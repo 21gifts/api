@@ -3332,7 +3332,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Value:** The integer `20`.
 - **Used by:** `shopTextProblem` when it checks that the stripped description is at least this long and strictly longer than the shop name.
 
-The constant is the lower bound of the 20–1000 character rule on a shop with a pin. `POST /messages` and `PATCH /messages/:id/text` return that error when the description is below it.
+The constant is the lower bound of the 20–1000 character rule on a shop with a pin. `POST /messages`, `PATCH /messages/:id/place` when a non-null pin is complete, and `PATCH /messages/:id/text` when the stored pin is complete return that error when the description is below it.
 
 ## Function: SHOP_DESCRIPTION_MAX
 
@@ -3340,7 +3340,7 @@ The constant is the lower bound of the 20–1000 character rule on a shop with a
 - **Value:** The integer `1000`.
 - **Used by:** `shopTextProblem` when it checks that the stripped description is at most this long and strictly longer than the shop name.
 
-The constant is the upper bound of the 20–1000 character rule on a shop with a pin. `POST /messages` and `PATCH /messages/:id/text` return that error when the description is above it.
+The constant is the upper bound of the 20–1000 character rule on a shop with a pin. `POST /messages`, `PATCH /messages/:id/place` when a non-null pin is complete, and `PATCH /messages/:id/text` when the stored pin is complete return that error when the description is above it.
 
 ## Function: shopDescription
 
@@ -3354,14 +3354,14 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 - **Purpose:** Name and address problems of a shop pin, or null when both are complete. Order: name required, then address required, then the label must not contain the street or postal code as a standalone token.
 - **Inputs:** A `ForumPlace` on a shop note.
 - **Returns / side effects:** A fixed English error (`Shop name is required`, `Shop address is required`, or `Shop name must not contain the address`), or `null`. No I/O.
-- **Used by:** `POST /messages` (JSON and multipart) for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null, and `shopOcpPlaceInput`.
+- **Used by:** `POST /messages` (JSON and multipart) for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null, `PATCH /messages/:id/text` when deciding whether the stored pin is complete, and `shopOcpPlaceInput`.
 
 ## Function: shopTextProblem
 
 - **Purpose:** Description problem of a shop note, or null when it is complete. The description is `shopDescription` of the text (CRLF already folded to LF). It must be 20–1000 characters, strictly longer than the pin label, and not equal to the label case-insensitively. A missing label is compared as the empty string.
 - **Inputs:** Stored or submitted note text, and the forum pin or `null` when the note has none.
 - **Returns / side effects:** `Shop description must be 20 to 1000 characters and longer than the shop name`, or `null`. No I/O.
-- **Used by:** `POST /messages` for a top-level shop with a pin, `PATCH /messages/:id/text` when the shop note already has a pin, and `shopOcpPlaceInput`.
+- **Used by:** `POST /messages` for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null (after `shopPlaceProblem` passes), `PATCH /messages/:id/text` when the stored place is complete, and `shopOcpPlaceInput`.
 
 ## Function: shopOcpPlaceInput
 
