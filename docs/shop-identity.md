@@ -367,9 +367,10 @@ Rules for every claim:
   sends a `DELETE`, it sets `ocp_photos_hash` to null, clears
   `ocp_photos_pending` and raises `ocp_photos_generation`, conditional only
   on the token `c`, so a photo push still in flight fails its generation
-  check and cannot store a hash afterwards: OpenCryptoPay may drop the photos even when the answer is
-  lost or a newer change makes the result write a no-op, and a null hash
-  makes the next confirmed `PUT` send the photos again. It keeps the 5 s
+  check and cannot store a hash afterwards. OpenCryptoPay may drop the
+  photos even when the answer is lost or a newer change makes the result
+  write a no-op, and a null hash makes the next confirmed `PUT` send the
+  photos again. It keeps the 5 s
   timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
 - **Results.**
   - `PUT` 2xx: clear the pending flag, then queue the photo push (set
