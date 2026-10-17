@@ -1,10 +1,12 @@
 # Shop identity
 
 Status: **concept only**. Decided 2026-10-17. Not implemented. No HTTP path
-in this document is reserved. A change that builds a part of this adds its
-routes, and the new `shopNpub` field on existing responses, to `SPEC.md`, its
-table to `docs/schema/` and its functions and routes to the handbook in that
-same change. Nothing here changes runtime behaviour.
+in this document is reserved. A later change that builds this adds its routes
+to `SPEC.md` in that same change. Nothing here changes runtime behaviour.
+
+That change also adds the `shopNpub` field on existing responses to
+`SPEC.md`, the new table to `docs/schema/` and its functions and routes to the
+handbook.
 
 Every shop gets its own NOSTR identity. 21.gifts generates it, holds it and
 publishes its profile, exactly the way it already does for every account. The
@@ -28,9 +30,11 @@ A **listed shop** is a top-level forum note (`parent_id` null) that:
 - has a place pin;
 - has `shop_account_id` set.
 
-"Listed" is the single rule for everything in this document: who gets a key,
-whose profile is a shop profile, what `GET /shops/:npub` serves, and which
-shops are on the OpenCryptoPay map. A note that stops meeting any of the four
+"Listed" is the single rule for everything in this document: which notes get
+a key, which kind 0 content a shop identity publishes (S2 publishes every
+identity, listed or not, with different content), which shops
+`GET /shops/:npub` serves with 200, and which shops are on the OpenCryptoPay
+map. A note that stops meeting any of the four
 conditions is no longer listed. It keeps its identity.
 
 The shop name is the pin label, otherwise the author's name, otherwise
