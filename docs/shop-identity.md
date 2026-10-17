@@ -377,7 +377,7 @@ Rules for every claim:
   transaction, as its own statement after the write has locked the message
   row, so it sees a `shop_identity` row that a concurrent key insert has
   just committed. That covers the writes named in S1, `DELETE /messages/:id`
-  (staff hide or author delete) and the cascade hide of an external author
+  (staff hide) and the cascade hide of an external author
   in `blockPubkeyAndHideRows`. That function's statement already selects
   the hidden ids but returns only their count today; the implementing change
   makes it return the ids and wraps it in a transaction that queues the
