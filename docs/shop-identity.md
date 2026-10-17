@@ -286,7 +286,8 @@ OpenCryptoPay reports.
     shop; shown only when `payUsername` is not `null`;
   - npub copy button: the copy control of `ExternalAuthorProfile`.
 - The shops page (`/shops`) and the map link each shop to `/{npub}` instead
-  of the note.
+  of the note. While `shopNpub` is `null` (a listed shop whose key is not
+  created yet), the link stays `/messages/<messageId>`.
 - All visible text goes through the existing translations.
 
 ## S5 OpenCryptoPay push
