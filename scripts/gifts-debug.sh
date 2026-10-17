@@ -16,7 +16,10 @@
 #               GET /debug/trust-edges, POST /debug/trust-edges,
 #               DELETE /debug/trust-edges,
 #               GET /debug/dump, GET /debug/dump/:table,
-#               GET /funding/goal). No raw SQL.
+#               GET /funding/goal,
+#               GET/PUT /debug/logins, POST /debug/logins/allowlist,
+#               DELETE /debug/logins/allowlist/:accountId,
+#               DELETE /debug/sessions). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -54,6 +57,12 @@
 #   gifts-debug trust-edge-delete <subject-id> <kind>
 #                                      # DELETE a stored trust edge; print edge JSON
 #                                      # Does not change account.role
+#   gifts-debug logins               # GET /debug/logins JSON (switch, source, allowlist)
+#   gifts-debug logins-open          # PUT /debug/logins {"open":true}
+#   gifts-debug logins-close         # PUT /debug/logins {"open":false}; sessions stay
+#   gifts-debug logins-allow <account-uuid>     # add to the login allowlist
+#   gifts-debug logins-disallow <account-uuid>  # remove from the login allowlist
+#   gifts-debug end-sessions yes     # DELETE /debug/sessions; every member is signed out
 #
 # Example:
 #   gifts-debug accounts
@@ -234,6 +243,55 @@ cmd_refuse_session() {
     die "HTTP ${status}: ${body}"
   fi
   printf '%s\n' "$body"
+}
+
+# One debug request with an optional JSON body; prints the 200 body or dies.
+debug_json() {
+  local method="$1" path="$2" data="${3:-}" tmp status body
+  tmp=$(mktemp)
+  if [ -n "$data" ]; then
+    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$data" \
+      "${DEBUG_API_URL}${path}") || {
+      rm -f "$tmp"
+      die "request failed"
+    }
+  else
+    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+      "${DEBUG_API_URL}${path}") || {
+      rm -f "$tmp"
+      die "request failed"
+    }
+  fi
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
+require_account_uuid() {
+  [[ "${1:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+    || die "invalid account uuid"
+}
+
+cmd_logins_allow() {
+  require_account_uuid "${1:-}"
+  debug_json POST /debug/logins/allowlist "{\"accountId\":\"$1\"}"
+}
+
+cmd_logins_disallow() {
+  require_account_uuid "${1:-}"
+  debug_json DELETE "/debug/logins/allowlist/$1"
+}
+
+cmd_end_sessions() {
+  [ "${1:-}" = "yes" ] || die "usage: gifts-debug end-sessions yes   (signs every member out)"
+  debug_json DELETE /debug/sessions
 }
 
 cmd_passkey_renew_reopen() {
@@ -743,6 +801,12 @@ case "${1:-}" in
   funding-goal) cmd_funding_goal ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
   trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
+  logins) debug_json GET /debug/logins ;;
+  logins-open) debug_json PUT /debug/logins '{"open":true}' ;;
+  logins-close) debug_json PUT /debug/logins '{"open":false}' ;;
+  logins-allow) shift; cmd_logins_allow "$@" ;;
+  logins-disallow) shift; cmd_logins_disallow "$@" ;;
+  end-sessions) shift; cmd_end_sessions "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

@@ -22,6 +22,7 @@ import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
+import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
 import { parseWalletReport } from '@/lib/wallet-report';
 import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
@@ -2041,6 +2042,102 @@ describe('PostgresMemberEventStore', () => {
         [accountId],
       );
       expect(inserts).toHaveLength(2);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresLoginGateStore and session wipe', () => {
+  test('switch upsert, allowlist with cascade, deleteAllSessions count, db_change rows', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migrateLoginGateSchema(client);
+      await migrateLoginGateSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresLoginGateStore(client);
+      // db_change is append-only and logins_open is a singleton key, so only
+      // rows written after this mark prove this run's triggers fired.
+      const [mark] = await client.query<{ id: string }>(
+        `SELECT COALESCE(MAX(id), 0)::text AS id FROM db_change`,
+      );
+      await client.execute(`DELETE FROM app_setting WHERE key = 'logins_open'`);
+      expect(await store.loginsOpen()).toBeNull();
+      await store.setLoginsOpen(false, Date.now());
+      expect(await store.loginsOpen()).toBe(false);
+      await store.setLoginsOpen(true, Date.now());
+      expect(await store.loginsOpen()).toBe(true);
+
+      const auth = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `gate_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      expect(await store.addToAllowlist(accountId, 1_000)).toBe(true);
+      expect(await store.addToAllowlist(accountId, 2_000)).toBe(false);
+      expect(await store.isAllowlisted(accountId)).toBe(true);
+      const listed = await store.listAllowlist();
+      expect(listed.find((row) => row.accountId === accountId)).toEqual({
+        accountId,
+        createdAt: 1_000,
+      });
+      expect(await store.removeFromAllowlist(accountId)).toBe(true);
+      expect(await store.removeFromAllowlist(accountId)).toBe(false);
+      await store.addToAllowlist(accountId, 3_000);
+      await auth.deleteAccount(accountId);
+      expect(await store.isAllowlisted(accountId)).toBe(false);
+
+      const sessionOwner = crypto.randomUUID();
+      await auth.createAccount({
+        id: sessionOwner,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `wipe_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await auth.deleteAllSessions();
+      await auth.createSession({ token: hex64(), accountId: sessionOwner, createdAt: Date.now() });
+      await auth.createSession({ token: hex64(), accountId: sessionOwner, createdAt: Date.now() });
+      expect(await auth.deleteAllSessions()).toBe(2);
+      expect(await auth.deleteAllSessions()).toBe(0);
+
+      const changes = await client.query<{ table_name: string; op: string }>(
+        `SELECT table_name, op
+         FROM db_change
+         WHERE id > $3::bigint
+           AND ((table_name = 'app_setting'
+                AND COALESCE(after->>'key', before->>'key') = 'logins_open'
+                AND COALESCE(after->>'value', '') = 'open'
+                AND COALESCE(before->>'value', '') = 'closed')
+            OR (table_name = 'login_allowlist'
+                AND COALESCE(after->>'account_id', before->>'account_id') = $1)
+            OR (table_name = 'auth_session'
+                AND COALESCE(after->>'account_id', before->>'account_id') = $2))`,
+        [accountId, sessionOwner, mark?.id ?? '0'],
+      );
+      const seen = new Set(changes.map((row) => `${row.table_name}:${row.op}`));
+      expect(seen.has('app_setting:UPDATE')).toBe(true);
+      expect(seen.has('login_allowlist:INSERT')).toBe(true);
+      expect(seen.has('login_allowlist:DELETE')).toBe(true);
+      expect(seen.has('auth_session:DELETE')).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }

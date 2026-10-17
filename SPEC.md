@@ -70,7 +70,7 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, `https://staging-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization`, `Content-Type`, `Time-Zone`, and `X-App-Build`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
@@ -100,10 +100,10 @@ Public base URLs used in examples:
 | GET    | `/favicon.ico`                                       | none                                         | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/favicon.svg`                                       | none                                         | Brand mark (SVG favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/apple-touch-icon.png`                              | none                                         | Brand mark (Apple touch icon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (always for a new account; a claim passes for the platform account or an allowlisted account)                                                                                                                                                                                                                                                            |
+| POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                               |
+| POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/auth/passkey/replace/begin`                        | Bearer                                       | 409 refusal after a valid Bearer (a recovery phrase cannot be replaced; no challenge)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                                       | 409 refusal that deletes nothing and keeps the session                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                                       | Creation options for one extra seed passkey; 409 when walletRequired is already true stores a failed renew row and does not change the account; a 200 stores no row; no excludeCredentials.                                                                                                                                                                                                                                                                                                                                   |
@@ -252,6 +252,11 @@ Public base URLs used in examples:
 | POST   | `/me/events`                                         | Bearer                                       | `{ events: [{ name, at, path, props }] }` (at most 50) → `{ accepted, dropped }`; allow-listed interaction log; 30/account/min; 64 KiB                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Login switch `{ open, source, defaultOpen, allowlist }`; `source` is `stored` or `default` (`LOGINS_OPEN_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| PUT    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Body `{ open }`. Stored value wins over `LOGINS_OPEN_DEFAULT`. Existing sessions are not touched                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/debug/logins/allowlist`                            | Bearer `DEBUG_TOKEN`                         | Body `{ accountId }`. Account may start a session while logins are closed. 404 for an unknown account                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| DELETE | `/debug/logins/allowlist/:accountId`                 | Bearer `DEBUG_TOKEN`                         | Remove one account from the login allowlist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| DELETE | `/debug/sessions`                                    | Bearer `DEBUG_TOKEN`                         | Delete every `auth_session` row → `{ deleted }`; those bearers answer 401                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/debug/dump`                                        | `Authorization: Bearer`                      | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`                      | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/gifts`                                             | none                                         | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -266,6 +271,40 @@ Public base URLs used in examples:
 | POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                     | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment }`, plus messageId only when the decision includes it.                                                                                                                                                                                                                                                                   |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
+
+### Login controls
+
+Two server-side request checks and one operator action for a release. The
+two checks only apply to the passkey steps that lead to a session:
+`POST /auth/passkey/register/begin` (new account and claim),
+`POST /auth/passkey/register/finish`, `POST /auth/passkey/authenticate/begin`
+(build check only), and `POST /auth/passkey/authenticate/finish`. The operator
+mint `POST /debug/accounts/:id/session` is exempt from both checks. Refusals
+are JSON `{ error, code }` with a stable `code`:
+
+| Check       | Status | `code`          | `error`                                             |
+| ----------- | ------ | --------------- | --------------------------------------------------- |
+| App build   | 403    | `app_outdated`  | `A new app version is ready. Reload the page.`      |
+| Logins open | 503    | `logins_closed` | `Logins are paused for an update. Try again later.` |
+
+- **App build.** When `APP_BUILD_REQUIRED` is set (trimmed, non-empty), the
+  request must carry the header `X-App-Build` with exactly that value
+  (trimmed, case-sensitive). The check runs before every other check. Unset
+  or blank → no check.
+- **Login switch.** `open` is the stored `app_setting` row `logins_open` once
+  `PUT /debug/logins` ran, otherwise `LOGINS_OPEN_DEFAULT` (`open` | `closed`,
+  default `open`; any other value stops the boot). While closed, only the
+  platform account (`isPlatform`) and accounts on `login_allowlist` may start a
+  session; a new registration is always refused. Finish steps check after the
+  passkey is verified and before any account, credential, or session write.
+  Existing sessions are not checked.
+- **End all sessions.** `DELETE /debug/sessions` deletes every `auth_session`
+  row and returns `{ deleted }`. Every bearer that held one answers 401 on its
+  next request.
+
+Storage: `app_setting` and `login_allowlist` (`docs/schema/login_gate.sql`),
+migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in
+memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 
 ## Role hierarchy
 
@@ -870,6 +909,13 @@ challenge row. On success the challenge stores `requestedName` as the
 normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
+When `APP_BUILD_REQUIRED` is set and `X-App-Build` differs, **Response**
+`403` `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }` before every other check (see Login controls). While the login
+switch is closed, **Response** `503` `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`:
+for a new account right after the JSON check, and for a claim after the
+`404` / `409` checks unless the provisioned account is the platform account
+or on the allowlist. A refused begin writes no challenge row.
+
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
@@ -909,20 +955,22 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                                              | When                                                                                                    |
-| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                              |
-| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                        |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                         |
-| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                   |
-| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                      |
-| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                     |
-| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                             |
-| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                          |
-| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                       |
-| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                 |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                   |
-| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session |
+| Status | Body                                                                                              | When                                                                                                                                                                                               |
+| ------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 403    | `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }`             | `APP_BUILD_REQUIRED` set and `X-App-Build` differs; checked first                                                                                                                                  |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                                                                                                                         |
+| 503    | `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`       | Login switch closed after the passkey verified: always for a new account, and for a claim unless the account is the platform account or allowlisted; no account, credential, or session is written |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                                                                                                                   |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                                                                                                                    |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                                                                                                              |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                                                                                                                 |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                                                                                                                |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                                                                                                                        |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                                                                                                                     |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                                                                                                                  |
+| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                                                                                                            |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                                                                                                              |
+| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session                                                                                            |
 
 **Response** `200`:
 
@@ -974,7 +1022,8 @@ A new register row is stored with `walletRequired: true` and `walletBackupSeenAt
 ### `POST /auth/passkey/authenticate/begin`
 
 Starts a discoverable-credential assertion. `allowCredentials` is empty.
-Same 500 as register begin when WebAuthn is unconfigured.
+Same 403 `app_outdated` and 500 as register begin. The login switch does not
+apply here, because the account is unknown until finish.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
 `PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
@@ -990,8 +1039,12 @@ Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
 not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
-and does not persist a bearer. Success body matches register finish
-(`linkingKey` is whatever the account currently has).
+and does not persist a bearer. Same 403 `app_outdated` as register finish,
+checked first. While the login switch is closed, an account that is neither
+the platform account nor allowlisted gets **503** `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`
+after the passkey verified, with no sign-count or session write. Success
+body matches register finish (`linkingKey` is whatever the account currently
+has).
 
 ### `POST /auth/passkey/replace/begin`
 
@@ -3907,6 +3960,96 @@ Success → **Response** `200`:
 ```
 
 `deleted` is `0` when the account had no failed row.
+
+### `GET /debug/logins`
+
+Operator read of the login switch (see Login controls). Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{
+  "open": false,
+  "source": "stored",
+  "defaultOpen": true,
+  "allowlist": [
+    { "accountId": "00000000-0000-4000-8000-000000000001", "createdAt": "2026-06-01T12:00:00.000Z" }
+  ]
+}
+```
+
+`source` is `stored` once `PUT /debug/logins` ran and `default` before that
+(then `open` equals `defaultOpen` from `LOGINS_OPEN_DEFAULT`). `allowlist` is
+oldest first; `createdAt` is ISO 8601.
+
+### `PUT /debug/logins`
+
+Operator set of the login switch. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "open": <boolean> }` with no other keys. Stores the value in
+`app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from
+then on. Existing sessions are not touched. Logs `debug.logins.set`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a non-boolean `open`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"open\" boolean" }`.
+
+Success → **Response** `200`: the same JSON as `GET /debug/logins`.
+
+### `POST /debug/logins/allowlist`
+
+Operator add of one account to the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "accountId": "<uuid>" }` with no other keys (any case, stored
+lower case). Logs `debug.logins.allowlist.add`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a missing or non-UUID `accountId`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"accountId\" uuid" }`.
+Unknown account → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "added": true, ...GET /debug/logins }`.
+`added` is `false` when the account was already listed (its first
+`createdAt` stays). Deleting the account removes its row.
+
+### `DELETE /debug/logins/allowlist/:accountId`
+
+Operator removal of one account from the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Does not end the account's sessions. Logs `debug.logins.allowlist.remove`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+`:accountId` not a UUID → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "removed": true, ...GET /debug/logins }`.
+`removed` is `false` when the account was not listed.
+
+### `DELETE /debug/sessions`
+
+Operator end of every member session. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Deletes every `auth_session` row in one statement. Every bearer that held one
+answers 401 on its next request. The existing `trg_db_change` row trigger
+records each deleted row with the token hashed. Logs `debug.sessions.deleted`
+with the count.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "deleted": 12 }
+```
+
+`deleted` is `0` when no session existed.
 
 ### `GET /gifts`
 

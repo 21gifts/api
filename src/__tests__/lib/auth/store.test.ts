@@ -308,6 +308,16 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getSession('tok'))?.accountId).toBe('acc');
   });
 
+  it('deleteAllSessions removes every session and returns the count', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createSession({ token: 'a', accountId: 'acc', createdAt: 1 });
+    await store.createSession({ token: 'b', accountId: 'other', createdAt: 1 });
+    expect(await store.deleteAllSessions()).toBe(2);
+    expect(await store.getSession('a')).toBeUndefined();
+    expect(await store.listSessions()).toEqual([]);
+    expect(await store.deleteAllSessions()).toBe(0);
+  });
+
   it('tryCreateSession writes only when the account is not refused', async () => {
     const store = new InMemoryAuthStore();
     const account = {

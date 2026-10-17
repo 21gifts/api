@@ -613,6 +613,13 @@ export interface AuthStore {
   setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined>;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Promise<Session | undefined>;
+  /**
+   * Delete every session row (operator `DELETE /debug/sessions`). Bearers
+   * that held one answer 401 from then on.
+   *
+   * @returns How many rows were deleted.
+   */
+  deleteAllSessions(): Promise<number>;
   /** Persist a freshly issued passkey ceremony challenge. */
   createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void>;
   /** Look up a passkey challenge by id, or `undefined` if unknown. */
@@ -1268,6 +1275,12 @@ export class InMemoryAuthStore implements AuthStore {
     }
     await this.createSession(session);
     return true;
+  }
+
+  async deleteAllSessions(): Promise<number> {
+    const count = this.#sessions.size;
+    this.#sessions.clear();
+    return count;
   }
 
   async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {
