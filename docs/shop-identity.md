@@ -254,9 +254,12 @@ OpenCryptoPay reports.
 
 ## S4 Shop page `https://21.gifts/{npub}`
 
-- New app route `src/app/[npub]/page.tsx`. Static routes keep precedence. The
-  segment must match `^npub1[02-9ac-hj-np-z]{58}$` or `^[0-9a-f]{64}$`,
-  otherwise `notFound()`.
+- New app route `src/app/[npub]/page.tsx`. `/messages/[id]` shows the forum
+  note by its note id, and `/view/[viewKey]` shows a member's profile card by
+  a capability key. Neither resolves a shop by the npub that OpenCryptoPay,
+  NIP-05 and the kind 0 `website` use, so the shop page is a new route.
+  Static routes keep precedence. The segment must match
+  `^npub1[02-9ac-hj-np-z]{58}$` or `^[0-9a-f]{64}$`, otherwise `notFound()`.
 - `^[0-9a-f]{64}$` asks the api and redirects (308) to `/{npub}` on its 301.
 - `generateMetadata` like a public note, with the same 2.5 s timeout
   (`AbortSignal.timeout(2500)` in `src/lib/public-message-og.ts`), `title` =
