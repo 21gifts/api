@@ -1,4 +1,5 @@
 import { openAuthStore } from '@/lib/auth/open-store';
+import type { MergeDb } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -311,6 +312,8 @@ export interface BootFxOptions {
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional network, URL, timeout, and clock overrides for tests.
+ * @param transactions - Optional transaction port; the SQL funding store uses
+ *   it for the locked admission count (`admitWithinPlaces`).
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
  *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
@@ -320,6 +323,7 @@ export async function openBootStores(
   databaseUrl: string | undefined,
   createClient?: (url: string) => SqlClient,
   fx?: BootFxOptions,
+  transactions?: MergeDb,
 ): Promise<BootStores> {
   let sqlClient: SqlClient | undefined;
   const authStore = await openAuthStore(
@@ -557,7 +561,7 @@ export async function openBootStores(
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);
-  const fundingStore = new PostgresFundingStore(sqlClient);
+  const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient);
   return {
     authStore,

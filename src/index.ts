@@ -76,12 +76,17 @@ if (import.meta.main) {
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
   const querier = new WebsocketNostrQuerier();
-  const boot = await openBootStores(databaseUrl, bun === undefined ? undefined : () => bun.client, {
-    nostrQuerier: querier,
-    zapRelayUrls: resolveZapRelays(process.env),
-    nostrRelayTimeoutMs: RELAY_TIMEOUT_MS,
-    now: Date.now,
-  });
+  const boot = await openBootStores(
+    databaseUrl,
+    bun === undefined ? undefined : () => bun.client,
+    {
+      nostrQuerier: querier,
+      zapRelayUrls: resolveZapRelays(process.env),
+      nostrRelayTimeoutMs: RELAY_TIMEOUT_MS,
+      now: Date.now,
+    },
+    bun?.mergeDb,
+  );
   const {
     authStore,
     giftStore,

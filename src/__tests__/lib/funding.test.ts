@@ -2,12 +2,15 @@ import { describe, expect, it } from 'vitest';
 import type { AccountRole } from '@/lib/auth/store';
 import type { FundingGrant, FundingStatus } from '@/lib/funding';
 import {
+  CURRENT_GRANT_ROUND,
   FUNDING_REQUIRED_FROM_UTC,
+  countRoundAdmissions,
   dailyPayoutStoppedNotice,
   effectiveStatus,
   eligibleToday,
   fundingGrantRequired,
   fundingReviewedAt,
+  grantPlaces,
   serializeOwnerFunding,
 } from '@/lib/funding';
 
@@ -297,5 +300,58 @@ describe('fundingReviewedAt', () => {
     expect(fundingReviewedAt(grant({ status: 'admitted', admittedAt: NOW_MS }), NOW_MS)).toBe(
       NOW_MS,
     );
+  });
+});
+
+describe('grant round places', () => {
+  const START = Date.parse('2026-10-16T00:00:00.000Z');
+  const round = { number: 1, startsAtMs: START, places: 2, nextGoalShops: 20 };
+  const grant = (partial: Partial<FundingGrant>): FundingGrant => ({
+    accountId: 'acc',
+    status: 'admitted',
+    appliedAt: START - 100,
+    decidedAt: START,
+    decidedBy: 'staff',
+    trialUtcDate: null,
+    admittedAt: START,
+    note: null,
+    ...partial,
+  });
+
+  it('round 1 opens on UTC 2026-10-16 with 10 places and the 20-shop goal next', () => {
+    expect(CURRENT_GRANT_ROUND).toEqual({
+      number: 1,
+      startsAtMs: START,
+      places: 10,
+      nextGoalShops: 20,
+    });
+  });
+
+  it('countRoundAdmissions counts admitted grants from the round start only', () => {
+    expect(
+      countRoundAdmissions(
+        [
+          grant({ accountId: 'a' }),
+          grant({ accountId: 'b', admittedAt: START - 1 }),
+          grant({ accountId: 'c', admittedAt: null }),
+          grant({ accountId: 'd', status: 'rejected' }),
+          grant({ accountId: 'e', status: 'pending', admittedAt: null }),
+          grant({ accountId: 'f', admittedAt: START + 86_400_000 }),
+        ],
+        round,
+      ),
+    ).toBe(2);
+  });
+
+  it('grantPlaces reports places left and never below zero', () => {
+    expect(grantPlaces(round, 1)).toEqual({
+      round: 1,
+      startsAt: '2026-10-16T00:00:00.000Z',
+      places: 2,
+      admitted: 1,
+      placesLeft: 1,
+      nextGoalShops: 20,
+    });
+    expect(grantPlaces(round, 3).placesLeft).toBe(0);
   });
 });

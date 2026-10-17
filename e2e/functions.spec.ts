@@ -2923,8 +2923,26 @@ test('Function: effectiveStatus — default boot has no DATABASE_URL', async ({ 
 test('Function: fundingGrantRequired — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: applicationPauseExempt — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+test('Function: countRoundAdmissions — GET /funding/places counts the round', async ({
+  request,
+}) => {
+  const res = await request.get('/funding/places');
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { admitted: number }).admitted).toBe(0);
+});
+test('Function: grantPlaces — GET /funding/places is public with places left', async ({
+  request,
+}) => {
+  const res = await request.get('/funding/places');
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({
+    round: 1,
+    startsAt: '2026-10-16T00:00:00.000Z',
+    places: 10,
+    admitted: 0,
+    placesLeft: 10,
+    nextGoalShops: 20,
+  });
 });
 test('Function: comparePayoutRows — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);

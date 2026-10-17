@@ -150,11 +150,12 @@ Public base URLs used in examples:
 | POST   | `/trust/confirm-moderator`                           | Bearer (moderator+)                          | Staff: second, independent confirmation → `moderator`                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/trust/reject-moderator`                            | Bearer (moderator+)                          | Staff: reject an open proposal (subject stays verified)                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | POST   | `/trust/appoint-moderator`                           | Bearer (founder)                             | Founder: appoint a moderator directly                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| POST   | `/funding/apply`                                     | Bearer                                       | Paused except joey-rosima, vincent, jewel-bacolbas, who still get 400/409/200/503. Every other verified caller → 403 Applications are paused, no write. basis → 403 Forbidden.                                                                                                                                                                                                                                                                                                                                                |
+| POST   | `/funding/apply`                                     | Bearer                                       | Open to verified and above: 400 About me / photo / location, 409 already pending, trial, or admitted, 200 pending, 503. Basis 403.                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/funding/applications`                              | Bearer (moderator+)                          | Staff pending grant queue                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/funding/applications/:accountId`                   | Bearer (moderator+)                          | Staff grant review                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/funding/trial`                                     | Bearer (moderator+)                          | One-UTC-day trial                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| POST   | `/funding/admit`                                     | Bearer (moderator+)                          | Admit grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| POST   | `/funding/admit`                                     | Bearer (moderator+)                          | Admit grant while the round has a free place; full round → 409 `All grant places are taken`                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/funding/places`                                    | none                                         | Public: grant round places (`round`, `startsAt`, `places`, `admitted`, `placesLeft`, `nextGoalShops`)                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/funding/reject`                                    | Bearer (moderator+)                          | Reject grant                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/funding/daily-roster`                              | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderators stay off this list. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                        |
 | POST   | `/funding/daily-roster/comment`                      | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable.                                                                                                                                                                                                                                                                                       |
@@ -1722,13 +1723,8 @@ not fail the POST.
 ### `POST /funding/apply`
 
 Bearer session. Role `basis` → **403** `{ "error": "Forbidden" }`.
-While applications are paused, every verified caller except
-`joey-rosima`, `vincent`, and `jewel-bacolbas` gets **403**
-`{ "error": "Applications are paused" }` with no About me, photo,
-location, or grant write, and the route logs `funding.apply.paused`
-`{ accountId }`. Those three usernames are not paused. They, and every
-caller when the route is built with `applicationsPaused` set to false,
-still run the checks below. Production omits that flag. Apply requires a
+Applications are open to `verified` and above; the grant program has
+no application pause since round 1 (UTC 2026-10-16). Apply requires a
 filled About me (real bio, not empty/name-only), an About me photo, and a
 non-empty location, checked in that order: missing About me → **400**
 `{ "error": "About me is required" }`; missing photo → **400**
@@ -1773,6 +1769,27 @@ Self / ineligible → **409**. Same 401/403/400/404/503 as
 Staff Bearer. Target effective pending **or** trial, not self, not
 `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null.
 **200** same shape as trial.
+
+Admission is limited per grant round. Round 1 starts UTC 2026-10-16 and
+has 10 places; only grants with status `admitted` and `admittedAt` at or
+after the round start count. The store counts and writes in one atomic
+step (`admitWithinPlaces`: Postgres transaction with
+`pg_advisory_xact_lock`, count, then the status-CAS update), so concurrent
+admissions never exceed the round. A full round is **409**
+`{ "error": "All grant places are taken" }`, logs `funding.admit.full`
+`{ accountId, actorId }`, and leaves the grant unchanged. Applications stay
+open while the round is full.
+
+### `GET /funding/places`
+
+No session. Public count of the current grant round:
+`{ "round": 1, "startsAt": "2026-10-16T00:00:00.000Z", "places": 10,
+"admitted": 0, "placesLeft": 10, "nextGoalShops": 20 }`. `admitted` uses
+the same count as `POST /funding/admit`. `placesLeft` is never below 0.
+`nextGoalShops` is the fixed goal of active shops that opens the next
+round: once `qualifyingShops` from `GET /funding/goal` reaches it, the next
+round opens, and that round's size is set when it opens. A store throw → **503** `{ "error": "Funding is
+unavailable" }` and log `funding.places.failed`.
 
 ### `POST /funding/reject`
 
