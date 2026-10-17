@@ -171,9 +171,10 @@ Kind 0 content of a listed shop:
 | `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none |
 
 Without a public origin, the shop profile does what an account profile does
-today (`publishProfiles`): when `nip05Domain` (`src/lib/nip05.ts`) gives
-`null`, `nip05` is left out, and when `resolvePublicApiBase`
-(`src/lib/nostr/relays.ts`) is empty, `picture` and `banner` are left out.
+today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
+(`src/lib/nip05.ts`) gives `null`, `nip05` is left out, and when
+`resolvePublicApiBase` (`src/lib/nostr/relays.ts`) is empty, `picture` and
+`banner` take the fallbacks `KIND0_PICTURE_URL` and `KIND0_BANNER_URL`.
 
 Kind 0 of a shop that is no longer listed:
 
@@ -268,7 +269,7 @@ account's username when the account has a username and a non-empty linked
 Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does
 today.
-`nip05` is `null` when the shop has no NIP-05 entry, the same case in which
+`nip05` is `null` when `nip05Domain` gives `null`, the same case in which
 its kind 0 leaves the field out. A photo `url` is absolute from
 `resolvePublicApiBase`; when that is empty, it is the path alone
 (`/messages/:id/photo`).
