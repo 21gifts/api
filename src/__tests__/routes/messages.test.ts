@@ -8902,6 +8902,42 @@ describe('forum video', () => {
     expect(await res.json()).toEqual({ error: 'Place address is invalid' });
   });
 
+  it('returns 400 when a multipart address is sent without coordinates', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore();
+    const app = mount(auth, messages);
+    const streetOnly = new FormData();
+    streetOnly.set('text', 'pin');
+    streetOnly.set('placeStreet', 'Bahnhofstrasse');
+    const streetOnlyRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: streetOnly,
+    });
+    expect(streetOnlyRes.status).toBe(400);
+    expect(await streetOnlyRes.json()).toEqual({
+      error: 'Place must be a latitude and longitude',
+    });
+
+    const fullAddress = new FormData();
+    fullAddress.set('text', 'pin');
+    fullAddress.set('placeStreet', 'Bahnhofstrasse');
+    fullAddress.set('placeHouseNumber', '1');
+    fullAddress.set('placePostalCode', '8001');
+    fullAddress.set('placeCity', 'Zürich');
+    fullAddress.set('placeCountry', 'CH');
+    const fullAddressRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: fullAddress,
+    });
+    expect(fullAddressRes.status).toBe(400);
+    expect(await fullAddressRes.json()).toEqual({
+      error: 'Place must be a latitude and longitude',
+    });
+    expect(await messages.listLatest(10)).toHaveLength(0);
+  });
+
   it('returns 400 when multipart place is incomplete or out of range', async () => {
     const onlyLat = new FormData();
     onlyLat.set('text', 'pin');
