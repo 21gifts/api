@@ -13622,3 +13622,46 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
     });
   });
 });
+
+describe('GET /messages/hidden and GET /messages/:id/edits with an operator token', () => {
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+
+  async function shopStore(): Promise<InMemoryMessageStore> {
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Cafe\n\n#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    return messages;
+  }
+
+  it.each(['op-write', 'op-read'])(
+    'reads both staff logs with %s and no session',
+    async (token) => {
+      const app = mount(new InMemoryAuthStore(), await shopStore(), TOKENS);
+      const headers = { authorization: `Bearer ${token}` };
+      const hidden = await app.request('/messages/hidden', { headers });
+      expect(hidden.status).toBe(200);
+      expect(await hidden.json()).toEqual({ messages: [] });
+      const edits = await app.request('/messages/' + SHOP_ID + '/edits', { headers });
+      expect(edits.status).toBe(200);
+      expect(await edits.json()).toEqual({ edits: [] });
+    },
+  );
+
+  it('keeps the session gate for a wrong bearer and a basis session', async () => {
+    const app = mount(await seededStore(), await shopStore(), TOKENS);
+    for (const path of ['/messages/hidden', '/messages/' + SHOP_ID + '/edits']) {
+      const wrong = await app.request(path, { headers: { authorization: 'Bearer op-other' } });
+      expect(wrong.status).toBe(401);
+      const basis = await app.request(path, { headers: AUTH });
+      expect(basis.status).toBe(403);
+    }
+  });
+});

@@ -8,6 +8,7 @@ import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { isOperatorBearer } from '@/lib/debug-token';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
@@ -58,6 +59,10 @@ export interface MembersRouteDeps {
    * Missing fiat never 503s the page.
    */
   fiatRates?: FiatRateBook;
+  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  debugToken?: string;
+  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  debugReadToken?: string;
 }
 
 /** Auth or member-load outcome. */
@@ -170,9 +175,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
 
   return new Hono()
     .get('/:accountId/activity', async (c) => {
-      const auth = await requireForumRead(deps, c);
-      if (!auth.ok) {
-        return auth.response;
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+        const auth = await requireForumRead(deps, c);
+        if (!auth.ok) {
+          return auth.response;
+        }
       }
       const member = await loadMember(deps, c);
       if (!member.ok) {

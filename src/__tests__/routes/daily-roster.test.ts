@@ -159,6 +159,7 @@ function mount(
   authStore: InMemoryAuthStore,
   rosterStore?: DailyRosterStore,
   spendApiToken?: string,
+  tokens: { debugToken?: string; debugReadToken?: string } = {},
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -171,6 +172,7 @@ function mount(
       lnurlServer: LNURL_SERVER,
       ...(rosterStore === undefined ? {} : { rosterStore }),
       ...(spendApiToken === undefined ? {} : { spendApiToken }),
+      ...tokens,
     }),
   );
 }
@@ -1480,5 +1482,58 @@ describe('daily payout roster routes', () => {
     expect(logged).not.toContain('ada@example.com');
     expect(logged).not.toContain('mod@example.com');
     expect(logged).not.toContain('leaked');
+  });
+});
+
+describe('GET /funding/daily-roster with an operator token', () => {
+  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it.each(['op-write', 'op-read'])(
+    'reads the roster with %s and logs no account id',
+    async (token) => {
+      const res = await get(
+        mount(await seeded(), fakeStore(), undefined, TOKENS),
+        '/funding/daily-roster',
+        token,
+      );
+      expect(res.status).toBe(200);
+      const listed = parsedEvents(warn).filter(
+        (entry) => entry['event'] === 'funding.daily_roster',
+      );
+      expect(listed).toHaveLength(1);
+      expect(listed[0]).toMatchObject({ operator: true, action: 'read' });
+      expect(listed[0]).not.toHaveProperty('accountId');
+    },
+  );
+
+  it('returns 502 and logs the operator when the roster store throws', async () => {
+    const store = fakeStore({ get: () => Promise.reject(new Error('down')) });
+    const res = await get(
+      mount(await seeded(), store, undefined, TOKENS),
+      '/funding/daily-roster',
+      'op-read',
+    );
+    expect(res.status).toBe(502);
+    const failed = parsedEvents(warn).filter(
+      (entry) => entry['event'] === 'funding.daily_roster.failed',
+    );
+    expect(failed).toHaveLength(1);
+    expect(failed[0]).toMatchObject({ operator: true, action: 'read' });
+  });
+
+  it('keeps the session gate for a wrong operator bearer and a moderator', async () => {
+    const app = mount(await seeded(), fakeStore(), undefined, TOKENS);
+    expect((await get(app, '/funding/daily-roster', 'op-other')).status).toBe(401);
+    expect((await get(app, '/funding/daily-roster', 'mod')).status).toBe(403);
+    expect((await get(app, '/funding/daily-roster', 'founder')).status).toBe(200);
   });
 });

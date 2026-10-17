@@ -3,6 +3,7 @@ import {
   assertDistinctDebugTokens,
   bearerMatchesDebugToken,
   classifyDebugDbBearer,
+  isOperatorBearer,
 } from '@/lib/debug-token';
 import { setDiagnosticSink } from '@/lib/log';
 import { createApp } from '@/server';
@@ -107,5 +108,18 @@ describe('createApp debug read token', () => {
 
   it('boots when debugToken and debugReadToken differ', () => {
     expect(() => createApp({ debugToken: WRITE, debugReadToken: READ })).not.toThrow();
+  });
+});
+
+describe('isOperatorBearer', () => {
+  it('is true for the write or the read token', () => {
+    expect(isOperatorBearer(WRITE, READ, `Bearer ${WRITE}`)).toBe(true);
+    expect(isOperatorBearer(WRITE, READ, `Bearer ${READ}`)).toBe(true);
+  });
+
+  it('is false for a wrong bearer, a missing header, or no configured token', () => {
+    expect(isOperatorBearer(WRITE, READ, 'Bearer other')).toBe(false);
+    expect(isOperatorBearer(WRITE, READ, undefined)).toBe(false);
+    expect(isOperatorBearer(undefined, undefined, `Bearer ${WRITE}`)).toBe(false);
   });
 });
