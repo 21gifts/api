@@ -133,11 +133,12 @@ calling `deleteById`. The duplicate handling of today stays: after a unique
 violation the transaction is rolled back first, then the existing lookups
 (`getById` for a retry with the same id, `findLiveByAccountContent` for the
 same content) run on the pool and return the stored row as today. The video
-file is removed with `removeForumVideo` only when no such row is returned,
-so a retry never deletes the live note's video. Regression tests fail an
-extra photo insert while the backfill runs and check that neither the note
-nor a `shop_identity` row is left, and repeat a same-id retry and a
-duplicate upload of a video note inside the transaction.
+file, stored under the new id, is removed with `removeForumVideo` unless
+`getById` returns a row with that same id, so a same-id retry keeps the live
+note's video and a duplicate upload leaves no file behind. Regression tests
+fail an extra photo insert while the backfill runs and check that neither the
+note nor a `shop_identity` row is left; a same-id retry keeps the video, and a
+duplicate video upload removes the new id's file and keeps the existing one.
 
 ### Encryption at rest
 
