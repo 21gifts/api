@@ -1,9 +1,10 @@
 # Shop identity
 
-Status: **specified, not implemented**. Nothing here changes runtime
-behaviour yet. A change that builds a part of this adds its routes to
-`SPEC.md`, its table to `docs/schema/` and its functions and routes to the
-handbook in that same change.
+Status: **concept only**. Decided 2026-10-17. Not implemented. No HTTP path
+in this document is reserved. A change that builds a part of this adds its
+routes, and the new `shopNpub` field on existing responses, to `SPEC.md`, its
+table to `docs/schema/` and its functions and routes to the handbook in that
+same change. Nothing here changes runtime behaviour.
 
 Every shop gets its own NOSTR identity. 21.gifts generates it, holds it and
 publishes its profile, exactly the way it already does for every account. The
@@ -13,18 +14,30 @@ The same npub identifies the shop on the OpenCryptoPay map. OpenCryptoPay
 requires a NOSTR public key for every shop it lists and uses it as the shop's
 id, including for its page `https://opencryptopay.io/{npub}`. OpenCryptoPay
 does not hold keys and does not maintain profiles. Its side is specified in
-[openCryptoPay/api `docs/product/shop-identity.md`](https://github.com/openCryptoPay/api/blob/develop/docs/product/shop-identity.md).
+[openCryptoPay/api `docs/product/shop-identity.md`](https://github.com/openCryptoPay/api/blob/develop/docs/product/shop-identity.md)
+(until that is merged: openCryptoPay/api#23).
 
 ## What a shop is
 
-A **listed shop** is a live top-level forum note (`parent_id` null,
-`deleted_at` null) whose text has the hashtag token `21GiftsShop` (the same
-token rule as `GET /shops/activity`), that has a place pin, and whose
-`shop_account_id` is set.
+A **listed shop** is a top-level forum note (`parent_id` null) that:
 
-A note that stops meeting any of these (hashtag removed, pin removed, till
-account cleared, note deleted or hidden by staff) is no longer listed. It
-keeps its identity.
+- is live: `deleted_at` null. A staff hide sets `deleted_at` too, so a hidden
+  note is not listed;
+- has the hashtag token `21GiftsShop` in its text, with the same token rule
+  as `GET /shops/activity`;
+- has a place pin;
+- has `shop_account_id` set.
+
+"Listed" is the single rule for everything in this document: who gets a key,
+whose profile is a shop profile, what `GET /shops/:npub` serves, and which
+shops are on the OpenCryptoPay map. A note that stops meeting any of the four
+conditions is no longer listed. It keeps its identity.
+
+The shop name is the pin label, otherwise the author's name, otherwise
+`Shop`: the same chain as today's map name (`shopOcpPlaceName`). The shop
+description is the note text without the `#21GiftsShop` token. Both follow
+the rules of the change that makes shops complete for the map once that
+change is merged.
 
 ## S1 Key per shop
 
@@ -37,6 +50,8 @@ keeps its identity.
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
     per tick, oldest note first, next to the existing account backfill.
+    After it creates a key, it runs the OpenCryptoPay push of S5 for that
+    shop, so a failed mint at the write is repaired without another edit.
 - The identity belongs to the note. It is never deleted and never moved to
   another note:
   - A note that stops being listed and is listed again gets the same npub
@@ -50,19 +65,21 @@ keeps its identity.
 
 ### Storage
 
-New table `shop_identity`, with the same column names as the key columns on
+New table `shop_identity`. The key columns have the same names as on
 `account`:
 
-| Column                  | Type                   | Rule                                       |
-| ----------------------- | ---------------------- | ------------------------------------------ |
-| `message_id`            | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                  |
-| `nostr_pubkey`          | `text NOT NULL UNIQUE` | 64 lowercase hex                           |
-| `nostr_nsec_ciphertext` | `bytea NOT NULL`       | Envelope below                             |
-| `nostr_kek_id`          | `integer NOT NULL`     | Only `1`                                   |
-| `nostr_key_custody`     | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial` |
-| `nostr_key_created_at`  | `timestamptz NOT NULL` | Set on insert                              |
+| Column                  | Type                   | Rule                                             |
+| ----------------------- | ---------------------- | ------------------------------------------------ |
+| `message_id`            | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                        |
+| `nostr_pubkey`          | `text NOT NULL UNIQUE` | 64 lowercase hex                                 |
+| `nostr_nsec_ciphertext` | `bytea NOT NULL`       | Envelope below                                   |
+| `nostr_kek_id`          | `integer NOT NULL`     | Only `1`                                         |
+| `nostr_key_custody`     | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`       |
+| `nostr_key_created_at`  | `timestamptz NOT NULL` | Set on insert                                    |
+| `profile_name`          | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed |
+| `ocp_photos_hash`       | `text NULL`            | SHA-256 of the photo set last accepted by S5     |
 
-Messages are soft-deleted, so the reference never dangles.
+Shop notes are only soft-deleted, so the reference never dangles.
 
 ### Encryption at rest
 
@@ -72,8 +89,9 @@ Messages are soft-deleted, so the reference never dangles.
 - Additional authenticated data: the UTF-8 bytes of `shop:<messageId>`. An
   account key uses the account UUID, so a shop ciphertext can never be
   decrypted as an account key or as another shop's key.
-- Signing decrypts, signs and zeroes the secret, through the existing
-  `src/lib/nostr/sign.ts` path.
+- A new `signEventForShop(messageId, event)` next to `signEventForAccount` in
+  `src/lib/nostr/sign.ts`: it reads `shop_identity.nostr_nsec_ciphertext`,
+  decrypts with the shop AAD, signs and zeroes the secret.
 - The `db_change` audit log stores a shop's `nostr_nsec_ciphertext` only as
   a SHA-256 hash, as it does for accounts.
 
@@ -86,8 +104,9 @@ custodial-to-user step of Open Question #9 in `CONCEPT.md`.
 
 ## S2 Profile
 
-The worker publishes shop profiles in the same loop and with the same rules
-as account profiles (`publishProfiles` in `src/lib/nostr/worker.ts`):
+The worker publishes a profile for **every** `shop_identity` row, listed or
+not, in the same loop and with the same rules as account profiles
+(`publishProfiles` in `src/lib/nostr/worker.ts`):
 
 - same interval and batch size, same `NOSTR_PUBLISH` and
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
@@ -99,22 +118,24 @@ Kind 0 content of a listed shop:
 
 | Field          | Value                                                                  |
 | -------------- | ---------------------------------------------------------------------- |
-| `name`         | shop name: the pin label                                               |
+| `name`         | shop name                                                              |
 | `display_name` | shop name                                                              |
-| `about`        | shop description: the note text without the `#21GiftsShop` token       |
+| `about`        | shop description                                                       |
 | `picture`      | absolute URL of `/messages/:id/photo`, otherwise the account fallback  |
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `/og.png`     |
 | `website`      | `https://21.gifts/{npub}`                                              |
 | `nip05`        | `<local>@<domain>`, see below                                          |
 | `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none |
 
-The shop name and description follow `src/lib/shop-place.ts` once the change
-that makes shops complete for the map is merged. Until then `name` is the pin
-label and `about` is the note text without the token.
+Kind 0 of a shop that is no longer listed:
 
-Kind 0 of a shop that is no longer listed keeps `name` and `website`, sets
-`about` to `This shop is no longer listed on 21.gifts.`, and drops `picture`,
-`banner`, `nip05` and `lud16`. There is no kind 5 deletion.
+- `name` and `display_name`: `profile_name`, the name it had when it was last
+  listed. If the note is hidden or deleted, `Shop` instead, so a name staff
+  removed is not kept on the relays.
+- `about`: `This shop is no longer listed on 21.gifts.`
+- `website`: unchanged.
+- `picture`, `banner`, `nip05` and `lud16` are dropped.
+- There is no kind 5 deletion.
 
 Kind 10002 lists the same write relays as an account's.
 
@@ -137,8 +158,9 @@ is unchanged, so this spec adds no zap receipts for a shop key.
 
 ### `GET /shops/:npub`
 
-New. No session; a missing or invalid bearer gets the same answer.
-`Cache-Control: public, max-age=60`.
+New. No session; a missing or invalid bearer gets the same answer. Registered
+after `GET /shops/activity`; it only matches a parameter that is an npub or 64
+lowercase hex, so `activity` is never captured.
 
 | Request                                  | Response                                                                  |
 | ---------------------------------------- | ------------------------------------------------------------------------- |
@@ -147,6 +169,11 @@ New. No session; a missing or invalid bearer gets the same answer.
 | npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`            |
 | anything else, including an unknown npub | **404** `{ "error": "Shop not found" }`                                   |
 | store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` |
+
+`Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
+`Cache-Control: no-store` on 503.
+
+The 410 body carries no name, so a hidden note's name is not served.
 
 `Shop`:
 
@@ -158,7 +185,7 @@ New. No session; a missing or invalid bearer gets the same answer.
   "description": "…",
   "place": {
     "lat": 0,
-    "lon": 0,
+    "lng": 0,
     "label": "…",
     "address": {
       "street": "…",
@@ -175,9 +202,9 @@ New. No session; a missing or invalid bearer gets the same answer.
 }
 ```
 
-`address` is `null` while the pin has none. `tillUsername` is `null` when the
-till account has no username. Photos are the note's photos in note order.
-Hidden media are never listed.
+`lat` and `lng` as in `GET /messages/places`. `address` is `null` while the
+pin has none. `tillUsername` is `null` when the till account has no username.
+Photos are the note's photos in note order.
 
 ### Existing responses
 
@@ -193,8 +220,8 @@ Hidden media are never listed.
 - `generateMetadata` like a public note: 2.5 s timeout, `title` = shop name,
   description, `og:image` = first photo or `/og.png`, canonical
   `https://21.gifts/{npub}`.
-- 404 → the existing not-found page. 410 → a page with the name and "no
-  longer listed". 503 → an error state with retry, never a blank page.
+- 404 → the existing not-found page. 410 → a "this shop is no longer listed"
+  page without a name. 503 → an error state with retry, never a blank page.
 - Content: photo gallery, name, description, address with a directions link,
   a small map with one pin, the pay link and QR of the till account
   (`/pay/<tillUsername>`) when it exists, a link to the forum note
@@ -205,28 +232,39 @@ Hidden media are never listed.
 
 ## S5 OpenCryptoPay push
 
-`src/lib/ocp-place.ts`:
+`src/lib/ocp-place.ts` uses "listed" as its only rule:
 
-- Every place `PUT` carries the shop's `nostrPubkey` (64 lowercase hex).
-  OpenCryptoPay rejects a place without it.
-- A listed shop without a key gets one first through S1. If that fails, the
-  push is skipped and logged, and the next sync or
-  `publishExistingShopPlaces` tries again.
-- After each successful place `PUT`, the api sends the note's photos to
-  `PUT /map/places/photos` with the same bearer: up to 10, in note order,
-  bytes and content type as stored. A note without photos sends an empty
-  list. `PATCH /messages/:id/photos` on a listed shop triggers the same photo
-  push.
-- Removal is unchanged: `DELETE /map/places` when a shop is no longer listed.
-  OpenCryptoPay drops the photos with it.
+- **Place:** a listed shop is sent with `PUT /map/places`, and every `PUT`
+  carries its `nostrPubkey` (64 lowercase hex). A shop without a key gets one
+  first through S1; if that fails, nothing is sent and the S1 backfill
+  repeats the push later. A note that is not listed is never sent.
+- **Removal:** every change from listed to not listed sends
+  `DELETE /map/places`: hashtag removed, pin removed, till account cleared,
+  note deleted or hidden. This includes `PATCH /messages/:id/shop-account`
+  clearing the till, which today still re-sends the place.
+  `publishExistingShopPlaces` at start-up sends listed shops and deletes
+  tagged pins that are not listed.
+- **Photos:** after a successful place `PUT`, and after
+  `PATCH /messages/:id/photos` on a listed shop, the worker sends the note's
+  photos to `PUT /map/places/photos`:
+  - up to 10, in note order, as `{ nostrPubkey, photos: [{ contentType, data }] }`
+    with `data` the stored bytes in base64, under the 15 MiB body limit of
+    that route;
+  - only when the SHA-256 over the photo set differs from `ocp_photos_hash`,
+    which is updated after a 200; an empty set is sent as an empty list;
+  - outside the request path, with its own 30 s timeout. A failure logs
+    `ocp.photos.failed` and is retried on the next tick.
+- **Rollout:** OpenCryptoPay first accepts `nostrPubkey` and lists only shops
+  that have one, then rejects writes without it. This change deploys between
+  those two steps. Until it is live, 21.gifts shops are off the
+  OpenCryptoPay list.
 
 ## Order of work
 
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
-3. S5: OpenCryptoPay push of `nostrPubkey` and photos, deployed together with
-   the OpenCryptoPay change that requires the key. Until then 21.gifts shops
-   are not on the OpenCryptoPay list.
+3. S5: OpenCryptoPay push with `nostrPubkey`, removal by the listed rule,
+   photos.
 4. S4 in `21gifts/app`.
 
 Each step is one pull request with the handbook, e2e tests and the coverage
