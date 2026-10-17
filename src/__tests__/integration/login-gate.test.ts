@@ -217,9 +217,11 @@ describe('login gate via createApp', () => {
       expect(((await res.json()) as { account: { id: string } }).account.id).toBe(accountId);
       expect(await store.getAccount(accountId)).toBeDefined();
       await provision(store);
+      const challengesBefore = await store.listPasskeyChallenges();
       const otherClaim = await post(app, '/auth/passkey/register/begin', { viewKey: VIEW_KEY });
       expect(otherClaim.status).toBe(503);
       expect((await post(app, '/auth/passkey/register/begin')).status).toBe(503);
+      expect(await store.listPasskeyChallenges()).toEqual(challengesBefore);
     });
 
     it('always lets the platform account log in while closed', async () => {
@@ -255,6 +257,7 @@ describe('login gate via createApp', () => {
       const refused = await post(app, '/auth/passkey/register/begin', { viewKey: VIEW_KEY });
       expect(refused.status).toBe(503);
       expect(await refused.json()).toEqual(LOGINS_CLOSED);
+      expect(await store.listPasskeyChallenges()).toEqual([]);
       await allow(app, PROVISIONED_ID);
       const claimed = await register(app, undefined, { viewKey: VIEW_KEY });
       expect(claimed.finish?.status).toBe(200);

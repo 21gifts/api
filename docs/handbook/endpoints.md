@@ -311,7 +311,7 @@
 
 ## Endpoint: PUT /debug/logins
 
-- **Purpose:** Operator set of the login switch. Body `{ open: boolean }` (no other keys). Stores the value in `app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from then on, and returns the same JSON as `GET /debug/logins`. While closed, `POST /auth/passkey/register/begin`, `POST /auth/passkey/register/finish`, and `POST /auth/passkey/authenticate/finish` answer 503 `logins_closed` except for the platform account and allowlisted accounts. Existing sessions are not touched. Logs `debug.logins.set`.
+- **Purpose:** Operator set of the login switch. Body `{ open: boolean }` (no other keys). Stores the value in `app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from then on, and returns the same JSON as `GET /debug/logins`. While closed, `POST /auth/passkey/register/begin`, `POST /auth/passkey/register/finish`, and `POST /auth/passkey/authenticate/finish` answer 503 `logins_closed` except for the platform account and allowlisted accounts (a new registration has no account yet and is always refused). Existing sessions are not touched. Logs `debug.logins.set`.
 - **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 `{ error: 'Expected a JSON body with an "open" boolean' }`.
 - **Used by:** Operators closing logins for a release and opening them again; `scripts/gifts-debug.sh logins-open` / `logins-close`.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

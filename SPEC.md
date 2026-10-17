@@ -100,7 +100,7 @@ Public base URLs used in examples:
 | GET    | `/favicon.ico`                                       | none                                         | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/favicon.svg`                                       | none                                         | Brand mark (SVG favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/apple-touch-icon.png`                              | none                                         | Brand mark (Apple touch icon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                 |
+| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (always for a new account; a claim passes for the platform account or an allowlisted account)                                                                                                                                                                                                                                                            |
 | POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                               |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                 |
@@ -909,6 +909,13 @@ challenge row. On success the challenge stores `requestedName` as the
 normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
+When `APP_BUILD_REQUIRED` is set and `X-App-Build` differs, **Response**
+`403` `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }` before every other check (see Login controls). While the login
+switch is closed, **Response** `503` `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`:
+for a new account right after the JSON check, and for a claim after the
+`404` / `409` checks unless the provisioned account is the platform account
+or on the allowlist. A refused begin writes no challenge row.
+
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
@@ -948,20 +955,22 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                                              | When                                                                                                    |
-| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                              |
-| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                        |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                         |
-| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                   |
-| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                      |
-| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                     |
-| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                             |
-| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                          |
-| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                       |
-| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                 |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                   |
-| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session |
+| Status | Body                                                                                              | When                                                                                                                                                                                               |
+| ------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 403    | `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }`             | `APP_BUILD_REQUIRED` set and `X-App-Build` differs; checked first                                                                                                                                  |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                                                                                                                         |
+| 503    | `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`       | Login switch closed after the passkey verified: always for a new account, and for a claim unless the account is the platform account or allowlisted; no account, credential, or session is written |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                                                                                                                   |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                                                                                                                    |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                                                                                                              |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                                                                                                                 |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                                                                                                                |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                                                                                                                        |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                                                                                                                     |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                                                                                                                  |
+| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                                                                                                            |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                                                                                                              |
+| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session                                                                                            |
 
 **Response** `200`:
 
@@ -1013,7 +1022,8 @@ A new register row is stored with `walletRequired: true` and `walletBackupSeenAt
 ### `POST /auth/passkey/authenticate/begin`
 
 Starts a discoverable-credential assertion. `allowCredentials` is empty.
-Same 500 as register begin when WebAuthn is unconfigured.
+Same 403 `app_outdated` and 500 as register begin. The login switch does not
+apply here, because the account is unknown until finish.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
 `PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
@@ -1029,8 +1039,12 @@ Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
 not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
-and does not persist a bearer. Success body matches register finish
-(`linkingKey` is whatever the account currently has).
+and does not persist a bearer. Same 403 `app_outdated` as register finish,
+checked first. While the login switch is closed, an account that is neither
+the platform account nor allowlisted gets **503** `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`
+after the passkey verified, with no sign-count or session write. Success
+body matches register finish (`linkingKey` is whatever the account currently
+has).
 
 ### `POST /auth/passkey/replace/begin`
 
