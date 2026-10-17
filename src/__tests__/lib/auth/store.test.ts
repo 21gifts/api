@@ -777,6 +777,24 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
   });
 
+  it('skips blank usernames on lookup and does not fill a blank one with a taken name', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null,
+      role: 'basis' as const,
+      name: 'Ada',
+      location: null as string | null,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({ ...base, id: 'blank', username: '   ', viewKey: 'd'.repeat(64) });
+    await store.createAccount({ ...base, id: 'ada', username: 'ada', viewKey: 'e'.repeat(64) });
+    expect((await store.getAccountByUsername('ada'))?.id).toBe('ada');
+    await store.updateAccount({ ...(await store.getAccount('blank'))!, username: 'ada' });
+    expect((await store.getAccount('blank'))?.username).toBe('   ');
+  });
+
   it('listAccountsByUsernamePrefix skips null, undefined, and blank usernames', async () => {
     const store = new InMemoryAuthStore();
     const base = {
