@@ -186,6 +186,12 @@ Kind 0 of a shop that is no longer listed:
 - `picture`, `banner`, `nip05` and `lud16` are dropped.
 - There is no kind 5 deletion.
 
+`buildKind0Content` (`src/lib/nostr/event.ts`) always writes
+`website: 'https://21.gifts'` and both images, so it gains two optional
+arguments: a `website` that replaces the fixed value, and a flag that leaves
+out `picture` and `banner` for a shop that is no longer listed. Accounts call
+it without them and keep today's content.
+
 Kind 10002 lists the same write relays as an account's.
 
 The `lud16` is a plain Lightning address. The till account's LNURL response
