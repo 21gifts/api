@@ -4165,7 +4165,10 @@ Invalid place is 400 with `Place must be a latitude and longitude`,
 `placeLat`, `placeLng`, optional `placeLabel`, and optional
 `placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
 `placeCountry` (always top-level). Both coordinates empty means no pin.
-Exactly one of them set is 400 `Place must be a latitude and longitude`.
+Any of those address fields set while both coordinates are missing is 400
+`Place must be a latitude and longitude` and nothing is stored. A missing
+or blank label without coordinates still stores no pin. Exactly one
+coordinate set is 400 `Place must be a latitude and longitude`.
 All five address fields blank means no address; any present field requires
 all five (same `Place address is invalid`). A top-level note whose text has
 `#21GiftsShop` and that carries a pin must pass `shopPlaceProblem` then
@@ -4891,25 +4894,26 @@ the hidden-row count, never the pubkey. On store throw it logs
 
 ### `PATCH /messages/:id/place`
 
-Staff map pin on a live top-level shop note (`#21GiftsShop`). Bearer
-session required. Live role must be at least `moderator`. No rules
-gate. `:id` must match `MESSAGE_ID_RE` or the response is **404**.
-Body is JSON via `c.req.json()`; a non-JSON body or an object with no
-`place` key is **400** `{ "error": "Invalid body" }`. `normalizePlace`
-accepts a pin or `null` (clears). A bad coordinate is **400**
-`{ "error": "Place must be a latitude and longitude" }`. A label over
-80 characters is **400** `{ "error": "Place label must be at most 80 characters" }`.
-An invalid structured address is **400**
-`{ "error": "Place address is invalid" }`. A non-null shop pin that fails
-`shopPlaceProblem` is **400** with `Shop name is required`,
+Staff map pin on a live top-level shop note (`#21GiftsShop`). No rules
+gate. Checks run in this order: Bearer session required (**401**
+`{ "error": "Unauthorized" }`); live role must be at least `moderator`
+(**403** `{ "error": "Forbidden" }`); `:id` must match `MESSAGE_ID_RE` or
+the response is **404**; body is JSON via `c.req.json()` and a non-JSON
+body or an object with no `place` key is **400**
+`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null`
+(clears) — a bad coordinate is **400**
+`{ "error": "Place must be a latitude and longitude" }`, a label over 80
+characters is **400** `{ "error": "Place label must be at most 80 characters" }`,
+an invalid structured address is **400**
+`{ "error": "Place address is invalid" }`; a missing or hidden row is
+**404** `{ "error": "Not found" }` and no write; a reply is **400**
+`{ "error": "A reply cannot include a place" }`; a non-shop top-level
+note is **400** `{ "error": "Only a shop note can set a place" }`; for a
+non-null pin `shopPlaceProblem` is **400** with `Shop name is required`,
 `Shop address is required`, or `Shop name must not contain the address`
-and nothing is stored. A non-null shop pin whose name the stored note text
-fails against (`shopTextProblem`) is **400**
-`{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`
-and nothing is stored. Clearing the pin stays allowed without a text check.
-Missing or hidden row → **404** and no write. A reply → **400**
-`{ "error": "A reply cannot include a place" }`. A non-shop top-level
-note → **400** `{ "error": "Only a shop note can set a place" }`.
+and nothing is stored; then `shopTextProblem` against the stored text is
+**400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`
+and nothing is stored. Clearing with `null` skips both shop checks.
 `setPlace` false → **404**. Store throw → **503**
 `{ "error": "Messages are unavailable" }` and `messages.place.failed`.
 

@@ -1318,11 +1318,14 @@ async function postMultipartMessage(
   const lngParsed = parseMultipartCoord(placeLng);
   const latMissing = latParsed === 'missing';
   const lngMissing = lngParsed === 'missing';
+  const address = multipartPlaceAddress(form);
+  if (latMissing && lngMissing && address !== undefined) {
+    return c.json({ error: 'Place must be a latitude and longitude' }, 400);
+  }
   if (!latMissing || !lngMissing) {
     if (latMissing || lngMissing || latParsed === 'invalid' || lngParsed === 'invalid') {
       return c.json({ error: 'Place must be a latitude and longitude' }, 400);
     }
-    const address = multipartPlaceAddress(form);
     const parsedPlace = normalizePlace({
       lat: latParsed,
       lng: lngParsed,
