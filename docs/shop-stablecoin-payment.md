@@ -1406,7 +1406,12 @@ page.
   whatever a later call answers, because an open payment it cannot see
   could be paid next to a second invoice. It repeats the same call once;
   a new payer amount replaces any payment the lost answer opened, so at
-  most one stays open. When the repeat does not return a payment, it
+  most one stays open. Replacing it is safe: the page never received
+  that payment's invoice or quote, so this payer cannot pay it, and like
+  any replaced payer amount it can only be paid by a wallet that fetched
+  it before, which [States](#states) handles; a page-side retry
+  identifier is not added, because the pay link already shows which
+  payment is open and replacement keeps one. When the repeat does not return a payment, it
   shows "This payment could not be started. Try again." with a button
   that repeats the call.
   After a success it fetches the pay link and checks that `quote.payment`
