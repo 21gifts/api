@@ -280,7 +280,7 @@ export interface BootFxOptions {
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
- * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, and `member_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
