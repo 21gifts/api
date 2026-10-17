@@ -498,8 +498,9 @@ the second release is live, 21.gifts shops are off the OpenCryptoPay list.
    `DELETE` decided at send time, photo push) and the paged start-up.
 4. S4 in `21gifts/app`.
 
-Each step is one pull request with the handbook, e2e tests and the coverage
-gate from `CONTRIBUTING.md`.
+Each step is one pull request, step 3 one per release. Steps 0 to 3 meet the
+handbook, e2e and coverage gates of this repo's `CONTRIBUTING.md`; step 4
+meets those of 21gifts/app.
 
 ## Not part of this
 
