@@ -384,10 +384,11 @@ failures) is replaced by it.
 ### Claiming
 
 Both outboxes claim like the existing worker claims (`claimUnsigned` in
-`src/lib/conversation-store.ts`): at most `WORKER_BATCH` rows per tick, a
-lease of `WORKER_LEASE_MS` (`src/lib/nostr/worker.ts`) on a `claimed_until`
-column, `SELECT … FOR UPDATE SKIP LOCKED`. Two things differ, because two
-requests for one shop must never be in flight at once:
+`src/lib/conversation-store.ts`): at most `WORKER_BATCH` rows per tick (the
+photo sender one row per pass, see below), a lease of `WORKER_LEASE_MS`
+(`src/lib/nostr/worker.ts`) on a `claimed_until` column,
+`SELECT … FOR UPDATE SKIP LOCKED`. Two things differ, because two requests
+for one shop must never be in flight at once:
 
 - The lease is set and compared with the database clock
   (`claimed_until = now() + WORKER_LEASE_MS`, claimable when it is null or
@@ -412,7 +413,14 @@ Rules for every claim:
   releases the claim and skips the row this tick. The 10 s cover the time
   between that check and the request starting, so a request that runs to
   its full timeout still ends before another worker can claim the row. For
-  photos the bytes are read before this check.
+  photos the check runs before the bytes are read and again after.
+- The photo sender does not run in the fast tick, which starts every 2 s
+  without waiting for the previous one. It runs as its own serialised pass
+  that schedules the next one only when it is done, as `runIngestPass`
+  (`src/lib/nostr/worker.ts`) does for the ingest, and claims one row per
+  pass. Each instance therefore has at most one photo upload in flight, and
+  the start-up pass of the second S5 release does not send every shop's
+  photos at once.
 - Every write after a claim that clears a pending flag or stores a hash is
   also conditional on the generation `g`, including the writes of the paths
   that send nothing; if a newer change was queued meanwhile, the worker only
