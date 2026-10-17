@@ -410,17 +410,20 @@ Rules for every claim:
   sent.
 - Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
-  releases the claim and skips the row this tick. The 10 s cover the time
-  between that check and the request starting, so a request that runs to
-  its full timeout still ends before another worker can claim the row. For
-  photos the check runs before the bytes are read and again after.
+  releases the claim and skips the row this tick (for photos, this pass).
+  The 10 s cover the time between that check and the request starting, so a
+  request that runs to its full timeout still ends before another worker can
+  claim the row. For photos the check runs before the bytes are read and
+  again after.
 - The photo sender does not run in the fast tick, which starts every 2 s
   without waiting for the previous one. It runs as its own serialised pass
   that schedules the next one only when it is done, as `runIngestPass`
   (`src/lib/nostr/worker.ts`) does for the ingest, and claims one row per
-  pass. Each instance therefore has at most one photo upload in flight, and
-  the start-up pass of the second S5 release does not send every shop's
-  photos at once.
+  pass. The next pass starts `WORKER_INTERVAL_MS` (2 s) after the previous
+  one settled, also when it found no row or released one, so an empty queue
+  is not a busy loop. Each instance therefore has at most one photo upload
+  in flight, and the start-up pass of the second S5 release does not send
+  every shop's photos at once.
 - Every write after a claim that clears a pending flag or stores a hash is
   also conditional on the generation `g`, including the writes of the paths
   that send nothing; if a newer change was queued meanwhile, the worker only
