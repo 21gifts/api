@@ -2826,7 +2826,7 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
     id: string;
     place?: { lat: number; lng: number; label: string };
   };
-  expect(note.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+  expect(note.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich', address: null });
 
   const pins = await request.get('/messages/places', { headers: auth });
   expect(pins.status()).toBe(200);
