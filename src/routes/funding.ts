@@ -14,6 +14,7 @@ import {
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
+import { isOperatorBearer } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -84,6 +85,10 @@ export interface FundingRouteDeps {
    * for every caller.
    */
   applicationsPaused?: boolean;
+  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  debugToken?: string;
+  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  debugReadToken?: string;
 }
 
 /** Body schema for staff POSTs that target one account. */
@@ -235,6 +240,24 @@ async function requireStaff(
   return { caller };
 }
 
+/**
+ * Gate for the staff GET routes: an operator token or a staff session.
+ *
+ * @param deps - Route collaborators (operator tokens and auth store).
+ * @param header - Raw `Authorization` header.
+ * @returns `null` when the caller may read, otherwise the 401/403 error.
+ */
+async function staffOrOperatorRead(
+  deps: FundingRouteDeps,
+  header: string | undefined,
+): Promise<{ error: string; status: 401 | 403 } | null> {
+  if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+    return null;
+  }
+  const staff = await requireStaff(deps, header);
+  return 'status' in staff ? staff : null;
+}
+
 /** Parse `{ accountId }` or a 400/404. */
 function parseAccountId(
   raw: unknown,
@@ -377,18 +400,33 @@ async function answerSpendDocument(
   }
 }
 
+/** Roster log fields: the session actor, or `operator` for a token read. */
+type RosterLogFields =
+  { accountId: string; action: DailyRosterAction } | { operator: true; action: DailyRosterAction };
+
+/**
+ * Log fields for a roster call: the actor id for a session, `operator` for a token read.
+ *
+ * @param caller - Session account, or `null` for an operator-token read.
+ * @param action - Stable action name.
+ * @returns `{ accountId, action }` or `{ operator: true, action }`.
+ */
+function rosterLogFields(caller: Account | null, action: DailyRosterAction): RosterLogFields {
+  return caller === null ? { operator: true, action } : { accountId: caller.id, action };
+}
+
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
  * @param deps - Route collaborators (auth store for recipient identity).
- * @param caller - Initiator or founder.
+ * @param caller - Initiator or founder, or `null` for an operator-token read.
  * @param action - Stable action name.
  * @param call - Client method.
  * @returns 200 public roster, 400 forwarded change, or 502 unavailable.
  */
 async function callRoster(
   deps: FundingRouteDeps,
-  caller: Account,
+  caller: Account | null,
   action: DailyRosterAction,
   call: () => Promise<DailyRosterDocument>,
 ): Promise<RosterReply> {
@@ -401,13 +439,13 @@ async function callRoster(
       }
       return { id: account.id, name: account.name };
     });
-    logEvent('funding.daily_roster', { accountId: caller.id, action });
+    logEvent('funding.daily_roster', rosterLogFields(caller, action));
     return { status: 200, body };
   } catch (err) {
     if (err instanceof DailyRosterRequestError && err.status === 400) {
       return { status: 400, body: { error: err.error } };
     }
-    logEvent('funding.daily_roster.failed', { accountId: caller.id, action });
+    logEvent('funding.daily_roster.failed', rosterLogFields(caller, action));
     const error = err instanceof DailyRosterRequestError ? err.error : DAILY_ROSTER_UNAVAILABLE;
     return { status: 502, body: { error } };
   }
@@ -534,9 +572,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/applications', async (c) => {
-      const staff = await requireStaff(deps, c.req.header('authorization'));
-      if ('status' in staff) {
-        return c.json({ error: staff.error }, staff.status);
+      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if (denied !== null) {
+        return c.json({ error: denied.error }, denied.status);
       }
       const nowMs = deps.now();
       try {
@@ -571,9 +609,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/applications/:accountId', async (c) => {
-      const staff = await requireStaff(deps, c.req.header('authorization'));
-      if ('status' in staff) {
-        return c.json({ error: staff.error }, staff.status);
+      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if (denied !== null) {
+        return c.json({ error: denied.error }, denied.status);
       }
       const accountId = c.req.param('accountId');
       if (accountId === undefined || !MESSAGE_ID_RE.test(accountId)) {
@@ -796,9 +834,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/payout-days', async (c) => {
-      const staff = await requireStaff(deps, c.req.header('authorization'));
-      if ('status' in staff) {
-        return c.json({ error: staff.error }, staff.status);
+      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if (denied !== null) {
+        return c.json({ error: denied.error }, denied.status);
       }
       const nowMs = deps.now();
       try {
@@ -826,7 +864,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/daily-roster', async (c) => {
-      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      const header = c.req.header('authorization');
+      if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        return answerRoster(c, await callRoster(deps, null, 'read', () => rosterStore.get()));
+      }
+      const opened = await openDailyRoster(deps, header);
       if ('status' in opened) {
         return stopRoster(c, opened);
       }

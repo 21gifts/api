@@ -403,3 +403,28 @@ describe('account activity routes', () => {
     );
   });
 });
+
+describe('GET /members/:accountId/activity with an operator token', () => {
+  it.each(['op-write', 'op-read'])(
+    'reads a member activity with %s and no session',
+    async (token) => {
+      const authStore = new InMemoryAuthStore();
+      await seedMember(authStore);
+      const app = createApp({ authStore, now, debugToken: 'op-write', debugReadToken: 'op-read' });
+      const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
+        headers: { authorization: `Bearer ${token}` },
+      });
+      expect(res.status).toBe(200);
+    },
+  );
+
+  it('keeps 401 for a wrong bearer', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedMember(authStore);
+    const app = createApp({ authStore, now, debugToken: 'op-write', debugReadToken: 'op-read' });
+    const res = await app.request(`/members/${ACCOUNT_ID}/activity`, {
+      headers: { authorization: 'Bearer op-other' },
+    });
+    expect(res.status).toBe(401);
+  });
+});

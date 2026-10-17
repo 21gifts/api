@@ -143,10 +143,11 @@ export interface AppDeps {
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db` and `GET /funding/goal` (default: `process.env.DEBUG_READ_TOKEN`).
+   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, and the operator staff GET reads
+   * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
-   * interpolating either value. Other routes do not receive this value.
+   * interpolating either value. No write route receives this value.
    */
   debugReadToken?: string;
   /**
@@ -541,6 +542,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       giftStore,
       rates: btcUsdRates,
       fiatRates,
+      ...(debugToken === undefined ? {} : { debugToken }),
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
   app.route('/mentions', mentionsRoutes({ auth: store, now }));
@@ -650,6 +653,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       conversationStore,
       messages: messageStore,
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(debugToken === undefined ? {} : { debugToken }),
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
   app.route(
@@ -663,6 +668,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(spendApiToken === undefined ? {} : { spendApiToken }),
       rosterStore,
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(debugToken === undefined ? {} : { debugToken }),
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
   app.route('/gifts', giftsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }));
@@ -696,6 +703,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),
       postLimiter,
+      ...(debugToken === undefined ? {} : { debugToken }),
+      ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
   );
   app.route(
