@@ -40,8 +40,9 @@ conditions is no longer listed. It keeps its identity.
 The shop name is the pin label, otherwise the author's name, otherwise
 `Shop`: the same chain as today's map name (`shopOcpPlaceName`). The shop
 description is the note text without the `#21GiftsShop` token. Both follow
-the rules of the change that makes shops complete for the map once that
-change is merged.
+the rules of 21gifts/api#478, which makes shops complete for the map and adds
+the structured pin address, once it is merged. This concept builds on that
+change.
 
 ## S1 Key per shop
 
@@ -81,7 +82,8 @@ New table `shop_identity`. The key columns have the same names as on
 | `nostr_key_custody`     | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`       |
 | `nostr_key_created_at`  | `timestamptz NOT NULL` | Set on insert                                    |
 | `profile_name`          | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed |
-| `ocp_photos_hash`       | `text NULL`            | SHA-256 of the photo set last accepted by S5     |
+| `ocp_photos_hash`       | `text NULL`            | SHA-256 of the photo set last answered by S5     |
+| `ocp_photos_pending`    | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)        |
 
 Shop notes are only soft-deleted, so the reference never dangles.
 
@@ -162,7 +164,11 @@ is unchanged, so this spec adds no zap receipts for a shop key.
 
 ### `GET /shops/:npub`
 
-New. No session; a missing or invalid bearer gets the same answer. Registered
+New. `GET /messages/:id` keeps serving a note by its note id. This route
+resolves a shop by its NOSTR identity, the id that OpenCryptoPay, NIP-05 and
+the shop page use, and answers for a shop that is no longer listed with 410.
+
+No session; a missing or invalid bearer gets the same answer. Registered
 after `GET /shops/activity`; it only matches a parameter that is an npub or 64
 lowercase hex, so `activity` is never captured.
 
@@ -208,7 +214,9 @@ The 410 body carries no name, so a hidden note's name is not served.
 
 `lat` and `lng` as in `GET /messages/places`. `address` is `null` while the
 pin has none. `tillUsername` is `null` when the till account has no username.
-Photos are the note's photos in note order.
+Photos are the note's photos in note order. `width` and `height` come from
+`imageDisplaySize` (`src/lib/nostr/image.ts`) on the stored bytes when the
+response is built, and are both `null` when it cannot read them.
 
 ### Existing responses
 
@@ -243,28 +251,42 @@ Photos are the note's photos in note order.
   first through S1; if that fails, nothing is sent and the S1 backfill
   repeats the push later. A note that is not listed is never sent.
 - **Removal:** every change from listed to not listed sends
-  `DELETE /map/places`: hashtag removed, pin removed, till account cleared,
-  note deleted or hidden. This includes `PATCH /messages/:id/shop-account`
-  clearing the till, which today still re-sends the place.
+  `DELETE /map/places`: pin removed, till account cleared, note deleted or
+  hidden. This includes `PATCH /messages/:id/shop-account` clearing the till,
+  which today still re-sends the place. Each removal also sets
+  `ocp_photos_hash` to null, because OpenCryptoPay drops the photos with the
+  place, so a shop that is listed again sends its photos again.
   `publishExistingShopPlaces` at start-up sends listed shops and deletes
   tagged pins that are not listed.
-- **Photos:** after a successful place `PUT`, and after
-  `PATCH /messages/:id/photos` on a listed shop, the worker sends the note's
-  photos to `PUT /map/places/photos`:
-  - up to 10, in note order, as `{ nostrPubkey, photos: [{ contentType, data }] }`
-    with `data` the stored bytes in base64, under the 15 MiB body limit of
-    that route;
-  - only when the SHA-256 over the photo set differs from `ocp_photos_hash`,
-    which is updated after a 200; an empty set is sent as an empty list;
-  - outside the request path, with its own 30 s timeout. A failure logs
-    `ocp.photos.failed` and is retried on the next tick.
+- **Account merge:** `src/lib/account-merge.ts` moves `shop_account_id` from
+  the merged account to the surviving one before it deletes the old account.
+  Today the foreign key sets it to null, which would unlist the shop without
+  any removal being sent.
+- **Photos:** a successful place `PUT`, and `PATCH /messages/:id/photos` on
+  a listed shop, set `ocp_photos_pending`. The worker takes at most 20 pending
+  shops per tick, outside the request path:
+  - It computes the SHA-256 over the photo set. If it equals
+    `ocp_photos_hash`, it clears the flag and sends nothing.
+  - Otherwise it sends up to 10 photos, in note order, as
+    `{ nostrPubkey, photos: [{ contentType, data }] }` with `data` the stored
+    bytes in base64, under the 15 MiB body limit of that route, with its own
+    30 s timeout. An empty set is sent as an empty list.
+  - On 200 it stores the hash and clears the flag. OpenCryptoPay may skip
+    single photos it does not accept and lists them in its answer; those are
+    logged as `ocp.photos.skipped` and not retried for this set.
+  - On 400, 404 or 413 it also stores the hash and clears the flag, and logs
+    `ocp.photos.rejected`. The same set is not sent again.
+  - On a network error, a timeout or a 5xx it logs `ocp.photos.failed` and
+    keeps the flag, so the next tick retries.
 - **Rollout:** OpenCryptoPay first accepts `nostrPubkey` and lists only shops
-  that have one, then rejects writes without it. This change deploys between
-  those two steps. Until it is live, 21.gifts shops are off the
+  that have one (its step 1a), then adds the photo route (step 2), and only
+  then rejects writes without a key (step 1b). This change deploys after 1a
+  and 2 and before 1b. Until it is live, 21.gifts shops are off the
   OpenCryptoPay list.
 
 ## Order of work
 
+0. 21gifts/api#478: complete shops with a structured address.
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
 3. S5: OpenCryptoPay push with `nostrPubkey`, removal by the listed rule,
