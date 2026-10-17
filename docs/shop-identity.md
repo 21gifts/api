@@ -465,7 +465,8 @@ writes without a key (step 1b). This change deploys after 1a and 2 and before
 During the rolling deploy of either release, old and new instances both
 either queue or do not push at all, so no change is lost and nothing is
 sent outside the outbox. The start-up pass of the second release then
-sends what the first release queued. Until it is live, 21.gifts shops are off the OpenCryptoPay list.
+sends what the first release queued. Until it is live, 21.gifts shops are
+off the OpenCryptoPay list.
 
 ## Order of work
 
