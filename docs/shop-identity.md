@@ -86,7 +86,11 @@ New table `shop_identity`. The key columns have the same names as on
 | `ocp_photos_pending`    | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)        |
 | `ocp_photos_generation` | `integer NOT NULL`     | Default `0`; raised by every S5 trigger          |
 
-Shop notes are only soft-deleted, so the reference never dangles.
+`MessageStore.deleteById` can hard-delete a top-level note, for example when
+its video file is missing. It deletes nothing for a note that has a
+`shop_identity` row, the same way it already keeps a credit note with sats,
+and its callers treat that note like any other kept row. So the reference
+never dangles and the identity is never deleted.
 
 ### Encryption at rest
 
@@ -232,7 +236,8 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
 ## S4 Shop page `https://21.gifts/{npub}`
 
 - New app route `src/app/[npub]/page.tsx`. Static routes keep precedence. The
-  segment must match `^npub1[02-9ac-hj-np-z]{58}$`, otherwise `notFound()`.
+  segment must match `^npub1[02-9ac-hj-np-z]{58}$` or `^[0-9a-f]{64}$`,
+  otherwise `notFound()`.
 - `^[0-9a-f]{64}$` asks the api and redirects (308) to `/{npub}` on its 301.
 - `generateMetadata` like a public note: 2.5 s timeout, `title` = shop name,
   description, `og:image` = first photo or `/og.png`, canonical
@@ -262,8 +267,10 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
   `ocp_photos_hash` to null, clears `ocp_photos_pending` and raises
   `ocp_photos_generation`, because OpenCryptoPay drops the photos with the
   place, so a shop that is listed again sends its photos again.
-  `publishExistingShopPlaces` at start-up sends listed shops and deletes
-  tagged pins that are not listed.
+  `publishExistingShopPlaces` at start-up sends listed shops, and sends the
+  removal again for tagged pins that are not listed and for every
+  `shop_identity` whose note is not listed, so a removal that failed is
+  repeated.
 - **Account merge:** `src/lib/account-merge.ts` moves `shop_account_id` from
   the merged account to the surviving one before it deletes the old account.
   Today the foreign key sets it to null, which would unlist the shop without
@@ -282,7 +289,8 @@ reports; reading that orientation is new code next to `imageDisplaySize`.
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
     body limit. An empty set is sent as an empty list.
   - It uses its own 30 s timeout instead of the 5 s timeout of the place
-    push (`src/lib/ocp-place.ts:356`), because the body can reach about 13.3 MiB while a place body is a few fields of text.
+    push (`src/lib/ocp-place.ts:356`), because the body can reach about 13.3 MiB
+    while a place body is a few fields of text.
   - Every write the worker makes, including the two early flag clears
     above, is conditional on `ocp_photos_generation = g`. If a trigger or a
     removal ran in the meantime, the write does nothing and the flag stays
