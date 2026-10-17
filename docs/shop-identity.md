@@ -209,6 +209,12 @@ is unchanged, so this spec adds no zap receipts for a shop key.
 - Accounts are allocated first, then shops by `nostr_key_created_at` and
   then `message_id`, so the order is the same on every run. An
   account never loses its local part to a shop.
+- Today `listNip05Entries` (for `nostr.json`) reserves every account with a
+  username, while `nip05Identifier` in `publishProfiles` only sees accounts
+  with a name. Shop local parts come from one allocation that both use: the
+  account set and order of `listNip05Entries`, then the listed shops. A test
+  checks that a shop's kind 0 `nip05` equals its `nostr.json` entry, also
+  when a nameless account's username equals the shop's slug.
 - The local part follows the current shop name. A rename, or a new account
   that takes the slug, gives the shop a new local part, and its kind 0 is
   published again.
