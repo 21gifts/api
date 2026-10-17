@@ -847,10 +847,10 @@ the [Watcher](#watcher), which stores it as a `detected` proof.
 4. Find the ERC-20 `Transfer` logs (topic
    `0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef`)
    whose emitting address is an offer contract of this quote and method,
-   and whose `to` topic is that offer's deposit address. A log whose
-   value equals the offer's `amountIn` comes first; otherwise the first
-   such log is used. It selects the offer. When `asset` is present, it
-   must equal that offer's asset.
+   and whose `to` topic is that offer's deposit address. When `asset` is
+   present, only the offers of that asset count. A log whose value equals
+   the offer's `amountIn` comes first; otherwise the first such log is
+   used. It selects the offer.
 5. No such log: **400**, reason `Payment was not accepted`. Nothing is
    stored, because no coin reached Orchestra for this offer. When every
    such log is already claimed by a proof of another quote, the reason is
