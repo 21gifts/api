@@ -129,9 +129,10 @@ the committed row in between and mint a key, which would keep a half-written
 note. The implementing change therefore writes all three in one transaction
 on one reserved connection, the pattern of the account merge
 (`src/lib/account-merge.ts`); a failure rolls the note back instead of
-calling `deleteById`. A regression test fails an extra photo insert while the
-backfill runs and checks that neither the note nor a `shop_identity` row is
-left.
+calling `deleteById` and, for a video note, removes the video file with
+`removeForumVideo` as a failed insert does today. A regression test fails an
+extra photo insert while the backfill runs and checks that neither the note
+nor a `shop_identity` row is left.
 
 ### Encryption at rest
 
