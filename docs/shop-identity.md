@@ -264,15 +264,16 @@ OpenCryptoPay reports.
   description, `og:image` = first photo or `/og.png`, canonical
   `https://21.gifts/{npub}`.
 - 404 → the existing not-found page. 410 → a "this shop is no longer listed"
-  page without a name. 503 → an error state with retry, never a blank page.
-- Content: name, description, address with a directions link, a link to the
-  forum note (`/messages/<messageId>`) and the NIP-05. The page reuses these
+  page without a name. 503 → the error text and retry button pattern of
+  `ExternalAuthorProfile` (`forum.error`, `view.retry`), never a blank page.
+- Content: name, description, address as text, a link to the forum note
+  (`/messages/<messageId>`) and the NIP-05. The page reuses these
   app components (all in `src/components/` of 21gifts/app):
   - photos: `ForumPhotoGallery`;
   - map: the Google Maps setup of `PlacesMapScreen`, drawing only this
-    shop's marker; without a maps key the page keeps only the directions
-    link, the same fallback `PlacesMapScreen` uses. `PlacesMapScreen` itself
-    is not embedded because it loads every place;
+    shop's marker; without a maps key the page shows no map, and the
+    address text stays. `PlacesMapScreen` itself is not embedded because it
+    loads every place;
   - pay QR: `QrCode`, with the pay link `/pay/<payUsername>`, shown only when
     `payUsername` is not `null`;
   - npub copy button: the copy control of `ExternalAuthorProfile`.
