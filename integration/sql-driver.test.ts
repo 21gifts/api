@@ -2058,6 +2058,11 @@ describe('PostgresLoginGateStore and session wipe', () => {
       await migrateDbChangeSchema(client);
 
       const store = new PostgresLoginGateStore(client);
+      // db_change is append-only and logins_open is a singleton key, so only
+      // rows written after this mark prove this run's triggers fired.
+      const [mark] = await client.query<{ id: string }>(
+        `SELECT COALESCE(MAX(id), 0)::text AS id FROM db_change`,
+      );
       await client.execute(`DELETE FROM app_setting WHERE key = 'logins_open'`);
       expect(await store.loginsOpen()).toBeNull();
       await store.setLoginsOpen(false, Date.now());
@@ -2117,15 +2122,16 @@ describe('PostgresLoginGateStore and session wipe', () => {
       const changes = await client.query<{ table_name: string; op: string }>(
         `SELECT table_name, op
          FROM db_change
-         WHERE (table_name = 'app_setting'
+         WHERE id > $3::bigint
+           AND ((table_name = 'app_setting'
                 AND COALESCE(after->>'key', before->>'key') = 'logins_open'
                 AND COALESCE(after->>'value', '') = 'open'
                 AND COALESCE(before->>'value', '') = 'closed')
             OR (table_name = 'login_allowlist'
                 AND COALESCE(after->>'account_id', before->>'account_id') = $1)
             OR (table_name = 'auth_session'
-                AND COALESCE(after->>'account_id', before->>'account_id') = $2)`,
-        [accountId, sessionOwner],
+                AND COALESCE(after->>'account_id', before->>'account_id') = $2))`,
+        [accountId, sessionOwner, mark?.id ?? '0'],
       );
       const seen = new Set(changes.map((row) => `${row.table_name}:${row.op}`));
       expect(seen.has('app_setting:UPDATE')).toBe(true);
