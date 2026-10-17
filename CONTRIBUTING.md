@@ -156,7 +156,7 @@ api/
 │   │   ├── spend-instruction.ts  # Decide the USD amount and memo for a spend ping
 │   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
 │   │   ├── daily-roster.ts   # Daily roster types, 400 texts, comment folding, public identity projection
-│   │   ├── daily-roster-store.ts  # DailyRosterStore port, InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL
+│   │   ├── daily-roster-store.ts  # DailyRosterStore port, InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL, moveDailyRosterToWalletAddresses (DAILY_ROSTER_WALLET_MOVE_SQL), setUsernameWithRoster
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
 │   │   ├── gift-recorder.ts  # Persist proven spend gifts into `gift` (no-op or SQL)
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
@@ -508,7 +508,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresMemberEventStore`, `migrateMemberEventSchema`,
 `PostgresTrustStore`, `migrateTrustSchema`,
 `PostgresFundingStore`, `migrateFundingSchema`,
-`PostgresDailyRosterStore`, `migrateDailyRosterSchema`,
+`PostgresDailyRosterStore`, `migrateDailyRosterSchema`, `moveDailyRosterToWalletAddresses`, `setUsernameWithRoster`,
 `PostgresConversationStore`, `migrateConversationSchema`,
 `PostgresPushStore`, `migratePushSchema`,
 `PostgresNotificationStore`, `migrateNotificationSchema`, `PostgresApiLogStore`,
@@ -659,9 +659,11 @@ Draft pull requests run the GitHub CI jobs. GitHub holds fork runs from
 external contributors as `action_required`. Ready does not start CI. After a
 fresh A38 enforce pass on the current head, `dfx pr guard` approves those
 waiting initial runs, then sets Ready when the required GitHub jobs are green
-and the PR is mergeable. A second review comment whose `blocks_merge` is true
-returns the pull request to draft until a newer second review clears it. The
-merger does not click Approve and run workflows.
+and the PR is mergeable. The newest well-formed second review comment that
+covers the current head returns a Ready pull request to draft when its
+`blocks_merge` is true and it counts at least one defect; a newer well-formed
+second review with `blocks_merge` false clears that. The merger does not click
+Approve and run workflows.
 Do not ask a maintainer to approve workflow runs. Post the light A38 report
 on the current head only when the pinned standard requires one. A head that
 still requires a report needs a new report. That standard defines the waivers,
@@ -726,13 +728,21 @@ More will be added as concrete subsystems that need runtime configuration
 | ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
 | `loan-e2e.yml`         | `workflow_dispatch` only                                          | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
-| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` → notify → wait for deploy                                                                                                              |
-| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` → notify → wait for deploy                                                                                                           |
-| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` → notify → wait for deploy                                                                                                            |
+| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
+| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
+| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
 | `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
 | `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                                     |
 
-Images target `linux/arm64`.
+Images target `linux/arm64`. Every deploy also pushes the image as
+`21gifts/api:<tag>-<sha>`, where `<tag>` is that workflow's moving tag (`beta`,
+`staging`, or `latest`) and `<sha>` is the full 40-character `github.sha` of the
+built commit, for example `21gifts/api:latest-<sha>`. No later commit writes
+that tag, so a running image can be traced to its commit and environment. A
+re-run for the same commit pushes the same tag again from the same source. The
+moving tags and the deploy dispatch are unchanged. `publish-spend-staging.yaml`
+builds `21gifts/spend` from that repository, not from this commit, and pushes
+only `:staging`.
 
 Deploy workflows require these GitHub Actions secrets:
 

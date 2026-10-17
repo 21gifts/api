@@ -77,8 +77,10 @@ import {
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
   migrateDailyRosterSchema,
+  moveDailyRosterToWalletAddresses,
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
+import { resolveLnurlServerConfig, type LnurlServerConfig } from '@/lib/config';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
 import {
   migrateSparkInvoiceSchema,
@@ -228,6 +230,11 @@ export interface BootFxOptions {
   zapRelayUrls?: readonly string[];
   /** Per-relay timeout for the external-zapper backfill. */
   nostrRelayTimeoutMs?: number;
+  /**
+   * LNURL server config for the roster wallet move, or `null` when off
+   * (default: `resolveLnurlServerConfig(process.env)`).
+   */
+  lnurlServer?: LnurlServerConfig | null;
 }
 
 /**
@@ -406,6 +413,12 @@ export async function openBootStores(
   });
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
+  const rosterLnurlServer =
+    fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
+  if (rosterLnurlServer !== null) {
+    const move = await moveDailyRosterToWalletAddresses(sqlClient, rosterLnurlServer.host);
+    logEvent('daily_roster.wallet_move', { moved: move.moved, removed: move.removed });
+  }
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);

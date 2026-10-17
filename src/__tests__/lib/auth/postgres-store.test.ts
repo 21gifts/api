@@ -325,7 +325,7 @@ describe('PostgresAuthStore', () => {
     expect(update.text).toMatch(/location = \$13/);
     expect(update.text).toMatch(/notification_level = \$14/);
     expect(update.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
     expect(update.text).toMatch(/notify_hearts = \$17/);
@@ -336,7 +336,7 @@ describe('PostgresAuthStore', () => {
     const setClause = update.text.split(/\bWHERE\b/)[0]!;
     expect(
       setClause.replace(
-        /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+        /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
         '',
       ),
     ).not.toMatch(/spark_pubkey/);
@@ -393,7 +393,7 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$14/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(sql.executes[1]?.params[13]).toBe('active');
     expect(sql.executes[1]?.params[14]).toBeNull();
@@ -457,7 +457,7 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, amountUnit: 'btc' });
     expect(sql.executes[1]?.text).toMatch(/amount_unit = \$16/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(sql.executes[1]?.params[15]).toBe('btc');
   });
@@ -2207,5 +2207,76 @@ describe('PostgresAuthStore spark pubkey', () => {
     await new PostgresAuthStore(sql).getAccount('acc');
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey/);
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at/);
+  });
+});
+
+describe('PostgresAuthStore setUsername', () => {
+  it('updates with FOR UPDATE and returns the previous username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: 'ada' }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: true,
+      previous: 'ada',
+    });
+    expect(sql.queries[0]?.text).toMatch(/UPDATE account AS a SET username = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING before\.previous/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'grace']);
+  });
+
+  it('returns previous null when the row had no username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: null }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('coalesces a missing previous column to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('returns frozen when the update matches no row and the account exists', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ spark_pubkey_verified_at: new Date(10) }]];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: false,
+      reason: 'frozen',
+    });
+    expect(sql.queries[1]?.text).toMatch(
+      /SELECT spark_pubkey_verified_at FROM account WHERE id = \$1/,
+    );
+    expect(sql.queries[1]?.params).toEqual(['acc']);
+  });
+
+  it('returns missing when the update matches no row and the account is gone', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], []];
+    expect(await new PostgresAuthStore(sql).setUsername('missing', 'ada')).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+  });
+
+  it('returns taken on unique violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(new PostgresAuthStore(sql).setUsername('acc', 'ada')).rejects.toThrow('boom');
   });
 });

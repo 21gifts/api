@@ -334,6 +334,18 @@ export interface Session {
 }
 
 /**
+ * Result of {@link AuthStore.setUsername}: the username this write replaced,
+ * or why the write did not run.
+ *
+ * `{ ok: true, previous }` carries the replaced handle (`null` when none was
+ * set). `{ ok: false, reason }` is `'frozen'` when the wallet is verified,
+ * `'taken'` when another account owns the username, or `'missing'` when the
+ * account does not exist.
+ */
+export type SetUsernameResult =
+  { ok: true; previous: string | null } | { ok: false; reason: 'frozen' | 'taken' | 'missing' };
+
+/**
  * Persistence port for the auth subsystem. In-memory and Postgres adapters
  * implement the same async contract so domain logic does not branch on storage.
  */
@@ -344,14 +356,29 @@ export interface AuthStore {
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
    * or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
-   * matching no row or swallowed unique_violation). An account with a verified
-   * wallet (`sparkPubkeyVerifiedAt` set) keeps its stored username; the other
+   * matching no row or swallowed unique_violation). A stored non-blank username
+   * is kept, and so is the username of an account with a verified wallet
+   * (`sparkPubkeyVerifiedAt` set); only a blank one is filled, so a write from
+   * an older snapshot cannot undo a rename. Renames go through
+   * {@link AuthStore.setUsername} (or `setUsernameWithRoster`). The other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
    * are never written here. `walletIntroSeen` is only ever raised to true
    * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
    * never written.
    */
   updateAccount(account: Account): Promise<void>;
+  /**
+   * Set the username of an account whose wallet is not verified yet, as one
+   * atomic step, and report the username it replaced.
+   *
+   * @param accountId - Account id.
+   * @param username - Normalized username (see `normalizeUsername`).
+   * @returns `{ ok: true, previous }` with the replaced username (`null` when
+   *   none was set); `{ ok: false, reason }` with `'frozen'` when the wallet is
+   *   verified, `'taken'` when another account owns the username, `'missing'`
+   *   when the account does not exist.
+   */
+  setUsername(accountId: string, username: string): Promise<SetUsernameResult>;
   /**
    * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
    * stay unchanged.
@@ -976,12 +1003,11 @@ export class InMemoryAuthStore implements AuthStore {
     }
     const previous = this.#accounts.get(account.id);
     const { username: passedUsername, ...rest } = account;
-    const username =
+    const keepStored =
       previous !== undefined &&
-      previous.sparkPubkeyVerifiedAt !== null &&
-      previous.sparkPubkeyVerifiedAt !== undefined
-        ? previous.username
-        : passedUsername;
+      ((previous.sparkPubkeyVerifiedAt !== null && previous.sparkPubkeyVerifiedAt !== undefined) ||
+        (previous.username ?? '').trim() !== '');
+    const username = keepStored ? previous.username : passedUsername;
     if (this.#usernameTaken(username, account.id)) {
       return;
     }
@@ -1015,6 +1041,22 @@ export class InMemoryAuthStore implements AuthStore {
     if (account.linkingKey !== null) {
       this.#accountsByLinkingKey.set(account.linkingKey, account.id);
     }
+  }
+
+  async setUsername(accountId: string, username: string): Promise<SetUsernameResult> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return { ok: false, reason: 'missing' };
+    }
+    if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+      return { ok: false, reason: 'frozen' };
+    }
+    if (this.#usernameTaken(username, accountId)) {
+      return { ok: false, reason: 'taken' };
+    }
+    const previous = current.username ?? null;
+    this.#accounts.set(accountId, { ...current, username });
+    return { ok: true, previous };
   }
 
   async claimProfileMessageId(

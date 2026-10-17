@@ -78,6 +78,7 @@ function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
     addModerator: (address, amountUsd) => fallback.addModerator(address, amountUsd),
     updateModerator: (address, amountUsd) => fallback.updateModerator(address, amountUsd),
     deleteModerator: (address) => fallback.deleteModerator(address),
+    renameAddress: (from, to) => fallback.renameAddress(from, to),
     importDocument: (body) => fallback.importDocument(body),
   };
 }

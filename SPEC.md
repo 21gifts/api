@@ -176,7 +176,7 @@ Public base URLs used in examples:
 | POST   | `/funding/daily-roster/worker/moderators/payments`   | Spend Bearer (invoices)                      | Spend Bearer. Body `{ enabled: boolean }` sets moderatorPaymentsEnabled. Non-boolean enabled is 400 Invalid payments switch. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                                                       |
 | GET    | `/funding/payout-days`                               | Bearer (moderator+)                          | Staff seven-UTC-day grant payout matrix (`days`: `blocked` / `missed` / `paid`; `welcome`: seven booleans, same order)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/shops/activity`                                    | none                                         | 30-UTC-day shop till-charge counts (`days`: `{ day, shopCount }`, oldest first, zeros included)                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| GET    | `/funding/goal`                                      | Bearer (any role)                            | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                             |
+| GET    | `/funding/goal`                                      | Bearer (any role) or `DEBUG_*_TOKEN`         | 7-UTC-day shop till-charge counts plus how many shops had a charge on 5 of those days (`days`, `qualifyingShops`)                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages`                                          | none for active / Bearer                     | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                                            |
 | GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats, firstPostFree }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -295,11 +295,28 @@ Liveness probe. No I/O; always succeeds when the process is up.
 {
   "status": "ok",
   "service": "21gifts-api",
-  "version": "0.1.0"
+  "version": "0.1.0",
+  "wallet": {
+    "lnurlServer": true,
+    "zapSigning": true,
+    "freePayments": true,
+    "passkey": true
+  }
 }
 ```
 
 `version` is `SERVICE_VERSION` (env) or `"0.1.0"` when unset.
+
+`wallet` reports which in-app wallet features this process has configured.
+Each field is a boolean resolved once at boot; the response never contains an
+env value, key, or URL, and `wallet` never changes `status` or the HTTP code.
+
+| Field          | `true` when                                                                                                                                                             |
+| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `lnurlServer`  | `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` are http(s) URLs (`resolveLnurlServerConfig`)                                                                                  |
+| `zapSigning`   | `LNURL_ZAP_NSEC_HEX` is 64 hex characters and `SPARK_OPERATOR_URL` is unset, blank, or http(s)                                                                          |
+| `freePayments` | `lnurlServer` and `zapSigning`: free in-app payments between members are on                                                                                             |
+| `passkey`      | `WEBAUTHN_RP_ID` is a known RP ID and an allowed CORS origin matches it (`resolveWebAuthnConfig`, the check the passkey routes make); otherwise those routes answer 500 |
 
 ### `GET /info`
 
@@ -1868,8 +1885,10 @@ Spend Bearer, same as the invoices. Body `{ enabled: boolean }` is passed to `se
 
 ### `GET /funding/goal`
 
-Bearer session. Any signed-in role, including `basis`. Missing or
-invalid bearer is **401** `{ "error": "Unauthorized" }`. Seven UTC days
+Bearer session. Any signed-in role, including `basis`. The operator
+`DEBUG_TOKEN` or `DEBUG_READ_TOKEN` reads the same body without a session;
+the body holds only counts. Missing bearer, or a bearer that is neither an
+operator token nor a session, is **401** `{ "error": "Unauthorized" }`. Seven UTC days
 ending on the server clock's today, oldest first. A shop is a live
 top-level forum note (`parent_id` null, `deleted_at` null) whose text
 has the hashtag token `21GiftsShop` (case-insensitive, not followed by
@@ -2018,6 +2037,21 @@ accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `"name" | "lightning-address"`). Same handle on the same account is
 idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
+When the account already had a different username and the LNURL server is
+configured, every daily roster row (both buckets) on `<old>@<host>` moves to
+`<new>@<host>`, so a fixed amount or moderator stipend follows the new
+receiving address; a bucket that already holds the new address drops the old
+row. With a database (`mergeDb`, the daily roster and the LNURL server all
+wired), the username change and that roster move run in one transaction under
+the account row lock (`setUsernameWithRoster`): a concurrent rename of the same
+account waits, then sees both the new username and the moved rows; a failure
+changes nothing and the request fails with 500. Otherwise the username change
+is one atomic `AuthStore.setUsername` step that reports the replaced username,
+and the roster move, when it applies, is a second step; if that second step
+fails, the request fails with 500 and `daily_roster.address.rename_failed`
+names the old and the new username so an operator can rename the roster row
+by hand; the new username stays stored.
+
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
 Body is not JSON with a `username` string → **Response** `400`:
@@ -2040,8 +2074,7 @@ Wallet already verified → **Response** `409`:
 ```
 
 Another account owns the handle, including a unique-index race
-(re-read after `updateAccount`: if the stored username lower/trim is
-not the requested handle) → **Response** `409`:
+(`setUsername` or `setUsernameWithRoster` returns `{ ok: false, reason: 'taken' }`) → **Response** `409`:
 
 ```json
 { "error": "Username is already in use" }
@@ -6643,7 +6676,7 @@ exist on the account model; `GET /debug/accounts` and
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
 - Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required. An owner who continues chooses two people. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
-- Shop payment in USDT or USDC ([docs/shop-spark-payment.md](docs/shop-spark-payment.md)). Specified there. Not mounted. Not in the table above.
+- Shop payment in USDT or USDC ([docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md)). Specified there. Not mounted. Not in the table above.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)

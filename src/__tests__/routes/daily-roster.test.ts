@@ -150,6 +150,7 @@ function fakeStore(overrides: Partial<DailyRosterStore> = {}): DailyRosterStore 
       overrides.updateModerator ??
       ((address, amountUsd) => fallback.updateModerator(address, amountUsd)),
     deleteModerator: overrides.deleteModerator ?? ((address) => fallback.deleteModerator(address)),
+    renameAddress: overrides.renameAddress ?? ((from, to) => fallback.renameAddress(from, to)),
     importDocument: overrides.importDocument ?? ((body) => fallback.importDocument(body)),
   };
 }
