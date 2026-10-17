@@ -804,7 +804,10 @@ well, and Tether 1.11.0 sends only `tx`. The api accepts both.
 Before any chain read, the api looks for a stored proof of this quote's
 offers whose `tx_hash` or `user_op_hash` equals the normalised `tx`, or
 whose `tx_hash` equals the hash of `hex`. When one exists, the request is
-a repeat and answers from that row (table in
+a repeat and answers from that row; when several exist, which happens
+after the orders duty stored a second transfer of the same transaction,
+it answers from the `accepted` row, else from the row whose offer's
+asset equals `asset`, else from the oldest row (table in
 [Storing and submitting](#storing-and-submitting)). Before it answers, the
 request brings the row forward within its budget: a row without a log
 index reads the receipt once, as in [Verification of `tx`](#verification-of-tx),
