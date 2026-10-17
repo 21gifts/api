@@ -273,8 +273,9 @@ OpenCryptoPay reports.
   repeats the push later. A note that is not listed is never sent.
 - **Removal:** every change from listed to not listed sends
   `DELETE /map/places`: pin removed, till account cleared, shop no longer
-  complete, note deleted or hidden. This includes `PATCH /messages/:id/shop-account` clearing the till,
-  which today still re-sends the place. Each removal also sets
+  complete, note deleted or hidden. This includes
+  `PATCH /messages/:id/shop-account` clearing the till, which today still
+  re-sends the place. Each removal also sets
   `ocp_photos_hash` to null, clears `ocp_photos_pending` and raises
   `ocp_photos_generation`, because OpenCryptoPay drops the photos with the
   place, so a shop that is listed again sends its photos again.
