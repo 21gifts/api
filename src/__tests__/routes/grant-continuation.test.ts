@@ -49,12 +49,15 @@ function mount(
   messages: ShopNoteRef[] = [],
   charges: PosChargeRef[] = [],
   seen?: { window?: [number, number] },
+  tokens: { debugToken?: string; debugReadToken?: string } = {},
 ): Hono {
   return new Hono().route(
     '/funding/goal',
     grantContinuationRoutes({
       authStore,
       now: () => NOW_MS,
+      debugToken: tokens.debugToken,
+      ...(tokens.debugReadToken === undefined ? {} : { debugReadToken: tokens.debugReadToken }),
       messages: { listLiveAssignedShops: () => Promise.resolve(messages) },
       pos: {
         listCreatedBetween: (startMs, endMs) => {
@@ -103,6 +106,40 @@ describe('GET /funding/goal', () => {
     const res = await get(mount(await staffed()), 'missing');
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it.each([
+    ['write', 'operator-write'],
+    ['read', 'operator-read'],
+  ] as const)('returns 200 for the operator %s token without a session', async (_kind, token) => {
+    const notes: ShopNoteRef[] = [{ id: 'n1', accountId: 'acc', text: 'A #21GiftsShop' }];
+    const charges: PosChargeRef[] = [0, 1, 2, 3, 4].map((offset) => ({
+      accountId: 'acc',
+      createdAtMs: START_MS + offset * DAY_MS,
+    }));
+    const seen: { window?: [number, number] } = {};
+    const app = mount(new InMemoryAuthStore(), notes, charges, seen, {
+      debugToken: 'operator-write',
+      debugReadToken: 'operator-read',
+    });
+    const res = await get(app, token);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as GoalBody;
+    expect(body.days).toHaveLength(7);
+    expect(body.days[6]?.day).toBe(TODAY);
+    expect(body.qualifyingShops).toBe(1);
+    expect(seen.window).toEqual([START_MS, END_MS]);
+  });
+
+  it('still reads a member session and refuses a wrong bearer when operator tokens are set', async () => {
+    const tokens = { debugToken: 'operator-write', debugReadToken: 'operator-read' };
+    const member = await get(mount(await staffed(), [], [], undefined, tokens), 'basis');
+    expect(member.status).toBe(200);
+    const wrong = await get(mount(await staffed(), [], [], undefined, tokens), 'operator-other');
+    expect(wrong.status).toBe(401);
+    expect(await wrong.json()).toEqual({ error: 'Unauthorized' });
+    const none = await get(mount(await staffed(), [], [], undefined, tokens), undefined);
+    expect(none.status).toBe(401);
   });
 
   it.each(['basis', 'verified'] as const)(
@@ -202,6 +239,7 @@ describe('GET /funding/goal', () => {
       grantContinuationRoutes({
         authStore: await staffed(),
         now: () => NOW_MS,
+        debugToken: undefined,
         messages: {
           listLiveAssignedShops: () => Promise.reject(new Error('down')),
         },
