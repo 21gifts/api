@@ -704,7 +704,14 @@ export function createApp(deps: AppDeps = {}): Hono {
   if (lnurlServer !== null) {
     app.route(
       '/',
-      lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now, posStore, ...shopDeps }),
+      lnurlServerRoutes({
+        auth: store,
+        config: lnurlServer,
+        fetchImpl,
+        now,
+        posStore,
+        ...shopDeps,
+      }),
     );
   }
   app.route(

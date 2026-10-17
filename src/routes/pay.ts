@@ -298,7 +298,9 @@ async function readAmountBody(
   const parsed = z
     .object({ amountSats: z.number().int(), comment: z.unknown().optional() })
     .safeParse(body);
-  return parsed.success ? { amountSats: parsed.data.amountSats, comment: parsed.data.comment } : null;
+  return parsed.success
+    ? { amountSats: parsed.data.amountSats, comment: parsed.data.comment }
+    : null;
 }
 
 /**
@@ -309,10 +311,7 @@ async function readAmountBody(
  * @param amountSats - Requested sats.
  * @returns `true` when the amount is accepted.
  */
-function withinPayRange(
-  lookup: Extract<PayLookup, { ok: true }>,
-  amountSats: number,
-): boolean {
+function withinPayRange(lookup: Extract<PayLookup, { ok: true }>, amountSats: number): boolean {
   const amountMsat = amountSats * 1000;
   const outsideSat = amountSats < lookup.minSats || amountSats > lookup.maxSats;
   const belowMsat = amountMsat < lookup.metadata.minSendable;
