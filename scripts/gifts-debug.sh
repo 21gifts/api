@@ -4,7 +4,8 @@
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
 #               spend live roster, trust-edge backfill, account-by-id,
-#               grant goal, and full-table dump for 21.gifts
+#               grant goal, staff funding/trust/forum reads, and
+#               full-table dump for 21.gifts
 #               (GET /debug/accounts, GET /debug/accounts/:id,
 #               PATCH /debug/accounts/:id,
 #               GET /debug/messages, GET /debug/messages/:id,
@@ -16,7 +17,11 @@
 #               GET /debug/trust-edges, POST /debug/trust-edges,
 #               DELETE /debug/trust-edges,
 #               GET /debug/dump, GET /debug/dump/:table,
-#               GET /funding/goal). No raw SQL.
+#               GET /funding/goal, GET /funding/payout-days,
+#               GET /funding/applications, GET /funding/applications/:accountId,
+#               GET /funding/daily-roster, GET /trust/proposals,
+#               GET /members/:accountId/activity, GET /messages/hidden,
+#               GET /messages/:id/edits). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -47,6 +52,15 @@
 #   gifts-debug settle <payment-hash> <note> [preimage]  # POST manual settle; print response JSON
 #   gifts-debug spend [--raw]        # spend live roster table (default) or JSON
 #   gifts-debug funding-goal [--raw] # grant goal: shops per UTC day and qualifyingShops
+#   gifts-debug payout-days          # 7-UTC-day grant payout matrix JSON
+#   gifts-debug applications [account-id]
+#                                    # pending grant applications, or one application JSON
+#   gifts-debug daily-roster         # API daily roster JSON (master copy, with identities)
+#   gifts-debug trust-proposals      # open moderator proposals JSON
+#   gifts-debug member-activity <account-id>
+#                                    # one member's donation activity JSON
+#   gifts-debug hidden               # soft-hidden forum notes JSON
+#   gifts-debug edits <message-id>   # edit history of one shop note JSON
 #   gifts-debug trust-edge <subject-id> <actor-id> <kind>
 #                                      # POST a stored trust edge; print edge JSON
 #                                      # kind: verify | moderator_propose |
@@ -641,6 +655,31 @@ print("qualifyingShops\t%s" % data.get("qualifyingShops", ""))
 '
 }
 
+cmd_get_json() {
+  printf '%s\n' "$(debug_get "$1")"
+}
+
+cmd_applications() {
+  local id="${1:-}"
+  if [ -n "$id" ]; then
+    cmd_get_json "/funding/applications/${id}"
+  else
+    cmd_get_json "/funding/applications"
+  fi
+}
+
+cmd_member_activity() {
+  local id="${1:-}"
+  [ -n "$id" ] || die "usage: gifts-debug member-activity <account-id>"
+  cmd_get_json "/members/${id}/activity"
+}
+
+cmd_edits() {
+  local id="${1:-}"
+  [ -n "$id" ] || die "usage: gifts-debug edits <message-id>"
+  cmd_get_json "/messages/${id}/edits"
+}
+
 fetch_debug_db() {
   local tmp status body
   tmp=$(mktemp)
@@ -741,6 +780,13 @@ case "${1:-}" in
   settle) shift; cmd_settle "$@" ;;
   spend) cmd_spend ;;
   funding-goal) cmd_funding_goal ;;
+  payout-days) cmd_get_json "/funding/payout-days" ;;
+  applications) shift; cmd_applications "$@" ;;
+  daily-roster) cmd_get_json "/funding/daily-roster" ;;
+  trust-proposals) cmd_get_json "/trust/proposals" ;;
+  member-activity) shift; cmd_member_activity "$@" ;;
+  hidden) cmd_get_json "/messages/hidden" ;;
+  edits) shift; cmd_edits "$@" ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
   trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
   ""|-h|--help) usage 0 ;;

@@ -64,6 +64,8 @@ function mount(
     spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> };
     /** `false` omits the LNURL server (no receiving address). Default on. */
     lnurlServer?: false;
+    debugToken?: string;
+    debugReadToken?: string;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -79,6 +81,8 @@ function mount(
       ...(extras.messages === undefined ? {} : { messages: extras.messages }),
       ...(extras.spendPing === undefined ? {} : { spendPing: extras.spendPing }),
       ...(extras.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
+      ...(extras.debugToken === undefined ? {} : { debugToken: extras.debugToken }),
+      ...(extras.debugReadToken === undefined ? {} : { debugReadToken: extras.debugReadToken }),
     }),
   );
 }
@@ -3804,5 +3808,24 @@ describe('GET /trust/proposals', () => {
     expect(parsedEvents(warn).some((event) => event['event'] === 'trust.proposals.failed')).toBe(
       true,
     );
+  });
+});
+
+describe('GET /trust/proposals with an operator token', () => {
+  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+
+  it.each(['op-write', 'op-read'])('lists proposals with %s and no session', async (token) => {
+    const { authStore, trustStore } = await staffed();
+    const res = await get(mount(authStore, trustStore, TOKENS), '/trust/proposals', token);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ proposals: [] });
+  });
+
+  it('keeps 401 for a wrong bearer and 403 for a non-staff session', async () => {
+    const { authStore, trustStore } = await staffed();
+    const app = mount(authStore, trustStore, TOKENS);
+    expect((await get(app, '/trust/proposals', 'op-other')).status).toBe(401);
+    expect((await get(app, '/trust/proposals', 'other')).status).toBe(403);
+    expect((await get(app, '/trust/proposals', 'mod')).status).toBe(200);
   });
 });

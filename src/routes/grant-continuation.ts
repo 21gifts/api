@@ -1,7 +1,7 @@
 import { Hono } from 'hono';
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
-import { classifyDebugDbBearer } from '@/lib/debug-token';
+import { isOperatorBearer } from '@/lib/debug-token';
 import { measureGrantContinuation } from '@/lib/grant-continuation';
 import { logEvent } from '@/lib/log';
 import type { ShopNoteRef } from '@/lib/message-store';
@@ -41,8 +41,7 @@ export interface GrantContinuationRouteDeps {
 export function grantContinuationRoutes(deps: GrantContinuationRouteDeps): Hono {
   return new Hono().get('/', async (c) => {
     const authorization = c.req.header('authorization');
-    const access = classifyDebugDbBearer(deps.debugToken, deps.debugReadToken, authorization);
-    if (access !== 'write' && access !== 'read') {
+    if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, authorization)) {
       const token = bearerToken(authorization);
       if (token === null) {
         return c.json({ error: 'Unauthorized' }, 401);
