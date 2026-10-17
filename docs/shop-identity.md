@@ -52,9 +52,11 @@ builds on that change.
 
 - One random key per shop note, from the same `generateSecretKey()` path as
   account keys (`src/lib/nostr/keys.ts`). No master seed, no derivation.
-- The key is created when a note first becomes a listed shop, after the
-  commit of `POST /messages`, `PATCH /messages/:id/text`,
-  `PATCH /messages/:id/place` or `PATCH /messages/:id/shop-account`.
+- The key is created after the commit of any write that makes a note a
+  listed shop for the first time: today `POST /messages`,
+  `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
+  `PATCH /messages/:id/shop-account` and the staff restore
+  `POST /debug/messages/:id/restore`.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
@@ -257,8 +259,9 @@ OpenCryptoPay reports.
   page without a name. 503 → an error state with retry, never a blank page.
 - Content: photo gallery, name, description, address with a directions link,
   a small map with one pin, the pay link and QR of the till account
-  (`/pay/<payUsername>`) only when `payUsername` is not `null`, a link to the forum note
-  (`/messages/<messageId>`), the npub with a copy button and the NIP-05.
+  (`/pay/<payUsername>`) only when `payUsername` is not `null`, a link to
+  the forum note (`/messages/<messageId>`), the npub with a copy button and
+  the NIP-05.
 - The shops page (`/shops`) and the map link each shop to `/{npub}` instead
   of the note.
 - All visible text goes through the existing translations.
@@ -316,8 +319,8 @@ OpenCryptoPay reports.
   - On 404 (OpenCryptoPay does not know the place yet, for example because
     the place `PUT` failed) it sets the hash to null and clears the flag. The
     next successful place `PUT` sets the flag again and the photos follow.
-  - On a network error, a timeout or a 5xx it logs `ocp.photos.failed` and
-    keeps the flag, so the next tick retries.
+  - On a network error, a timeout, a 401 (wrong bearer) or a 5xx it logs
+    `ocp.photos.failed` and keeps the flag, so the next tick retries.
 - **Rollout:** OpenCryptoPay first accepts `nostrPubkey` and lists only shops
   that have one (its step 1a), then adds the photo route (step 2), and only
   then rejects writes without a key (step 1b). This change deploys after 1a
