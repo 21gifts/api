@@ -202,6 +202,9 @@ export interface DailyRosterWalletMove {
   removed: number;
 }
 
+/** Raised inside {@link setUsernameWithRoster} when the username write hits `account_username_uidx`. */
+class UsernameTakenInTransaction extends Error {}
+
 /** Result of {@link setUsernameWithRoster}. */
 export type UsernameRosterResult =
   | { ok: true; previous: string | null; moved: number; removed: number }
@@ -314,7 +317,8 @@ SELECT (SELECT count(*) FROM moved)::int AS moved,
  * account row lock, so a concurrent rename of the same account waits and then
  * sees both the new username and the moved rows. A missing account, a verified
  * wallet, or another account already holding the username leaves the rows
- * unchanged. A unique-index race on `account_username_uidx` is `'taken'`.
+ * unchanged. A unique-index race on `account_username_uidx` is `'taken'`; any
+ * other driver error, a roster unique violation included, rolls back and throws.
  * Each step is its own SQL statement so READ COMMITTED sees a fresh snapshot
  * after the lock. The rename statement is {@link DAILY_ROSTER_RENAME_SQL}.
  *
@@ -325,7 +329,8 @@ SELECT (SELECT count(*) FROM moved)::int AS moved,
  * @returns `{ ok: true, previous, moved, removed }` on success (`previous` is
  *   the replaced username, `null` when none was set); `{ ok: false, reason }`
  *   with `'frozen'`, `'taken'`, or `'missing'`.
- * @throws Unexpected driver errors other than unique violation `23505`.
+ * @throws Unexpected driver errors, including a unique violation on the
+ *   roster rows; only one on the account's username is `'taken'`.
  */
 export async function setUsernameWithRoster(
   db: MergeDb,
@@ -356,7 +361,15 @@ export async function setUsernameWithRoster(
       if (taken[0] !== undefined) {
         return { ok: false, reason: 'taken' };
       }
-      await tx.query(`UPDATE account SET username = $2 WHERE id = $1`, [accountId, username]);
+      try {
+        await tx.query(`UPDATE account SET username = $2 WHERE id = $1`, [accountId, username]);
+      } catch (error: unknown) {
+        // Only this write maps to 'taken'; a roster unique violation stays an error.
+        if (isUniqueViolation(error)) {
+          throw new UsernameTakenInTransaction();
+        }
+        throw error;
+      }
       const previous = (row.username ?? '').trim().toLowerCase();
       let moved = 0;
       let removed = 0;
@@ -374,7 +387,7 @@ export async function setUsernameWithRoster(
       return { ok: true, previous: row.username ?? null, moved, removed };
     });
   } catch (error: unknown) {
-    if (isUniqueViolation(error)) {
+    if (error instanceof UsernameTakenInTransaction) {
       return { ok: false, reason: 'taken' };
     }
     throw error;

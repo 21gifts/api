@@ -812,6 +812,50 @@ describe('setUsernameWithRoster', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('a write from a snapshot taken before the rename keeps the new username', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const orig = `s${stamp}`;
+    const renamed = `t${stamp}`;
+    const store = new PostgresAuthStore(client);
+    const roster = new PostgresDailyRosterStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Stale',
+        username: orig,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await roster.addRecipient(`${orig}@${host}`, 2);
+      const stale = await store.getAccount(id);
+      if (stale === undefined) {
+        throw new Error('expected account');
+      }
+      expect(await setUsernameWithRoster(mergeDb, id, renamed, host)).toMatchObject({ ok: true });
+      await store.updateAccount({ ...stale, location: 'Zurich' });
+      const after = await store.getAccount(id);
+      expect(after?.username).toBe(renamed);
+      expect(after?.location).toBe('Zurich');
+      expect(await roster.get()).toMatchObject({
+        recipients: [{ address: `${renamed}@${host}`, amountUsd: 2 }],
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('PostgresAuthStore spark pubkey', () => {

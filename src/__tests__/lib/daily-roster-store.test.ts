@@ -121,6 +121,7 @@ interface UsernameRosterFake {
   rename?: { moved: number | string; removed: number | string };
   beginError?: unknown;
   queryError?: unknown;
+  renameError?: unknown;
 }
 
 function usernameRosterDb(options: UsernameRosterFake = {}): {
@@ -152,6 +153,9 @@ function usernameRosterDb(options: UsernameRosterFake = {}): {
             return [] as unknown as R[];
           }
           if (text === DAILY_ROSTER_RENAME_SQL) {
+            if (options.renameError !== undefined) {
+              throw options.renameError;
+            }
             return (options.rename === undefined ? [] : [options.rename]) as unknown as R[];
           }
           throw new Error(`unexpected query: ${text}`);
@@ -166,12 +170,31 @@ describe('setUsernameWithRoster', () => {
   const accountId = 'acc-1';
   const host = 'Example.TEST';
 
-  it('maps a unique-violation from begin to taken', async () => {
+  it('rethrows a unique violation that does not come from the username write', async () => {
     const { db } = usernameRosterDb({ beginError: uniqueError() });
-    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
-      ok: false,
-      reason: 'taken',
+    await expect(setUsernameWithRoster(db, accountId, 'ada', host)).rejects.toMatchObject({
+      code: '23505',
     });
+  });
+
+  it('rethrows a roster unique violation instead of reporting the username taken', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      renameError: uniqueError(),
+    });
+    await expect(setUsernameWithRoster(db, accountId, 'newname', host)).rejects.toMatchObject({
+      code: '23505',
+    });
+  });
+
+  it('rethrows a non-unique error from the username write', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      queryError: new Error('write failed'),
+    });
+    await expect(setUsernameWithRoster(db, accountId, 'newname', host)).rejects.toThrow(
+      'write failed',
+    );
   });
 
   it('rethrows a non-unique begin error', async () => {

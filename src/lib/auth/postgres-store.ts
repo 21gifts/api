@@ -440,7 +440,10 @@ export class PostgresAuthStore implements AuthStore {
              profile_message_id = $12,
              location = $13,
              notification_level = $14,
-             username = CASE WHEN spark_pubkey_verified_at IS NULL THEN $15 ELSE username END,
+             username = CASE
+               WHEN spark_pubkey_verified_at IS NULL AND trim(coalesce(username, '')) = '' THEN $15
+               ELSE username
+             END,
              amount_unit = $16,
              notify_hearts = $17,
              wallet_intro_seen = wallet_intro_seen OR $18

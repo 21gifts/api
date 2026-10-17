@@ -356,8 +356,11 @@ export interface AuthStore {
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
    * or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
-   * matching no row or swallowed unique_violation). An account with a verified
-   * wallet (`sparkPubkeyVerifiedAt` set) keeps its stored username; the other
+   * matching no row or swallowed unique_violation). A stored non-blank username
+   * is kept, and so is the username of an account with a verified wallet
+   * (`sparkPubkeyVerifiedAt` set); only a blank one is filled, so a write from
+   * an older snapshot cannot undo a rename. Renames go through
+   * {@link AuthStore.setUsername} (or `setUsernameWithRoster`). The other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
    * are never written here. `walletIntroSeen` is only ever raised to true
    * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
@@ -1000,12 +1003,11 @@ export class InMemoryAuthStore implements AuthStore {
     }
     const previous = this.#accounts.get(account.id);
     const { username: passedUsername, ...rest } = account;
-    const username =
+    const keepStored =
       previous !== undefined &&
-      previous.sparkPubkeyVerifiedAt !== null &&
-      previous.sparkPubkeyVerifiedAt !== undefined
-        ? previous.username
-        : passedUsername;
+      ((previous.sparkPubkeyVerifiedAt !== null && previous.sparkPubkeyVerifiedAt !== undefined) ||
+        (previous.username ?? '').trim() !== '');
+    const username = keepStored ? previous.username : passedUsername;
     if (this.#usernameTaken(username, account.id)) {
       return;
     }

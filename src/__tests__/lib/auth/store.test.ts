@@ -2582,6 +2582,29 @@ describe('InMemoryAuthStore setUsername', () => {
     expect((await store.getAccount('acc'))?.username).toBe('grace');
   });
 
+  it('keeps a renamed username when a write from an older snapshot arrives', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    const stale = await store.getAccount('acc');
+    if (stale === undefined) {
+      throw new Error('expected account');
+    }
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: true, previous: 'ada' });
+    await store.updateAccount({ ...stale, location: 'Zurich' });
+    expect(await store.getAccount('acc')).toMatchObject({ username: 'grace', location: 'Zurich' });
+  });
+
+  it('lets updateAccount fill a blank username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: '  ' });
+    const current = await store.getAccount('acc');
+    if (current === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...current, username: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
   it('returns frozen when the wallet is verified and leaves the username', async () => {
     const store = new InMemoryAuthStore();
     await account(store, 'acc', { username: 'ada' });
