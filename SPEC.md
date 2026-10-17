@@ -3961,6 +3961,96 @@ Success → **Response** `200`:
 
 `deleted` is `0` when the account had no failed row.
 
+### `GET /debug/logins`
+
+Operator read of the login switch (see Login controls). Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{
+  "open": false,
+  "source": "stored",
+  "defaultOpen": true,
+  "allowlist": [
+    { "accountId": "00000000-0000-4000-8000-000000000001", "createdAt": "2026-06-01T12:00:00.000Z" }
+  ]
+}
+```
+
+`source` is `stored` once `PUT /debug/logins` ran and `default` before that
+(then `open` equals `defaultOpen` from `LOGINS_OPEN_DEFAULT`). `allowlist` is
+oldest first; `createdAt` is ISO 8601.
+
+### `PUT /debug/logins`
+
+Operator set of the login switch. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "open": <boolean> }` with no other keys. Stores the value in
+`app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from
+then on. Existing sessions are not touched. Logs `debug.logins.set`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a non-boolean `open`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"open\" boolean" }`.
+
+Success → **Response** `200`: the same JSON as `GET /debug/logins`.
+
+### `POST /debug/logins/allowlist`
+
+Operator add of one account to the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "accountId": "<uuid>" }` with no other keys (any case, stored
+lower case). Logs `debug.logins.allowlist.add`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a missing or non-UUID `accountId`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"accountId\" uuid" }`.
+Unknown account → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "added": true, ...GET /debug/logins }`.
+`added` is `false` when the account was already listed (its first
+`createdAt` stays). Deleting the account removes its row.
+
+### `DELETE /debug/logins/allowlist/:accountId`
+
+Operator removal of one account from the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Does not end the account's sessions. Logs `debug.logins.allowlist.remove`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+`:accountId` not a UUID → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "removed": true, ...GET /debug/logins }`.
+`removed` is `false` when the account was not listed.
+
+### `DELETE /debug/sessions`
+
+Operator end of every member session. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Deletes every `auth_session` row in one statement. Every bearer that held one
+answers 401 on its next request. The existing `trg_db_change` row trigger
+records each deleted row with the token hashed. Logs `debug.sessions.deleted`
+with the count.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "deleted": 12 }
+```
+
+`deleted` is `0` when no session existed.
+
 ### `GET /gifts`
 
 Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.

@@ -304,8 +304,8 @@ export interface BootFxOptions {
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
- * {@link PostgresDebugDbStore}, {@link PostgresWalletStore}, and
- * {@link PostgresMemberEventStore}.
+ * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
+ * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` then
  * `migrateDailyRosterSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
@@ -315,11 +315,12 @@ export interface BootFxOptions {
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
  * `migrateMemberEventSchema`, then `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
- * `diagnostic_event`, `spark_invoice`, wallet tables, and `member_event` are
- * migrated between `account_image` and `db_change` and `trg_db_change`
- * attaches to `api_log`, `account_image`, `diagnostic_event`,
- * `spark_invoice`, `wallet_balance_snapshot`, `wallet_payment`, and
- * `member_event`.
+ * `diagnostic_event`, `spark_invoice`, wallet tables, `member_event`,
+ * `app_setting`, and `login_allowlist` are migrated between `account_image`
+ * and `db_change` and `trg_db_change` attaches to `api_log`,
+ * `account_image`, `diagnostic_event`, `spark_invoice`,
+ * `wallet_balance_snapshot`, `wallet_payment`, `member_event`,
+ * `app_setting`, and `login_allowlist`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
