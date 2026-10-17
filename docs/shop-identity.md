@@ -108,7 +108,10 @@ New table `shop_identity`. The key columns have the same names as on
 `MessageStore.deleteById` can hard-delete a top-level note, for example when
 its video file is missing. It deletes nothing for a note that has a
 `shop_identity` row, the same way it already keeps a credit note with sats,
-and its callers treat that note like any other kept row. So the reference
+and its callers treat that note like any other kept row. It checks for that
+row in its own statement, after it has locked the note and inside the same
+transaction, so a key insert that commits while the delete waits is still
+seen. So the reference
 never dangles and the identity is never deleted.
 
 ### Encryption at rest
@@ -312,7 +315,8 @@ goes through a durable outbox on `shop_identity`, so a failed request is
 repeated and this side never has two requests for one shop in flight.
 OpenCryptoPay may still apply a request late, after the timeout here
 dropped it; the start-up pass, which queues every row again on each deploy,
-and the next change of the shop repair that. The
+and the next change of the shop repair that, photos included (a `PUT` that
+recreates the place resets the photo hash). The
 fire-and-forget place push of today (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logs and swallows
 failures) is replaced by it.
@@ -379,7 +383,10 @@ Rules for every claim:
   - `PUT` 2xx: in one conditional statement, clear the pending flag and
     queue the photo push (set `ocp_photos_pending`, raise
     `ocp_photos_generation`), so a crash cannot confirm the place without
-    queueing its photos.
+    queueing its photos. On 201, which OpenCryptoPay answers when this
+    request created the place, the same statement also sets
+    `ocp_photos_hash` to null: the place had no photos there, for example
+    after a `DELETE` that OpenCryptoPay applied late.
   - `DELETE` 2xx: clear the pending flag; the photo state was already reset
     before sending.
   - 400 or 409: log `ocp.place.rejected` with the message id and clear the
@@ -460,13 +467,17 @@ writes without a key (step 1b). This change deploys after 1a and 2 and before
    (`src/lib/shop-place-push-enabled.ts`) to `false`, so no instance pushes
    outside the outbox, and adds the outbox columns and every queueing write
    of this section, including the queue on key insert, but no sender.
-2. The second adds the two senders and the start-up pass.
+2. The second adds the two senders and the start-up pass, removes the old
+   `syncShopOcpPlace` / `removeShopOcpPlace` calls and sets
+   `SHOP_PLACE_PUSH_ENABLED` back to `true`, so `resolveMapPush` gives the
+   senders their target again and only the outbox uses it.
 
-During the rolling deploy of either release, old and new instances both
-either queue or do not push at all, so no change is lost and nothing is
-sent outside the outbox. The start-up pass of the second release then
-sends what the first release queued. Until it is live, 21.gifts shops are
-off the OpenCryptoPay list.
+While the first release rolls out, old instances still make the old push
+without a key and queue nothing; OpenCryptoPay's step 1a keeps those rows
+off the list. While the second release rolls out, every instance queues
+and no old instance pushes. The start-up pass of the second release queues
+every row, which covers the changes the old instances did not queue. Until
+the second release is live, 21.gifts shops are off the OpenCryptoPay list.
 
 ## Order of work
 
