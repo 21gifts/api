@@ -5585,7 +5585,7 @@ Photo and video bytes are never included. `:id` is a UUID
 
 Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
 is **200** `{ "messages" }` from `listReplies(id, limit, true)` including
-hidden attributed children with hide stamps `payable: false`, and `authorCanReceive: false`, whether
+hidden attributed children with hide stamps, `payable: false`, and `authorCanReceive: false`, whether
 the parent is live or hidden (live children stay live serialize).
 
 `:id` is not a UUID, the parent is missing, or (unsigned/non-staff) the
