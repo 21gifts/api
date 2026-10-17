@@ -170,11 +170,7 @@ describe('GET /mentions', () => {
   it('omits null, blank, and missing usernames', async () => {
     const store = await seededCaller();
     await addAccount(store, { id: 'null-user', username: null, viewKey: hexKey('null') });
-    await addAccount(store, { id: 'blank-user', username: 'keep', viewKey: hexKey('blank') });
-    await store.updateAccount({
-      ...(await store.getAccount('blank-user'))!,
-      username: '   ',
-    });
+    await addAccount(store, { id: 'blank-user', username: '   ', viewKey: hexKey('blank') });
     await addAccount(store, { id: 'omit-user', viewKey: hexKey('omit') });
     await addAccount(store, { id: 'zed-user', username: 'zed', viewKey: hexKey('zed') });
     const res = await mount(store).request('/mentions', { headers: AUTH });

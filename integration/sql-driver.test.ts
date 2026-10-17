@@ -1,8 +1,14 @@
 import { SQL } from 'bun';
 import { describe, expect, test } from 'bun:test';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
-import { migrateDailyRosterSchema, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
+import {
+  migrateDailyRosterSchema,
+  moveDailyRosterToWalletAddresses,
+  PostgresDailyRosterStore,
+  setUsernameWithRoster,
+} from '@/lib/daily-roster-store';
 import type { FundingGrant } from '@/lib/funding';
 import { migrateFundingSchema, PostgresFundingStore } from '@/lib/funding-store';
 import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member-habit-store';
@@ -28,9 +34,14 @@ if (databaseUrl === undefined || databaseUrl === '') {
 
 /**
  * `query` / `execute` body matches `createBunDatabase(...).client` in `src/index.ts`.
+ * `mergeDb.begin` matches `createBunDatabase(...).mergeDb`.
  * `sql` is that same instance so the test can close it.
  */
-function createBunSqlClient(databaseUrl: string): { client: SqlClient; sql: SQL } {
+function createBunSqlClient(databaseUrl: string): {
+  client: SqlClient;
+  mergeDb: MergeDb;
+  sql: SQL;
+} {
   const sql = new SQL(databaseUrl);
   const client: SqlClient = {
     async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
@@ -41,7 +52,17 @@ function createBunSqlClient(databaseUrl: string): { client: SqlClient; sql: SQL 
       await sql.unsafe(text, [...params]);
     },
   };
-  return { client, sql };
+  const mergeDb: MergeDb = {
+    async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
+      return sql.begin(async (tx) =>
+        run({
+          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+            (await tx.unsafe(text, [...params])) as R[],
+        }),
+      );
+    },
+  };
+  return { client, mergeDb, sql };
 }
 
 async function closeIfPossible(sql: SQL): Promise<void> {
@@ -341,6 +362,542 @@ describe('PostgresDailyRosterStore importDocument', () => {
   });
 });
 
+describe('moveDailyRosterToWalletAddresses', () => {
+  test('moves the roster to wallet addresses in one logged transaction on real Postgres', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const named = crypto.randomUUID();
+    const unnamed = crypto.randomUUID();
+    const username = `roster_${stamp}`;
+    const legacy = `legacy_${stamp}@walletofsatoshi.com`;
+    const unnamedLegacy = `unnamed_${stamp}@walletofsatoshi.com`;
+    const viewKey = (): string =>
+      `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await migrateDbChangeSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute(
+        `INSERT INTO account (id, role, name, username, lightning_address, lightning_address_verified,
+           forum_laws_dismissed, created_at, view_key)
+         VALUES ($1, 'verified', 'Roster', $2, $3, true, false, now(), $4),
+                ($5, 'verified', 'Unnamed', NULL, $6, true, false, now(), $7)`,
+        [named, username, legacy, viewKey(), unnamed, unnamedLegacy, viewKey()],
+      );
+      const inserted = await client.query<{ id: number; address: string; bucket: string }>(
+        `INSERT INTO daily_roster_entry (address, amount_usd, bucket)
+         SELECT address, amount_usd, bucket
+           FROM unnest($1::text[], $2::double precision[], $3::text[])
+                WITH ORDINALITY AS t(address, amount_usd, bucket, n)
+          ORDER BY n
+         RETURNING id, address, bucket`,
+        [
+          postgresTextArrayLiteral([
+            ` ${legacy.toUpperCase()} `,
+            legacy,
+            legacy,
+            `${username}@GIFTS.example`,
+            `nobody_${stamp}@walletofsatoshi.com`,
+            unnamedLegacy,
+            ` Carol_${stamp}@Gifts.Example `,
+            `Dave_${stamp}@gifts.example`,
+            `dave_${stamp}@gifts.example`,
+            `x_${stamp}@evil@gifts.example`,
+          ]),
+          '{3,9,5,7,2,2,2,6,4,1}',
+          postgresTextArrayLiteral([
+            'daily',
+            'daily',
+            'moderator',
+            'moderator',
+            'daily',
+            'daily',
+            'daily',
+            'moderator',
+            'moderator',
+            'daily',
+          ]),
+        ],
+      );
+      const ids = inserted.map((row) => Number(row.id));
+      const idsAt = (...positions: number[]): number[] =>
+        positions.map((position) => Number(ids[position])).sort((x, y) => x - y);
+      const markerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const marker = markerRows[0]?.marker ?? '0';
+
+      expect(await moveDailyRosterToWalletAddresses(client, 'Gifts.Example')).toEqual({
+        moved: 3,
+        removed: 6,
+      });
+      const rows = await client.query<{ address: string; amount_usd: number; bucket: string }>(
+        'SELECT address, amount_usd, bucket FROM daily_roster_entry ORDER BY bucket, address',
+      );
+      expect(rows).toEqual([
+        { address: `carol_${stamp}@gifts.example`, amount_usd: 2, bucket: 'daily' },
+        { address: `${username}@gifts.example`, amount_usd: 3, bucket: 'daily' },
+        { address: `dave_${stamp}@gifts.example`, amount_usd: 4, bucket: 'moderator' },
+        { address: `${username}@gifts.example`, amount_usd: 7, bucket: 'moderator' },
+      ]);
+
+      const changes = await client.query<{ op: string; row_id: number; txid: string }>(
+        `SELECT op, coalesce(before ->> 'id', after ->> 'id')::int AS row_id, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [marker],
+      );
+      const rowIds = (op: string): number[] =>
+        changes
+          .filter((c) => c.op === op)
+          .map((c) => Number(c.row_id))
+          .sort((x, y) => x - y);
+      expect(rowIds('UPDATE')).toEqual(idsAt(0, 3, 6));
+      expect(rowIds('DELETE')).toEqual(idsAt(1, 2, 4, 5, 7, 9));
+      expect(new Set(changes.map((c) => c.txid)).size).toBe(1);
+
+      expect(await moveDailyRosterToWalletAddresses(client, 'gifts.example')).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral([named, unnamed]),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresDailyRosterStore.renameAddress', () => {
+  test('moves both buckets, deletes a conflict, no-ops, and logs one txid', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const oldAddress = `old_${stamp}@gifts.example`;
+    const newAddress = `new_${stamp}@gifts.example`;
+    const conflictAddress = `keep_${stamp}@gifts.example`;
+    const store = new PostgresDailyRosterStore(client);
+    try {
+      await migrateDailyRosterSchema(client);
+      await migrateDbChangeSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+
+      await store.addRecipient(oldAddress, 2);
+      await store.addModerator(oldAddress, 3);
+      const moveMarkerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const moveMarker = moveMarkerRows[0]?.marker ?? '0';
+
+      expect(await store.renameAddress(oldAddress.toUpperCase(), ` ${newAddress} `)).toEqual({
+        moved: 2,
+        removed: 0,
+      });
+      expect(await store.get()).toMatchObject({
+        recipients: [{ address: newAddress, amountUsd: 2 }],
+        moderators: [{ address: newAddress, amountUsd: 3 }],
+      });
+      const moveChanges = await client.query<{ op: string; txid: string }>(
+        `SELECT op, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [moveMarker],
+      );
+      expect(moveChanges.map((row) => row.op)).toEqual(['UPDATE', 'UPDATE']);
+      expect(new Set(moveChanges.map((row) => row.txid)).size).toBe(1);
+
+      await store.addRecipient(conflictAddress, 9);
+      const conflictMarkerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const conflictMarker = conflictMarkerRows[0]?.marker ?? '0';
+
+      expect(await store.renameAddress(newAddress, conflictAddress)).toEqual({
+        moved: 1,
+        removed: 1,
+      });
+      expect(await store.get()).toMatchObject({
+        recipients: [{ address: conflictAddress, amountUsd: 9 }],
+        moderators: [{ address: conflictAddress, amountUsd: 3 }],
+      });
+      const conflictChanges = await client.query<{ op: string; txid: string }>(
+        `SELECT op, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name = 'daily_roster_entry'
+          ORDER BY id`,
+        [conflictMarker],
+      );
+      expect(conflictChanges.map((row) => row.op).sort()).toEqual(['DELETE', 'UPDATE']);
+      expect(new Set(conflictChanges.map((row) => row.txid)).size).toBe(1);
+
+      const afterConflict = await store.get();
+      expect(await store.renameAddress(`missing_${stamp}@gifts.example`, oldAddress)).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+      expect(await store.renameAddress(conflictAddress, conflictAddress.toUpperCase())).toEqual({
+        moved: 0,
+        removed: 0,
+      });
+      expect(await store.get()).toEqual(afterConflict);
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('setUsernameWithRoster', () => {
+  const host = 'gifts.example';
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+  const viewKey = (): string => hex64();
+
+  test('moves both buckets, deletes a conflict, and logs one txid', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const previous = `old_${stamp}`;
+    const next = `new_${stamp}`;
+    const oldAddress = `${previous}@${host}`;
+    const newAddress = `${next}@${host}`;
+    const store = new PostgresAuthStore(client);
+    const roster = new PostgresDailyRosterStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await migrateDbChangeSchema(client);
+      await client.execute('DELETE FROM daily_roster_entry');
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Roster',
+        username: previous,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await roster.addRecipient(oldAddress, 2);
+      await roster.addModerator(oldAddress, 3);
+      await roster.addRecipient(newAddress, 9);
+      const markerRows = await client.query<{ marker: string }>(
+        'SELECT coalesce(max(id), 0)::text AS marker FROM db_change',
+      );
+      const marker = markerRows[0]?.marker ?? '0';
+
+      expect(await setUsernameWithRoster(mergeDb, id, next, 'Gifts.Example')).toEqual({
+        ok: true,
+        previous,
+        moved: 1,
+        removed: 1,
+      });
+      expect((await store.getAccount(id))?.username).toBe(next);
+      expect(await roster.get()).toMatchObject({
+        recipients: [{ address: newAddress, amountUsd: 9 }],
+        moderators: [{ address: newAddress, amountUsd: 3 }],
+      });
+      const changes = await client.query<{ table_name: string; op: string; txid: string }>(
+        `SELECT table_name, op, txid::text AS txid
+           FROM db_change
+          WHERE id > $1::bigint AND table_name IN ('account', 'daily_roster_entry')
+          ORDER BY id`,
+        [marker],
+      );
+      expect(changes.some((row) => row.table_name === 'account' && row.op === 'UPDATE')).toBe(true);
+      expect(
+        changes.some((row) => row.table_name === 'daily_roster_entry' && row.op === 'UPDATE'),
+      ).toBe(true);
+      expect(new Set(changes.map((row) => row.txid)).size).toBe(1);
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('skips the roster move when the previous username is null', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const next = `new_${stamp}`;
+    const other = `keep_${stamp}@${host}`;
+    const store = new PostgresAuthStore(client);
+    const roster = new PostgresDailyRosterStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Blank',
+        username: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await roster.addRecipient(other, 2);
+      expect(await setUsernameWithRoster(mergeDb, id, next, host)).toEqual({
+        ok: true,
+        previous: null,
+        moved: 0,
+        removed: 0,
+      });
+      expect((await store.getAccount(id))?.username).toBe(next);
+      expect(await roster.get()).toMatchObject({
+        recipients: [{ address: other, amountUsd: 2 }],
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('returns frozen when the wallet is verified', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const username = `frz_${stamp}`;
+    const store = new PostgresAuthStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Frozen',
+        username,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      const pubkey = `02${hex64()}`;
+      expect((await store.claimSparkPubkey(id, pubkey))?.wrote).toBe(true);
+      expect(await store.markSparkPubkeyVerified(id, pubkey, username, Date.now())).toBe(true);
+      expect(await setUsernameWithRoster(mergeDb, id, `next_${stamp}`, host)).toEqual({
+        ok: false,
+        reason: 'frozen',
+      });
+      expect((await store.getAccount(id))?.username).toBe(username);
+    } finally {
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('returns taken when another account holds the username', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const otherId = crypto.randomUUID();
+    const mine = `mine_${stamp}`;
+    const taken = `take_${stamp}`;
+    const store = new PostgresAuthStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Mine',
+        username: mine,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await store.createAccount({
+        id: otherId,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Other',
+        username: taken,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now() + 1,
+        rulesAgreedAt: null,
+      });
+      expect(await setUsernameWithRoster(mergeDb, id, taken, host)).toEqual({
+        ok: false,
+        reason: 'taken',
+      });
+      expect((await store.getAccount(id))?.username).toBe(mine);
+    } finally {
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral([id, otherId]),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('returns missing when the account id is unknown', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      expect(await setUsernameWithRoster(mergeDb, crypto.randomUUID(), 'nobody', host)).toEqual({
+        ok: false,
+        reason: 'missing',
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('two concurrent renames of one account chain the roster onto the final username', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const orig = `u${stamp}`;
+    const userA = `a${stamp}`;
+    const userB = `b${stamp}`;
+    const store = new PostgresAuthStore(client);
+    const roster = new PostgresDailyRosterStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Race',
+        username: orig,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await roster.addRecipient(`${orig}@${host}`, 2);
+      await roster.addModerator(`${orig}@${host}`, 3);
+      const [first, second] = await Promise.all([
+        setUsernameWithRoster(mergeDb, id, userA, host),
+        setUsernameWithRoster(mergeDb, id, userB, host),
+      ]);
+      expect(first.ok).toBe(true);
+      expect(second.ok).toBe(true);
+      const final = (await store.getAccount(id))?.username;
+      expect(final === userA || final === userB).toBe(true);
+      const previous = [first, second].map((result) =>
+        result.ok ? (result.previous ?? '').trim().toLowerCase() : '',
+      );
+      const other = final === userA ? userB : userA;
+      expect(new Set(previous)).toEqual(new Set([orig, other]));
+      expect(await roster.get()).toMatchObject({
+        recipients: [{ address: `${final}@${host}`, amountUsd: 2 }],
+        moderators: [{ address: `${final}@${host}`, amountUsd: 3 }],
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('two accounts racing for one username: one wins, the other gets taken', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const ids = [crypto.randomUUID(), crypto.randomUUID()];
+    const wanted = `w${stamp}`;
+    const store = new PostgresAuthStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      for (const [index, id] of ids.entries()) {
+        await store.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: 'Race',
+          username: `r${index}${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: viewKey(),
+          createdAt: Date.now(),
+          rulesAgreedAt: null,
+        });
+      }
+      const results = await Promise.all(
+        ids.map((id) => setUsernameWithRoster(mergeDb, id, wanted, host)),
+      );
+      expect(results.filter((result) => result.ok)).toHaveLength(1);
+      expect(results.filter((result) => !result.ok)).toEqual([{ ok: false, reason: 'taken' }]);
+      const holders = (await Promise.all(ids.map((id) => store.getAccount(id)))).filter(
+        (account) => account?.username === wanted,
+      );
+      expect(holders).toHaveLength(1);
+    } finally {
+      for (const id of ids) {
+        await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      }
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a write from a snapshot taken before the rename keeps the new username', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    const id = crypto.randomUUID();
+    const orig = `s${stamp}`;
+    const renamed = `t${stamp}`;
+    const store = new PostgresAuthStore(client);
+    const roster = new PostgresDailyRosterStore(client);
+    try {
+      await migrateAuthSchema(client);
+      await migrateDailyRosterSchema(client);
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: 'Stale',
+        username: orig,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: viewKey(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      await roster.addRecipient(`${orig}@${host}`, 2);
+      const stale = await store.getAccount(id);
+      if (stale === undefined) {
+        throw new Error('expected account');
+      }
+      expect(await setUsernameWithRoster(mergeDb, id, renamed, host)).toMatchObject({ ok: true });
+      await store.updateAccount({ ...stale, location: 'Zurich' });
+      const after = await store.getAccount(id);
+      expect(after?.username).toBe(renamed);
+      expect(after?.location).toBe('Zurich');
+      expect(await roster.get()).toMatchObject({
+        recipients: [{ address: `${renamed}@${host}`, amountUsd: 2 }],
+      });
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM daily_roster');
+      await client.execute('DELETE FROM account WHERE id = $1', [id]);
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore spark pubkey', () => {
   test('claim, verify, unique index, username freeze, and db_change', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
@@ -457,6 +1014,104 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(verifyChange).toBeDefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresAuthStore setUsername', () => {
+  test('ok, previous, frozen, taken, missing, and concurrent writes chain previous', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const original = `cas_orig_${stamp}`.slice(0, 32);
+      const firstNew = `cas_a_${stamp}`.slice(0, 32);
+      const secondNew = `cas_b_${stamp}`.slice(0, 32);
+      const takenName = `cas_taken_${stamp}`.slice(0, 32);
+      const id = crypto.randomUUID();
+      const otherId = crypto.randomUUID();
+      const frozenId = crypto.randomUUID();
+      const pubkey = `02${hex64()}`;
+
+      await store.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      expect(await store.setUsername(id, original)).toEqual({ ok: true, previous: null });
+      expect(await store.setUsername(id, firstNew)).toEqual({ ok: true, previous: original });
+      expect((await store.getAccount(id))?.username).toBe(firstNew);
+
+      await store.createAccount({
+        id: otherId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: takenName,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now() + 1,
+        rulesAgreedAt: null,
+      });
+      expect(await store.setUsername(id, takenName)).toEqual({ ok: false, reason: 'taken' });
+      expect((await store.getAccount(id))?.username).toBe(firstNew);
+
+      await store.createAccount({
+        id: frozenId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `cas_frz_${stamp}`.slice(0, 32),
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now() + 2,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      const frozenName = (await store.getAccount(frozenId))?.username ?? '';
+      expect((await store.claimSparkPubkey(frozenId, pubkey))?.wrote).toBe(true);
+      expect(await store.markSparkPubkeyVerified(frozenId, pubkey, frozenName, Date.now())).toBe(
+        true,
+      );
+      expect(await store.setUsername(frozenId, secondNew)).toEqual({
+        ok: false,
+        reason: 'frozen',
+      });
+      expect((await store.getAccount(frozenId))?.username).toBe(frozenName);
+
+      expect(await store.setUsername(crypto.randomUUID(), original)).toEqual({
+        ok: false,
+        reason: 'missing',
+      });
+
+      await store.setUsername(id, original);
+      const [left, right] = await Promise.all([
+        store.setUsername(id, firstNew),
+        store.setUsername(id, secondNew),
+      ]);
+      expect(left.ok).toBe(true);
+      expect(right.ok).toBe(true);
+      if (!left.ok || !right.ok) {
+        throw new Error('expected both concurrent setUsername calls to succeed');
+      }
+      expect(new Set([left.previous, right.previous]).size).toBe(2);
+      expect([left.previous, right.previous].filter((value) => value === original)).toHaveLength(1);
+      const stored = await store.getAccount(id);
+      expect(stored?.username === firstNew || stored?.username === secondNew).toBe(true);
     } finally {
       await closeIfPossible(sql);
     }

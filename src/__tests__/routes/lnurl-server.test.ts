@@ -275,9 +275,7 @@ describe('lnurlServerRoutes', () => {
       const store = new InMemoryAuthStore();
       await seedWallet(store, { id: 'acc', username: 'ada' });
       const { fetchImpl, calls } = recordingFetch(async () => {
-        const current = await store.getAccount('acc');
-        expect(current).toBeDefined();
-        await store.updateAccount({ ...current!, username: 'changed' });
+        expect(await store.setUsername('acc', 'changed')).toMatchObject({ ok: true });
         return new Response('{"ok":true}', {
           status: 200,
           headers: { 'content-type': 'application/json' },

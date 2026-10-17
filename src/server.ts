@@ -163,9 +163,9 @@ export interface AppDeps {
    */
   debugReadToken?: string;
   /**
-   * Reserved-connection transaction port for `POST /debug/accounts/merge`.
-   * Omitted on a memory boot. A valid body then returns 503. An invalid body
-   * is still 400.
+   * Reserved-connection transaction port for `POST /debug/accounts/merge`
+   * and `POST /me/username`. Omitted on a memory boot. A valid merge body
+   * then returns 503. An invalid body is still 400.
    */
   mergeDb?: MergeDb;
   /**
@@ -229,7 +229,8 @@ export interface AppDeps {
   spendPing?: SpendPing;
   /**
    * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
-   * Boot injects the same instance used by {@link resolveSpendPing}.
+   * Boot injects the same instance used by {@link resolveSpendPing}. It is
+   * also passed to `meRoutes` for the `POST /me/username` roster rewrite.
    */
   rosterStore?: DailyRosterStore;
   /**
@@ -403,7 +404,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
  *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
  *   equal to debugToken after trim throws before routes mount),
- *   mergeDb, gift store,
+ *   mergeDb (also `POST /me/username`), gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
@@ -421,7 +422,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
- *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
+ *   `POST /spend/daily-instruction`, the `POST /me/username` roster rewrite,
+ *   and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), invoiceRateCaps (optional; default
  *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
@@ -689,8 +691,10 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      dailyRoster: rosterStore,
       ...receivingDeps,
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
   app.route(

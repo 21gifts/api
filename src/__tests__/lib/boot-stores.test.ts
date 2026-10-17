@@ -25,7 +25,11 @@ import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
-import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
+import {
+  DAILY_ROSTER_WALLET_MOVE_SQL,
+  InMemoryDailyRosterStore,
+  PostgresDailyRosterStore,
+} from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
@@ -623,6 +627,93 @@ describe('openBootStores', () => {
     expect(stores.memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
+    );
+  });
+
+  it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
+    const operations: Array<{
+      kind: 'query' | 'execute';
+      text: string;
+      params: readonly unknown[] | undefined;
+    }> = [];
+    const client: SqlClient = {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        operations.push({ kind: 'query', text, params });
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text === DAILY_ROSTER_WALLET_MOVE_SQL) {
+          return [{ moved: 1, removed: 1 }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string, params?: readonly unknown[]) => {
+        operations.push({ kind: 'execute', text, params });
+      },
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: {
+        baseUrl: 'http://lnurl.internal',
+        publicBaseUrl: 'https://21.gifts',
+        host: '21.Gifts',
+      },
+    });
+
+    const rosterIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(o.text),
+    );
+    const dbChangeIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS db_change/i.test(o.text),
+    );
+    const lastTriggerIdx = operations.reduce(
+      (last, o, i) => (o.text.includes('trg_db_change') ? i : last),
+      -1,
+    );
+    const moves = operations.filter((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    const moveIdx = operations.findIndex((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    expect(rosterIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeIdx).toBeGreaterThan(rosterIdx);
+    expect(lastTriggerIdx).toBeGreaterThan(dbChangeIdx);
+    expect(moveIdx).toBeGreaterThan(lastTriggerIdx);
+    expect(moves).toEqual([
+      { kind: 'query', text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] },
+    ]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move', moved: 1, removed: 1 }),
+    );
+  });
+
+  it('skips the roster wallet move when the LNURL server is off', async () => {
+    const queries: string[] = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        queries.push(text);
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async () => undefined,
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: null,
+    });
+
+    expect(queries).not.toContain(DAILY_ROSTER_WALLET_MOVE_SQL);
+    expect(parsedEvents(warn)).not.toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move' }),
     );
   });
 

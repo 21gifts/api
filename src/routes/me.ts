@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
 import { buildAccountActivity } from '@/lib/account-activity';
+import type { MergeDb } from '@/lib/account-merge';
 import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import {
+  setUsernameWithRoster,
+  type DailyRosterStore,
+  type DailyRosterWalletMove,
+} from '@/lib/daily-roster-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
@@ -92,6 +98,17 @@ export interface MeRouteDeps {
    * receiving address in owner JSON and the welcome ping. Omitted → off.
    */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * Daily payout roster; `POST /username` moves its rows from the old to the
+   * new receiving address. Omitted skips that.
+   */
+  dailyRoster?: DailyRosterStore;
+  /**
+   * Transaction port; with `dailyRoster` and `lnurlServer`, `POST /username`
+   * changes the username and moves the roster rows in one transaction.
+   * Omitted (no database) uses `setUsername` and then `renameAddress`.
+   */
+  mergeDb?: MergeDb;
 }
 
 /**
@@ -246,7 +263,7 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `lnurlServer` for `PUT /wallet` and the receiving address.
+ * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet` and the receiving address, optional `dailyRoster` for `POST /username` roster rewrites, and optional `mergeDb` so that write and roster move share one transaction.
  * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
@@ -496,20 +513,78 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (owner !== undefined && owner.id !== current.id) {
         return c.json({ error: 'Username is already in use' }, 409);
       }
-      const latest = await storedAccount(deps, current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (latest === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
+      if (
+        deps.mergeDb !== undefined &&
+        deps.dailyRoster !== undefined &&
+        deps.lnurlServer !== undefined
+      ) {
+        const result = await setUsernameWithRoster(
+          deps.mergeDb,
+          current.id,
+          username,
+          deps.lnurlServer.host,
+        );
+        if (!result.ok) {
+          if (result.reason === 'taken') {
+            return c.json({ error: 'Username is already in use' }, 409);
+          }
+          if (result.reason === 'frozen') {
+            return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
+          }
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (result.moved + result.removed > 0) {
+          logEvent('daily_roster.address.renamed', {
+            accountId: current.id,
+            moved: result.moved,
+            removed: result.removed,
+          });
+        }
+      } else {
+        const result = await deps.store.setUsername(current.id, username);
+        if (!result.ok) {
+          if (result.reason === 'taken') {
+            return c.json({ error: 'Username is already in use' }, 409);
+          }
+          if (result.reason === 'frozen') {
+            return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
+          }
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        const previous = (result.previous ?? '').trim().toLowerCase();
+        if (
+          deps.dailyRoster !== undefined &&
+          deps.lnurlServer !== undefined &&
+          previous !== '' &&
+          previous !== username
+        ) {
+          const host = deps.lnurlServer.host.toLowerCase();
+          const from = `${previous}@${host}`;
+          const to = `${username}@${host}`;
+          let rename: DailyRosterWalletMove;
+          try {
+            rename = await deps.dailyRoster.renameAddress(from, to);
+          } catch (error) {
+            logEvent('daily_roster.address.rename_failed', {
+              accountId: current.id,
+              fromUsername: previous,
+              toUsername: username,
+            });
+            throw error;
+          }
+          if (rename.moved + rename.removed > 0) {
+            logEvent('daily_roster.address.renamed', {
+              accountId: current.id,
+              moved: rename.moved,
+              removed: rename.removed,
+            });
+          }
+        }
       }
-      await deps.store.updateAccount({ ...latest, username });
       const stored = await storedAccount(deps, current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (stored === null) {
         return c.json({ error: 'Unauthorized' }, 401);
-      }
-      /* v8 ignore next 3 -- unique-index race: update no-ops and the stored handle stays taken */
-      if ((stored.username ?? '').trim().toLowerCase() !== username) {
-        return c.json({ error: 'Username is already in use' }, 409);
       }
       logEvent('account.username.set', { accountId: current.id });
       return c.json(await ownerJson(deps, stored), 200);
