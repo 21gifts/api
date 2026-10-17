@@ -2001,19 +2001,20 @@ accounts are not migrated. `a.b_c-d` is valid. Cannot skip (no
 `"name" | "lightning-address"`). Same handle on the same account is
 idempotent **200**. Once the wallet is verified, a request with a valid session, body and handle is 409, including the same handle; a missing session is still 401 and an invalid body or handle still 400.
 
-With a database, the username change and the roster move run in one
-transaction under the account row lock (`setUsernameWithRoster`): a
-concurrent rename of the same account waits, then sees both the new
-username and the moved rows; a failure changes nothing and the request
-fails with 500. Without a database (in-memory), the username change is
-one atomic `AuthStore.setUsername` step that reports the replaced
-username, then a second statement moves every daily roster row (both
-buckets) on `<old>@<host>` to `<new>@<host>`, so a fixed amount or
-moderator stipend follows the new receiving address; a bucket that already
-holds the new address drops the old row. If that second step fails, the
-request fails with 500 and `daily_roster.address.rename_failed` names both
-addresses so an operator can rename the roster row by hand; the new username
-stays stored.
+When the account already had a different username and the LNURL server is
+configured, every daily roster row (both buckets) on `<old>@<host>` moves to
+`<new>@<host>`, so a fixed amount or moderator stipend follows the new
+receiving address; a bucket that already holds the new address drops the old
+row. With a database (`mergeDb`, the daily roster and the LNURL server all
+wired), the username change and that roster move run in one transaction under
+the account row lock (`setUsernameWithRoster`): a concurrent rename of the same
+account waits, then sees both the new username and the moved rows; a failure
+changes nothing and the request fails with 500. Otherwise the username change
+is one atomic `AuthStore.setUsername` step that reports the replaced username,
+and the roster move, when it applies, is a second step; if that second step
+fails, the request fails with 500 and `daily_roster.address.rename_failed`
+names both addresses so an operator can rename the roster row by hand; the new
+username stays stored.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 
@@ -2037,7 +2038,7 @@ Wallet already verified → **Response** `409`:
 ```
 
 Another account owns the handle, including a unique-index race
-(`setUsername` returns `{ ok: false, reason: 'taken' }`) → **Response** `409`:
+(`setUsername` or `setUsernameWithRoster` returns `{ ok: false, reason: 'taken' }`) → **Response** `409`:
 
 ```json
 { "error": "Username is already in use" }
