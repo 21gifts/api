@@ -1786,9 +1786,9 @@ No session. Public count of the current grant round:
 `{ "round": 1, "startsAt": "2026-10-16T00:00:00.000Z", "places": 10,
 "admitted": 0, "placesLeft": 10, "nextGoalShops": 20 }`. `admitted` uses
 the same count as `POST /funding/admit`. `placesLeft` is never below 0.
-`nextGoalShops` is the active-shop goal (`GET /funding/goal`
-`qualifyingShops`) that opens the next round; that round's size is set
-when it opens. A store throw → **503** `{ "error": "Funding is
+`nextGoalShops` is the fixed goal of active shops that opens the next
+round: once `qualifyingShops` from `GET /funding/goal` reaches it, the next
+round opens, and that round's size is set when it opens. A store throw → **503** `{ "error": "Funding is
 unavailable" }` and log `funding.places.failed`.
 
 ### `POST /funding/reject`

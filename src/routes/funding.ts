@@ -56,7 +56,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 /**
  * Member apply (open), staff review with a per-round admission limit, the
  * public places count, and the initiator/founder daily payout roster.
- * Bearer session required. Grant routes are independent of `account.role`
+ * Bearer session required except the public `GET /funding/places`. Grant
+ * routes are independent of `account.role`
  * except `basis` cannot apply or be granted. Roster routes use
  * {@link canEditDailyPayoutRoster} (initiator or founder only).
  */
@@ -445,6 +446,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * Build the `/funding` route group.
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
+ * `GET /funding/places`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * `GET /funding/payout-days`, `GET /funding/daily-roster`,
@@ -472,10 +474,16 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * 200 `{ funding }` (log `funding.applied`), or 503
  * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
+ * `GET /places` needs no session and returns the current round's places
+ * count, or 503 `{ error: 'Funding is unavailable' }`. `POST /admit` admits
+ * only while the round has a free place and otherwise answers 409
+ * `{ error: 'All grant places are taken' }`.
+ *
  * @param deps - Auth store, funding store, message store, gift store, clock,
  *   optional spend ping, optional roster store, optional spend token,
  *   optional LNURL server, and optional admission round.
- * @returns A Hono app with member apply, staff review, and daily roster routes.
+ * @returns A Hono app with member apply, staff review, the public places
+ *   count, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
