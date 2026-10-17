@@ -183,7 +183,11 @@ A pair is offered on one quote only when all of these hold:
 A pair whose route-list values differ from the table is not offered, and
 the api logs `shop.route.mismatch`. The route list is fetched with the
 server key, because Orchestra filters it per partner, with a 1 s timeout.
-It is reused only for its `validForMs`. When a fetch fails, no
+It is reused only for its `validForMs`, and for at least 10 s when
+`validForMs` is smaller. Route-list fetches have their own budget of 30
+per minute per container, below Orchestra's 60 per address for routes
+and limits even with two containers; a 429 pauses them as
+[Calls](#calls) states for every endpoint. When a fetch fails, no
 stablecoin is offered until a fetch succeeds.
 
 Pairs are requested in this order, so that a short budget still serves
@@ -207,18 +211,18 @@ method is a change to the table and to its tests.
 
 ## Lifetimes
 
-| Name               | Value                                                                                                                                                                                                                                                                                                                                                                                                   |
-| ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                                                                                                                                                                                                                           |
-| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                                                                                                                                                                                                                               |
-| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                                                                                                                                                                                                                          |
-| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                                                                                                                                                                                                                                 |
-| Replacement        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, and the payment has had fewer than 4 replacements.                                                                                                                                                                                                           |
-| BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`, both moved from `src/routes/repayment.ts` to `src/lib/bolt11.ts` ([Implementation](#implementation)). Taking the request time, not the later answer, keeps the stored expiry at or before the real one. |
-| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                                                                                                |
-| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                                                                                          |
-| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                                                                                                    |
-| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                                                                                                      |
+| Name               | Value                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Window             | Five minutes (`POS_CHARGE_TTL_MS`). A charge-backed payment uses the charge's `expires_at`. A payer-opened payment uses `created_at` + 5 min.                                                                                                                                                                                                                                                                                                                                                        |
+| Offer expiry       | Orchestra's `expiresAt`, 2 minutes after the Orchestra quote was created.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| Funding margin     | 30 s, a design value: a transfer sent at `quote.expiration` has 30 s to reach the chain before Orchestra's `expiresAt`. Release check 4 measures late funding.                                                                                                                                                                                                                                                                                                                                       |
+| `quote.expiration` | A quote with offers: the earliest of `window_ends_at` and every offer's `expiresAt` minus the funding margin. A Lightning-only quote: `window_ends_at`.                                                                                                                                                                                                                                                                                                                                              |
+| Replacement        | A fetch replaces the current quote when less than 45 s remain before its `quote.expiration`, at least 45 s remain before `window_ends_at`, and the payment has had fewer than 4 replacements.                                                                                                                                                                                                                                                                                                        |
+| BOLT11 expiry      | The time the mint was requested plus the invoice's `expiry` tag, or plus 3600 s when the tag is absent, as `invoiceStillOpen` computes it from `inspectBolt11` and `DEFAULT_INVOICE_EXPIRY_MS`, both moved from `src/routes/repayment.ts` to `src/lib/bolt11.ts` ([Implementation](#implementation)). Taking the request time, not the later answer, keeps the stored expiry at or before the real one while the LNURL server's clock is not more than the BOLT11 margin (600 s) ahead of the api's. |
+| BOLT11 margin      | An offer commits only when the payment's BOLT11 expires at least 600 s after that offer's `expiresAt`. Over a full window that needs a BOLT11 of 1020 s.                                                                                                                                                                                                                                                                                                                                             |
+| Settlement watch   | The payment's BOLT11 is watched until its final read, 10 min after its expiry.                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| Order watch        | An offer with an issued detail is checked for an Orchestra order until 30 min after its `expiresAt`.                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Unresolved limit   | A proof that has no order and no refusal 24 h after it was stored becomes `stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                   |
 
 A wallet can take longer than the funding margin, for example when the
 chain is slow. Orchestra then decides about the late deposit. The api
@@ -394,14 +398,15 @@ are left out, because the shop callback serves no comment and no zap.
 | `displayQr`         | `false`                                                                                              |
 | `recipient`         | `{ "name": <the same shop name> }`                                                                   |
 | `quote`             | `{ "id": <current quote id>, "expiration": <quote.expiration>, "payment": <shop payment id> }`       |
-| `requestedAmount`   | `{ "asset": "BTC", "amount": <sats / 100000000> }`                                                   |
+| `requestedAmount`   | `{ "asset": "BTC", "amount": <sats / SATS_PER_BTC> }`                                                |
 | `transferAmounts`   | Lightning first, then each offered method in table order. Inside one method, USDT comes before USDC. |
 
 A `transferAmounts` entry is
 `{ "method", "minFee", "assets": [{ "asset", "amount" }], "available" }`.
 
 - Lightning: `method` `Lightning`, `minFee` 0, one asset `BTC` whose
-  `amount` is the sat count divided by 100000000, and `available` true.
+  `amount` is the sat count divided by `SATS_PER_BTC`
+  (`src/lib/money.ts`), and `available` true.
 - A stablecoin method: `minFee` is DFX's recommended gas price in wei,
   computed from the `eth_gasPrice` result `g` at quote creation:
   `floor(g × 12 / 10)`, and on `BinanceSmartChain`
@@ -411,7 +416,13 @@ A `transferAmounts` entry is
 
 Every amount string is built from integers. It has no exponent, no
 trailing zero after the decimal point, and no point when it is a whole
-number (`0.00001`, `1.5`, `12`). `requestedAmount.amount` is a JSON
+number (`0.00001`, `1.5`, `12`). That is the canonical form
+`canonicalGoalAmount` (`src/lib/goal-rate.ts`) writes; the BTC amount is
+`satsToBtcString` (`src/lib/money.ts`), which always writes eight
+decimals, put through that form. `canonicalGoalAmount` accepts at most
+eight decimals, so the implementing change moves its trimming into a
+shared helper that also takes the 6 and 18 decimals of the stablecoin
+amounts. `requestedAmount.amount` is a JSON
 number written in that same plain notation, never `1e-8`.
 
 A fetch returns the current quote unchanged unless the replacement rule
@@ -623,7 +634,11 @@ One procedure creates a shop payment, for a charge or for a payer:
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
    `account-merge.ts`. The row lock serialises the creation with
-   `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. A conflict on `payment_hash`
+   `POST /pos`, also across the two containers of a deploy. The unique indexes are the backstop. The insert is
+   `INSERT … ON CONFLICT DO NOTHING RETURNING id`, so a conflict never
+   aborts the transaction: an empty result is the lost insert (`23505`)
+   the following rules describe, and the reads and the second insert
+   they name run in the same transaction under the same locks. A conflict on `payment_hash`
    reads the payment that holds the hash. When it is this charge's own
    shop payment, the conflict is handled like the lost insert below: the
    api uses that payment. Otherwise the LNURL server returned an invoice
@@ -703,11 +718,17 @@ An Orchestra quote becomes an offer only when every check holds:
   holds only the offers that were inserted;
 - `expiresAt` minus the funding margin is at least 45 s in the future;
 - the BOLT11 expires at least 600 s after `expiresAt`;
-- when the stored spot quote (`FxSpotStore.latest()` in
+- the stored spot quote (`FxSpotStore.latest()` in
   `fx-spot-store.ts`, which `startFxSpotWorker` refreshes every
-  `FX_SPOT_REFRESH_MS`, 5 min) has a USD rate with an `asOf` younger
-  than 10 minutes, `amountIn` in USD is at most 5 % above the
-  sats' value at that spot. The creation never waits for a spot fetch.
+  `FX_SPOT_REFRESH_MS`, 5 min) has a USD rate with an `asOf` younger than 10 minutes, and `amountIn` in USD is at most 5 % above the
+  sats' value at that spot. The sats' value is `satsToUsdCents`
+  (`src/lib/money.ts`) at that USD rate, and the rate is parsed with
+  `parseUsdPerBtc`, the parser `satsToUsdCents` itself uses; `amountIn` is
+  turned into cents from its decimals, and the check is
+  `amountIn cents × 100 ≤ sats cents × 105`, in integers. The creation never waits for a spot fetch; without
+  a fresh rate no stablecoin pair is offered and the payment stays
+  payable by Lightning, because an offer whose price cannot be checked
+  could overcharge the payer.
 
 A failed check means the pair is not offered. The api logs
 `shop.offer.rejected` with the name of the check. A shared deposit
@@ -722,7 +743,10 @@ open amount: OpenCryptoPay needs a details callback that answers
 by replacing the `cb` path segment with `tx`, which the existing path
 cannot give. CORS `*`, methods `GET, OPTIONS`,
 `Cache-Control: no-store`, 120 requests per minute per client address.
-Over that limit it answers **503**, reason `Too many requests`, as the
+The client address is `readClientRequestMeta(headers).clientIp`
+(`src/lib/request-meta.ts`), as the pay link's limiter uses it; the
+proof and wait routes key their limits the same way. Over that limit it
+answers **503**, reason `Too many requests`, as the
 proof route does, because Tether 1.11.0 reads a 400 or 404 here as a
 final answer.
 
@@ -1042,7 +1066,10 @@ body. After any other answer a new attempt uses a new key. The api never
 changes the body under a key.
 
 Budget: each endpoint has its own in-process budget per minute, so one
-kind of call never crowds out another. Status and history reads share
+kind of call never crowds out another. The budget is its own counter,
+not an `IpRateLimiter`: it reserves submit slots for the watcher and
+orders waiting calls by priority, which a single limit per key cannot
+express. Status and history reads share
 50, which keeps two containers during a deploy below Orchestra's 120
 order lookups per IP. Submits: 30, of which proof requests may use at
 most 20 and the watcher always keeps 10. Within those 20, the first
@@ -1564,6 +1591,8 @@ The implementing change adds:
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;
+- the trimming of `canonicalGoalAmount` moved to a shared helper for
+  the canonical decimal form, with the decimals as a parameter;
 - the `UUID` pattern of `src/lib/pos-store.ts` moved to a shared helper
   that the shop payment routes use too;
 - a deadline parameter on `requestGiftInvoice` that covers both of its
