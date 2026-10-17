@@ -183,12 +183,13 @@ A pair is offered on one quote only when all of these hold:
 A pair whose route-list values differ from the table is not offered, and
 the api logs `shop.route.mismatch`. The route list is fetched with the
 server key, because Orchestra filters it per partner, with a 1 s timeout.
-It is reused only for its `validForMs`, and for at least 10 s when
-`validForMs` is smaller. Route-list fetches have their own budget of 25
+It is reused only until its `validForMs` has passed since the request
+started, as Orchestra defines it. Route-list fetches have their own
+budget of 25
 per minute per container, so two containers stay below Orchestra's 60
 per address for routes and limits; a 429 pauses them as
-[Calls](#calls) states for every endpoint. When a fetch fails, no
-stablecoin is offered until a fetch succeeds.
+[Calls](#calls) states for every endpoint. When a fetch fails or the budget is used up, no stablecoin is offered
+until a fetch succeeds.
 
 Pairs are requested in this order, so that a short budget still serves
 Tether 1.11.0 first: USDT on `Ethereum`, `Arbitrum`, and `Polygon`, then
@@ -268,17 +269,17 @@ conditional update on the expected result, in the same database
 transaction as the payment change it causes. At most one proof of a
 payment is `accepted`.
 
-| From                                                       | To           | Trigger                                                                                                                                                                                                                                                          |
-| ---------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.  |
-| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                            |
-| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
-| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                  |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
-| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
-| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
-| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
+| From                                                       | To           | Trigger                                                                                                                                                                                                                                                                                                                                    |
+| ---------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.                                                                            |
+| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                                                                                      |
+| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                                                                                                      |
+| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                                                                                            |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                                                                                               |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                                                                                 |
+| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch` (for a `hex` proof only after its receipt was found, see [Calls](#calls)), or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
+| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                                                                                        |
+| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                                                                                  |
 
 A proof whose payment is already `paid` is held: its order is
 expected to fail with `duplicate_lightning_invoice`, so it answers
@@ -1109,12 +1110,19 @@ absolute time in milliseconds.
   sender, which Orchestra may treat as a mismatch.
   Orchestra requires `sourceAddress` only on a shared deposit address;
   the api offers no deposit address it has seen on another offer
-  ([Offer checks](#offer-checks)), and release check 11 confirms that
-  Orchestra's EVM deposit addresses belong to one quote.
+  ([Offer checks](#offer-checks)), and release check 11 confirms for every offered pair that
+  Orchestra's EVM deposit addresses belong to one quote. Should Orchestra
+  still return a shared address the api has not seen, the submit stays
+  without `sourceAddress` and the deposit depends on Orchestra's own
+  detection; this is an accepted residual risk.
   - HTTP 200 with `orderId`: the proof gets that order, and the returned
     `status` is stored as its `order_status`.
   - HTTP 400 with `error.code` `xchain_deposit_mismatch` (a transaction
-    without a positive matching deposit): refused.
+    without a positive matching deposit): refused, except for a `hex`
+    proof whose receipt has not been found yet. Orchestra may not see a
+    transaction that was just sent, so that proof stays unresolved, and
+    the watcher submits it again with a new idempotency key once its
+    receipt is found; a mismatch after the receipt refuses it.
   - HTTP 409 with `error.code` `quote_expired` (the Lightning invoice
     expired): the proof is `late`, and the api stops submitting it.
   - Everything else leaves the proof unresolved: a timeout, HTTP 503
@@ -1695,7 +1703,7 @@ records each result in the pull request that turns the feature on.
    bundle hash.
 10. History with the payment's BOLT11 as `address` lists the orders of
     that payment's quotes.
-11. Two staging quotes for the same pair, created one after the other,
+11. For every offered pair, two staging quotes created one after the other
     return two different EVM deposit addresses, and a submit without
     `sourceAddress` for a deposit to one of them returns its order.
 
