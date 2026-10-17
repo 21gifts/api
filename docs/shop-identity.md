@@ -129,10 +129,15 @@ the committed row in between and mint a key, which would keep a half-written
 note. The implementing change therefore writes all three in one transaction
 on one reserved connection, the pattern of the account merge
 (`src/lib/account-merge.ts`); a failure rolls the note back instead of
-calling `deleteById` and, for a video note, removes the video file with
-`removeForumVideo` as a failed insert does today. A regression test fails an
-extra photo insert while the backfill runs and checks that neither the note
-nor a `shop_identity` row is left.
+calling `deleteById`. The duplicate handling of today stays: after a unique
+violation the transaction is rolled back first, then the existing lookups
+(`getById` for a retry with the same id, `findLiveByAccountContent` for the
+same content) run on the pool and return the stored row as today. The video
+file is removed with `removeForumVideo` only when no such row is returned,
+so a retry never deletes the live note's video. Regression tests fail an
+extra photo insert while the backfill runs and check that neither the note
+nor a `shop_identity` row is left, and repeat a same-id retry and a
+duplicate upload of a video note inside the transaction.
 
 ### Encryption at rest
 
