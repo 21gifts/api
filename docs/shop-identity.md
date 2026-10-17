@@ -66,7 +66,11 @@ builds on that change.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
-    per tick, oldest note first, next to the existing account backfill.
+    per tick, next to the existing account backfill. Completeness under
+    #478 is checked in code, not in SQL, so it walks candidate notes with a
+    keyset cursor by (`created_at`, `id`) that moves past rejected
+    (incomplete) notes and wraps around at the end. An older incomplete
+    note can therefore never hold the slot of a listed shop behind it.
     After it creates a key, it queues the OpenCryptoPay place push of S5
     for that shop, so a failed mint at the write is repaired without another
     edit.
