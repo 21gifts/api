@@ -227,8 +227,8 @@ The 410 body carries no name, so a hidden note's name is not served.
 }
 ```
 
-`lat` and `lng` as in `GET /messages/places`. `address` is `null` while the
-pin has none. `payUsername` is the till account's username when it has one
+`lat` and `lng` as in `GET /messages/places`. `address` is always
+present, because a listed shop is complete under #478. `payUsername` is the till account's username when it has one
 and `GET /pay/:username` would answer for it, that is, a Lightning address is
 linked; otherwise `null`.
 Photos are the note's photos in note order. `width` and `height` come from a
