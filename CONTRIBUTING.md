@@ -620,6 +620,34 @@ Weakening attach, logging from app code instead of triggers, omitting
 landing a durable write without a `db_change` row in the **same PR** is an
 undeclared deviation and is rejected.
 
+### Database schema reference (hard requirement)
+
+`docs/database/` is generated from the schema `openBootStores` creates at boot
+(every column, kind, Postgres type, nullable, default, foreign key, index; no
+prose, no enum values). Every change to a schema (`*_SCHEMA_SQL`,
+`migrate*Schema`, repairs) **must** regenerate it in the same PR with
+`DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run db:docs`
+(needs a Postgres 16 where the user may create databases; the generator uses a
+scratch database). `bun run test:postgres` (CI step "Postgres driver") fails
+when the committed pages differ; `bun run db:docs:check` prints the differing
+paths. `docs/schema/*.sql` stay the DDL reference per store; they are not
+replaced. Tables created outside this service (today `gift`) are built from
+their `docs/schema/*.sql` file when the pages are generated, so changing such a
+file also requires `bun run db:docs`. Do not hand-edit `docs/database/`.
+
+### Database change notice (hard requirement)
+
+A PR into `develop` that changes the database or database access **must**
+contain the exact line `⚠️ 🗄️ Attention: database change` in the visible part
+of the PR description (not inside `<details>`, an HTML comment or a code
+fence). The CI job "Database change notice" fails otherwise. It triggers on
+changes under `docs/schema/`, `docs/database/`, `integration/`,
+`src/lib/boot-stores.ts`, and on non-test `src/**/*.ts` diffs that add or
+remove SQL or database calls (`*_SCHEMA_SQL`, `migrate*Schema`, `.query(`,
+`.execute(`, `.unsafe(`, `.begin(`, `SELECT … FROM`, `INSERT INTO`,
+`UPDATE … SET`, `DELETE FROM`, `CREATE/ALTER/DROP`, `ON CONFLICT`, triggers).
+The check re-runs when the PR text is edited.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -642,6 +670,7 @@ bun run e2e:check
 bun run test:coverage
 # Postgres driver (Bun test, not Vitest); fails if DATABASE_URL is missing
 DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run test:postgres
+DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run db:docs:check
 bun run build
 bun run e2e
 ```

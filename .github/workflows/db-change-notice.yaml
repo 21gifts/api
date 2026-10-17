@@ -1,0 +1,101 @@
+# Fails a pull request when the diff touches the database and the description
+# does not carry the required marker in the visible text. `edited` is a
+# trigger because editing the PR text must re-run this check. `ready_for_review`
+# is omitted: a Ready trigger would re-run a required check after the guard
+# sets Ready.
+name: Database change notice
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [develop]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: db-change-notice-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notice:
+    name: Database change notice
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # The decision is made by the base branch's copy of db-change-notice.mjs, so a pull request
+      # cannot turn its own check green by editing the script. This workflow file itself is covered
+      # by the A38 guard, which requires a maintainer approval for any workflow change. The pull
+      # request's copy is used only while the base does not have the script yet.
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: notice-base
+          sparse-checkout: scripts
+
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          sparse-checkout: scripts
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test database change notice
+        run: node --test scripts/db-change-notice.test.mjs
+
+      - name: Evaluate database change notice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { existsSync } = require('node:fs');
+            const { pathToFileURL } = require('node:url');
+            const basePath = `${process.env.GITHUB_WORKSPACE}/notice-base/scripts/db-change-notice.mjs`;
+            const headPath = `${process.env.GITHUB_WORKSPACE}/scripts/db-change-notice.mjs`;
+            const bootstrap = !existsSync(basePath);
+            const { evaluate, MARKER } = await import(
+              pathToFileURL(bootstrap ? headPath : basePath).href
+            );
+            const body = context.payload.pull_request.body ?? '';
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // The files endpoint stops at 3000 entries without saying so. A list shorter than the
+            // pull request's changed_files may hide triggers, so the notice is then required: an
+            // entry without a patch is the fail-closed trigger the script already knows.
+            const truncated = files.length < context.payload.pull_request.changed_files;
+            const listed = truncated
+              ? [...files, { filename: 'src/(file list truncated by the GitHub API).ts' }]
+              : files;
+            const { required, ok, triggers } = evaluate({ body, files: listed });
+            const triggerList =
+              triggers.length === 0
+                ? '(none)'
+                : triggers.map((file) => `- ${file}`).join('\n');
+            core.summary
+              .addHeading('Database change notice')
+              .addRaw(
+                `Required: ${required ? 'yes' : 'no'}\n\nRules from: ${bootstrap ? 'this pull request (base has no script yet)' : 'base branch'}\n\nTrigger files:\n\n${triggerList}\n`,
+              );
+            await core.summary.write();
+            if (required && !ok) {
+              const shown = triggers.slice(0, 20);
+              const rest = triggers.length - shown.length;
+              const more = rest > 0 ? ` and ${rest} more` : '';
+              core.setFailed(
+                [
+                  MARKER,
+                  'Put the marker line in the visible part of the PR description, not inside <details>.',
+                  `Trigger files: ${shown.join(', ')}${more}`,
+                ].join('\n'),
+              );
+            }

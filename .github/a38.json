@@ -67,6 +67,11 @@
       "workflow": ".github/workflows/loan-e2e.yml",
       "job": "screens",
       "reason": "Manual live loan through the app screens. It pays real Spark invoices, can run for hours, and is not a pull-request check, so the author does not run it as a local test."
+    },
+    {
+      "workflow": ".github/workflows/db-change-notice.yaml",
+      "job": "notice",
+      "reason": "GitHub-only PR description check (reads the PR body and file list from the GitHub API). Not a local code test."
     }
   ]
 }
