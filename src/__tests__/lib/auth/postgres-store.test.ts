@@ -325,7 +325,7 @@ describe('PostgresAuthStore', () => {
     expect(update.text).toMatch(/location = \$13/);
     expect(update.text).toMatch(/notification_level = \$14/);
     expect(update.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(update.text).toMatch(/amount_unit = \$16/);
     expect(update.text).toMatch(/notify_hearts = \$17/);
@@ -336,7 +336,7 @@ describe('PostgresAuthStore', () => {
     const setClause = update.text.split(/\bWHERE\b/)[0]!;
     expect(
       setClause.replace(
-        /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+        /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
         '',
       ),
     ).not.toMatch(/spark_pubkey/);
@@ -393,7 +393,7 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, notificationLevel: 'active' });
     expect(sql.executes[1]?.text).toMatch(/notification_level = \$14/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(sql.executes[1]?.params[13]).toBe('active');
     expect(sql.executes[1]?.params[14]).toBeNull();
@@ -457,7 +457,7 @@ describe('PostgresAuthStore', () => {
     await store.updateAccount({ ...account, amountUnit: 'btc' });
     expect(sql.executes[1]?.text).toMatch(/amount_unit = \$16/);
     expect(sql.executes[1]?.text).toMatch(
-      /username = CASE WHEN spark_pubkey_verified_at IS NULL THEN \$15 ELSE username END/,
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
     );
     expect(sql.executes[1]?.params[15]).toBe('btc');
   });

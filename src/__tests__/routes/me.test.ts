@@ -2072,8 +2072,8 @@ describe('POST /me/username', () => {
         (e) =>
           e['event'] === 'daily_roster.address.rename_failed' &&
           e['accountId'] === 'acc' &&
-          e['from'] === '[address]' &&
-          e['to'] === '[address]',
+          e['fromUsername'] === 'oldname' &&
+          e['toUsername'] === 'newname',
       ),
     ).toBe(true);
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.username.set')).toBe(false);
@@ -2225,10 +2225,7 @@ describe('POST /me/username', () => {
     return {
       async begin<T>(): Promise<T> {
         if (result.ok && store !== undefined && nextUsername !== undefined) {
-          const acc = await store.getAccount('acc');
-          if (acc !== undefined) {
-            await store.updateAccount({ ...acc, username: nextUsername });
-          }
+          await store.setUsername('acc', nextUsername);
         }
         return result as unknown as T;
       },

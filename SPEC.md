@@ -2013,8 +2013,8 @@ changes nothing and the request fails with 500. Otherwise the username change
 is one atomic `AuthStore.setUsername` step that reports the replaced username,
 and the roster move, when it applies, is a second step; if that second step
 fails, the request fails with 500 and `daily_roster.address.rename_failed`
-names both addresses so an operator can rename the roster row by hand; the new
-username stays stored.
+names the old and the new username so an operator can rename the roster row
+by hand; the new username stays stored.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 

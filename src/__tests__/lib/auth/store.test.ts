@@ -774,7 +774,7 @@ describe('InMemoryAuthStore', () => {
       ...(await store.getAccount('c'))!,
       username: '   ',
     });
-    expect(await store.getAccountByUsername('cara')).toBeUndefined();
+    expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
   });
 
   it('listAccountsByUsernamePrefix skips null, undefined, and blank usernames', async () => {
@@ -2506,8 +2506,7 @@ describe('InMemoryAuthStore spark pubkey', () => {
   it('updateAccount keeps verified username but writes other fields', async () => {
     const store = new InMemoryAuthStore();
     await walletAccount(store, 'acc');
-    const before = await store.getAccount('acc');
-    await store.updateAccount({ ...before!, username: 'grace' });
+    expect(await store.setUsername('acc', 'grace')).toMatchObject({ ok: true });
     expect((await store.getAccount('acc'))?.username).toBe('grace');
     await store.claimSparkPubkey('acc', PUBKEY);
     await store.markSparkPubkeyVerified('acc', PUBKEY, 'grace', 10);
@@ -2523,7 +2522,7 @@ describe('InMemoryAuthStore spark pubkey', () => {
     });
     const unverified = await store.getAccount('unverified');
     await store.updateAccount({ ...unverified!, username: 'carol' });
-    expect((await store.getAccount('unverified'))?.username).toBe('carol');
+    expect((await store.getAccount('unverified'))?.username).toBe('bob');
   });
 
   it('updateAccount never alters the two wallet fields', async () => {

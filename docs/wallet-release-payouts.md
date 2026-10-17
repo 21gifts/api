@@ -263,10 +263,10 @@ moderators would get no stipend.
   transaction under the account row lock (a concurrent rename waits; a
   failure changes nothing and the request fails with 500). Without a
   database (in-memory) they are two steps: one atomic username write that
-  reports the replaced username, then `renameAddress` (one statement) so
+  reports the replaced username, then `renameAddress` as a second step so
   the fixed amount follows the new receiving address; if that second step
   fails, the request fails with 500 and `daily_roster.address.rename_failed`
-  names both addresses so an operator can rename the roster row by hand.
+  names the old and the new username so an operator can rename the roster row by hand.
 
 On the roster of 2026-10-16 this rewrites 15 recipient rows and 6 moderator
 rows and deletes 1 recipient row.

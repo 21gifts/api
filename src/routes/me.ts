@@ -567,8 +567,8 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           } catch (error) {
             logEvent('daily_roster.address.rename_failed', {
               accountId: current.id,
-              from,
-              to,
+              fromUsername: previous,
+              toUsername: username,
             });
             throw error;
           }
