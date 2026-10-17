@@ -122,6 +122,17 @@ that locks the note, checks for that row in its own statement and then
 deletes, so a key insert that commits while the delete waits is still seen.
 So the reference never dangles and the identity is never deleted.
 
+`PostgresMessageStore.create` writes the note row, its `message_extra_photo`
+rows and the mentions update in separate statements today, and an extra photo
+that fails calls `deleteById` and ignores its result. The backfill could see
+the committed row in between and mint a key, which would keep a half-written
+note. The implementing change therefore writes all three in one transaction
+on one reserved connection, the pattern of the account merge
+(`src/lib/account-merge.ts`); a failure rolls the note back instead of
+calling `deleteById`. A regression test fails an extra photo insert while the
+backfill runs and checks that neither the note nor a `shop_identity` row is
+left.
+
 ### Encryption at rest
 
 - The existing envelope and key-encryption key: `version (0x01) || kek_id
