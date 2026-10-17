@@ -285,7 +285,12 @@ export interface ShopPaymentConfig {
  */
 function parseHttpsUrl(value: string): URL | null {
   const parsed = parseHttpUrl(value);
-  if (parsed === null || parsed.protocol !== 'https:' || parsed.username !== '' || parsed.password !== '') {
+  if (
+    parsed === null ||
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== ''
+  ) {
     return null;
   }
   return parsed;

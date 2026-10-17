@@ -20,15 +20,8 @@ import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent, type LogFields } from '@/lib/log';
-import type {
-  OrchestraClient,
-  OrchestraQuote,
-  OrchestraRouteAsset,
-} from '@/lib/orchestra';
-import {
-  ORCHESTRA_FINAL_STATUSES,
-  ORCHESTRA_PROGRESSING_STATUSES,
-} from '@/lib/orchestra';
+import type { OrchestraClient, OrchestraQuote, OrchestraRouteAsset } from '@/lib/orchestra';
+import { ORCHESTRA_FINAL_STATUSES, ORCHESTRA_PROGRESSING_STATUSES } from '@/lib/orchestra';
 import type { PosCharge } from '@/lib/pos-charge';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type {
@@ -556,7 +549,10 @@ export function shopPayRequest(input: ShopPayRequestInput): Record<string, unkno
       expiration: input.quote.expiresAt.toISOString(),
       payment: input.payment.id,
     },
-    requestedAmount: { asset: 'BTC', amount: new PlainJsonNumber(btcAmount(input.payment.amountSats)) },
+    requestedAmount: {
+      asset: 'BTC',
+      amount: new PlainJsonNumber(btcAmount(input.payment.amountSats)),
+    },
     transferAmounts: input.quote.transferAmounts,
   };
 }
@@ -621,7 +617,12 @@ const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
  * @param usdPerBtc - Decimal string.
  * @returns `true` when within the bound.
  */
-function withinPriceBound(amountIn: bigint, decimals: number, sats: number, usdPerBtc: string): boolean {
+function withinPriceBound(
+  amountIn: bigint,
+  decimals: number,
+  sats: number,
+  usdPerBtc: string,
+): boolean {
   const point = usdPerBtc.indexOf('.');
   const fraction = point === -1 ? '' : usdPerBtc.slice(point + 1);
   const rate = BigInt(point === -1 ? usdPerBtc : `${usdPerBtc.slice(0, point)}${fraction}`);
@@ -651,8 +652,7 @@ export function checkOffer(input: OfferCheckInput): OfferCheck | null {
     (quote.requiredAmountIn !== null &&
       (!/^[0-9]+$/.test(quote.requiredAmountIn) || amountIn < BigInt(quote.requiredAmountIn))) ||
     (quote.maxAcceptedAmountIn !== null &&
-      (!/^[0-9]+$/.test(quote.maxAcceptedAmountIn) ||
-        amountIn > BigInt(quote.maxAcceptedAmountIn)))
+      (!/^[0-9]+$/.test(quote.maxAcceptedAmountIn) || amountIn > BigInt(quote.maxAcceptedAmountIn)))
   ) {
     return 'bounds';
   }
@@ -815,7 +815,11 @@ export async function evaluateProof(
     if (target === 'accepted') {
       for (const other of await tx.proofsOf(payment.id)) {
         if (other.id !== proof.id && other.result === 'accepted') {
-          await tx.updateProof(other.id, { results: ['accepted'] }, { result: 'superseded', resolvedAt: new Date(nowMs) });
+          await tx.updateProof(
+            other.id,
+            { results: ['accepted'] },
+            { result: 'superseded', resolvedAt: new Date(nowMs) },
+          );
           shopLog('shop.proof.superseded', { paymentId: payment.id, proofId: other.id });
         }
       }
@@ -857,7 +861,11 @@ export async function evaluateProof(
     return proof;
   }
   if (payment.closedAt !== null) {
-    const late = await tx.updateProof(proof.id, { results: OPEN_RESULTS }, { result: 'late', resolvedAt: new Date(nowMs) });
+    const late = await tx.updateProof(
+      proof.id,
+      { results: OPEN_RESULTS },
+      { result: 'late', resolvedAt: new Date(nowMs) },
+    );
     shopLog('shop.proof.late', ids);
     shopLog('shop.alert.late_deposit', ids);
     /* v8 ignore next -- the row is locked through its payment */
@@ -880,7 +888,11 @@ export async function evaluateProof(
       return accepted;
     }
   }
-  const superseded = await tx.updateProof(proof.id, { results: OPEN_RESULTS }, { result: 'superseded', resolvedAt: new Date(nowMs) });
+  const superseded = await tx.updateProof(
+    proof.id,
+    { results: OPEN_RESULTS },
+    { result: 'superseded', resolvedAt: new Date(nowMs) },
+  );
   shopLog('shop.proof.superseded', ids);
   /* v8 ignore next -- the row is locked through its payment */
   return superseded === 'conflict' ? proof : superseded;
@@ -1116,8 +1128,7 @@ export type ShopCreation =
 
 /** What the pay link answers. */
 export type ShopPayLinkAnswer =
-  | { kind: 'today'; pinSats: number | null }
-  | { kind: 'response'; response: Response };
+  { kind: 'today'; pinSats: number | null } | { kind: 'response'; response: Response };
 
 /** Pay-link query values the route read (each `null` when absent). */
 export interface ShopPayLinkQuery {
@@ -1431,11 +1442,22 @@ export class ShopPayments {
     if (offers.length === 0) {
       return quote;
     }
-    const inserted = await tx.insertOffers(offers.map((offer) => ({ ...offer, quoteId: quote.id })));
+    const inserted = await tx.insertOffers(
+      offers.map((offer) => ({ ...offer, quoteId: quote.id })),
+    );
     for (const offer of offers) {
       if (!inserted.some((row) => row.id === offer.id)) {
-        logEvent('shop.offer.rejected', { paymentId: payment.id, method: offer.method, asset: offer.asset, check: 'deposit_shared' });
-        logEvent('shop.alert.shared_deposit_address', { paymentId: payment.id, method: offer.method, asset: offer.asset });
+        logEvent('shop.offer.rejected', {
+          paymentId: payment.id,
+          method: offer.method,
+          asset: offer.asset,
+          check: 'deposit_shared',
+        });
+        logEvent('shop.alert.shared_deposit_address', {
+          paymentId: payment.id,
+          method: offer.method,
+          asset: offer.asset,
+        });
       }
     }
     const patch = {
@@ -1473,7 +1495,13 @@ export class ShopPayments {
    * @returns The outcome.
    */
   createForCharge(account: Account, username: string, charge: PosCharge): Promise<ShopCreation> {
-    return this.#create({ kind: 'charge', account, username, charge, amountSats: charge.amountSats });
+    return this.#create({
+      kind: 'charge',
+      account,
+      username,
+      charge,
+      amountSats: charge.amountSats,
+    });
   }
 
   /**
@@ -1497,7 +1525,13 @@ export class ShopPayments {
    */
   #create(
     input:
-      | { kind: 'charge'; account: Account; username: string; charge: PosCharge; amountSats: number }
+      | {
+          kind: 'charge';
+          account: Account;
+          username: string;
+          charge: PosCharge;
+          amountSats: number;
+        }
       | { kind: 'payer'; account: Account; username: string; amountSats: number },
   ): Promise<ShopCreation> {
     const { account } = input;
@@ -1515,7 +1549,11 @@ export class ShopPayments {
             return { kind: 'payment', payment: existing } as const;
           }
           const charge = await tx.lockCharge(input.charge.id);
-          if (charge === null || charge.status !== 'pending' || charge.expiresAt.getTime() <= startMs) {
+          if (
+            charge === null ||
+            charge.status !== 'pending' ||
+            charge.expiresAt.getTime() <= startMs
+          ) {
             return { kind: 'skipped' } as const;
           }
           return null;
@@ -1562,7 +1600,9 @@ export class ShopPayments {
       if (minted === null) {
         return { kind: 'mint_failed' };
       }
-      const held = await this.#deps.store.transaction((tx) => tx.paymentForHash(minted.paymentHash));
+      const held = await this.#deps.store.transaction((tx) =>
+        tx.paymentForHash(minted.paymentHash),
+      );
       if (held !== null) {
         logEvent('shop.alert.duplicate_invoice', { paymentId: held.id });
         return { kind: 'mint_failed' };
@@ -1570,7 +1610,9 @@ export class ShopPayments {
       let recordedByUs = false;
       if (input.kind === 'charge') {
         const recorded = await this.#deps.store.transaction(async (tx) => {
-          if (await tx.recordChargeInvoice(input.charge.id, minted.paymentHash, minted.requestedAtMs)) {
+          if (
+            await tx.recordChargeInvoice(input.charge.id, minted.paymentHash, minted.requestedAtMs)
+          ) {
             return 'recorded' as const;
           }
           const owner = await tx.chargeIdForInvoice(minted.paymentHash);
@@ -1621,7 +1663,12 @@ export class ShopPayments {
   async #mint(
     account: Account,
     amountSats: number,
-  ): Promise<{ bolt11: string; paymentHash: string; expiresAtMs: number; requestedAtMs: number } | null> {
+  ): Promise<{
+    bolt11: string;
+    paymentHash: string;
+    expiresAtMs: number;
+    requestedAtMs: number;
+  } | null> {
     const receiving = receivingAddress(account, this.#deps.lnurlServer);
     /* v8 ignore next 3 -- callers resolved the verified wallet first */
     if (receiving === null) {
@@ -1632,7 +1679,12 @@ export class ShopPayments {
     const invoice = await requestGiftInvoice({
       address: receiving.address,
       amountMsat: amountSats * 1000,
-      fetchImpl: lnurlServerFetch(this.#deps.lnurlServer, this.#deps.fetchImpl, this.#deps.auth, deadline),
+      fetchImpl: lnurlServerFetch(
+        this.#deps.lnurlServer,
+        this.#deps.fetchImpl,
+        this.#deps.auth,
+        deadline,
+      ),
       deadlineMs: deadline.deadlineMs,
       now: this.#deps.now,
     });
@@ -1666,7 +1718,13 @@ export class ShopPayments {
    */
   async #insertPayment(
     input:
-      | { kind: 'charge'; account: Account; username: string; charge: PosCharge; amountSats: number }
+      | {
+          kind: 'charge';
+          account: Account;
+          username: string;
+          charge: PosCharge;
+          amountSats: number;
+        }
       | { kind: 'payer'; account: Account; username: string; amountSats: number },
     paymentId: string,
     minted: { bolt11: string; paymentHash: string; expiresAtMs: number },
@@ -1815,7 +1873,10 @@ export class ShopPayments {
         }
       }
       if (!ready(state)) {
-        return { kind: 'response', response: shopResponse(noPendingPaymentBody(username, name), 404) };
+        return {
+          kind: 'response',
+          response: shopResponse(noPendingPaymentBody(username, name), 404),
+        };
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
@@ -1834,12 +1895,18 @@ export class ShopPayments {
       const status = state.payment?.status;
       const pinned = status === undefined || status === 'ended' || status === 'open';
       if (query.method !== null) {
-        return { kind: 'response', response: shopResponse(noPendingPaymentBody(username, name), 404) };
+        return {
+          kind: 'response',
+          response: shopResponse(noPendingPaymentBody(username, name), 404),
+        };
       }
       return { kind: 'today', pinSats: pinned ? state.charge.amountSats : null };
     }
     if (query.method !== null) {
-      return { kind: 'response', response: shopResponse(noPendingPaymentBody(username, name), 404) };
+      return {
+        kind: 'response',
+        response: shopResponse(noPendingPaymentBody(username, name), 404),
+      };
     }
     return { kind: 'today', pinSats: null };
   }
@@ -1910,7 +1977,10 @@ export class ShopPayments {
     if (read === null) {
       return null;
     }
-    if (this.#replaceable(read.payment, read.quote, this.#deps.now()) && this.offersStablecoins(username)) {
+    if (
+      this.#replaceable(read.payment, read.quote, this.#deps.now()) &&
+      this.offersStablecoins(username)
+    ) {
       read = await this.#replace(account, read.payment.id);
       if (read === null) {
         return null;
@@ -1942,7 +2012,9 @@ export class ShopPayments {
    * @param paymentId - Payment id.
    * @returns The rows, or `null` when the payment is no longer open.
    */
-  async #readCurrent(paymentId: string): Promise<{ payment: ShopPayment; quote: ShopQuote } | null> {
+  async #readCurrent(
+    paymentId: string,
+  ): Promise<{ payment: ShopPayment; quote: ShopQuote } | null> {
     return this.#deps.store.transaction(async (tx) => {
       const payment = await tx.getPayment(paymentId);
       if (
@@ -2036,7 +2108,11 @@ export class ShopPayments {
         );
         if (counted === null) {
           const payment = await tx.getPayment(paymentId);
-          if (payment === null || payment.status !== 'open' || nowMs >= payment.windowEndsAt.getTime()) {
+          if (
+            payment === null ||
+            payment.status !== 'open' ||
+            nowMs >= payment.windowEndsAt.getTime()
+          ) {
             return null;
           }
           const quotes = await tx.quotesOf(paymentId);
@@ -2183,7 +2259,12 @@ export class ShopPayments {
       const open = await tx.openPayment(account.id);
       if (open !== null) {
         const nowMs = row.createdAt.getTime();
-        await endPayment(tx, open, open.windowEndsAt.getTime() <= nowMs ? 'window' : 'superseded', nowMs);
+        await endPayment(
+          tx,
+          open,
+          open.windowEndsAt.getTime() <= nowMs ? 'window' : 'superseded',
+          nowMs,
+        );
       }
       return true;
     });
@@ -2250,7 +2331,9 @@ export class ShopPayments {
    * @param chargeId - Charge id.
    * @returns `{ id, status }`, or `null` when the charge has none.
    */
-  async shopPaymentOfCharge(chargeId: string): Promise<{ id: string; status: ShopPayment['status'] } | null> {
+  async shopPaymentOfCharge(
+    chargeId: string,
+  ): Promise<{ id: string; status: ShopPayment['status'] } | null> {
     const payment = await this.#deps.store.transaction((tx) => tx.paymentForCharge(chargeId));
     return payment === null ? null : { id: payment.id, status: payment.status };
   }
