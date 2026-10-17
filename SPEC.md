@@ -274,8 +274,9 @@ Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
 
 ### Login controls
 
-Three server-side controls for a release. They only affect requests that
-create a session: `POST /auth/passkey/register/begin` (new account and claim),
+Two server-side request checks and one operator action for a release. The
+two checks only apply to the passkey steps that lead to a session:
+`POST /auth/passkey/register/begin` (new account and claim),
 `POST /auth/passkey/register/finish`, `POST /auth/passkey/authenticate/begin`
 (build check only), and `POST /auth/passkey/authenticate/finish`. The operator
 mint `POST /debug/accounts/:id/session` is exempt from both checks. Refusals

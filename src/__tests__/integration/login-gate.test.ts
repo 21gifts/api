@@ -153,14 +153,23 @@ describe('login gate via createApp', () => {
       const registered = await register(app);
       await setLogins(app, false);
       const credentialsBefore = await store.listPasskeyCredentials();
+      const challengesBefore = await store.listPasskeyChallenges();
 
       const begin = await post(app, '/auth/passkey/register/begin');
       expect(begin.status).toBe(503);
       expect(await begin.json()).toEqual(LOGINS_CLOSED);
       const named = await post(app, '/auth/passkey/register/begin', { name: 'ada' });
       expect(named.status).toBe(503);
+      expect(await store.listPasskeyChallenges()).toEqual(challengesBefore);
 
-      const refused = await login(app);
+      // Authenticate begin does not know the account yet, so only finish refuses.
+      const loginBegin = await post(app, '/auth/passkey/authenticate/begin');
+      expect(loginBegin.status).toBe(200);
+      const { challengeId } = (await loginBegin.json()) as { challengeId: string };
+      const refused = await post(app, '/auth/passkey/authenticate/finish', {
+        challengeId,
+        credential: { test: 'ok', id: 'cred-1' },
+      });
       expect(refused.status).toBe(503);
       expect(await refused.json()).toEqual(LOGINS_CLOSED);
       expect(await store.listPasskeyCredentials()).toEqual(credentialsBefore);
@@ -171,9 +180,10 @@ describe('login gate via createApp', () => {
     });
 
     it('boots closed from LOGINS_OPEN_DEFAULT=closed when nothing is stored', async () => {
-      const { app } = harness({ LOGINS_OPEN_DEFAULT: 'closed' });
+      const { app, store } = harness({ LOGINS_OPEN_DEFAULT: 'closed' });
       const registered = await register(app);
       expect(registered.begin.status).toBe(503);
+      expect(await store.listPasskeyChallenges()).toEqual([]);
       const state = await app.request('/debug/logins', { headers: OPERATOR });
       expect(await state.json()).toEqual({
         open: false,
