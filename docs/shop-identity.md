@@ -166,7 +166,7 @@ Kind 0 content of a listed shop:
 | `about`        | shop description                                                            |
 | `picture`      | absolute URL of `/messages/:id/photo.<ext>`, otherwise `KIND0_PICTURE_URL`  |
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
-| `website`      | `https://21.gifts/{npub}`                                                   |
+| `website`      | `<site origin>/{npub}`, see below                                           |
 | `nip05`        | `<local>@<domain>`, see below                                               |
 | `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none      |
 
@@ -175,6 +175,13 @@ today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
 (`src/lib/nip05.ts`) gives `null`, `nip05` is left out, and when
 `resolvePublicApiBase` (`src/lib/nostr/relays.ts`) is empty, `picture` and
 `banner` take the fallbacks `KIND0_PICTURE_URL` and `KIND0_BANNER_URL`.
+
+`<site origin>` is `PUBLIC_BASE_URL` without a trailing slash, as
+`notePageUrl` (`src/lib/nostr/event.ts`) builds note links, so a dev or
+staging shop links to its own site; when it is empty, `https://21.gifts`.
+Until the shop page is live (step 4), `website` is the site origin alone, as
+for accounts, so no profile links to a missing page; step 5 switches it to
+`<site origin>/{npub}`.
 
 Kind 0 of a shop that is no longer listed:
 
@@ -545,10 +552,11 @@ that write.
    columns and all queueing writes, then the senders (place `PUT` or
    `DELETE` decided at send time, photo push) and the paged start-up.
 4. S4 in `21gifts/app`.
+5. The kind 0 `website` of shops switches to `<site origin>/{npub}`.
 
-Each step is one pull request, step 3 one per release. Steps 0 to 3 meet the
-handbook, e2e and coverage gates of this repo's `CONTRIBUTING.md`; step 4
-meets those of 21gifts/app.
+Each step is one pull request, step 3 one per release. Steps 0 to 3 and 5
+meet the handbook, e2e and coverage gates of this repo's `CONTRIBUTING.md`;
+step 4 meets those of 21gifts/app.
 
 ## Not part of this
 
