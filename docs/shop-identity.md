@@ -90,24 +90,25 @@ builds on that change.
 New table `shop_identity`. The key columns have the same names as on
 `account`:
 
-| Column                     | Type                   | Rule                                             |
-| -------------------------- | ---------------------- | ------------------------------------------------ |
-| `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                        |
-| `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                 |
-| `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                   |
-| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                         |
-| `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`       |
-| `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                    |
-| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed |
-| `ocp_photos_hash`          | `text NULL`            | SHA-256 of the photo set last answered by S5     |
-| `ocp_photos_pending`       | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)        |
-| `ocp_photos_generation`    | `integer NOT NULL`     | Default `0`; raised by every S5 trigger          |
-| `ocp_photos_claimed_until` | `timestamptz NULL`     | Photo push claimed until then (S5)               |
-| `ocp_photos_claim`         | `integer NOT NULL`     | Default `0`; raised by every photo claim (S5)    |
-| `ocp_place_pending`        | `boolean NOT NULL`     | Default `false`; a place push is due (S5)        |
-| `ocp_place_generation`     | `integer NOT NULL`     | Default `0`; raised by every place change (S5)   |
-| `ocp_place_claimed_until`  | `timestamptz NULL`     | Place push claimed until then (S5)               |
-| `ocp_place_claim`          | `integer NOT NULL`     | Default `0`; raised by every place claim (S5)    |
+| Column                     | Type                   | Rule                                                             |
+| -------------------------- | ---------------------- | ---------------------------------------------------------------- |
+| `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                                        |
+| `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                                 |
+| `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                                   |
+| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                         |
+| `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                       |
+| `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                    |
+| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed                 |
+| `ocp_photos_hash`          | `text NULL`            | SHA-256 of the photo set last answered by S5                     |
+| `ocp_photos_pending`       | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)                        |
+| `ocp_photos_generation`    | `integer NOT NULL`     | Default `0`; raised by every S5 trigger                          |
+| `ocp_photos_claimed_until` | `timestamptz NULL`     | Photo push claimed until then (S5)                               |
+| `ocp_photos_claim`         | `integer NOT NULL`     | Default `0`; raised by every photo claim (S5)                    |
+| `ocp_place_pending`        | `boolean NOT NULL`     | Default `false`; a place push is due (S5)                        |
+| `ocp_place_generation`     | `integer NOT NULL`     | Default `0`; raised by every place change (S5)                   |
+| `ocp_place_claimed_until`  | `timestamptz NULL`     | Place push claimed until then (S5)                               |
+| `ocp_place_claim`          | `integer NOT NULL`     | Default `0`; raised by every place claim (S5)                    |
+| `ocp_revision`             | `bigint NOT NULL`      | Default `0`; raised for every request sent to OpenCryptoPay (S5) |
 
 `MessageStore.deleteById` can hard-delete a top-level note, for example when
 its video file is missing. It deletes nothing for a note that has a
@@ -317,11 +318,9 @@ OpenCryptoPay reports.
 "Listed" is the only rule for what is on the OpenCryptoPay map. Every push
 goes through a durable outbox on `shop_identity`, so a failed request is
 repeated and this side never has two requests for one shop in flight.
-OpenCryptoPay may still apply a request late, after the timeout here
-dropped it; the start-up pass, which queues every row again on each deploy,
-and the next change of the shop repair the place; a `PUT` that recreates
-the place also repairs its photos. A photo request applied late after a
-newer set was confirmed stays until the photo set changes again. The
+Every request carries a `revision` (OpenCryptoPay R8) from one counter per
+shop, so a request that OpenCryptoPay applies late, after the timeout here
+dropped it, is refused there instead of overwriting newer state. The
 fire-and-forget place push of today (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logs and swallows
 failures) is replaced by it.
@@ -348,6 +347,10 @@ Rules for every claim:
 
 - Every write after a claim, including releasing it, is conditional on the
   token `c`. A worker whose lease was taken over writes nothing.
+- Before each request, the worker raises `ocp_revision` (conditional on
+  `c`) and sends the new value as `revision`. Place and photo requests share
+  this counter, so OpenCryptoPay accepts them only in the order they were
+  sent.
 - Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
   releases the claim and skips the row this tick. The 10 s cover the time
@@ -398,7 +401,10 @@ Rules for every claim:
     the place flag still depends on `g`.
   - `DELETE` 2xx: clear the pending flag; the photo state was already reset
     before sending.
-  - 400 or 409: log `ocp.place.rejected` with the message id and clear the
+  - 409 `Stale revision`: a newer request for this shop was already
+    applied; the worker only releases the claim.
+  - 400 or any other 409: log `ocp.place.rejected` with the message id and
+    clear the
     flag. It is sent again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
     log `ocp.place.failed` as today and keep the flag; the next attempt
@@ -455,6 +461,8 @@ Rules for every claim:
     OpenCryptoPay may skip single
     photos it does not accept and lists them in its answer; those are logged
     as `ocp.photos.skipped` and not retried for this set.
+  - 409 `Stale revision`: a newer request for this shop was already
+    applied; the worker sets the hash to null and only releases the claim.
   - 400 or 413: store the sent hash, clear the flag (both only while `g`
     still matches) and log `ocp.photos.rejected`. The same set is not sent
     again.
