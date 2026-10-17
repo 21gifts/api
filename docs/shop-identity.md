@@ -258,16 +258,24 @@ OpenCryptoPay reports.
   segment must match `^npub1[02-9ac-hj-np-z]{58}$` or `^[0-9a-f]{64}$`,
   otherwise `notFound()`.
 - `^[0-9a-f]{64}$` asks the api and redirects (308) to `/{npub}` on its 301.
-- `generateMetadata` like a public note: 2.5 s timeout, `title` = shop name,
+- `generateMetadata` like a public note, with the same 2.5 s timeout
+  (`AbortSignal.timeout(2500)` in `src/lib/public-message-og.ts`), `title` =
+  shop name,
   description, `og:image` = first photo or `/og.png`, canonical
   `https://21.gifts/{npub}`.
 - 404 → the existing not-found page. 410 → a "this shop is no longer listed"
   page without a name. 503 → an error state with retry, never a blank page.
-- Content: photo gallery, name, description, address with a directions link,
-  a small map with one pin, the pay link and QR of the till account
-  (`/pay/<payUsername>`) only when `payUsername` is not `null`, a link to
-  the forum note (`/messages/<messageId>`), the npub with a copy button and
-  the NIP-05.
+- Content: name, description, address with a directions link, a link to the
+  forum note (`/messages/<messageId>`) and the NIP-05. The page reuses these
+  app components (all in `src/components/` of 21gifts/app):
+  - photos: `ForumPhotoGallery`;
+  - map: the Google Maps setup of `PlacesMapScreen`, drawing only this
+    shop's marker; without a maps key the page keeps only the directions
+    link, the same fallback `PlacesMapScreen` uses. `PlacesMapScreen` itself
+    is not embedded because it loads every place;
+  - pay QR: `QrCode`, with the pay link `/pay/<payUsername>`, shown only when
+    `payUsername` is not `null`;
+  - npub copy button: the copy control of `ExternalAuthorProfile`.
 - The shops page (`/shops`) and the map link each shop to `/{npub}` instead
   of the note.
 - All visible text goes through the existing translations.
