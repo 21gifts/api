@@ -163,8 +163,8 @@ export interface PublicConversation {
   accountId?: string;
   /**
    * Whether the counterpart can receive a payment (a verified in-app wallet
-   * with the LNURL server configured). False for Damus-only counterparts, the
-   * moderator group, and a missing account.
+   * with the LNURL server configured). False for a counterpart without a
+   * 21.gifts account, the moderator group, and a missing account.
    */
   canReceive: boolean;
 }
