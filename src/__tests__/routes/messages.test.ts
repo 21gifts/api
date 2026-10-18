@@ -12151,6 +12151,34 @@ describe('shop OCP place hook', () => {
     expect(meta[0]?.method).toBe('DELETE');
   });
 
+  it('answers 200 for a text write on a note hidden concurrently without a map push', async () => {
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    const hidden = { ...before, deletedAt: new Date(0) };
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : hidden;
+      },
+      updateText: async () => hidden,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(await staffStore('Ada'), store).request(
+      '/messages/' + SHOP_ID + '/text',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'Fresh pastries and coffee are served throughout the day.' }),
+      },
+    );
+    expect(res.status).toBe(200);
+  });
+
   it('sends nothing when a place write reloads a pin cleared concurrently', async () => {
     const { mapPush, calls } = recordingMap();
     const messages = new InMemoryMessageStore();
