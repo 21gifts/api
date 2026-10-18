@@ -43,9 +43,7 @@ Bun.serve({
     if (request.method === 'GET' && url.pathname === '/_calls') {
       bootClosed = true;
       const externalId = url.searchParams.get('externalId');
-      return Response.json(
-        externalId === null ? authorizedCalls : (calls.get(externalId) ?? []),
-      );
+      return Response.json(externalId === null ? authorizedCalls : (calls.get(externalId) ?? []));
     }
     if (request.method === 'GET' && url.pathname === '/_boot') {
       bootClosed = true;
