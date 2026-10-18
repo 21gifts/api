@@ -1060,9 +1060,11 @@ duty, and the order duty.
    row, then writes those values onto the kept row, because the unique
    indexes are not deferrable. It answers from the kept row.
 
-Every transaction that changes a proof's `result`, and step 4, first
-locks the payment's `shop_payment` row (`SELECT … FOR UPDATE`), then
-reads the payment's status and which proof is `accepted`, then locks every proof row it changes
+Every transaction that changes a proof's `result`, step 4, the
+order-status duty's step for a replaced order ([Calls](#calls)), and the
+orders duty's clearing of `next_history_at` first lock the payment's
+`shop_payment` row (`SELECT … FOR UPDATE`), then read the payment's
+status, which proof is `accepted`, and the successor columns, then lock every proof row they change
 with one `SELECT … FOR UPDATE` ordered by id. Two decisions about one
 payment therefore never run at the same time, also across the two
 containers. The payment row comes before the proof rows everywhere, and
@@ -1326,12 +1328,13 @@ that for the overlap of a deploy, because the per-IP limit still holds. `next_hi
 detail of a payment is issued and cleared when the order watch of its
 last offer ends, except while some proof of the payment has a
 `superseded_by_order` that no proof holds as `provider_order` and
-`successor_wait_until` has not passed ([Calls](#calls)). When that time
-passes first, the duty logs `shop.alert.successor_missing` and clears
-`next_history_at` and `successor_wait_until` together. One read is one page; `history_offset` keeps the next
+`successor_wait_until` has not passed ([Calls](#calls)); such a payment is
+read every 60 s instead of every 10 s. When that time passes first, duty 3 logs `shop.alert.successor_missing` and clears `next_history_at` and
+`successor_wait_until` together. Both decisions run under the payment row
+lock ([Storing and submitting](#storing-and-submitting)). One read is one page; `history_offset` keeps the next
 offset, and a short page starts the next read at offset 0 again. Duty 3
 reads one payment until the order watch of its last offer with an issued
-detail ends, also after the payment is paid or closed, because a later
+detail ends, or while it waits for a successor as stated above, also after the payment is paid or closed, because a later
 deposit still makes an order that Orchestra must fill or refund.
 
 The BOLT11 settling marks the payment `paid` and runs `markPaid` for its
@@ -1467,6 +1470,8 @@ CREATE INDEX IF NOT EXISTS shop_proof_user_op_idx
 CREATE INDEX IF NOT EXISTS shop_proof_submit_idx ON shop_proof (next_submit_at);
 CREATE INDEX IF NOT EXISTS shop_proof_receipt_idx ON shop_proof (next_receipt_at);
 CREATE INDEX IF NOT EXISTS shop_proof_status_idx ON shop_proof (next_status_at);
+CREATE INDEX IF NOT EXISTS shop_proof_superseded_idx
+  ON shop_proof (payment_id) WHERE superseded_by_order IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS shop_proof_lookup (
   id           uuid PRIMARY KEY,
