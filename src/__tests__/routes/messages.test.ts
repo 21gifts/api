@@ -12052,6 +12052,78 @@ describe('shop OCP place hook', () => {
     expect(meta.filter((item) => item.method === 'PUT')).toHaveLength(2);
   });
 
+  it('deletes the map pin when a place write reloads an incomplete concurrent place', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : { ...before, place: { ...PIN, address: null } };
+      },
+      setPlace: async () => true,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(await staffStore('Ada'), store, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/place',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ place: PIN }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+    expect(JSON.parse(calls[0] ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: SHOP_ID,
+    });
+  });
+
+  it('deletes the map pin when a text write reloads an incomplete concurrent place', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    const updatedText = 'Fresh pastries and coffee are served throughout the day.\n\n#21GiftsShop';
+    const concurrent = { ...before, text: updatedText, place: { ...PIN, address: null } };
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : concurrent;
+      },
+      updateText: async () => concurrent,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(await staffStore('Ada'), store, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/text',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'Fresh pastries and coffee are served throughout the day.' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+    expect(JSON.parse(calls[0] ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: SHOP_ID,
+    });
+  });
+
   it('puts when a shop-account change has a place and skips when it does not', async () => {
     const withPlace = recordingMap();
     const authWithPlace = await staffStore('Ada');

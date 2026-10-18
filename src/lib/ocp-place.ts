@@ -3,7 +3,8 @@
  *
  * Coordinates follow the same 6-decimal rounding as forum pins. A complete
  * shop note pin maps onto one OCP place (`origin` `21gifts`, `techProvider`
- * `21.gifts`). An incomplete shop is not sent.
+ * `21.gifts`). An incomplete shop is not put; edit synchronization may delete
+ * it so an older complete version does not stay on the map.
  */
 
 import { errorLogFields, logEvent } from '@/lib/log';
@@ -205,11 +206,13 @@ async function mapPlacesRequest(
  *
  * Only when `parentId` is null, the text contains `#21GiftsShop`, a pin is
  * present, {@link shopOcpPlaceInput} is non-null, and `mapPush` is configured.
- * An incomplete existing shop is not sent. A pin that already existed is still
- * sent when complete. BTC Map is not called here. Failures are logged as
- * `ocp.place.failed` and swallowed.
+ * An incomplete existing shop is normally not sent. When `removeWhenIncomplete`
+ * is true, it is deleted instead: concurrent place and text edits can leave an
+ * incomplete pair, and removing it keeps the map from showing the stale shop.
+ * A pin that already existed is still sent when complete. BTC Map is not called
+ * here. Failures are logged as `ocp.place.failed` and swallowed.
  *
- * @param opts - Optional map push, message fields, and pin.
+ * @param opts - Optional map push, message fields, pin, and incomplete-removal policy.
  */
 export async function syncShopOcpPlace(opts: {
   mapPush?: MapPush;
@@ -217,6 +220,7 @@ export async function syncShopOcpPlace(opts: {
   text: string;
   parentId: string | null;
   place: ForumPlace | null;
+  removeWhenIncomplete?: boolean;
   /** Hashtag token check (injected so tests need not import the message helper). */
   textHasHashtagToken: (text: string, name: string) => boolean;
 }): Promise<void> {
@@ -230,6 +234,9 @@ export async function syncShopOcpPlace(opts: {
   }
   const body = shopOcpPlaceInput(opts.messageId, opts.text, opts.place);
   if (body === null) {
+    if (opts.removeWhenIncomplete === true) {
+      await removeShopOcpPlace({ mapPush: opts.mapPush, messageId: opts.messageId });
+    }
     return;
   }
   await mapPlacesRequest(opts.mapPush, 'PUT', body);

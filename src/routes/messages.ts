@@ -271,7 +271,8 @@ export interface MessagesRouteDeps {
   spendPing?: SpendPing;
   /**
    * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * write, DELETE on clear or hide). Omitted → the forum write still
+   * a complete write; DELETE on clear, hide, or an incomplete place/text
+   * pair re-read after a place/text write). Omitted → the forum write still
    * succeeds and nothing is sent.
    */
   mapPush?: MapPush;
@@ -2292,7 +2293,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             messageId: updated.id,
             text: updated.text,
             parentId: updated.parentId ?? null,
-            place: parsed.value,
+            place: updated.place ?? null,
+            removeWhenIncomplete: true,
             textHasHashtagToken,
           });
         } else {
@@ -2540,6 +2542,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           text: updated.text,
           parentId: updated.parentId ?? null,
           place: updated.place ?? null,
+          removeWhenIncomplete: true,
           textHasHashtagToken,
         });
         return c.json(
