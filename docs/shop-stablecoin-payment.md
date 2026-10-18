@@ -1028,7 +1028,9 @@ duty, and the order duty.
 
 1. Look for a stored proof of the same offer and transaction. A row
    without `log_index` (a `detected` or `hex` proof) takes the log index
-   and value; a row with that log index is a repeat. A row without an
+   and value; a row with that log index is a repeat. A found row without
+   `user_op_hash` takes the request's, so that a repeat by that hash finds
+   it. A row without an
    order takes the order that the order duty found for the same
    transaction and offer. Otherwise insert the
    `shop_proof` row with `give_up_at` 24 h ahead. A lost insert (`23505`)
@@ -1051,8 +1053,8 @@ duty, and the order duty.
    step 3, and nothing is deleted. When it belongs to the same offer, in
    one transaction
    the api keeps the row that holds an order, or else the older row,
-   reads the other row's log index, value, and order, keeps any value
-   the kept row already has, deletes the other
+   reads the other row's log index, value, order, and `user_op_hash`,
+   keeps any value the kept row already has, deletes the other
    row, then writes those values onto the kept row, because the unique
    indexes are not deferrable. It answers from the kept row.
 5. When the orders duty finds that the successor of a row's order (the
