@@ -1246,6 +1246,15 @@ type ShopCreationInput =
   | { kind: 'payer'; account: Account; username: string; amountSats: number };
 
 /**
+ * The in-flight creation procedure of one pending charge: its outcome, and
+ * when it took the account's creation lock (`null` while it is still queued).
+ */
+interface ShopChargeCreation {
+  readonly promise: Promise<ShopCreation>;
+  startMs: number | null;
+}
+
+/**
  * Shop payment service: one instance per process, created at boot when the
  * LNURL server resolves. Holds the per-account creation locks, the two
  * creation counters, the no-pair waits, and the cached route list.
@@ -1256,10 +1265,12 @@ export class ShopPayments {
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #locks = new Map<string, Promise<unknown>>();
   /**
-   * The creation procedure that holds an account's lock, by account id:
-   * when it took the lock, and its charge (`null` for a payer creation).
+   * The in-flight creation of each pending charge, by charge id, from the
+   * moment it is queued until it ends. A later caller for the same charge
+   * joins it instead of queueing another run, the way `translate-note.ts`
+   * keeps its in-flight work.
    */
-  readonly #runningCreation = new Map<string, { startMs: number; chargeId: string | null }>();
+  readonly #chargeCreations = new Map<string, ShopChargeCreation>();
   readonly #noPairUntil = new Map<string, number>();
   readonly #apiCreations = new IpRateLimiter(SHOP_API_CREATIONS_PER_MINUTE);
   readonly #accountCreations = new IpRateLimiter(SHOP_ACCOUNT_CREATIONS_PER_MINUTE);
@@ -1590,7 +1601,8 @@ export class ShopPayments {
   }
 
   /**
-   * The creation procedure for a pending charge.
+   * The creation procedure for a pending charge. A creation for the same
+   * charge that is already queued or running is joined, not run again.
    *
    * @param account - Shop account.
    * @param username - Its username.
@@ -1598,13 +1610,36 @@ export class ShopPayments {
    * @returns The outcome.
    */
   createForCharge(account: Account, username: string, charge: PosCharge): Promise<ShopCreation> {
-    return this.#create({
-      kind: 'charge',
-      account,
-      username,
-      charge,
-      amountSats: charge.amountSats,
-    });
+    return this.#chargeCreation(account, username, charge).promise;
+  }
+
+  /**
+   * The charge's in-flight creation: the one already queued or running, or
+   * a new run queued now and registered until it ends (also on a throw).
+   *
+   * @param account - Shop account.
+   * @param username - Its username.
+   * @param charge - The pending charge.
+   * @returns The in-flight creation.
+   */
+  #chargeCreation(account: Account, username: string, charge: PosCharge): ShopChargeCreation {
+    const running = this.#chargeCreations.get(charge.id);
+    if (running !== undefined) {
+      return running;
+    }
+    const entry: ShopChargeCreation = {
+      startMs: null,
+      promise: this.#create(
+        { kind: 'charge', account, username, charge, amountSats: charge.amountSats },
+        (startMs) => {
+          entry.startMs = startMs;
+        },
+      ).finally(() => {
+        this.#chargeCreations.delete(charge.id);
+      }),
+    };
+    this.#chargeCreations.set(charge.id, entry);
+    return entry;
   }
 
   /**
@@ -1627,23 +1662,14 @@ export class ShopPayments {
    *
    * @param input - Charge or payer creation.
    * @param onStart - Called with the clock when this run takes the lock,
-   *   before its re-read (the pay link counts its wait from here).
+   *   before its re-read (a joining pay link counts its wait from here).
    * @returns The outcome.
    */
   #create(input: ShopCreationInput, onStart?: (startMs: number) => void): Promise<ShopCreation> {
-    const { account } = input;
-    return this.#withLock(account.id, async () => {
+    return this.#withLock(input.account.id, async () => {
       const startMs = this.#deps.now();
-      this.#runningCreation.set(account.id, {
-        startMs,
-        chargeId: input.kind === 'charge' ? input.charge.id : null,
-      });
       onStart?.(startMs);
-      try {
-        return await this.#createLocked(input, startMs);
-      } finally {
-        this.#runningCreation.delete(account.id);
-      }
+      return this.#createLocked(input, startMs);
     });
   }
 
@@ -2028,30 +2054,22 @@ export class ShopPayments {
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
-      // The wait follows the creation procedure for this charge: joining
-      // one that already runs ends the wait when its 8 s budget is used up.
-      // Otherwise this request's own run is that procedure; while it is
-      // queued behind another holder of the lock (a payer creation, another
-      // charge's creation, a quote replacement), the request waits for it to
-      // take the lock, then for its budget. A run that re-reads and stops at
-      // once ends the wait right away.
-      const charge = state.charge;
-      const running = this.#runningCreation.get(account.id);
-      // The executor runs at once, so `creation` is this request's run.
-      let creation: Promise<ShopCreation | null> = Promise.resolve(null);
-      const ownStart = new Promise<number>((resolve) => {
-        creation = this.#create(
-          { kind: 'charge', account, username, charge, amountSats: charge.amountSats },
-          resolve,
-        ).catch(() => null);
-      });
-      const procedureStartMs = running?.chargeId === charge.id ? running.startMs : await ownStart;
-      const waitMs = procedureStartMs + SHOP_CREATION_BUDGET_MS - this.#deps.now();
+      // The request starts or joins the charge's in-flight creation and
+      // waits until it ends, at most until the earlier of 8 s after this
+      // request reached this step and 8 s after that procedure took the
+      // account's lock. A procedure still queued (behind a payer creation,
+      // another charge's creation, a quote replacement, or a stalled holder)
+      // takes the lock at or after this request's arrival, so its budget
+      // never ends earlier: only a running one shortens the wait. A creation
+      // that outlasts the wait goes on in the background.
+      const arrivalMs = this.#deps.now();
+      const creation = this.#chargeCreation(account, username, state.charge);
+      const waitMs = (creation.startMs ?? arrivalMs) + SHOP_CREATION_BUDGET_MS - arrivalMs;
       if (waitMs > 0) {
-        await Promise.race([creation, this.#sleep(waitMs).then(() => null)]);
+        await Promise.race([creation.promise.catch(() => null), this.#sleep(waitMs)]);
       }
       // Whatever the outcome (a payment, a charge cancelled, expired, or
-      // paid meanwhile, or the 8 s budget), answer from the state now.
+      // paid meanwhile, or the end of the wait), answer from the state now.
       state = await this.#linkState(account.id, this.#deps.now());
     }
     if (state.kind === 'open') {

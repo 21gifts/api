@@ -500,15 +500,20 @@ the 404 for no pending payment).
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
 for the username, and waits for it until the procedure's 8 s budget is
-used up, with or without `timeout`. The wait follows the procedure for
-this charge. When it joins a procedure for the same charge that already
-runs, that procedure's budget counts, so the wait ends 8 s after that
-procedure started, not 8 s after the join. Otherwise the request's own
-run is that procedure: while it is queued behind another procedure of the
-account (a payer creation, another charge's creation, a quote
-replacement), the request waits for it to take the creation lock, and the
-8 s count from then. A run that re-reads and stops at once (the charge
-already has a payment, or is no longer pending) ends the wait right away.
+used up, with or without `timeout`. A charge has at most one creation in
+flight, from the moment it is queued until it ends: requests for the same
+charge (and the creation `POST /pos` starts) share it instead of queueing
+another run. The wait ends at the earlier of 8 s after the request reached
+this step and 8 s after the procedure it joins took the creation lock. A
+procedure still queued behind another procedure of the account (a payer
+creation, another charge's creation, a quote replacement, or a holder that
+does not finish) takes the lock at or after the request's arrival, so the
+wait then ends 8 s after the arrival at the latest; joining a procedure
+that already runs waits only for the rest of its budget, and not at all
+once it is used up. A creation that outlasts the wait goes on in the
+background. A creation that ends earlier (it re-reads and stops at once
+because the charge already has a payment or is no longer pending, or it
+fails) ends the wait right away, and the next request starts a new one.
 Whatever the outcome (a payment, a skipped or failed creation, a charge
 cancelled, paid, or expired meanwhile, or the 8 s used up), the api then
 reads the account's state again and answers from it: the open-amount pay

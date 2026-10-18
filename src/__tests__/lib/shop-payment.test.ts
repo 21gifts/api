@@ -1909,7 +1909,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     );
   });
 
-  it('serialises creations of one account under the lock; a second charge caller joins the first payment', async () => {
+  it('serialises creations of one account under the lock; a second charge caller joins the first in-flight creation', async () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
@@ -1921,6 +1921,11 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       true,
     );
     expect(h.net.issued).toHaveLength(1);
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    // A later run for the same charge re-reads under the lock and returns its payment.
+    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual(a);
+    expect(h.net.issued).toHaveLength(1);
+    expect(h.orchestra.routesCalls).toHaveLength(1);
   });
 
   it('replaces an open payer payment with end_reason replaced; two payers run one after the other', async () => {
@@ -2727,6 +2732,12 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
+    // The thrown creation is no longer in flight: the next request starts a new one.
+    expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+    expect(thrown.orchestra.routesCalls).toHaveLength(2);
 
     const slow = await setup();
     await slow.pos.create(chargeRow());
@@ -2781,7 +2792,29 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     return (result) => releases[0]?.(result);
   }
 
-  it('a charge creation queued behind a running payer creation waits for its own run to start, then its full 8 s budget, with or without timeout', async () => {
+  it('a lock holder that never releases: the request answers today’s pinned request 8 s after its arrival, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      h.orchestra.routesImpl = () => new Promise(() => undefined);
+      void h.svc.createForPayer(h.account, USER, SATS);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+      await h.pos.create(chargeRow());
+      clock = T0 + 5_000;
+      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
+      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      // One wait of 8 s from the arrival; the charge's creation is still queued.
+      expect(sleepCalls).toEqual([8_000]);
+      expect(h.orchestra.routesCalls).toHaveLength(1);
+      sleepImpl = defaultSleep;
+    }
+  });
+
+  it('a charge creation queued behind a payer creation that holds the lock 7 s answers 8 s after the arrival at the latest, with or without timeout', async () => {
     for (const timeout of [null, '5']) {
       sleepCalls = [];
       clock = T0;
@@ -2792,23 +2825,60 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       const charge = chargeRow();
       await h.pos.create(charge);
       clock = T0 + 5_000;
-      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
+      let endWait = (): void => undefined;
+      sleepImpl = (ms) =>
+        ms === 8_000
+          ? new Promise<void>((resolve) => {
+              endWait = resolve;
+            })
+          : defaultSleep(ms);
       const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      // Still queued: no budget wait has started.
-      expect(sleepCalls).toEqual([]);
-      clock = T0 + 7_000;
+      // Still queued, the request already waits 8 s from its arrival.
+      await vi.waitFor(() => expect(sleepCalls).toEqual([8_000]));
+      clock = T0 + 12_000;
       release({ ok: false });
       expect(await payer).toEqual({ kind: 'unavailable' });
+      // The charge's run took the lock at T0 + 12 s; its route list does not answer.
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+      clock = T0 + 13_000;
+      endWait();
       expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      // This charge's run took the lock at T0 + 7 s: the whole 8 s from there.
       expect(sleepCalls).toEqual([8_000]);
-      expect(h.orchestra.routesCalls).toHaveLength(2);
       sleepImpl = defaultSleep;
     }
   });
 
-  it('a charge creation queued behind a quote replacement waits for its own run to start, then its full 8 s budget, with or without timeout', async () => {
+  it('two simultaneous requests for one charge queued behind a held lock share one creation run and answer within 8 s of their arrival, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      let releasePayer = (_result: OrchestraRoutesResult): void => undefined;
+      h.orchestra.routesImpl = () =>
+        h.orchestra.routesCalls.length === 1
+          ? new Promise((resolve) => {
+              releasePayer = resolve;
+            })
+          : Promise.resolve({ ok: false });
+      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+      await h.pos.create(chargeRow());
+      clock = T0 + 5_000;
+      // The 8 s waits never end: only the shared creation ends both requests.
+      const first = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const second = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      await vi.waitFor(() => expect(sleepCalls).toEqual([8_000, 8_000]));
+      clock = T0 + 12_000;
+      releasePayer({ ok: false });
+      expect(await payer).toEqual({ kind: 'unavailable' });
+      expect(await first).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      expect(await second).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      // One route-list fetch for the payer, one for the charge's single run.
+      expect(h.orchestra.routesCalls).toHaveLength(2);
+    }
+  });
+
+  it('a charge creation queued behind a quote replacement answers 8 s after the arrival at the latest, with or without timeout', async () => {
     for (const timeout of [null, '5']) {
       sleepCalls = [];
       clock = T0;
@@ -2826,19 +2896,20 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
           { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
         ),
       );
-      const charge = chargeRow();
-      await h.pos.create(charge);
+      await h.pos.create(chargeRow());
       clock = T0 + 62_000;
       sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
-      await new Promise((resolve) => setTimeout(resolve, 0));
-      expect(sleepCalls).toEqual([]);
-      clock = T0 + 64_000;
+      // Answered while the replacement still holds the lock.
+      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      expect(sleepCalls).toEqual([8_000]);
+      expect(h.orchestra.routesCalls).toHaveLength(2);
+      // The charge's creation goes on in the background once the lock is free.
       release({ ok: false });
       expect(await replacement).toBeNull();
-      expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-      expect(sleepCalls).toEqual([8_000]);
-      expect(h.orchestra.routesCalls).toHaveLength(3);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(3));
       sleepImpl = defaultSleep;
     }
   });
