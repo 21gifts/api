@@ -16,9 +16,9 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 
 ## Indexes
 
-| Columns             | Unique | Where |
-| ------------------- | ------ | ----- |
-| `message_id`, `idx` | Yes    | –     |
+| Columns             | Unique | Where | Definition                                                                                                                           |
+| ------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| `message_id`, `idx` | Yes    | –     | `CREATE UNIQUE INDEX conversation_message_extra_photo_pkey ON public.conversation_message_extra_photo USING btree (message_id, idx)` |
 
 ## Referenced by
 

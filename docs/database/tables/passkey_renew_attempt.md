@@ -34,10 +34,10 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns                    | Unique | Where |
-| -------------------------- | ------ | ----- |
-| `account_id`, `created_at` | No     | –     |
-| `id`                       | Yes    | –     |
+| Columns                    | Unique | Where | Definition                                                                                                                 |
+| -------------------------- | ------ | ----- | -------------------------------------------------------------------------------------------------------------------------- |
+| `account_id`, `created_at` | No     | –     | `CREATE INDEX passkey_renew_attempt_account_idx ON public.passkey_renew_attempt USING btree (account_id, created_at DESC)` |
+| `id`                       | Yes    | –     | `CREATE UNIQUE INDEX passkey_renew_attempt_pkey ON public.passkey_renew_attempt USING btree (id)`                          |
 
 ## Referenced by
 

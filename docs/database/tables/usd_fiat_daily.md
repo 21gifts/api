@@ -17,9 +17,9 @@ Source: [src/lib/usd-fiat-store.ts](../../../src/lib/usd-fiat-store.ts)
 
 ## Indexes
 
-| Columns        | Unique | Where |
-| -------------- | ------ | ----- |
-| `day`, `quote` | Yes    | –     |
+| Columns        | Unique | Where | Definition                                                                                  |
+| -------------- | ------ | ----- | ------------------------------------------------------------------------------------------- |
+| `day`, `quote` | Yes    | –     | `CREATE UNIQUE INDEX usd_fiat_daily_pkey ON public.usd_fiat_daily USING btree (day, quote)` |
 
 ## Referenced by
 

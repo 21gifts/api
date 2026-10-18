@@ -16,7 +16,8 @@
           "env": { "CI": "true" },
           "steps": [
             ["bun", "install", "--frozen-lockfile"],
-            ["bun", "run", "lint"]
+            ["bun", "run", "lint"],
+            ["node", "--test", "scripts/db-change-notice.test.mjs"]
           ]
         }
       }

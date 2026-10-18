@@ -14,9 +14,9 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns | Unique | Where |
-| ------- | ------ | ----- |
-| `token` | Yes    | –     |
+| Columns | Unique | Where | Definition                                                                         |
+| ------- | ------ | ----- | ---------------------------------------------------------------------------------- |
+| `token` | Yes    | –     | `CREATE UNIQUE INDEX auth_session_pkey ON public.auth_session USING btree (token)` |
 
 ## Referenced by
 

@@ -22,9 +22,9 @@ Source: [src/lib/member-habit-store.ts](../../../src/lib/member-habit-store.ts)
 
 ## Indexes
 
-| Columns | Unique | Where |
-| ------- | ------ | ----- |
-| `id`    | Yes    | –     |
+| Columns | Unique | Where | Definition                                                                      |
+| ------- | ------ | ----- | ------------------------------------------------------------------------------- |
+| `id`    | Yes    | –     | `CREATE UNIQUE INDEX member_habit_pkey ON public.member_habit USING btree (id)` |
 
 ## Referenced by
 

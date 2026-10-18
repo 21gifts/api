@@ -25,11 +25,11 @@ Source: [src/lib/api-log.ts](../../../src/lib/api-log.ts)
 
 ## Indexes
 
-| Columns                          | Unique | Where |
-| -------------------------------- | ------ | ----- |
-| `account_id`, `created_at`, `id` | No     | –     |
-| `created_at`, `id`               | No     | –     |
-| `id`                             | Yes    | –     |
+| Columns                          | Unique | Where | Definition                                                                                                         |
+| -------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `account_id`, `created_at`, `id` | No     | –     | `CREATE INDEX api_log_account_created_at_idx ON public.api_log USING btree (account_id, created_at DESC, id DESC)` |
+| `created_at`, `id`               | No     | –     | `CREATE INDEX api_log_created_at_idx ON public.api_log USING btree (created_at DESC, id DESC)`                     |
+| `id`                             | Yes    | –     | `CREATE UNIQUE INDEX api_log_pkey ON public.api_log USING btree (id)`                                              |
 
 ## Referenced by
 

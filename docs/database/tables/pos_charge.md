@@ -17,11 +17,11 @@ Source: [src/lib/pos-store.ts](../../../src/lib/pos-store.ts)
 
 ## Indexes
 
-| Columns                          | Unique | Where                        |
-| -------------------------------- | ------ | ---------------------------- |
-| `account_id`                     | Yes    | `(status = 'pending'::text)` |
-| `account_id`, `created_at`, `id` | No     | –                            |
-| `id`                             | Yes    | –                            |
+| Columns                          | Unique | Where                        | Definition                                                                                                                          |
+| -------------------------------- | ------ | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
+| `account_id`                     | Yes    | `(status = 'pending'::text)` | `CREATE UNIQUE INDEX pos_charge_account_pending_idx ON public.pos_charge USING btree (account_id) WHERE (status = 'pending'::text)` |
+| `account_id`, `created_at`, `id` | No     | –                            | `CREATE INDEX pos_charge_account_created_idx ON public.pos_charge USING btree (account_id, created_at DESC, id DESC)`               |
+| `id`                             | Yes    | –                            | `CREATE UNIQUE INDEX pos_charge_pkey ON public.pos_charge USING btree (id)`                                                         |
 
 ## Referenced by
 

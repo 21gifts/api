@@ -16,9 +16,9 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns         | Unique | Where |
-| --------------- | ------ | ----- |
-| `credential_id` | Yes    | –     |
+| Columns         | Unique | Where | Definition                                                                                             |
+| --------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------ |
+| `credential_id` | Yes    | –     | `CREATE UNIQUE INDEX passkey_credential_pkey ON public.passkey_credential USING btree (credential_id)` |
 
 ## Referenced by
 

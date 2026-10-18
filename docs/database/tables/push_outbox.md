@@ -22,10 +22,10 @@ Source: [src/lib/push-store.ts](../../../src/lib/push-store.ts)
 
 ## Indexes
 
-| Columns            | Unique | Where                        |
-| ------------------ | ------ | ---------------------------- |
-| `created_at`, `id` | No     | `(status = 'pending'::text)` |
-| `id`               | Yes    | –                            |
+| Columns            | Unique | Where                        | Definition                                                                                                                 |
+| ------------------ | ------ | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `created_at`, `id` | No     | `(status = 'pending'::text)` | `CREATE INDEX push_outbox_pending_idx ON public.push_outbox USING btree (created_at, id) WHERE (status = 'pending'::text)` |
+| `id`               | Yes    | –                            | `CREATE UNIQUE INDEX push_outbox_pkey ON public.push_outbox USING btree (id)`                                              |
 
 ## Referenced by
 

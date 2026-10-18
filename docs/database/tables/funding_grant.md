@@ -19,9 +19,9 @@ Source: [src/lib/funding-store.ts](../../../src/lib/funding-store.ts)
 
 ## Indexes
 
-| Columns      | Unique | Where |
-| ------------ | ------ | ----- |
-| `account_id` | Yes    | –     |
+| Columns      | Unique | Where | Definition                                                                                |
+| ------------ | ------ | ----- | ----------------------------------------------------------------------------------------- |
+| `account_id` | Yes    | –     | `CREATE UNIQUE INDEX funding_grant_pkey ON public.funding_grant USING btree (account_id)` |
 
 ## Referenced by
 

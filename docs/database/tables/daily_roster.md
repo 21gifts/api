@@ -15,9 +15,9 @@ Source: [src/lib/daily-roster-store.ts](../../../src/lib/daily-roster-store.ts)
 
 ## Indexes
 
-| Columns     | Unique | Where |
-| ----------- | ------ | ----- |
-| `singleton` | Yes    | –     |
+| Columns     | Unique | Where | Definition                                                                             |
+| ----------- | ------ | ----- | -------------------------------------------------------------------------------------- |
+| `singleton` | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_pkey ON public.daily_roster USING btree (singleton)` |
 
 ## Referenced by
 

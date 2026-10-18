@@ -391,6 +391,16 @@ function fixture(): {
       where: null,
       definition: 'CREATE UNIQUE INDEX gift_note_key ON public.gift USING btree (note)',
     },
+    {
+      table_name: 'gift',
+      name: 'gift_note_search_idx',
+      columns: ['(expression)'],
+      is_unique: false,
+      is_primary: false,
+      where: '(note IS NOT NULL)',
+      definition:
+        'CREATE INDEX gift_note_search_idx ON public.gift USING btree (lower(note) DESC) INCLUDE (account_id) WHERE (note IS NOT NULL)',
+    },
   ];
   return { columns, constraints, indexes };
 }
@@ -436,6 +446,10 @@ describe('buildSchemaModel and renderPages', () => {
     expect(giftPage).toContain('## Relations');
     expect(giftPage).toContain('erDiagram');
     expect(giftPage).toContain('}o--||');
+    expect(giftPage).toMatch(/\| Columns +\| Unique +\| Where +\| Definition +\|/);
+    expect(giftPage).toContain(
+      '`CREATE INDEX gift_note_search_idx ON public.gift USING btree (lower(note) DESC) INCLUDE (account_id) WHERE (note IS NOT NULL)`',
+    );
     expect(accountPage).toContain('## Referenced by');
     expect(accountPage).toContain('gift');
     expect(markerPage).not.toContain('## Relations');
@@ -588,6 +602,66 @@ describe('foreign key uniqueness', () => {
     const foreignKeys = model.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
     expect(foreignKeys).toHaveLength(1);
     expect(foreignKeys[0]?.unique).toBe(true);
+  });
+
+  test('treats an exact IS NOT NULL partial unique index as unique for a single-column foreign key', () => {
+    for (const predicate of [
+      'parent_id IS NOT NULL',
+      '(parent_id IS NOT NULL)',
+      '("parent_id" IS NOT NULL)',
+    ]) {
+      const model = buildSchemaModel(
+        [textColumn('parent', 'id', 1), textColumn('child', 'parent_id', 1)],
+        [
+          key('parent', 'parent_pkey', 'p', ['id'], null, []),
+          key('child', 'child_parent_fkey', 'f', ['parent_id'], 'parent', ['id']),
+        ],
+        [
+          {
+            table_name: 'child',
+            name: 'child_parent_id_key',
+            columns: ['parent_id'],
+            is_unique: true,
+            is_primary: false,
+            where: predicate,
+            definition: `CREATE UNIQUE INDEX child_parent_id_key ON child (parent_id) WHERE ${predicate}`,
+          },
+        ],
+      );
+      const foreignKeys = model.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+      expect(foreignKeys).toHaveLength(1);
+      expect(foreignKeys[0]?.unique).toBe(true);
+    }
+  });
+
+  test('does not treat other partial unique index predicates as foreign-key uniqueness', () => {
+    for (const predicate of [
+      'parent_id IS NULL',
+      '(parent_id IS NOT NULL) AND active',
+      'other_id IS NOT NULL',
+    ]) {
+      const model = buildSchemaModel(
+        [textColumn('parent', 'id', 1), textColumn('child', 'parent_id', 1)],
+        [
+          key('parent', 'parent_pkey', 'p', ['id'], null, []),
+          key('child', 'child_parent_fkey', 'f', ['parent_id'], 'parent', ['id']),
+        ],
+        [
+          {
+            table_name: 'child',
+            name: 'child_parent_id_key',
+            columns: ['parent_id'],
+            is_unique: true,
+            is_primary: false,
+            where: predicate,
+            definition: `CREATE UNIQUE INDEX child_parent_id_key ON child (parent_id) WHERE ${predicate}`,
+          },
+        ],
+      );
+      const foreignKeys = model.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+      expect(foreignKeys).toHaveLength(1);
+      expect(foreignKeys[0]?.unique).toBe(false);
+    }
   });
 });
 

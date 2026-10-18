@@ -18,10 +18,10 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns                          | Unique | Where |
-| -------------------------------- | ------ | ----- |
-| `id`                             | Yes    | –     |
-| `message_id`, `created_at`, `id` | No     | –     |
+| Columns                          | Unique | Where | Definition                                                                                                                |
+| -------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------------- |
+| `id`                             | Yes    | –     | `CREATE UNIQUE INDEX message_edit_pkey ON public.message_edit USING btree (id)`                                           |
+| `message_id`, `created_at`, `id` | No     | –     | `CREATE INDEX message_edit_message_created_idx ON public.message_edit USING btree (message_id, created_at DESC, id DESC)` |
 
 ## Referenced by
 

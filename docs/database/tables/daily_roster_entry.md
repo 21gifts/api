@@ -15,10 +15,10 @@ Source: [src/lib/daily-roster-store.ts](../../../src/lib/daily-roster-store.ts)
 
 ## Indexes
 
-| Columns             | Unique | Where |
-| ------------------- | ------ | ----- |
-| `address`, `bucket` | Yes    | –     |
-| `id`                | Yes    | –     |
+| Columns             | Unique | Where | Definition                                                                                                             |
+| ------------------- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------- |
+| `address`, `bucket` | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_address_bucket_key ON public.daily_roster_entry USING btree (address, bucket)` |
+| `id`                | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_pkey ON public.daily_roster_entry USING btree (id)`                            |
 
 ## Referenced by
 

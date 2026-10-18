@@ -16,9 +16,9 @@ Source: [src/lib/translation-store.ts](../../../src/lib/translation-store.ts)
 
 ## Indexes
 
-| Columns                     | Unique | Where |
-| --------------------------- | ------ | ----- |
-| `message_id`, `target_lang` | Yes    | –     |
+| Columns                     | Unique | Where | Definition                                                                                                         |
+| --------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `message_id`, `target_lang` | Yes    | –     | `CREATE UNIQUE INDEX message_translation_pkey ON public.message_translation USING btree (message_id, target_lang)` |
 
 ## Referenced by
 

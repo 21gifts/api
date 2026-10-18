@@ -14,9 +14,9 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns        | Unique | Where |
-| -------------- | ------ | ----- |
-| `payment_hash` | Yes    | –     |
+| Columns        | Unique | Where | Definition                                                                                          |
+| -------------- | ------ | ----- | --------------------------------------------------------------------------------------------------- |
+| `payment_hash` | Yes    | –     | `CREATE UNIQUE INDEX nostr_zap_payment_pkey ON public.nostr_zap_payment USING btree (payment_hash)` |
 
 ## Referenced by
 

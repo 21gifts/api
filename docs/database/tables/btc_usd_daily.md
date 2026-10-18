@@ -15,9 +15,9 @@ Source: [src/lib/btc-usd-store.ts](../../../src/lib/btc-usd-store.ts)
 
 ## Indexes
 
-| Columns | Unique | Where |
-| ------- | ------ | ----- |
-| `day`   | Yes    | –     |
+| Columns | Unique | Where | Definition                                                                         |
+| ------- | ------ | ----- | ---------------------------------------------------------------------------------- |
+| `day`   | Yes    | –     | `CREATE UNIQUE INDEX btc_usd_daily_pkey ON public.btc_usd_daily USING btree (day)` |
 
 ## Referenced by
 

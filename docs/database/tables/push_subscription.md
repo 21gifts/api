@@ -16,10 +16,10 @@ Source: [src/lib/push-store.ts](../../../src/lib/push-store.ts)
 
 ## Indexes
 
-| Columns      | Unique | Where |
-| ------------ | ------ | ----- |
-| `account_id` | No     | –     |
-| `endpoint`   | Yes    | –     |
+| Columns      | Unique | Where | Definition                                                                                           |
+| ------------ | ------ | ----- | ---------------------------------------------------------------------------------------------------- |
+| `account_id` | No     | –     | `CREATE INDEX push_subscription_account_id_idx ON public.push_subscription USING btree (account_id)` |
+| `endpoint`   | Yes    | –     | `CREATE UNIQUE INDEX push_subscription_pkey ON public.push_subscription USING btree (endpoint)`      |
 
 ## Referenced by
 

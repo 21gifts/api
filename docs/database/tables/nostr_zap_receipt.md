@@ -20,11 +20,11 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns          | Unique | Where                          |
-| ---------------- | ------ | ------------------------------ |
-| `event_id`       | Yes    | –                              |
-| `gift_reply_id`  | Yes    | `(gift_reply_id IS NOT NULL)`  |
-| `zap_request_id` | Yes    | `(zap_request_id IS NOT NULL)` |
+| Columns          | Unique | Where                          | Definition                                                                                                                                           |
+| ---------------- | ------ | ------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `event_id`       | Yes    | –                              | `CREATE UNIQUE INDEX nostr_zap_receipt_pkey ON public.nostr_zap_receipt USING btree (event_id)`                                                      |
+| `gift_reply_id`  | Yes    | `(gift_reply_id IS NOT NULL)`  | `CREATE UNIQUE INDEX nostr_zap_receipt_gift_reply_id_uidx ON public.nostr_zap_receipt USING btree (gift_reply_id) WHERE (gift_reply_id IS NOT NULL)` |
+| `zap_request_id` | Yes    | `(zap_request_id IS NOT NULL)` | `CREATE UNIQUE INDEX nostr_zap_receipt_request_uidx ON public.nostr_zap_receipt USING btree (zap_request_id) WHERE (zap_request_id IS NOT NULL)`     |
 
 ## Referenced by
 
@@ -34,6 +34,6 @@ None.
 
 ```mermaid
 erDiagram
-    "nostr_zap_receipt" }o--o| "message" : "gift_reply_id"
+    "nostr_zap_receipt" |o--o| "message" : "gift_reply_id"
     "nostr_zap_receipt" }o--|| "message" : "message_id"
 ```

@@ -18,11 +18,11 @@ Source: [src/lib/db-change.ts](../../../src/lib/db-change.ts)
 
 ## Indexes
 
-| Columns            | Unique | Where |
-| ------------------ | ------ | ----- |
-| `at`               | No     | –     |
-| `id`               | Yes    | –     |
-| `table_name`, `at` | No     | –     |
+| Columns            | Unique | Where | Definition                                                                             |
+| ------------------ | ------ | ----- | -------------------------------------------------------------------------------------- |
+| `at`               | No     | –     | `CREATE INDEX db_change_at_idx ON public.db_change USING btree (at)`                   |
+| `id`               | Yes    | –     | `CREATE UNIQUE INDEX db_change_pkey ON public.db_change USING btree (id)`              |
+| `table_name`, `at` | No     | –     | `CREATE INDEX db_change_table_at_idx ON public.db_change USING btree (table_name, at)` |
 
 ## Referenced by
 

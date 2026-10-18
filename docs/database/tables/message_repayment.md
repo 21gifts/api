@@ -16,9 +16,9 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns                                           | Unique | Where |
-| ------------------------------------------------- | ------ | ----- |
-| `message_id`, `day_index`, `recipient_account_id` | Yes    | –     |
+| Columns                                           | Unique | Where | Definition                                                                                                                         |
+| ------------------------------------------------- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------- |
+| `message_id`, `day_index`, `recipient_account_id` | Yes    | –     | `CREATE UNIQUE INDEX message_repayment_pkey ON public.message_repayment USING btree (message_id, day_index, recipient_account_id)` |
 
 ## Referenced by
 

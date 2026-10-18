@@ -15,9 +15,9 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns      | Unique | Where |
-| ------------ | ------ | ----- |
-| `account_id` | Yes    | –     |
+| Columns      | Unique | Where | Definition                                                                                              |
+| ------------ | ------ | ----- | ------------------------------------------------------------------------------------------------------- |
+| `account_id` | Yes    | –     | `CREATE UNIQUE INDEX address_verification_pkey ON public.address_verification USING btree (account_id)` |
 
 ## Referenced by
 

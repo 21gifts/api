@@ -16,9 +16,9 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns             | Unique | Where |
-| ------------------- | ------ | ----- |
-| `message_id`, `idx` | Yes    | –     |
+| Columns             | Unique | Where | Definition                                                                                                 |
+| ------------------- | ------ | ----- | ---------------------------------------------------------------------------------------------------------- |
+| `message_id`, `idx` | Yes    | –     | `CREATE UNIQUE INDEX message_extra_photo_pkey ON public.message_extra_photo USING btree (message_id, idx)` |
 
 ## Referenced by
 

@@ -25,11 +25,11 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns            | Unique | Where |
-| ------------------ | ------ | ----- |
-| `created_at`, `id` | No     | –     |
-| `id`               | Yes    | –     |
-| `receipt_id`       | No     | –     |
+| Columns            | Unique | Where | Definition                                                                                                       |
+| ------------------ | ------ | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| `created_at`, `id` | No     | –     | `CREATE INDEX nostr_zap_ingest_created_at_idx ON public.nostr_zap_ingest USING btree (created_at DESC, id DESC)` |
+| `id`               | Yes    | –     | `CREATE UNIQUE INDEX nostr_zap_ingest_pkey ON public.nostr_zap_ingest USING btree (id)`                          |
+| `receipt_id`       | No     | –     | `CREATE INDEX nostr_zap_ingest_receipt_id_idx ON public.nostr_zap_ingest USING btree (receipt_id)`               |
 
 ## Referenced by
 

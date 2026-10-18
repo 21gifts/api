@@ -234,6 +234,21 @@ describe('marker visibility', () => {
     assert.equal(isMarkerVisible(body), true);
   });
 
+  it('hides a marker inside a list-item fence', () => {
+    const body = `- \`\`\`text\n  ${MARKER}\n  \`\`\``;
+    assert.equal(isMarkerVisible(body), false);
+  });
+
+  it('hides a marker inside a blockquote fence', () => {
+    const body = `> \`\`\`\`\n> ${MARKER}\n> \`\`\`\``;
+    assert.equal(isMarkerVisible(body), false);
+  });
+
+  it('keeps a marker after a closed list-item fence visible', () => {
+    const body = `- \`\`\`text\n  sample\n  \`\`\`\n${MARKER}`;
+    assert.equal(isMarkerVisible(body), true);
+  });
+
   it('a four-backtick opener is not closed by a three-backtick line', () => {
     const body = `\`\`\`\`\n\`\`\`\n${MARKER}\n\`\`\`\``;
     assert.equal(isMarkerVisible(body), false);
@@ -425,5 +440,22 @@ describe('unclosed hidden regions', () => {
     });
     assert.equal(result.required, true);
     assert.equal(result.ok, false);
+  });
+});
+
+describe('generic database calls', () => {
+  it('triggers on a change in the middle of a sql.query<Row>( statement', () => {
+    const patch =
+      '@@ -326,5 +326,5 @@\n    const rows = await this.#sql.query<{ id: string }>(\n      `UPDATE pos_charge\n-       SET state = $2\n+       SET state = $3\n        WHERE id = $1`,';
+    const result = evaluate({ body: '', files: files('src/lib/pos-store.ts', patch) });
+    assert.deepEqual(result.triggers, ['src/lib/pos-store.ts']);
+  });
+
+  it('triggers on a changed sql.execute<Row>( line', () => {
+    const result = evaluate({
+      body: '',
+      files: files('src/lib/pos-store.ts', diffWith('+  await sql.execute<void>(text, params);')),
+    });
+    assert.deepEqual(result.triggers, ['src/lib/pos-store.ts']);
   });
 });

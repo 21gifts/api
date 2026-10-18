@@ -34,11 +34,11 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns                    | Unique | Where |
-| -------------------------- | ------ | ----- |
-| `created_at`, `id`         | No     | –     |
-| `id`                       | Yes    | –     |
-| `message_id`, `created_at` | No     | –     |
+| Columns                    | Unique | Where | Definition                                                                                                        |
+| -------------------------- | ------ | ----- | ----------------------------------------------------------------------------------------------------------------- |
+| `created_at`, `id`         | No     | –     | `CREATE INDEX message_invoice_created_at_idx ON public.message_invoice USING btree (created_at DESC, id DESC)`    |
+| `id`                       | Yes    | –     | `CREATE UNIQUE INDEX message_invoice_pkey ON public.message_invoice USING btree (id)`                             |
+| `message_id`, `created_at` | No     | –     | `CREATE INDEX message_invoice_message_id_idx ON public.message_invoice USING btree (message_id, created_at DESC)` |
 
 ## Referenced by
 

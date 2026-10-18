@@ -21,11 +21,11 @@ Source: [src/lib/notification-store.ts](../../../src/lib/notification-store.ts)
 
 ## Indexes
 
-| Columns                                    | Unique | Where |
-| ------------------------------------------ | ------ | ----- |
-| `id`                                       | Yes    | –     |
-| `recipient_account_id`, `created_at`, `id` | No     | –     |
-| `recipient_account_id`, `type`, `reply_id` | Yes    | –     |
+| Columns                                    | Unique | Where | Definition                                                                                                                               |
+| ------------------------------------------ | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                                       | Yes    | –     | `CREATE UNIQUE INDEX notification_pkey ON public.notification USING btree (id)`                                                          |
+| `recipient_account_id`, `created_at`, `id` | No     | –     | `CREATE INDEX notification_recipient_created_at_idx ON public.notification USING btree (recipient_account_id, created_at DESC, id DESC)` |
+| `recipient_account_id`, `type`, `reply_id` | Yes    | –     | `CREATE UNIQUE INDEX notification_recipient_type_reply_idx ON public.notification USING btree (recipient_account_id, type, reply_id)`    |
 
 ## Referenced by
 

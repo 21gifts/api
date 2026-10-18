@@ -14,9 +14,9 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns  | Unique | Where |
-| -------- | ------ | ----- |
-| `pubkey` | Yes    | –     |
+| Columns  | Unique | Where | Definition                                                                          |
+| -------- | ------ | ----- | ----------------------------------------------------------------------------------- |
+| `pubkey` | Yes    | –     | `CREATE UNIQUE INDEX nostr_zapper_pkey ON public.nostr_zapper USING btree (pubkey)` |
 
 ## Referenced by
 

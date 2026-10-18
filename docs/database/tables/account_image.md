@@ -15,9 +15,9 @@ Source: [src/lib/banner-store.ts](../../../src/lib/banner-store.ts)
 
 ## Indexes
 
-| Columns              | Unique | Where |
-| -------------------- | ------ | ----- |
-| `account_id`, `slot` | Yes    | –     |
+| Columns              | Unique | Where | Definition                                                                                      |
+| -------------------- | ------ | ----- | ----------------------------------------------------------------------------------------------- |
+| `account_id`, `slot` | Yes    | –     | `CREATE UNIQUE INDEX account_image_pkey ON public.account_image USING btree (account_id, slot)` |
 
 ## Referenced by
 

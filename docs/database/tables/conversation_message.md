@@ -34,13 +34,13 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 
 ## Indexes
 
-| Columns                               | Unique | Where                                                                           |
-| ------------------------------------- | ------ | ------------------------------------------------------------------------------- |
-| `conversation_id`, `created_at`       | No     | `((gift_for_message_id IS NULL) AND (sats > 0) AND (actor_account_id IS NULL))` |
-| `conversation_id`, `created_at`, `id` | No     | –                                                                               |
-| `event_id`                            | Yes    | `(event_id IS NOT NULL)`                                                        |
-| `id`                                  | No     | `((nostr_event IS NOT NULL) AND (jsonb_typeof(nostr_event) = 'string'::text))`  |
-| `id`                                  | Yes    | –                                                                               |
+| Columns                               | Unique | Where                                                                           | Definition                                                                                                                                                                                                         |
+| ------------------------------------- | ------ | ------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `conversation_id`, `created_at`       | No     | `((gift_for_message_id IS NULL) AND (sats > 0) AND (actor_account_id IS NULL))` | `CREATE INDEX conversation_message_gift_unlinked_idx ON public.conversation_message USING btree (conversation_id, created_at) WHERE ((gift_for_message_id IS NULL) AND (sats > 0) AND (actor_account_id IS NULL))` |
+| `conversation_id`, `created_at`, `id` | No     | –                                                                               | `CREATE INDEX conversation_message_conversation_id_idx ON public.conversation_message USING btree (conversation_id, created_at, id)`                                                                               |
+| `event_id`                            | Yes    | `(event_id IS NOT NULL)`                                                        | `CREATE UNIQUE INDEX conversation_message_event_id_uidx ON public.conversation_message USING btree (event_id) WHERE (event_id IS NOT NULL)`                                                                        |
+| `id`                                  | No     | `((nostr_event IS NOT NULL) AND (jsonb_typeof(nostr_event) = 'string'::text))`  | `CREATE INDEX conversation_message_nostr_event_unrepaired_idx ON public.conversation_message USING btree (id) WHERE ((nostr_event IS NOT NULL) AND (jsonb_typeof(nostr_event) = 'string'::text))`                  |
+| `id`                                  | Yes    | –                                                                               | `CREATE UNIQUE INDEX conversation_message_pkey ON public.conversation_message USING btree (id)`                                                                                                                    |
 
 ## Referenced by
 

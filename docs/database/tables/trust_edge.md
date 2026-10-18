@@ -16,11 +16,11 @@ Source: [src/lib/trust-store.ts](../../../src/lib/trust-store.ts)
 
 ## Indexes
 
-| Columns              | Unique | Where                                                                                        |
-| -------------------- | ------ | -------------------------------------------------------------------------------------------- |
-| `actor_id`           | No     | –                                                                                            |
-| `id`                 | Yes    | –                                                                                            |
-| `subject_id`, `kind` | Yes    | `(kind = ANY (ARRAY['verify'::text, 'moderator_confirm'::text, 'moderator_appoint'::text]))` |
+| Columns              | Unique | Where                                                                                        | Definition                                                                                                                                                                                                   |
+| -------------------- | ------ | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `actor_id`           | No     | –                                                                                            | `CREATE INDEX trust_edge_actor_idx ON public.trust_edge USING btree (actor_id)`                                                                                                                              |
+| `id`                 | Yes    | –                                                                                            | `CREATE UNIQUE INDEX trust_edge_pkey ON public.trust_edge USING btree (id)`                                                                                                                                  |
+| `subject_id`, `kind` | Yes    | `(kind = ANY (ARRAY['verify'::text, 'moderator_confirm'::text, 'moderator_appoint'::text]))` | `CREATE UNIQUE INDEX trust_edge_subject_kind_live_uidx ON public.trust_edge USING btree (subject_id, kind) WHERE (kind = ANY (ARRAY['verify'::text, 'moderator_confirm'::text, 'moderator_appoint'::text]))` |
 
 ## Referenced by
 

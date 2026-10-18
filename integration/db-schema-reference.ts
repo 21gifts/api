@@ -89,6 +89,7 @@ export type IndexModel = {
   columns: string[];
   unique: boolean;
   where: string | null;
+  definition: string;
 };
 
 /**
@@ -259,8 +260,6 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
 
   const literal = /^'((?:''|[^'])*)'(?:::.+)?$/.exec(text);
   if (literal?.[1] !== undefined) return `\`${literal[1].replace(/''/g, "'")}\``;
-
-  if (/^[+-]?\d+(?:\.\d+)?$/.test(text) || /^(?:true|false)$/i.test(text)) return `\`${text}\``;
 
   return `\`${text}\``;
 }
@@ -528,6 +527,7 @@ export function buildSchemaModel(
         columns: row.columns,
         unique: row.is_unique,
         where: row.where,
+        definition: row.definition,
       }));
 
     const foreignKeys: ForeignKeyModel[] = [];
@@ -854,15 +854,16 @@ function referenceFor(
 }
 
 /**
- * Whether a primary key, unique constraint, or non-partial unique index has exactly this column set.
+ * Whether a primary key, unique constraint, or qualifying unique index has exactly this column set.
  * Membership is compared without regard to order. A wider unique that merely covers the set does not
- * count.
+ * count. A partial index qualifies only for a single column when its predicate is exactly that column
+ * `IS NOT NULL`.
  * @param table - Table that owns the columns.
  * @param columns - Column set that must match exactly.
  * @param constraints - Catalog constraints, including primary keys and unique constraints.
  * @param indexes - Catalog indexes, including unique indexes.
- * @returns True when some primary-key or unique constraint, or a unique index with `where === null`,
- * has exactly this column set.
+ * @returns True when some primary-key or unique constraint, or a qualifying unique index, has exactly
+ * this column set.
  */
 function columnsAreUnique(
   table: string,
@@ -890,11 +891,21 @@ function columnsAreUnique(
     (row) =>
       row.table_name === table && (row.type === 'u' || row.type === 'p') && sameSet(row.columns),
   );
+  const singleColumn = columns.length === 1 ? columns[0] : undefined;
   const indexUnique = indexes.some(
     (row) =>
-      row.table_name === table && row.is_unique && row.where === null && sameSet(row.columns),
+      row.table_name === table &&
+      row.is_unique &&
+      sameSet(row.columns) &&
+      (row.where === null ||
+        (singleColumn !== undefined && matchesNotNullPredicate(row.where, singleColumn))),
   );
   return constraintUnique || indexUnique;
+}
+
+function matchesNotNullPredicate(predicate: string, column: string): boolean {
+  const clause = stripOuterParens(predicate);
+  return new RegExp(`^${columnRef(column)}\\s+IS\\s+NOT\\s+NULL$`, 'i').test(clause);
 }
 
 async function collectTypeScriptFiles(directory: string): Promise<string[]> {
@@ -933,7 +944,7 @@ function renderReadme(model: SchemaModel, sources: Map<string, string[]>): strin
     '',
     '# Database schema',
     '',
-    'The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values enforced by a CHECK constraint on a `text` column. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.',
+    'The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.',
     '',
     `- Tables: ${model.tables.length}`,
     `- Columns: ${columnCount}`,
@@ -1000,9 +1011,11 @@ function renderIndexes(table: TableModel): string {
   if (table.indexes.length === 0) return 'None.';
   const rows = table.indexes.map((index) => {
     const columns = index.columns.map((column) => codeSpan(column)).join(', ');
-    return `| ${markdownCell(columns)} | ${index.unique ? 'Yes' : 'No'} | ${markdownCell(codeOrDash(index.where))} |`;
+    return `| ${markdownCell(columns)} | ${index.unique ? 'Yes' : 'No'} | ${markdownCell(codeOrDash(index.where))} | ${markdownCell(codeSpan(index.definition))} |`;
   });
-  return ['| Columns | Unique | Where |', '| --- | --- | --- |', ...rows].join('\n');
+  return ['| Columns | Unique | Where | Definition |', '| --- | --- | --- | --- |', ...rows].join(
+    '\n',
+  );
 }
 
 function renderReferencedBy(tableName: string, foreignKeys: readonly ForeignKeyModel[]): string {
@@ -1257,6 +1270,7 @@ async function writeRendered(
  * @param argv - Arguments after the script name.
  * @param env - Process environment; `DATABASE_URL` is required.
  * @returns Exit code: `0` success, `1` docs drift, `2` usage or missing URL.
+ * @throws When generating the pages fails, for example because the database is unreachable.
  */
 export async function runCli(
   argv: readonly string[],

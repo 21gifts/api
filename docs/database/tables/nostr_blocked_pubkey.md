@@ -15,9 +15,9 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ## Indexes
 
-| Columns  | Unique | Where |
-| -------- | ------ | ----- |
-| `pubkey` | Yes    | –     |
+| Columns  | Unique | Where | Definition                                                                                          |
+| -------- | ------ | ----- | --------------------------------------------------------------------------------------------------- |
+| `pubkey` | Yes    | –     | `CREATE UNIQUE INDEX nostr_blocked_pubkey_pkey ON public.nostr_blocked_pubkey USING btree (pubkey)` |
 
 ## Referenced by
 

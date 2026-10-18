@@ -40,16 +40,16 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns              | Unique | Where                                                                 |
-| -------------------- | ------ | --------------------------------------------------------------------- |
-| `(expression)`       | Yes    | `(lightning_address IS NOT NULL)`                                     |
-| `(expression)`       | Yes    | `((username IS NOT NULL) AND (TRIM(BOTH FROM username) <> ''::text))` |
-| `id`                 | Yes    | –                                                                     |
-| `is_platform`        | Yes    | `is_platform`                                                         |
-| `linking_key`        | Yes    | –                                                                     |
-| `nostr_pubkey`       | Yes    | `(nostr_pubkey IS NOT NULL)`                                          |
-| `profile_message_id` | Yes    | `(profile_message_id IS NOT NULL)`                                    |
-| `view_key`           | Yes    | `(view_key IS NOT NULL)`                                              |
+| Columns              | Unique | Where                                                                 | Definition                                                                                                                                                                            |
+| -------------------- | ------ | --------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `(expression)`       | Yes    | `(lightning_address IS NOT NULL)`                                     | `CREATE UNIQUE INDEX account_lightning_address_uidx ON public.account USING btree (lower(TRIM(BOTH FROM lightning_address))) WHERE (lightning_address IS NOT NULL)`                   |
+| `(expression)`       | Yes    | `((username IS NOT NULL) AND (TRIM(BOTH FROM username) <> ''::text))` | `CREATE UNIQUE INDEX account_username_uidx ON public.account USING btree (lower(TRIM(BOTH FROM username))) WHERE ((username IS NOT NULL) AND (TRIM(BOTH FROM username) <> ''::text))` |
+| `id`                 | Yes    | –                                                                     | `CREATE UNIQUE INDEX account_pkey ON public.account USING btree (id)`                                                                                                                 |
+| `is_platform`        | Yes    | `is_platform`                                                         | `CREATE UNIQUE INDEX account_is_platform_uidx ON public.account USING btree (is_platform) WHERE is_platform`                                                                          |
+| `linking_key`        | Yes    | –                                                                     | `CREATE UNIQUE INDEX account_linking_key_key ON public.account USING btree (linking_key)`                                                                                             |
+| `nostr_pubkey`       | Yes    | `(nostr_pubkey IS NOT NULL)`                                          | `CREATE UNIQUE INDEX account_nostr_pubkey_uidx ON public.account USING btree (nostr_pubkey) WHERE (nostr_pubkey IS NOT NULL)`                                                         |
+| `profile_message_id` | Yes    | `(profile_message_id IS NOT NULL)`                                    | `CREATE UNIQUE INDEX account_profile_message_uidx ON public.account USING btree (profile_message_id) WHERE (profile_message_id IS NOT NULL)`                                          |
+| `view_key`           | Yes    | `(view_key IS NOT NULL)`                                              | `CREATE UNIQUE INDEX account_view_key_uidx ON public.account USING btree (view_key) WHERE (view_key IS NOT NULL)`                                                                     |
 
 ## Referenced by
 
@@ -85,7 +85,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ```mermaid
 erDiagram
-    "account" }o--o| "message" : "profile_message_id"
+    "account" |o--o| "message" : "profile_message_id"
     "account_image" }o--|| "account" : "account_id"
     "address_verification" |o--|| "account" : "account_id"
     "api_log" }o--o| "account" : "account_id"

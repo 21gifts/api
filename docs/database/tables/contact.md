@@ -16,10 +16,10 @@ Source: [src/lib/contact-store.ts](../../../src/lib/contact-store.ts)
 
 ## Indexes
 
-| Columns            | Unique | Where |
-| ------------------ | ------ | ----- |
-| `created_at`, `id` | No     | –     |
-| `id`               | Yes    | –     |
+| Columns            | Unique | Where | Definition                                                                                     |
+| ------------------ | ------ | ----- | ---------------------------------------------------------------------------------------------- |
+| `created_at`, `id` | No     | –     | `CREATE INDEX contact_created_at_idx ON public.contact USING btree (created_at DESC, id DESC)` |
+| `id`               | Yes    | –     | `CREATE UNIQUE INDEX contact_pkey ON public.contact USING btree (id)`                          |
 
 ## Referenced by
 

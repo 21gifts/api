@@ -14,10 +14,10 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 
 ## Indexes
 
-| Columns                         | Unique | Where |
-| ------------------------------- | ------ | ----- |
-| `account_id`, `conversation_id` | Yes    | –     |
-| `conversation_id`               | No     | –     |
+| Columns                         | Unique | Where | Definition                                                                                                         |
+| ------------------------------- | ------ | ----- | ------------------------------------------------------------------------------------------------------------------ |
+| `account_id`, `conversation_id` | Yes    | –     | `CREATE UNIQUE INDEX conversation_read_pkey ON public.conversation_read USING btree (account_id, conversation_id)` |
+| `conversation_id`               | No     | –     | `CREATE INDEX conversation_read_conversation_id_idx ON public.conversation_read USING btree (conversation_id)`     |
 
 ## Referenced by
 

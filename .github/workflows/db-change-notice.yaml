@@ -24,7 +24,8 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      # The decision is made by the base branch's copy of db-change-notice.mjs in notice-base, so a
+      # No pull request code runs in this job: the tests of the notice script run in ci.yaml, and
+      # the decision is made by the base branch's copy of db-change-notice.mjs in notice-base, so a
       # pull request cannot turn its own check green by editing the script. This workflow file
       # itself is covered by the A38 guard, which requires a maintainer approval for any workflow
       # change. The pull request copy lives in notice-head and is used only while the base does
@@ -43,14 +44,6 @@ jobs:
           persist-credentials: false
           path: notice-head
           sparse-checkout: scripts
-
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Test database change notice
-        run: node --test notice-head/scripts/db-change-notice.test.mjs
 
       - name: Evaluate database change notice
         uses: actions/github-script@v7

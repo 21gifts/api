@@ -16,10 +16,10 @@ Source: [src/lib/diagnostic-log.ts](../../../src/lib/diagnostic-log.ts)
 
 ## Indexes
 
-| Columns            | Unique | Where |
-| ------------------ | ------ | ----- |
-| `created_at`, `id` | No     | –     |
-| `id`               | Yes    | –     |
+| Columns            | Unique | Where | Definition                                                                                                       |
+| ------------------ | ------ | ----- | ---------------------------------------------------------------------------------------------------------------- |
+| `created_at`, `id` | No     | –     | `CREATE INDEX diagnostic_event_created_at_idx ON public.diagnostic_event USING btree (created_at DESC, id DESC)` |
+| `id`               | Yes    | –     | `CREATE UNIQUE INDEX diagnostic_event_pkey ON public.diagnostic_event USING btree (id)`                          |
 
 ## Referenced by
 

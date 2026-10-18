@@ -15,9 +15,9 @@ Source: [src/lib/member-habit-store.ts](../../../src/lib/member-habit-store.ts)
 
 ## Indexes
 
-| Columns              | Unique | Where |
-| -------------------- | ------ | ----- |
-| `habit_id`, `period` | Yes    | –     |
+| Columns              | Unique | Where | Definition                                                                                                      |
+| -------------------- | ------ | ----- | --------------------------------------------------------------------------------------------------------------- |
+| `habit_id`, `period` | Yes    | –     | `CREATE UNIQUE INDEX member_habit_revision_pkey ON public.member_habit_revision USING btree (habit_id, period)` |
 
 ## Referenced by
 

@@ -30,13 +30,13 @@ Source: [docs/schema/gift.sql](../../../docs/schema/gift.sql) Created outside th
 
 ## Indexes
 
-| Columns              | Unique | Where |
-| -------------------- | ------ | ----- |
-| `id`                 | Yes    | –     |
-| `lightning_invoice`  | Yes    | –     |
-| `paid_at`            | No     | –     |
-| `recipient_wos_user` | No     | –     |
-| `source_wallet`      | No     | –     |
+| Columns              | Unique | Where | Definition                                                                             |
+| -------------------- | ------ | ----- | -------------------------------------------------------------------------------------- |
+| `id`                 | Yes    | –     | `CREATE UNIQUE INDEX gift_pkey ON public.gift USING btree (id)`                        |
+| `lightning_invoice`  | Yes    | –     | `CREATE UNIQUE INDEX gift_invoice_uidx ON public.gift USING btree (lightning_invoice)` |
+| `paid_at`            | No     | –     | `CREATE INDEX gift_paid_at_idx ON public.gift USING btree (paid_at)`                   |
+| `recipient_wos_user` | No     | –     | `CREATE INDEX gift_recipient_idx ON public.gift USING btree (recipient_wos_user)`      |
+| `source_wallet`      | No     | –     | `CREATE INDEX gift_source_wallet_idx ON public.gift USING btree (source_wallet)`       |
 
 ## Referenced by
 

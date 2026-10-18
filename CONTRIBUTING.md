@@ -378,6 +378,7 @@ api/
 │   ├── README.md
 │   ├── functions.md
 │   └── endpoints.md
+├── docs/database/            # Generated: one page per Postgres table (`bun run db:docs`)
 ├── docs/schema/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
@@ -404,9 +405,13 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
+│   ├── db-change-notice.mjs  # Database change notice: does a PR need the visible marker line
+│   ├── db-change-notice.test.mjs
 │   ├── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log, logins, logins-open, logins-close, logins-allow, logins-disallow, end-sessions, funding-goal, payout-days, applications, daily-roster, trust-proposals, member-activity, hidden, edits (DEBUG_TOKEN)
 │   └── loan-e2e/             # Live loan cycle on Spark mainnet (manual; see its README)
 ├── integration/
+│   ├── db-schema-reference.ts       # Generates docs/database/ from a scratch boot schema
+│   ├── db-schema-reference.test.ts  # Bun test:postgres; fails when docs/database/ drifts
 │   └── sql-driver.test.ts  # Bun test:postgres; needs DATABASE_URL; text[] binding against Postgres
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
@@ -770,12 +775,13 @@ More will be added as concrete subsystems that need runtime configuration
 | Workflow               | Trigger                                                           | Action                                                                                                                                                                         |
 | ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
+| `db-change-notice.yaml` | PR into `develop` or `staging` (opened, edited, synchronize, reopened)         | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code                                 |
 | `loan-e2e.yml`         | `workflow_dispatch` only                                          | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
 | `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
 | `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
 | `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
 | `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
-| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                                     |
+| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml` and `db-change-notice.yaml`, and sets ready; never checks out the PR code                                                     |
 
 Images target `linux/arm64`. Every deploy also pushes the image as
 `21gifts/api:<tag>-<sha>`, where `<tag>` is that workflow's moving tag (`beta`,

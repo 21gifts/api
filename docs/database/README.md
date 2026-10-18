@@ -2,7 +2,7 @@
 
 # Database schema
 
-The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values enforced by a CHECK constraint on a `text` column. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
+The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
 - Tables: 42
 - Columns: 382
