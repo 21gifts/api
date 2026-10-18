@@ -655,7 +655,9 @@ It also triggers when the changed source file imports the SQL client from
 `@/lib/auth/sql`, `./sql`, or a relative `auth/sql` path, imports `SQL` from
 `bun`, or contains `_SCHEMA_SQL` or a `migrate*Schema` helper, regardless of
 which line changed. Removed files are inspected from the base revision. The
-check re-runs when the PR text is edited. This check is a safety net; it does
+check re-runs when the PR text is edited. The release pull request `staging` →
+`develop` that `auto-release-pr.yaml` opens passes without the marker, because
+every pull request it bundles already passed the check on `staging`. This check is a safety net; it does
 not replace the author's own judgement about whether a change affects the
 database.
 
