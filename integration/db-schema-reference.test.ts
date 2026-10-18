@@ -100,7 +100,10 @@ describe('baseKind / columnKind / dbType', () => {
     expect(baseKind('jsonb', 'jsonb', false)).toBe('JSON');
     expect(baseKind('uuid', 'uuid', false)).toBe('UUID');
     expect(baseKind('bytea', 'bytea', false)).toBe('Binary');
+    expect(baseKind('ARRAY', '_int4', false)).toBe('Array of integer');
+    expect(baseKind('ARRAY', '_int8', false)).toBe('Array of bigint');
     expect(baseKind('ARRAY', '_text', false)).toBe('Array of text');
+    expect(baseKind('ARRAY', '_citext', false)).toBe('Array of citext');
     expect(baseKind('USER-DEFINED', 'gift_status', true)).toBe('ENUM');
     expect(baseKind('USER-DEFINED', 'gift_status', false)).toBe('USER-DEFINED');
     expect(baseKind('citext', 'citext', false)).toBe('citext');
@@ -166,6 +169,33 @@ describe('baseKind / columnKind / dbType', () => {
     ).toBe('character varying(32)');
     expect(
       dbType({
+        data_type: 'character',
+        udt_name: 'bpchar',
+        character_maximum_length: 8,
+        numeric_precision: null,
+        numeric_scale: null,
+      }),
+    ).toBe('character(8)');
+    expect(
+      dbType({
+        data_type: 'character',
+        udt_name: 'bpchar',
+        character_maximum_length: null,
+        numeric_precision: null,
+        numeric_scale: null,
+      }),
+    ).toBe('character');
+    expect(
+      dbType({
+        data_type: 'USER-DEFINED',
+        udt_name: 'gift_status',
+        character_maximum_length: null,
+        numeric_precision: null,
+        numeric_scale: null,
+      }),
+    ).toBe('gift_status');
+    expect(
+      dbType({
         data_type: 'numeric',
         udt_name: 'numeric',
         character_maximum_length: null,
@@ -182,6 +212,15 @@ describe('baseKind / columnKind / dbType', () => {
         numeric_scale: null,
       }),
     ).toBe('integer[]');
+    expect(
+      dbType({
+        data_type: 'ARRAY',
+        udt_name: '_int8',
+        character_maximum_length: null,
+        numeric_precision: null,
+        numeric_scale: null,
+      }),
+    ).toBe('bigint[]');
     expect(
       dbType({
         data_type: 'ARRAY',
@@ -444,6 +483,111 @@ describe('buildSchemaModel and renderPages', () => {
     expect(accountPage).not.toContain('Created outside this service');
     expect(readme).toContain('[docs/schema/gift.sql](../../docs/schema/gift.sql)');
     expect(readme).toContain('Tables created outside this service are built from their');
+  });
+});
+
+describe('foreign key uniqueness', () => {
+  function textColumn(tableName: string, columnName: string, position: number): ColumnRow {
+    return column({
+      table_name: tableName,
+      column_name: columnName,
+      ordinal_position: position,
+      data_type: 'text',
+      udt_name: 'text',
+    });
+  }
+
+  function key(
+    tableName: string,
+    name: string,
+    type: ConstraintRow['type'],
+    columns: string[],
+    refTable: string | null,
+    refColumns: string[],
+  ): ConstraintRow {
+    return {
+      table_name: tableName,
+      name,
+      type,
+      columns,
+      definition: name,
+      ref_table: refTable,
+      ref_columns: refColumns,
+    };
+  }
+
+  test('marks every column of a composite foreign key unique when the child primary key matches that set', () => {
+    const model = buildSchemaModel(
+      [
+        textColumn('parent', 'a', 1),
+        textColumn('parent', 'b', 2),
+        textColumn('child', 'a', 1),
+        textColumn('child', 'b', 2),
+      ],
+      [
+        key('parent', 'parent_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_parent_fkey', 'f', ['a', 'b'], 'parent', ['a', 'b']),
+      ],
+      [],
+    );
+    const foreignKeys = model.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+    expect(foreignKeys).toHaveLength(2);
+    expect(foreignKeys.every((foreignKey) => foreignKey.unique)).toBe(true);
+  });
+
+  test('does not treat a wider unique or a single covering column as uniqueness of the composite key', () => {
+    const wider = buildSchemaModel(
+      [
+        textColumn('parent', 'a', 1),
+        textColumn('parent', 'b', 2),
+        textColumn('child', 'a', 1),
+        textColumn('child', 'b', 2),
+        textColumn('child', 'c', 3),
+      ],
+      [
+        key('parent', 'parent_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_pkey', 'p', ['a'], null, []),
+        key('child', 'child_abc_key', 'u', ['a', 'b', 'c'], null, []),
+        key('child', 'child_parent_fkey', 'f', ['a', 'b'], 'parent', ['a', 'b']),
+      ],
+      [],
+    );
+    const widerKeys = wider.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+    expect(widerKeys).toHaveLength(2);
+    expect(widerKeys.every((foreignKey) => foreignKey.unique)).toBe(false);
+
+    const covered = buildSchemaModel(
+      [
+        textColumn('parent', 'a', 1),
+        textColumn('parent', 'b', 2),
+        textColumn('child', 'a', 1),
+        textColumn('child', 'b', 2),
+      ],
+      [
+        key('parent', 'parent_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_a_key', 'u', ['a'], null, []),
+        key('child', 'child_parent_fkey', 'f', ['a', 'b'], 'parent', ['a', 'b']),
+      ],
+      [],
+    );
+    const coveredKeys = covered.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+    expect(coveredKeys.every((foreignKey) => foreignKey.unique)).toBe(false);
+  });
+
+  test('keeps a single-column foreign key unique when a unique constraint matches that column', () => {
+    const model = buildSchemaModel(
+      [textColumn('parent', 'id', 1), textColumn('child', 'parent_id', 1)],
+      [
+        key('parent', 'parent_pkey', 'p', ['id'], null, []),
+        key('child', 'child_parent_id_key', 'u', ['parent_id'], null, []),
+        key('child', 'child_parent_fkey', 'f', ['parent_id'], 'parent', ['id']),
+      ],
+      [],
+    );
+    const foreignKeys = model.tables.find((table) => table.name === 'child')?.foreignKeys ?? [];
+    expect(foreignKeys).toHaveLength(1);
+    expect(foreignKeys[0]?.unique).toBe(true);
   });
 });
 

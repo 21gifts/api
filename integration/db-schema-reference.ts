@@ -118,10 +118,24 @@ const ARRAY_UDT_NAMES: Record<string, string> = {
 };
 
 /**
+ * Maps a Postgres array `udt_name` to the element type name used in the reference.
+ * Known internal names use `ARRAY_UDT_NAMES`; any other name drops a leading underscore.
+ * @param udtName - `information_schema.columns.udt_name` of an `ARRAY` column.
+ * @returns Element type name, e.g. `integer` for `_int4` or `text` for `_text`.
+ */
+function arrayElementName(udtName: string): string {
+  const element = udtName.replace(/^_/, '');
+  return ARRAY_UDT_NAMES[element] ?? element;
+}
+
+/**
  * True when `definition` is a CHECK that pins exactly `column` to a fixed
  * literal list (`= ANY (ARRAY[...])` or `IN (...)`), optionally combined with
  * `OR column IS NULL`. Any other column, predicate, or shape yields false.
  * Literal values are not returned.
+ * @param definition - `pg_get_constraintdef` text of one CHECK constraint.
+ * @param column - Column the CHECK must pin.
+ * @returns Whether the CHECK is a fixed literal list on exactly that column.
  */
 export function isEnumCheck(definition: string, column: string): boolean {
   const normalized = collapseSqlSpace(definition.trim());
@@ -151,6 +165,10 @@ export function isEnumCheck(definition: string, column: string): boolean {
 /**
  * Maps a PostgreSQL `data_type` / `udt_name` pair to the reference's base kind.
  * `USER-DEFINED` becomes `ENUM` only when `isPgEnum` is set.
+ * @param dataType - `information_schema.columns.data_type`.
+ * @param udtName - `information_schema.columns.udt_name` (array element type for `ARRAY`).
+ * @param isPgEnum - Whether the column type is a Postgres enum type.
+ * @returns Base kind such as `Integer`, `Free text` or `ENUM`.
  */
 export function baseKind(dataType: string, udtName: string, isPgEnum: boolean): string {
   if (dataType === 'USER-DEFINED' && isPgEnum) return 'ENUM';
@@ -172,13 +190,15 @@ export function baseKind(dataType: string, udtName: string, isPgEnum: boolean): 
   if (dataType === 'json' || dataType === 'jsonb') return 'JSON';
   if (dataType === 'uuid') return 'UUID';
   if (dataType === 'bytea') return 'Binary';
-  if (dataType === 'ARRAY') return `Array of ${udtName.replace(/^_/, '')}`;
+  if (dataType === 'ARRAY') return `Array of ${arrayElementName(udtName)}`;
   return dataType;
 }
 
 /**
  * Specializes a base kind for primary keys, identity columns, foreign keys, and enums.
  * An auto-increment primary key is always reported as an integer key.
+ * @param input - Base kind and the key, enum and identity flags of one column.
+ * @returns Kind cell text.
  */
 export function columnKind(input: {
   base: string;
@@ -197,8 +217,10 @@ export function columnKind(input: {
 }
 
 /**
- * Renders the SQL type shown in the reference, including length, numeric
- * precision, and array element types.
+ * Renders the SQL type shown in the reference, including character length,
+ * numeric precision, array element types, and user-defined type names.
+ * @param row - Catalog row of one column.
+ * @returns Postgres type as shown in the reference, e.g. `character varying(32)` or `character(8)`.
  */
 export function dbType(
   row: Pick<
@@ -209,13 +231,14 @@ export function dbType(
   if (row.data_type === 'character varying' && row.character_maximum_length !== null) {
     return `character varying(${row.character_maximum_length})`;
   }
+  if (row.data_type === 'character' && row.character_maximum_length !== null) {
+    return `character(${row.character_maximum_length})`;
+  }
   if (row.data_type === 'numeric' && row.numeric_precision !== null) {
     return `numeric(${row.numeric_precision},${row.numeric_scale ?? 0})`;
   }
-  if (row.data_type === 'ARRAY') {
-    const element = row.udt_name.replace(/^_/, '');
-    return `${ARRAY_UDT_NAMES[element] ?? element}[]`;
-  }
+  if (row.data_type === 'ARRAY') return `${arrayElementName(row.udt_name)}[]`;
+  if (row.data_type === 'USER-DEFINED') return row.udt_name;
   return row.data_type;
 }
 
@@ -223,6 +246,9 @@ export function dbType(
  * Renders a column default for the reference.
  * Identity and `nextval(` become `auto-increment`; a missing default becomes an en dash.
  * String literals lose their quotes and cast; other literals and expressions stay SQL, in backticks.
+ * @param columnDefault - `column_default` from the catalog, or `null`.
+ * @param isIdentity - Whether the column is an identity column.
+ * @returns Default cell text.
  */
 export function renderDefault(columnDefault: string | null, isIdentity: boolean): string {
   if (isIdentity) return 'auto-increment';
@@ -241,13 +267,17 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
 
 /**
  * Crow's-foot cardinality of a foreign key from the referencing side.
- * Uniqueness is the key's own uniqueness, not a multi-column unique that merely covers it.
+ * Uniqueness means a primary-key or unique constraint with exactly the key's column set;
+ * a wider unique that merely covers it does not count.
+ * @param fkNullable - Whether the foreign-key column accepts NULL.
+ * @param fkUnique - Whether the foreign-key column set is unique.
+ * @returns Mermaid relationship symbol.
  */
 export function cardinality(
   fkNullable: boolean,
-  fkAloneUnique: boolean,
+  fkUnique: boolean,
 ): '}o--o|' | '}o--||' | '|o--o|' | '||--||' {
-  if (!fkAloneUnique) return fkNullable ? '}o--o|' : '}o--||';
+  if (!fkUnique) return fkNullable ? '}o--o|' : '}o--||';
   return fkNullable ? '|o--o|' : '||--||';
 }
 
@@ -255,6 +285,9 @@ export function cardinality(
  * Compares a freshly rendered path-to-text map with the committed one.
  * `missing` exists only in `rendered`, `stale` only in `committed`, `differing` in both with different text.
  * Each list is sorted by path.
+ * @param rendered - Freshly rendered path-to-text map.
+ * @param committed - Path-to-text map read from the repository.
+ * @returns Missing, differing and stale paths, each sorted.
  */
 export function compareToCommitted(
   rendered: Map<string, string>,
@@ -426,6 +459,10 @@ function escapeRegExp(value: string): string {
  *
  * Tables are ordered by name. Columns follow `ordinal_position`. Indexes are ordered by
  * their column list and then by definition. Foreign keys are ordered by column.
+ * @param columns - Column catalog rows.
+ * @param constraints - Constraint catalog rows.
+ * @param indexes - Index catalog rows.
+ * @returns Sorted schema model.
  */
 export function buildSchemaModel(
   columns: ColumnRow[],
@@ -491,18 +528,18 @@ export function buildSchemaModel(
 
     const foreignKeys: ForeignKeyModel[] = [];
     for (const constraint of foreignKeyConstraints) {
+      const unique = columnsAreUnique(tableName, constraint.columns, constraints, indexes);
       constraint.columns.forEach((column, index) => {
         const refTable = constraint.ref_table;
         const refColumn = constraint.ref_columns[index];
         if (refTable === null || refColumn === undefined) return;
-        const singleColumn = constraint.columns.length === 1;
         foreignKeys.push({
           table: tableName,
           column,
           refTable,
           refColumn,
           nullable: columnModels.find((model) => model.name === column)?.nullable ?? false,
-          unique: singleColumn && columnIsAloneUnique(tableName, column, constraints, indexes),
+          unique,
         });
       });
     }
@@ -521,6 +558,8 @@ export function buildSchemaModel(
 
 /**
  * Reads the public schema through three parameterless catalog queries and builds a model.
+ * @param sql - SQL client connected to the database to describe.
+ * @returns Sorted schema model of the `public` schema.
  */
 export async function readSchema(sql: SqlClient): Promise<SchemaModel> {
   const columnRows = await sql.query<RawColumnRow>(COLUMNS_SQL);
@@ -538,6 +577,8 @@ export async function readSchema(sql: SqlClient): Promise<SchemaModel> {
  *
  * Directories named `__tests__` are skipped. Only `.ts` files are read. Files are visited in
  * sorted path order.
+ * @param repoRoot - Repository root.
+ * @returns Table name to sorted repo-relative source files.
  */
 export async function sourceFiles(repoRoot: string): Promise<Map<string, string[]>> {
   const files = (await collectTypeScriptFiles(path.join(repoRoot, 'src'))).sort(compareText);
@@ -637,7 +678,11 @@ export function externalSchemaFiles(
  *
  * Keys are `docs/database/README.md` and `docs/database/tables/<table>.md`. Each page starts
  * with {@link GENERATED_HEADER} and is formatted as Markdown with the repo Prettier config.
+ * @param model - Schema model to render.
+ * @param sources - Table name to its source files.
+ * @param repoRoot - Repository root, used to resolve the Prettier config.
  * @param external - Tables created outside this service, mapped to their `docs/schema` file.
+ * @returns Path to Markdown text for the README and every table page.
  */
 export async function renderPages(
   model: SchemaModel,
@@ -804,26 +849,46 @@ function referenceFor(
   return null;
 }
 
-function columnIsAloneUnique(
+/**
+ * Whether a primary key, unique constraint, or non-partial unique index has exactly this column set.
+ * Membership is compared without regard to order. A wider unique that merely covers the set does not
+ * count.
+ * @param table - Table that owns the columns.
+ * @param columns - Column set that must match exactly.
+ * @param constraints - Catalog constraints, including primary keys and unique constraints.
+ * @param indexes - Catalog indexes, including unique indexes.
+ * @returns True when some primary-key or unique constraint, or a unique index with `where === null`,
+ * has exactly this column set.
+ */
+function columnsAreUnique(
   table: string,
-  column: string,
+  columns: readonly string[],
   constraints: readonly ConstraintRow[],
   indexes: readonly IndexRow[],
 ): boolean {
+  /**
+   * Whether two column lists contain the same members the same number of times.
+   * @param candidate - Column list to compare with `columns`.
+   * @returns True when the lists are the same multiset.
+   */
+  const sameSet = (candidate: readonly string[]): boolean => {
+    if (candidate.length !== columns.length) return false;
+    const remaining = new Map<string, number>();
+    for (const name of columns) remaining.set(name, (remaining.get(name) ?? 0) + 1);
+    for (const name of candidate) {
+      const count = remaining.get(name);
+      if (count === undefined || count === 0) return false;
+      remaining.set(name, count - 1);
+    }
+    return true;
+  };
   const constraintUnique = constraints.some(
     (row) =>
-      row.table_name === table &&
-      (row.type === 'u' || row.type === 'p') &&
-      row.columns.length === 1 &&
-      row.columns[0] === column,
+      row.table_name === table && (row.type === 'u' || row.type === 'p') && sameSet(row.columns),
   );
   const indexUnique = indexes.some(
     (row) =>
-      row.table_name === table &&
-      row.is_unique &&
-      row.where === null &&
-      row.columns.length === 1 &&
-      row.columns[0] === column,
+      row.table_name === table && row.is_unique && row.where === null && sameSet(row.columns),
   );
   return constraintUnique || indexUnique;
 }
@@ -1048,12 +1113,15 @@ export async function readCommitted(repoRoot: string): Promise<Map<string, strin
 }
 
 /**
- * Creates a temporary Postgres database, runs `run` against its URL, then drops it.
+ * Creates a temporary Postgres database from template0, runs `run` against its URL, then drops it.
+ * A failure while creating the database or building the URL is rethrown after the admin client is
+ * closed, and the database is dropped when it was created.
  * A drop failure after `run` already threw is logged and the original error is rethrown.
  * A drop failure after a successful `run` is thrown after cleanup.
  * @param adminUrl - Admin connection string allowed to `CREATE DATABASE`.
  * @param run - Callback receiving the scratch database URL.
  * @returns Whatever `run` returns.
+ * @throws The error of `run`, create, or URL setup, or the drop error when nothing else failed.
  */
 export async function withScratchDatabase<T>(
   adminUrl: string,
@@ -1061,28 +1129,32 @@ export async function withScratchDatabase<T>(
 ): Promise<T> {
   const admin = new SQL(adminUrl);
   const name = `gifts_schema_${randomBytes(6).toString('hex')}`;
-  await admin.unsafe(`CREATE DATABASE "${name}"`);
-  const scratch = new URL(adminUrl);
-  scratch.pathname = `/${name}`;
-  const scratchUrl = scratch.toString();
 
   let runError: unknown;
   let runFailed = false;
   let result: T | undefined;
   let dropError: unknown;
   let dropFailed = false;
+  let created = false;
   try {
+    await admin.unsafe(`CREATE DATABASE "${name}" TEMPLATE template0`);
+    created = true;
+    const scratch = new URL(adminUrl);
+    scratch.pathname = `/${name}`;
+    const scratchUrl = scratch.toString();
     result = await run(scratchUrl);
   } catch (error) {
     runFailed = true;
     runError = error;
   } finally {
-    try {
-      await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
-    } catch (error) {
-      dropFailed = true;
-      dropError = error;
-      console.error(error);
+    if (created) {
+      try {
+        await admin.unsafe(`DROP DATABASE IF EXISTS "${name}" WITH (FORCE)`);
+      } catch (error) {
+        dropFailed = true;
+        dropError = error;
+        console.error(error);
+      }
     }
     try {
       if (typeof admin.close === 'function') await admin.close();

@@ -25,7 +25,11 @@ const DATABASE_LINE_PATTERNS = [
   /\.begin\(/,
   /\bSELECT\b.*\bFROM\b/i,
   /\bINSERT\s+INTO\b/i,
-  /\bUPDATE\s+[A-Za-z_][A-Za-z0-9_]*\s+SET\b/i,
+  new RegExp(
+    '\\bUPDATE\\s+(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*)' +
+      '(?:\\.(?:"[^"]+"|[A-Za-z_][A-Za-z0-9_]*))?\\s+SET\\b',
+    'i',
+  ),
   /\bDELETE\s+FROM\b/i,
   /\bCREATE\s+(?:UNIQUE\s+)?INDEX\b/i,
   /\bCREATE\s+TABLE\b/i,
@@ -33,6 +37,21 @@ const DATABASE_LINE_PATTERNS = [
   /\bDROP\s+(?:TABLE|INDEX)\b/i,
   /\bON\s+CONFLICT\b/i,
   /\bCREATE\s+TRIGGER\b/i,
+];
+
+/**
+ * Patterns that mark hunk text as a database call or schema helper.
+ * Used when a hunk has a changed line but that line itself is not SQL.
+ * @type {RegExp[]}
+ */
+const DATABASE_ANCHOR_PATTERNS = [
+  /sql`/,
+  /\.query\(/,
+  /\.execute\(/,
+  /\.unsafe\(/,
+  /\.begin\(/,
+  /_SCHEMA_SQL/,
+  /migrate\w*Schema/,
 ];
 
 /**
@@ -69,6 +88,68 @@ function stripFencedCode(text) {
   return kept.join('\n');
 }
 
+// A run of N backticks opens a span and closes at the next run of exactly N on
+// the same line. An unmatched run stays. The span, backticks included, is removed.
+function stripInlineCode(line) {
+  let kept = '';
+  let index = 0;
+  while (index < line.length) {
+    if (line[index] !== '`') {
+      kept += line[index];
+      index += 1;
+      continue;
+    }
+    let length = 0;
+    while (index + length < line.length && line[index + length] === '`') length += 1;
+    let cursor = index + length;
+    let close = -1;
+    while (cursor < line.length) {
+      if (line[cursor] !== '`') {
+        cursor += 1;
+        continue;
+      }
+      let run = 0;
+      while (cursor + run < line.length && line[cursor + run] === '`') run += 1;
+      if (run === length) {
+        close = cursor;
+        break;
+      }
+      cursor += run;
+    }
+    if (close === -1) {
+      kept += line.slice(index, index + length);
+      index += length;
+      continue;
+    }
+    index = close + length;
+  }
+  return kept;
+}
+
+// Indented code is a line of 4+ spaces or a tab that follows a blank line or
+// another indented-code line. The first line counts as following a blank line.
+// A 4-space line right after ordinary text is a lazy continuation and stays.
+function stripCode(input) {
+  const lines = input.split(/\r?\n/);
+  const kept = [];
+  let afterBlank = true;
+  let afterIndentedCode = false;
+  for (const line of lines) {
+    const blank = line.trim() === '';
+    const indented = line.startsWith('\t') || line.startsWith('    ');
+    if (!blank && indented && (afterBlank || afterIndentedCode)) {
+      kept.push('');
+      afterBlank = false;
+      afterIndentedCode = true;
+      continue;
+    }
+    kept.push(stripInlineCode(line));
+    afterBlank = blank;
+    afterIndentedCode = false;
+  }
+  return kept.join('\n');
+}
+
 /**
  * Remove HTML comments, including comments that span lines.
  * @param {string} text
@@ -96,14 +177,27 @@ function stripDetails(text) {
 }
 
 /**
+ * Hide text from the first unclosed `<!--` or `<details` through the end.
+ * GitHub treats an unclosed comment or details region as hidden. Closed regions are already gone.
+ * @param {string} text
+ * @returns {string}
+ */
+function stripUnclosedRegions(text) {
+  const match = /<!--|<details\b/i.exec(text);
+  if (!match) return text;
+  return text.slice(0, match.index);
+}
+
+/**
  * Pull-request body after hidden regions are removed.
- * Hidden regions are fenced code, HTML comments, and `<details>` blocks.
+ * Hidden regions are fenced code, inline and indented code, HTML comments, `<details>` blocks,
+ * and any unclosed `<!--` or `<details` through the end of the text.
  * @param {string | null | undefined} body
  * @returns {string}
  */
 export function visibleBody(body) {
   const source = body ?? '';
-  return stripDetails(stripHtmlComments(stripFencedCode(source)));
+  return stripUnclosedRegions(stripDetails(stripHtmlComments(stripCode(stripFencedCode(source)))));
 }
 
 /**
@@ -162,26 +256,86 @@ function lineTouchesDatabase(line) {
 }
 
 /**
+ * Split a patch into hunks. A line matching `@@ ... @@` starts a hunk and is not part of it.
+ * Lines before the first header are one implicit hunk, including a patch that has no `@@` header.
+ * A trailing CR is stripped from each line.
+ * @param {string} patch
+ * @returns {string[][]}
+ */
+function splitHunks(patch) {
+  /** @type {string[][]} */
+  const hunks = [[]];
+  for (const raw of patch.split('\n')) {
+    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
+    if (/^@@ .* @@/.test(line)) {
+      hunks.push([]);
+      continue;
+    }
+    hunks[hunks.length - 1].push(line);
+  }
+  return hunks;
+}
+
+/**
+ * Whether hunk text contains a database anchor.
+ * @param {string} text
+ * @returns {boolean}
+ */
+function textHasDatabaseAnchor(text) {
+  return DATABASE_ANCHOR_PATTERNS.some((pattern) => pattern.test(text));
+}
+
+/**
+ * Whether one hunk touches the database.
+ * A changed line that matches a database line pattern always triggers.
+ * An explicit hunk (one that follows a `@@` header) also triggers when it has at least one
+ * changed line and its full text, context lines included, matches a database anchor.
+ * The implicit leading hunk uses changed lines only, so patches without `@@` headers stay on
+ * that rule.
+ * @param {string[]} lines
+ * @param {boolean} afterHeader
+ * @returns {boolean}
+ */
+function hunkTouchesDatabase(lines, afterHeader) {
+  let changed = false;
+  for (const line of lines) {
+    if (!isChangedLine(line)) continue;
+    if (lineTouchesDatabase(line)) return true;
+    changed = true;
+  }
+  if (!afterHeader || !changed) return false;
+  return textHasDatabaseAnchor(lines.join('\n'));
+}
+
+/**
  * Whether a patch touches the database. A missing or empty patch is fail-closed.
+ * The patch is split into hunks. Each hunk after a `@@` header triggers when a changed line
+ * matches a database line pattern, or when it has a changed line and the hunk text matches a
+ * database anchor. Lines before the first header are one implicit hunk and trigger only on
+ * changed lines.
  * @param {string | undefined} patch
  * @returns {boolean}
  */
 function patchTouchesDatabase(patch) {
   if (patch === undefined || patch === '') return true;
-  for (const raw of patch.split('\n')) {
-    const line = raw.endsWith('\r') ? raw.slice(0, -1) : raw;
-    if (isChangedLine(line) && lineTouchesDatabase(line)) return true;
+  const hunks = splitHunks(patch);
+  for (let index = 0; index < hunks.length; index += 1) {
+    if (hunkTouchesDatabase(hunks[index], index > 0)) return true;
   }
   return false;
 }
 
 /**
  * Whether one pull-request file requires the database-change marker.
- * @param {{ filename: string, patch?: string }} file
+ * A rename also triggers when `previous_filename` is a path trigger.
+ * @param {{ filename: string, previous_filename?: string, patch?: string }} file
  * @returns {boolean}
  */
 function fileTriggers(file) {
   if (isPathTrigger(file.filename)) return true;
+  if (typeof file.previous_filename === 'string' && isPathTrigger(file.previous_filename)) {
+    return true;
+  }
   if (!isInspectedSource(file.filename)) return false;
   return patchTouchesDatabase(file.patch);
 }
@@ -191,7 +345,12 @@ function fileTriggers(file) {
  * `triggers` lists triggering filenames once, in file order.
  * @param {{
  *   body?: string | null,
- *   files?: Array<{ filename: string, status?: string, patch?: string }>,
+ *   files?: Array<{
+ *     filename: string,
+ *     previous_filename?: string,
+ *     status?: string,
+ *     patch?: string,
+ *   }>,
  * }} input
  * @returns {{ required: boolean, ok: boolean, triggers: string[] }}
  */
