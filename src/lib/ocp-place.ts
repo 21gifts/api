@@ -202,7 +202,7 @@ async function mapPlacesRequest(
 }
 
 /**
- * PUT a shop pin to the OpenCryptoPay map.
+ * PUT a complete shop pin, or with `removeWhenIncomplete` DELETE an incomplete one.
  *
  * Only when `parentId` is null, the text contains `#21GiftsShop`, a pin is
  * present, {@link shopOcpPlaceInput} is non-null, and `mapPush` is configured.
@@ -220,6 +220,7 @@ export async function syncShopOcpPlace(opts: {
   text: string;
   parentId: string | null;
   place: ForumPlace | null;
+  /** Whether an incomplete shop should be deleted from the map. */
   removeWhenIncomplete?: boolean;
   /** Hashtag token check (injected so tests need not import the message helper). */
   textHasHashtagToken: (text: string, name: string) => boolean;

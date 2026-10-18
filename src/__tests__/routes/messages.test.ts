@@ -12151,6 +12151,69 @@ describe('shop OCP place hook', () => {
     expect(meta[0]?.method).toBe('DELETE');
   });
 
+  it('deletes the map pin when a shop-account write reloads a note hidden concurrently', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const auth = await staffStore('Ada');
+    await addShopkeep(auth);
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : { ...before, deletedAt: new Date(0) };
+      },
+      setShopAccount: async () => true,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(auth, store, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/shop-account',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ username: 'shopkeep' }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+    expect(JSON.parse(calls[0] ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: SHOP_ID,
+    });
+  });
+
+  it('answers 200 when a shop-account write reloads a hidden note without a map push', async () => {
+    const auth = await staffStore('Ada');
+    await addShopkeep(auth);
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : { ...before, deletedAt: new Date(0) };
+      },
+      setShopAccount: async () => true,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(auth, store).request('/messages/' + SHOP_ID + '/shop-account', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'shopkeep' }),
+    });
+    expect(res.status).toBe(200);
+  });
+
   it('answers 200 for a text write on a note hidden concurrently without a map push', async () => {
     const messages = new InMemoryMessageStore();
     await shopNote(messages);

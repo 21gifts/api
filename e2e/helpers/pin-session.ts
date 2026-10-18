@@ -3,16 +3,10 @@ import { expect, type APIRequestContext } from '@playwright/test';
 /** Operator headers configured by the Playwright web server. */
 export const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
-/**
- * Create a verified account and return its authenticated request headers.
- *
- * @param request - Playwright request context for the booted API.
- * @param stamp - Unique suffix for the debug account and Lightning Address.
- * @returns Bearer headers for the verified account session.
- */
-export async function verifiedPinSession(
+async function pinSession(
   request: APIRequestContext,
   stamp: string,
+  role: 'verified' | 'moderator',
 ): Promise<{ authorization: string }> {
   const name = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
@@ -42,8 +36,36 @@ export async function verifiedPinSession(
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${id}`, {
     headers: DEBUG,
-    data: { role: 'verified' },
+    data: { role },
   });
   expect(promoted.status()).toBe(200);
   return auth;
+}
+
+/**
+ * Create a verified account and return its authenticated request headers.
+ *
+ * @param request - Playwright request context for the booted API.
+ * @param stamp - Unique suffix for the debug account and Lightning Address.
+ * @returns Bearer headers for the verified account session.
+ */
+export async function verifiedPinSession(
+  request: APIRequestContext,
+  stamp: string,
+): Promise<{ authorization: string }> {
+  return pinSession(request, stamp, 'verified');
+}
+
+/**
+ * Create a moderator account and return its authenticated request headers.
+ *
+ * @param request - Playwright request context for the booted API.
+ * @param stamp - Unique suffix for the debug account and Lightning Address.
+ * @returns Bearer headers for the moderator session.
+ */
+export async function staffPinSession(
+  request: APIRequestContext,
+  stamp: string,
+): Promise<{ authorization: string }> {
+  return pinSession(request, stamp, 'moderator');
 }
