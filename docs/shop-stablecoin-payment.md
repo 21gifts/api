@@ -1062,11 +1062,13 @@ duty, and the order duty.
    progressing with a known amount within the bounds while the payment is
    neither `paid` nor closed, or its order is completed. A `superseded`
    kept row counts as null here, because the proof it gave way to is the
-   deleted row. When the payment is `accepted` and the kept row does not
-   take `accepted`, the payment ends: as for an accepted proof that
+   deleted row. When the deleted row was `accepted`, the payment is
+   `accepted`, and the kept row does not take `accepted`, the payment
+   ends: as for an accepted proof that
    becomes that result when the kept row is `refunded`, `failed`, or
    `refused`, otherwise with `end_reason` `order_recovered`. A `paid` or
-   closed payment keeps its status and `end_reason`. The kept row then
+   closed payment keeps its status and `end_reason`. When the deleted row
+   was not `accepted`, the payment's status does not change. The kept row then
    moves as that table states, which can still accept an `ended` payment
    before it closes.
 
