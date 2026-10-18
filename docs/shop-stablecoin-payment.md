@@ -725,9 +725,14 @@ and the invoice forward `GET /lnurlp/:username/invoice` answers as when
 its upstream fails, **503**
 `{ "error": "Lightning address service is unavailable" }`
 (`src/routes/lnurl-server.ts`). On every other outcome both hand it out as
-today. One
+today. When `recordInvoice` fails with an error, both still log
+`pos.invoice.record_failed` and hand the invoice out, as today, so that a
+database error does not stop Lightning payments. Such an invoice
+reaches a payer of the charge unchecked only when the LNURL server has
+also minted a payment hash that another payment holds. One
 settlement can therefore never confirm a charge and another payment, and
-no payer of a charge gets another payment's invoice. Both routes call
+no payer of a charge gets another payment's invoice when `recordInvoice`
+returns an outcome. Both routes call
 `recordInvoice` only for a pending charge, as today, and check nothing
 without one. A BOLT11 that a shop payment holds then reaches a plain payer
 only when the LNURL server mints the same payment hash twice; paying it
@@ -1005,7 +1010,9 @@ duty, and the order duty.
    transaction and offer. Otherwise insert the
    `shop_proof` row with `give_up_at` 24 h ahead. A lost insert (`23505`)
    re-reads the winning row and answers from it.
-2. Submit it to Orchestra ([Calls](#calls)) once it has a log index. A
+2. Submit it to Orchestra ([Calls](#calls)) while it is unresolved, once
+   it has a log index; a row that already holds an order, such as a
+   `detected` row, is not submitted. A
    `hex` proof without a receipt yet is submitted by the submits duty
    after the receipts duty fills its log index. When the request's budget
    is used up before the submit, the watcher submits it.
@@ -1029,7 +1036,7 @@ duty, and the order duty.
 A row without a log index gets it from the repeat path or from the
 receipts duty of the [Watcher](#watcher).
 
-Every verified proof is submitted once it has a log index, including when the payment is
+Every unresolved verified proof is submitted once it has a log index, including when the payment is
 `ended`, `paid`, or already `accepted`, and after its quote expired.
 Orchestra holds the coin, and the submit lets it fill or refund the
 deposit when its own detection missed it.
