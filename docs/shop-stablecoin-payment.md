@@ -254,7 +254,8 @@ status. `db_change` keeps every earlier value.
 The step that moves a charge-backed payment to `paid` takes the account
 row lock first, then the `pos_charge` row, then the `shop_payment` row,
 the order the charge watch uses, so the two never wait for each other in
-opposite order. It also runs
+opposite order. For a payer's payment, which has no charge, it locks only
+the `shop_payment` row. It also runs
 `markPaid` for its charge, so the till sees the charge paid even after
 the charge's own watch has ended. That watch ends 10 minutes after the
 charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
@@ -273,18 +274,18 @@ conditional update on the expected result, in the same database
 transaction as the payment change it causes. At most one proof of a
 payment is `accepted`.
 
-| From                                                       | To           | Trigger                                                                                                                                                                                                                                                                                             |
-| ---------------------------------------------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.                                     |
-| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                                               |
-| `superseded`                                               | `accepted`   | In the transaction in which the payment's accepted proof becomes `refunded`, `failed`, or `refused`, while the payment is neither `paid` nor closed: the oldest `superseded` proof of the payment whose order is progressing and whose amount is known and within the bounds below takes its place. |
-| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction that first locks the rows it changes ([Storing and submitting](#storing-and-submitting)), the proof that was `accepted`, if there is one, first moves to `superseded`, then this proof moves to `accepted`.                   |
-| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                                                     |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                                                        |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                                          |
-| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)).                                    |
-| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                                                 |
-| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                                           |
+| From                                                       | To           | Trigger                                                                                                                                                                                                                                                                                                                                                              |
+| ---------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| null, `refused`, `stuck`, `superseded`                     | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`, which also lets a `superseded` proof whose order resumed take the place once no proof is `accepted`. Filling in a value or a new order status re-evaluates the proof. |
+| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                                                                                                                |
+| `superseded`                                               | `accepted`   | In the transaction in which the payment's accepted proof becomes `refunded`, `failed`, or `refused`, while the payment is neither `paid` nor closed: the oldest `superseded` proof of the payment whose order is progressing and whose amount is known and within the bounds below takes its place.                                                                  |
+| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction that first locks the rows it changes ([Storing and submitting](#storing-and-submitting)), the proof that was `accepted`, if there is one, first moves to `superseded`, then this proof moves to `accepted`.                                                                                    |
+| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                                                                                                                      |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                                                                                                                         |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                                                                                                           |
+| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)).                                                                                                     |
+| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                                                                                                                  |
+| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                                                                                                            |
 
 A proof whose payment is already `paid` is held: its order is
 expected to fail with `duplicate_lightning_invoice`, so it answers
@@ -1059,8 +1060,15 @@ duty, and the order duty.
    row, then writes those values onto the kept row, because the unique
    indexes are not deferrable. It answers from the kept row.
 
-Step 4 and the completion and takeover rows of the proof table in [States](#states) can change two proofs in one transaction. Each first
-locks every row it changes with one `SELECT … FOR UPDATE` ordered by id, so two of them never wait for each other in opposite order.
+Every transaction that changes a proof's `result`, and step 4, first
+locks the payment's `shop_payment` row (`SELECT … FOR UPDATE`), then
+reads the payment's status and which proof is `accepted`, then locks every proof row it changes
+with one `SELECT … FOR UPDATE` ordered by id. Two decisions about one
+payment therefore never run at the same time, also across the two
+containers. The payment row comes before the proof rows everywhere, and
+the settlement step, which locks the account, `pos_charge` and
+`shop_payment` rows, locks no proof row, so no two of these wait for
+each other in opposite order.
 
 A row without a log index gets it from the repeat path or from the
 receipts duty of the [Watcher](#watcher).
@@ -1263,8 +1271,8 @@ absolute time in milliseconds.
   (`next_status_at` is cleared) and logs no `shop.alert.order_stuck`,
   because the successor's own proof is watched. In the same step it sets
   the payment's `next_history_at` to now when it is empty, so the orders
-  duty reads the history once more and stores the successor even after
-  the payment's order watch has ended. A replaced proof that was
+  duty reads the history again and stores the successor even after the
+  payment's order watch has ended. A replaced proof that was
   never `accepted` stays held and answers a repeat with **503**, while the
   till and the payment page show the payment's state.
   A progressing status can make a proof `accepted`, as [States](#states)
@@ -1315,7 +1323,9 @@ one order should be polled no faster than every 3 s; the api accepts
 that for the overlap of a deploy, because the per-IP limit still holds. `next_history_at` is set when the first
 detail of a payment is issued and cleared when the order watch of its
 last offer ends; set again by the order-status duty for a successor
-([Calls](#calls)) after that watch ended, it is cleared after that one read. One read is one page; `history_offset` keeps the next
+([Calls](#calls)) after that watch ended, it stays set until a read has
+stored a proof for that successor, and at most 24 h, after which the
+duty logs `shop.alert.successor_missing` and clears it. One read is one page; `history_offset` keeps the next
 offset, and a short page starts the next read at offset 0 again. Duty 3
 reads one payment until the order watch of its last offer with an issued
 detail ends, also after the payment is paid or closed, because a later
@@ -1728,7 +1738,7 @@ api never logs a key, an RPC URL, raw `hex`, or a BOLT11.
   `shop.alert.proof_stuck`, `shop.alert.detected_mismatch`,
   `shop.alert.accepted_unpaid`,
   `shop.alert.double_settled`, `shop.alert.cancelled_settled`,
-  `shop.alert.duplicate_invoice`,
+  `shop.alert.duplicate_invoice`, `shop.alert.successor_missing`,
   `shop.alert.shared_deposit_address`, and
   `shop.alert.accepted_long` (a payment `accepted` for more than one
   hour)
