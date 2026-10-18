@@ -611,8 +611,16 @@ One procedure creates a shop payment, for a charge or for a payer:
    charge, the procedure goes on. When there is no row, the charge is no
    longer pending or has expired, and the procedure ends as step 8 ends
    for such a charge, without `shop.alert.duplicate_invoice`.
-   A payer creation never records against a charge, also not against one that appeared after
-   step 2.
+   A payer creation never records against a charge, also not against one
+   that appeared after step 2. It reads instead whether the hash is
+   already recorded against a charge, with
+   `posStore.findChargeForPayment({ paymentHash })`; a hit stops it as a
+   failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one
+   settlement can never confirm both a charge and a payer's payment. A
+   hash that `POST /pay/:username/invoice` records between this read and
+   the insert would need the LNURL server to repeat a hash within that
+   moment; that residual is accepted, like the other per-container
+   limits.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
    one Orchestra quote per candidate pair, within 3 s for the whole step;
    a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
@@ -1403,28 +1411,34 @@ page.
   **503** `stablecoin_unavailable` or another 4xx, it falls back to
   `POST /pay/:username/invoice`, which is today's Lightning-only path.
   When the first call ends in a timeout, a transport error, or another
-  5xx, the page does not know whether a payment was opened. From then on,
-  until a call returns a payment, the page does not fall back to
-  `POST /pay/:username/invoice` on its own, for any amount and whatever
-  a later call answers, because an open payment it cannot see could be
-  paid next to a second invoice. Before such a later fallback it fetches
-  the pay link, which shows which payment is open, and falls back only
-  when no open payer amount is shown. It repeats the same call once;
-  a new payer amount replaces any payment the lost answer opened, so at
-  most one stays open. Replacing it is safe: the page never received
-  that payment's invoice or quote, so this payer cannot pay it, and like
-  any replaced payer amount it can only be paid by a wallet that fetched
-  it before, which [States](#states) handles; a page-side retry
-  identifier is not added, because the pay link already shows which
-  payment is open and replacement keeps one. A **409** `payment_open` on the repeat reloads
-  and shows the till charge, as on the first call. Any other answer of
-  the repeat that is not a payment, a 503 or another 4xx included, and a
-  repeat that ends without an answer show "This payment could not be started. Try again." with a button
-  that repeats the call.
-  After a success it fetches the pay link and checks that `quote.payment`
-  is the payment it opened. When it is not, another payer replaced the amount, and the page shows
-  "Another payer entered an amount first. Enter yours again." and the
-  amount field.
+  5xx, the page does not know whether a payment was opened, because an
+  open payment it cannot see could be paid next to a second invoice.
+  From then on, until a call returns a payment, it handles every answer
+  of `POST /pay/:username/payment` for any amount as follows:
+  - It repeats the same call once. A new payer amount replaces any
+    payment the lost answer opened, so at most one stays open. Replacing
+    it is safe: the page never received that payment's invoice or quote,
+    so this payer cannot pay it, and like any replaced payer amount it
+    can only be paid by a wallet that fetched it before, which
+    [States](#states) handles; a page-side retry identifier is not
+    added, because the pay link already shows which payment is open and
+    replacement keeps one.
+  - A payment ends this state and is shown.
+  - A **409** `payment_open` reloads and shows the till charge, as on
+    the first call.
+  - A **503** `stablecoin_unavailable` or another 4xx makes the page
+    fetch the pay link. When it shows no open payer amount, the page
+    falls back to `POST /pay/:username/invoice`. When it shows one, or
+    the fetch fails, the page shows "This payment could not be started.
+    Try again." with a button that repeats the call.
+  - A timeout, a transport error, or another 5xx shows the same text
+    and button.
+
+  After a success it fetches the pay link and checks that
+  `quote.payment` is the payment it opened. When it is not, another
+  payer replaced the amount, and the page shows "Another payer entered
+  an amount first. Enter yours again." and the amount field.
+
 - It fetches the pay link on its own origin, without `timeout`. It shows
   one line per method and asset from `transferAmounts`, with the quote's
   expiry, and fetches again when the quote expires.
