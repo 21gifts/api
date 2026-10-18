@@ -759,3 +759,9 @@ describe('compareToCommitted', () => {
     });
   });
 });
+
+describe('empty string default', () => {
+  test('an empty literal is shown as two quotes', () => {
+    expect(renderDefault("''::text", false)).toBe("`''`");
+  });
+});

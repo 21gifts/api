@@ -79,7 +79,10 @@ jobs:
             const isSourceTypeScript = (filename) =>
               filename.startsWith('src/') && filename.endsWith('.ts');
             const filesWithContent = listed.map((file) => {
-              if (!isSourceTypeScript(file.filename)) return file;
+              // The old name counts too: a database file moved out of src/ is read from the base.
+              if (!isSourceTypeScript(file.filename) && !isSourceTypeScript(file.previous_filename ?? '')) {
+                return file;
+              }
               const baseFilename = file.previous_filename ?? file.filename;
               const headFile = `${process.env.GITHUB_WORKSPACE}/notice-head/${file.filename}`;
               const baseFile = `${process.env.GITHUB_WORKSPACE}/notice-base/${baseFilename}`;

@@ -259,7 +259,11 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
   if (text.startsWith('nextval(')) return 'auto-increment';
 
   const literal = /^'((?:''|[^'])*)'(?:::.+)?$/.exec(text);
-  if (literal?.[1] !== undefined) return `\`${literal[1].replace(/''/g, "'")}\``;
+  if (literal?.[1] !== undefined) {
+    // An empty literal would render as an empty code span, which Markdown shows as two backticks.
+    if (literal[1] === '') return "`''`";
+    return `\`${literal[1].replace(/''/g, "'")}\``;
+  }
 
   return `\`${text}\``;
 }

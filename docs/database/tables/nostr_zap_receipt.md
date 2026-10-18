@@ -15,7 +15,7 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 | `payer_pubkey`     | Free text               | `text`                     | Yes      | –       | –                            |
 | `zap_request_id`   | Free text               | `text`                     | Yes      | –       | –                            |
 | `gift_reply_id`    | UUID (foreign key)      | `uuid`                     | Yes      | –       | [`message`.`id`](message.md) |
-| `comment`          | Free text               | `text`                     | No       | ``      | –                            |
+| `comment`          | Free text               | `text`                     | No       | `''`    | –                            |
 | `recorded_at`      | Date/time               | `timestamp with time zone` | Yes      | –       | –                            |
 
 ## Indexes

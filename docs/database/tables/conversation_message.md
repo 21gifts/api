@@ -25,7 +25,7 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 | `fiat_eur`            | Decimal            | `numeric(20,2)`            | Yes      | –       | –                                      |
 | `fiat_php`            | Decimal            | `numeric(20,2)`            | Yes      | –       | –                                      |
 | `actor_account_id`    | UUID (foreign key) | `uuid`                     | Yes      | –       | [`account`.`id`](account.md)           |
-| `actor_name`          | Free text          | `text`                     | No       | ``      | –                                      |
+| `actor_name`          | Free text          | `text`                     | No       | `''`    | –                                      |
 | `gift_for_message_id` | UUID               | `uuid`                     | Yes      | –       | –                                      |
 | `mentions`            | JSON               | `jsonb`                    | No       | `[]`    | –                                      |
 | `photo`               | Binary             | `bytea`                    | Yes      | –       | –                                      |
