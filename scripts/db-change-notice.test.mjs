@@ -141,14 +141,19 @@ describe('non-triggers', () => {
   });
 
   it('ignores +++ and --- header lines', () => {
-    const patch = [
-      '--- SELECT id FROM gift a/src/lib/gift.ts',
-      '+++ INSERT INTO gift b/src/lib/gift.ts',
-      ' context line .query(',
-      '+export const n = 1;',
-    ].join('\n');
-    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
-    assert.deepEqual(result.triggers, []);
+    const patches = [
+      [
+        '--- a/src/lib/gift.ts',
+        '+++ b/src/lib/gift.ts',
+        ' context line .query(',
+        '+export const n = 1;',
+      ],
+      ['--- /dev/null', '+++ b/src/lib/gift.ts', '+export const n = 1;'],
+    ];
+    for (const lines of patches) {
+      const result = evaluate({ body: '', files: files('src/lib/gift.ts', lines.join('\n')) });
+      assert.deepEqual(result.triggers, []);
+    }
   });
 
   it('stays ok with no files when the body is empty or omitted', () => {
@@ -216,6 +221,23 @@ describe('marker visibility', () => {
     assert.equal(isMarkerVisible(body), true);
     assert.equal(visibleBody(body).includes('hidden'), false);
   });
+
+  it('a ```sql line does not close a fence', () => {
+    const body = `\`\`\`md\n\`\`\`sql\n${MARKER}\n\`\`\``;
+    assert.equal(isMarkerVisible(body), false);
+    const result = evaluate({ body, files: files('docs/schema/gift.sql', '') });
+    assert.equal(result.ok, false);
+  });
+
+  it('a marker after a properly closed fence is visible', () => {
+    const body = `\`\`\`md\nsample\n\`\`\`\n${MARKER}\n`;
+    assert.equal(isMarkerVisible(body), true);
+  });
+
+  it('a four-backtick opener is not closed by a three-backtick line', () => {
+    const body = `\`\`\`\`\n\`\`\`\n${MARKER}\n\`\`\`\``;
+    assert.equal(isMarkerVisible(body), false);
+  });
 });
 
 it('a </details> inside inline code does not reveal a hidden marker', () => {
@@ -245,7 +267,7 @@ describe('hunk anchors', () => {
     assert.deepEqual(result.triggers, []);
   });
 
-  it('does not trigger when the anchor and the changed line are in different hunks', () => {
+  it('triggers when the anchor and the changed line are in different hunks', () => {
     const patch = [
       '@@ -1,2 +1,2 @@',
       ' await sql.query(`',
@@ -255,6 +277,43 @@ describe('hunk anchors', () => {
       '+  WHERE id = $1',
       ' const b = 2;',
     ].join('\n');
+    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
+    assert.deepEqual(result.triggers, ['src/lib/gift.ts']);
+  });
+
+  it('does not trigger when no hunk has an anchor', () => {
+    const patch = [
+      '@@ -1,2 +1,3 @@',
+      ' const a = 1;',
+      '+  WHERE id = $1',
+      '@@ -8,2 +8,1 @@',
+      ' const a = 1;',
+      '-const old = 2;',
+    ].join('\n');
+    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
+    assert.deepEqual(result.triggers, []);
+  });
+
+  it('counts a removed line that starts with --- after the first @@', () => {
+    const patch = '@@ -1,3 +1,2 @@\n await sql.query(`\n--- SELECT 1 FROM gift\n )\n';
+    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
+    assert.deepEqual(result.triggers, ['src/lib/gift.ts']);
+  });
+
+  it('counts a removed --- line through the anchor alone', () => {
+    const patch = '@@ -1,3 +1,2 @@\n await sql.query(`\n--- plain comment\n )\n';
+    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
+    assert.deepEqual(result.triggers, ['src/lib/gift.ts']);
+  });
+
+  it('counts an added +++ line after the first @@', () => {
+    const patch = '@@ -1,2 +1,3 @@\n await sql.query(`\n+++ plain note\n )\n';
+    const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
+    assert.deepEqual(result.triggers, ['src/lib/gift.ts']);
+  });
+
+  it('does not count a --- line after @@ when no anchor exists', () => {
+    const patch = '@@ -1,2 +1,1 @@\n const a = 1;\n--- plain comment\n';
     const result = evaluate({ body: '', files: files('src/lib/gift.ts', patch) });
     assert.deepEqual(result.triggers, []);
   });
@@ -298,6 +357,48 @@ describe('renames', () => {
       ],
     });
     assert.equal(result.required, false);
+    assert.deepEqual(result.triggers, []);
+  });
+
+  it('scans the patch when the previous path is an inspected source', () => {
+    const result = evaluate({
+      files: [
+        {
+          filename: 'docs/x.ts',
+          previous_filename: 'src/lib/x.ts',
+          status: 'renamed',
+          patch: '@@ -1 +1 @@\n-const q = "SELECT id FROM gift";\n+const q = 1;\n',
+        },
+      ],
+    });
+    assert.deepEqual(result.triggers, ['docs/x.ts']);
+    assert.equal(result.required, true);
+  });
+
+  it('fails closed on a rename from an inspected source without a patch', () => {
+    const result = evaluate({
+      files: [
+        {
+          filename: 'docs/x.ts',
+          previous_filename: 'src/lib/x.ts',
+          status: 'renamed',
+        },
+      ],
+    });
+    assert.deepEqual(result.triggers, ['docs/x.ts']);
+  });
+
+  it('does not trigger on a rename from an inspected source when the patch has no database content', () => {
+    const result = evaluate({
+      files: [
+        {
+          filename: 'docs/x.ts',
+          previous_filename: 'src/lib/x.ts',
+          status: 'renamed',
+          patch: '@@ -1 +1 @@\n-const a = 1;\n+const a = 2;\n',
+        },
+      ],
+    });
     assert.deepEqual(result.triggers, []);
   });
 });

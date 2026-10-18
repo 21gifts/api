@@ -269,6 +269,10 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
  * Crow's-foot cardinality of a foreign key from the referencing side.
  * Uniqueness means a primary-key or unique constraint with exactly the key's column set;
  * a wider unique that merely covers it does not count.
+ * A unique foreign key is one-to-one: the child side is always optional-one `|o`, and the parent
+ * side is `||` when the foreign-key column is NOT NULL or `o|` when it is nullable
+ * (`|o--||` / `|o--o|`).
+ * Many-to-one stays `}o--||` / `}o--o|`.
  * @param fkNullable - Whether the foreign-key column accepts NULL.
  * @param fkUnique - Whether the foreign-key column set is unique.
  * @returns Mermaid relationship symbol.
@@ -276,9 +280,9 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
 export function cardinality(
   fkNullable: boolean,
   fkUnique: boolean,
-): '}o--o|' | '}o--||' | '|o--o|' | '||--||' {
+): '}o--o|' | '}o--||' | '|o--o|' | '|o--||' {
   if (!fkUnique) return fkNullable ? '}o--o|' : '}o--||';
-  return fkNullable ? '|o--o|' : '||--||';
+  return fkNullable ? '|o--o|' : '|o--||';
 }
 
 /**

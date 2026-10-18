@@ -41,7 +41,9 @@ const DATABASE_LINE_PATTERNS = [
 
 /**
  * Patterns that mark hunk text as a database call or schema helper.
- * Used when a hunk has a changed line but that line itself is not SQL.
+ * Used when any explicit hunk of the patch contains an anchor on a changed or context line:
+ * every explicit hunk that has a changed line then triggers. The implicit leading hunk does
+ * not use anchors.
  * @type {RegExp[]}
  */
 const DATABASE_ANCHOR_PATTERNS = [
@@ -64,7 +66,10 @@ function stripVariationSelectors(text) {
 }
 
 /**
- * Remove fenced code blocks. A fence is a line of at least three backticks or tildes.
+ * Remove fenced code blocks. A fence opens on a line of at least three backticks or tildes.
+ * While a fence is open, a line closes it only when, after one trailing CR is removed, the
+ * closer is the whole line, the character matches the opener, and the run is at least as long.
+ * A line such as ```sql does not close a fence. Outside a fence the opener regex is used.
  * @param {string} text
  * @returns {string}
  */
@@ -73,12 +78,16 @@ function stripFencedCode(text) {
   const kept = [];
   /** @type {{ mark: string, length: number } | null} */
   let open = null;
+  const opener = /^[ \t]{0,3}(`{3,}|~{3,})/;
+  const closer = /^[ \t]{0,3}(`{3,}|~{3,})[ \t]*$/;
   for (const line of text.split('\n')) {
-    const match = /^[ \t]{0,3}(`{3,}|~{3,})/.exec(line);
     if (open) {
+      const trimmed = line.endsWith('\r') ? line.slice(0, -1) : line;
+      const match = closer.exec(trimmed);
       if (match && match[1][0] === open.mark && match[1].length >= open.length) open = null;
       continue;
     }
+    const match = opener.exec(line);
     if (match) {
       open = { mark: match[1][0], length: match[1].length };
       continue;
@@ -237,12 +246,20 @@ function isInspectedSource(filename) {
 
 /**
  * Whether a diff line is an added or removed content line.
- * Git's `+++` and `---` headers are not content.
+ * Before the first `@@` header, lines matching `--- a/`, `--- /dev/null`, `+++ b/`, or
+ * `+++ /dev/null` are file headers and are not content. After that header, any line that
+ * starts with `+` or `-` is a changed line, including lines that start with `---` or `+++`.
  * @param {string} line
+ * @param {boolean} afterHeader
  * @returns {boolean}
  */
-function isChangedLine(line) {
-  if (line.startsWith('+++') || line.startsWith('---')) return false;
+function isChangedLine(line, afterHeader) {
+  if (
+    !afterHeader &&
+    (/^--- (?:a\/|\/dev\/null)/.test(line) || /^\+\+\+ (?:b\/|\/dev\/null)/.test(line))
+  ) {
+    return false;
+  }
   return line.startsWith('+') || line.startsWith('-');
 }
 
@@ -287,40 +304,42 @@ function textHasDatabaseAnchor(text) {
 
 /**
  * Whether one hunk touches the database.
- * A changed line that matches a database line pattern always triggers.
- * An explicit hunk (one that follows a `@@` header) also triggers when it has at least one
- * changed line and its full text, context lines included, matches a database anchor.
- * The implicit leading hunk uses changed lines only, so patches without `@@` headers stay on
- * that rule.
+ * A changed line that matches a database line pattern always triggers. `afterHeader` is passed
+ * to the changed-line test: file headers count only before the first `@@`. Otherwise an
+ * explicit hunk triggers when it has a changed line and `patchAnchored` is true.
  * @param {string[]} lines
  * @param {boolean} afterHeader
+ * @param {boolean} patchAnchored
  * @returns {boolean}
  */
-function hunkTouchesDatabase(lines, afterHeader) {
+function hunkTouchesDatabase(lines, afterHeader, patchAnchored) {
   let changed = false;
   for (const line of lines) {
-    if (!isChangedLine(line)) continue;
+    if (!isChangedLine(line, afterHeader)) continue;
     if (lineTouchesDatabase(line)) return true;
     changed = true;
   }
-  if (!afterHeader || !changed) return false;
-  return textHasDatabaseAnchor(lines.join('\n'));
+  if (afterHeader && changed && patchAnchored) return true;
+  return false;
 }
 
 /**
  * Whether a patch touches the database. A missing or empty patch is fail-closed.
- * The patch is split into hunks. Each hunk after a `@@` header triggers when a changed line
- * matches a database line pattern, or when it has a changed line and the hunk text matches a
- * database anchor. Lines before the first header are one implicit hunk and trigger only on
- * changed lines.
+ * The patch is anchored when any explicit hunk (after a `@@` header) contains a database
+ * anchor on a changed or context line. Every explicit hunk that has a changed line then
+ * triggers. The implicit leading hunk, before the first `@@`, triggers only when a changed
+ * line matches a database line pattern.
  * @param {string | undefined} patch
  * @returns {boolean}
  */
 function patchTouchesDatabase(patch) {
   if (patch === undefined || patch === '') return true;
   const hunks = splitHunks(patch);
+  const patchAnchored = hunks.some(
+    (lines, index) => index > 0 && textHasDatabaseAnchor(lines.join('\n')),
+  );
   for (let index = 0; index < hunks.length; index += 1) {
-    if (hunkTouchesDatabase(hunks[index], index > 0)) return true;
+    if (hunkTouchesDatabase(hunks[index], index > 0, patchAnchored)) return true;
   }
   return false;
 }
@@ -328,6 +347,8 @@ function patchTouchesDatabase(patch) {
 /**
  * Whether one pull-request file requires the database-change marker.
  * A rename also triggers when `previous_filename` is a path trigger.
+ * A rename scans the patch when either the current path or `previous_filename` is an
+ * inspected source. An absent patch stays fail-closed.
  * @param {{ filename: string, previous_filename?: string, patch?: string }} file
  * @returns {boolean}
  */
@@ -336,7 +357,10 @@ function fileTriggers(file) {
   if (typeof file.previous_filename === 'string' && isPathTrigger(file.previous_filename)) {
     return true;
   }
-  if (!isInspectedSource(file.filename)) return false;
+  const inspected =
+    isInspectedSource(file.filename) ||
+    (typeof file.previous_filename === 'string' && isInspectedSource(file.previous_filename));
+  if (!inspected) return false;
   return patchTouchesDatabase(file.patch);
 }
 

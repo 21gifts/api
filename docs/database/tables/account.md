@@ -87,7 +87,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 erDiagram
     "account" }o--o| "message" : "profile_message_id"
     "account_image" }o--|| "account" : "account_id"
-    "address_verification" ||--|| "account" : "account_id"
+    "address_verification" |o--|| "account" : "account_id"
     "api_log" }o--o| "account" : "account_id"
     "auth_session" }o--|| "account" : "account_id"
     "contact" }o--|| "account" : "account_id"
@@ -96,7 +96,7 @@ erDiagram
     "conversation_message" }o--o| "account" : "actor_account_id"
     "conversation_message" }o--o| "account" : "sender_account_id"
     "conversation_read" }o--|| "account" : "account_id"
-    "funding_grant" ||--|| "account" : "account_id"
+    "funding_grant" |o--|| "account" : "account_id"
     "funding_grant" }o--o| "account" : "decided_by"
     "member_habit" }o--|| "account" : "account_id"
     "member_habit_comment" }o--|| "account" : "account_id"

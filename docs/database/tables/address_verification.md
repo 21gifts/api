@@ -27,5 +27,5 @@ None.
 
 ```mermaid
 erDiagram
-    "address_verification" ||--|| "account" : "account_id"
+    "address_verification" |o--|| "account" : "account_id"
 ```

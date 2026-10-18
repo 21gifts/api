@@ -259,7 +259,7 @@ describe('cardinality', () => {
     expect(cardinality(true, false)).toBe('}o--o|');
     expect(cardinality(false, false)).toBe('}o--||');
     expect(cardinality(true, true)).toBe('|o--o|');
-    expect(cardinality(false, true)).toBe('||--||');
+    expect(cardinality(false, true)).toBe('|o--||');
   });
 });
 
