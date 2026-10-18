@@ -765,3 +765,10 @@ describe('empty string default', () => {
     expect(renderDefault("''::text", false)).toBe("`''`");
   });
 });
+
+describe('one-value CHECK', () => {
+  test('a CHECK pinning the column to one literal is an ENUM', () => {
+    expect(isEnumCheck("CHECK ((staff_tag = 'Gründer'::text))", 'staff_tag')).toBe(true);
+    expect(isEnumCheck('CHECK ((staff_tag = other_column))', 'staff_tag')).toBe(false);
+  });
+});

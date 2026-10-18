@@ -10,7 +10,7 @@ Source: [docs/schema/gift.sql](../../../docs/schema/gift.sql) Created outside th
 | -------------------- | ------------------------------------- | -------------------------- | -------- | -------------- | ---------- |
 | `id`                 | Integer (primary key, auto-increment) | `bigint`                   | No       | auto-increment | –          |
 | `paid_at`            | Date/time                             | `timestamp with time zone` | No       | –              | –          |
-| `direction`          | Free text                             | `text`                     | No       | –              | –          |
+| `direction`          | ENUM                                  | `text`                     | No       | –              | –          |
 | `currency`           | Free text                             | `text`                     | No       | –              | –          |
 | `amount_sats`        | Integer                               | `bigint`                   | No       | –              | –          |
 | `fee_sats`           | Integer                               | `bigint`                   | No       | –              | –          |

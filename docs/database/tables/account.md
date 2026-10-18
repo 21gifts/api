@@ -36,7 +36,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `session_refused`              | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `wallet_required`              | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `wallet_backup_seen_at`        | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
-| `staff_tag`                    | Free text          | `text`                     | Yes      | –           | –                            |
+| `staff_tag`                    | ENUM               | `text`                     | Yes      | –           | –                            |
 
 ## Indexes
 

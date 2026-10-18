@@ -443,7 +443,9 @@ function matchesLiteralList(clause: string, column: string): boolean {
     `${col}\\s*=\\s*ANY\\s*\\(\\s*\\(?\\s*ARRAY\\s*\\[\\s*${list}\\s*\\]\\s*\\)?` +
     `(?:${castType()})?\\s*\\)`;
   const inList = `${col}\\s+IN\\s*\\(\\s*${list}\\s*\\)`;
-  return new RegExp(`^(?:${anyList}|${inList})$`, 'i').test(clause);
+  // Postgres stores a one-value `IN ('x')` as `col = 'x'::text`.
+  const single = `${col}\\s*=\\s*${literal}`;
+  return new RegExp(`^(?:${anyList}|${inList}|${single})$`, 'i').test(clause);
 }
 
 function matchesIsNull(clause: string, column: string): boolean {

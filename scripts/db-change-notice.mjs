@@ -245,10 +245,11 @@ function stripUnclosedRegions(text) {
  */
 export function visibleBody(body) {
   const source = body ?? '';
-  // Remaining HTML tags go last: a marker inside a tag, such as a multi-line `title="…"`, is not shown.
-  return stripUnclosedRegions(
-    stripDetails(stripHtmlComments(stripCode(stripFencedCode(source)))),
-  ).replace(/<\/?[A-Za-z][^<>]*>/g, '');
+  // Remaining HTML tags (quote-aware) and images go last: a marker inside a tag attribute or an
+  // image's alt text is not shown.
+  return stripUnclosedRegions(stripDetails(stripHtmlComments(stripCode(stripFencedCode(source)))))
+    .replace(/<\/?[A-Za-z](?:"[^"]*"|'[^']*'|[^'"<>])*>/g, '')
+    .replace(/!\[[^\]]*\](?:\([^)]*\)|\[[^\]]*\])/g, '');
 }
 
 /**

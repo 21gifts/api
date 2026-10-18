@@ -527,3 +527,13 @@ describe('markers inside HTML tags', () => {
     assert.equal(isMarkerVisible(`<b>${MARKER}</b>`), true);
   });
 });
+
+describe('quoted attributes and images', () => {
+  it('does not end a tag at a > inside a quoted attribute', () => {
+    assert.equal(isMarkerVisible(`<div title=">\n${MARKER}\n"></div>`), false);
+  });
+
+  it('hides a marker in a multi-line image alt text', () => {
+    assert.equal(isMarkerVisible(`![\n${MARKER}\n](https://example.com/x.png)`), false);
+  });
+});
