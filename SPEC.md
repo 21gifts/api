@@ -483,7 +483,10 @@ its expiry, at least 45 s remain before `window_ends_at`, the payment has
 had fewer than 4 replacements, and stablecoin rows are on for the
 username. The replacement runs under the account's creation lock, within
 4 s: route list, Orchestra quotes, and offer checks for the same sats and
-the same BOLT11. Under the account row lock it then reads the payment's
+the same BOLT11. Its external calls (route list, gas prices, quotes) end
+`SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before those 4 s, so the
+transaction below normally commits inside a fetch's 4 s wait. Under the
+account row lock it then reads the payment's
 newest quote: when that is no longer the quote the replacement started
 from (a fetch's Lightning-only row, or another container's replacement,
 came first), it inserts nothing and answers with that newest quote.
@@ -497,7 +500,8 @@ arrived and 4 s after the replacement took the lock; a replacement still
 queued behind a creation or a stalled lock holder therefore costs the
 fetch at most 4 s. After that wait the fetch answers from the state then
 (the current quote while it is valid, else the Lightning-only row below),
-and the replacement finishes in the background.
+and the replacement finishes in the background; when its transaction lands
+after that Lightning-only row, it inserts nothing.
 When no new offer passes, the new quote is Lightning-only (its expiry is
 `window_ends_at`); a Lightning-only quote is never replaced. A current quote
 whose expiry has passed and that is not replaced gets a new Lightning-only

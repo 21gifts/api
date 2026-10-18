@@ -29,6 +29,8 @@ import {
   SHOP_ASSETS,
   SHOP_METHODS,
   SHOP_LNURL_HEADERS,
+  SHOP_REPLACEMENT_BUDGET_MS,
+  SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
   SHOP_SETTLE_FAST_INTERVAL_MS,
   SHOP_SETTLE_SLOW_INTERVAL_MS,
   ShopPayments,
@@ -159,7 +161,7 @@ class FakeOrchestra {
   routesCalls: number[] = [];
   quoteCalls: QuoteCall[] = [];
   quoteImpl: ((request: OrchestraQuoteRequest) => OrchestraQuoteResult) | null = null;
-  onQuote: (() => Promise<void>) | null = null;
+  onQuote: ((request: OrchestraQuoteRequest) => Promise<void>) | null = null;
   budget = 240;
   deposits = 0;
 
@@ -175,7 +177,7 @@ class FakeOrchestra {
   ): Promise<OrchestraQuoteResult> {
     this.quoteCalls.push({ request, key, deadlineMs });
     if (this.onQuote !== null) {
-      await this.onQuote();
+      await this.onQuote(request);
     }
     return this.quoteImpl === null
       ? { ok: true, quote: this.validQuote(request) }
@@ -3279,8 +3281,15 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
         tag: payment.id,
         amountSats: SATS,
       });
-      expect(call.deadlineMs).toBe(T0 + 45_001 + 4_000);
+      // The calls end the commit margin before the fetch's 4 s wait.
+      expect(call.deadlineMs).toBe(
+        T0 + 45_001 + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
+      );
     }
+    // The route list's own 1 s ends before that deadline.
+    expect(
+      T0 + 45_001 + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
+    ).toBeGreaterThan(T0 + 45_001 + 1_000);
     expect(h.orchestra.routesCalls).toEqual([1_000]);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
     expect(h.net.issued).toHaveLength(1);
@@ -3403,44 +3412,134 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
-  it('a replacement whose quotes end at the deadline after the fetch committed the Lightning-only fallback inserts nothing', async () => {
+  it('a replacement whose slow pair runs into its call deadline still commits inside the fetch wait and is answered, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const payment = await payerPayment(h);
+      const [first] = await quotesOf(h, payment.id);
+      // One timeline: the fetch's 4 s wait and the slow pair's deadline are
+      // timers, and the earlier one fires first (the fetch's on a tie).
+      const timers: { atMs: number; fetch: boolean; fire: () => void }[] = [];
+      sleepImpl = (ms) =>
+        ms === SHOP_REPLACEMENT_BUDGET_MS
+          ? new Promise((resolve) => {
+              timers.push({ atMs: clock + ms, fetch: true, fire: resolve });
+            })
+          : defaultSleep(ms);
+      // Polygon USDT answers only at its deadline, without a quote.
+      const slow = (request: OrchestraQuoteRequest): boolean =>
+        request.sourceChain === 'polygon' && request.sourceAsset === 'USDT';
+      h.orchestra.onQuote = (request) => {
+        const call = h.orchestra.quoteCalls[h.orchestra.quoteCalls.length - 1]!;
+        return slow(request)
+          ? new Promise((resolve) => {
+              timers.push({ atMs: call.deadlineMs, fetch: false, fire: resolve });
+            })
+          : Promise.resolve();
+      };
+      h.orchestra.quoteImpl = (request) =>
+        slow(request)
+          ? { ok: false, reason: 'unavailable' }
+          : { ok: true, quote: h.orchestra.validQuote(request) };
+      // The quote read expires at T0 + 90 s, 2 s into the fetch's wait.
+      const arrivalMs = T0 + 88_000;
+      clock = arrivalMs;
+      const answering = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      await vi.waitFor(() => expect(timers).toHaveLength(2));
+      timers.sort((x, y) => x.atMs - y.atMs || Number(y.fetch) - Number(x.fetch));
+      const [earliest, later] = timers as [(typeof timers)[0], (typeof timers)[0]];
+      expect(earliest.fetch).toBe(false);
+      expect(earliest.atMs).toBe(
+        arrivalMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
+      );
+      expect(later.atMs).toBe(arrivalMs + SHOP_REPLACEMENT_BUDGET_MS);
+      clock = earliest.atMs;
+      earliest.fire();
+      const answer = await bodyOf(await answering);
+      const quote = answer.json['quote'] as Record<string, string>;
+      const stored = await quotesOf(h, payment.id);
+      expect(stored.map((row) => row.id)).toEqual([first!.id, quote['id']]);
+      // The replacement's quote with the 11 pairs that answered in time.
+      const offers = await h.store.transaction((tx) => tx.offersOf(quote['id']!));
+      expect(offers).toHaveLength(11);
+      expect(offers.some((offer) => offer.method === 'Polygon' && offer.asset === 'USDT')).toBe(
+        false,
+      );
+      expect((await readPayment(h, payment.id)).replacements).toBe(1);
+      // The fetch's wait never ended: the replacement did.
+      expect(sleepCalls).toEqual([4_000]);
+      sleepImpl = defaultSleep;
+    }
+  });
+
+  it('a replacement that took the lock after the fetch arrived and commits after the fetch inserted the Lightning-only row inserts nothing', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     const [first] = await quotesOf(h, payment.id);
-    // The replacement's Orchestra calls hang until the deadline.
-    let release: () => void = () => undefined;
-    const quotesEnd = new Promise<void>((resolve) => {
-      release = resolve;
-    });
-    h.orchestra.onQuote = () => quotesEnd;
-    // The fetch's 4 s wait ends once the replacement asks for quotes; the
-    // quote read at the start has expired by then.
-    sleepImpl = async (ms) => {
-      if (ms !== 4_000) {
-        return defaultSleep(ms);
-      }
-      await vi.waitFor(() => expect(h.orchestra.quoteCalls.length).toBeGreaterThan(12));
-      clock = T0 + 90_000;
-    };
-    clock = T0 + 86_000;
-    const read = await h.svc.currentQuote(h.account, USER, payment);
+    // A payer creation holds the creation lock; the cached route list
+    // expired, so it reads the list again, which answers on release.
+    clock = T0 + 88_000;
+    let releaseCreation = (_result: OrchestraRoutesResult): void => undefined;
+    h.orchestra.routesImpl = () =>
+      new Promise((resolve) => {
+        releaseCreation = resolve;
+      });
+    const payer = h.svc.createForPayer(h.account, USER, SATS + 1);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+    // The fetch's replacement queues behind it, so the fetch waits 4 s from
+    // its arrival; that wait ends on wake.
+    let wake = (): void => undefined;
+    sleepImpl = (ms) =>
+      ms === SHOP_REPLACEMENT_BUDGET_MS
+        ? new Promise((resolve) => {
+            wake = resolve;
+          })
+        : defaultSleep(ms);
+    const reading = h.svc.currentQuote(h.account, USER, payment);
+    await vi.waitFor(() => expect(sleepCalls).toEqual([4_000]));
+    // 3 s after the arrival the creation ends and the replacement takes the
+    // lock; its route list answers on release.
+    let releaseReplacement = (_result: OrchestraRoutesResult): void => undefined;
+    h.orchestra.routesImpl = () =>
+      new Promise((resolve) => {
+        releaseReplacement = resolve;
+      });
+    const startMs = T0 + 91_000;
+    clock = startMs;
+    releaseCreation({ ok: false });
+    expect(await payer).toEqual({ kind: 'unavailable' });
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(3));
+    // The fetch's wait ends at arrival + 4 s, before the replacement's calls
+    // end; the quote read expired at T0 + 90 s, so the fetch inserts the
+    // Lightning-only row.
+    const callsEndMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
+    expect(callsEndMs).toBeGreaterThan(T0 + 92_000);
+    clock = T0 + 92_000;
+    wake();
+    const read = await reading;
     sleepImpl = defaultSleep;
     expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
     expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
     const fallback = read!.quote;
-    // The replacement's quotes end at its deadline and it takes the account row lock.
+    // The replacement's calls end and it takes the account row lock.
     let locked = false;
     h.store.hooks.lockAccount = async (tx, ...args) => {
       const [accountId] = args as unknown as [string];
       locked = true;
       return tx.lockAccount(accountId);
     };
-    h.orchestra.onQuote = null;
-    release();
+    clock = callsEndMs;
+    releaseReplacement(h.orchestra.routesResult);
     await vi.waitFor(() => expect(locked).toBe(true));
     // Transactions run in call order: this one starts after the replacement's.
     await h.store.transaction(async () => undefined);
     delete h.store.hooks.lockAccount;
+    for (const call of h.orchestra.quoteCalls.slice(12)) {
+      expect(call.deadlineMs).toBe(callsEndMs);
+    }
+    expect(h.orchestra.quoteCalls).toHaveLength(24);
     expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([
       first!.id,
       fallback.id,

@@ -65,8 +65,20 @@ export const SHOP_QUOTES_TIMEOUT_MS = 3_000;
 /** Whole creation procedure. */
 export const SHOP_CREATION_BUDGET_MS =
   SHOP_ROUTES_TIMEOUT_MS + SHOP_MINT_TIMEOUT_MS + SHOP_QUOTES_TIMEOUT_MS;
-/** Whole replacement (route list and quotes). */
+/**
+ * Whole replacement (route list, quotes, and its transaction), and the
+ * longest a fetch waits for one.
+ */
 export const SHOP_REPLACEMENT_BUDGET_MS = 4_000;
+/**
+ * Room for the replacement's transaction inside {@link SHOP_REPLACEMENT_BUDGET_MS}:
+ * its external calls (route list, gas prices, quotes) end at
+ * `startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS`.
+ * Measured on Postgres 16 (lock, quotes read, increment, quote with 12
+ * offers): p99 7–26 ms idle, 16–37 ms with 2 and 55–133 ms with 8 writers
+ * queuing on the same account row, 604–741 ms with 32 (stress).
+ */
+export const SHOP_REPLACEMENT_COMMIT_MARGIN_MS = 500;
 /** After a creation with no committed pair, the account's next creation waits this long. */
 export const SHOP_NO_PAIR_WAIT_MS = 60_000;
 /** Largest honoured `timeout` on the pay link, in seconds. */
@@ -2180,8 +2192,12 @@ export class ShopPayments {
       // this step and 4 s after the replacement took the account's lock. A
       // replacement still queued (behind a creation or a stalled holder)
       // takes the lock at or after the arrival, so its budget never ends
-      // earlier. A replacement that outlasts the wait goes on in the
-      // background, and the fetch answers from the state now.
+      // earlier. The replacement's external calls end
+      // SHOP_REPLACEMENT_COMMIT_MARGIN_MS before its 4 s, so its transaction
+      // normally commits inside this wait. A replacement that outlasts the
+      // wait (one that took the lock after the arrival, or whose transaction
+      // queues on the account row) goes on in the background, and the fetch
+      // answers from the state now.
       const arrivalMs = this.#deps.now();
       const replacement = this.#replacement(account, read.payment.id);
       const outcome = replacement.promise.then(
@@ -2289,7 +2305,8 @@ export class ShopPayments {
 
   /**
    * Replace the current quote under the creation lock: route list, quotes,
-   * and offer checks for the same sats and BOLT11 within 4 s, then one
+   * and offer checks for the same sats and BOLT11 until
+   * {@link SHOP_REPLACEMENT_COMMIT_MARGIN_MS} before the 4 s are up, then one
    * transaction that, under the account lock and only while the quote read
    * at the start is still the payment's newest, increments `replacements`
    * conditionally and inserts the quote (Lightning-only when no offer
@@ -2312,7 +2329,9 @@ export class ShopPayments {
       if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
         return read;
       }
-      const deadlineMs = startMs + SHOP_REPLACEMENT_BUDGET_MS;
+      // The external calls end early enough that the transaction below
+      // normally commits inside a fetch's 4 s wait.
+      const deadlineMs = startMs + SHOP_REPLACEMENT_BUDGET_MS - SHOP_REPLACEMENT_COMMIT_MARGIN_MS;
       const config = this.#deps.config;
       /* v8 ignore next 3 -- callers checked offersStablecoins */
       if (config === null) {
