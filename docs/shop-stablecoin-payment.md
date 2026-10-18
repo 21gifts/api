@@ -337,8 +337,11 @@ shop payment is `accepted` or `paid` is not pinned, so the response is
 today's unpinned request. Any LNURL wallet can still pay the sticker.
 
 A pending charge with no shop payment first starts or joins the
-[Creation procedure](#creation-procedure) and waits for it until the
-procedure's 8 s budget is used up. That stays below the 10 s a plain
+[Creation procedure](#creation-procedure) and waits for it at most until
+8 s after the fetch arrived, the procedure's budget, whatever the
+creation is still waiting for, lock waits included; a request with
+`timeout` waits no longer than 10 s after it arrived, the cap of
+`timeout` below. The creation goes on in the background. That stays below the 10 s a plain
 LNURL wallet waits and the 20 s Tether 1.11.0 waits. When the payment
 exists by then, the fetch answers as for an open amount. Otherwise it
 answers today's pinned Lightning request.
@@ -609,8 +612,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    [Payment hash claim](#payment-hash-claim) states. On `other_payment`
    the procedure stops as after a failed mint (order 8) and logs
    `shop.alert.duplicate_invoice`. On `recorded` or `this_charge` it goes
-   on. On `not_open` the charge is no longer pending or has expired, and
-   the procedure ends as step 8 ends for such a charge, without that
+   on. On `not_open` the charge was no longer open at the issue time, and the procedure ends as step 8 ends for such a charge, without that
    alert. When `recordInvoice` fails with an error, the api logs
    `pos.invoice.record_failed`, as the invoice routes do, and writes nothing; a fetch then answers today's pinned Lightning request.
    A payer creation never records against a charge, also not against one
@@ -711,8 +713,7 @@ boolean, decided inside its transaction: `recorded` when it inserted the
 row; `this_charge` when the hash is already recorded against this charge
 or held by this charge's shop payment; `other_payment` when another
 charge's `pos_charge_invoice` row or another payment's `shop_payment`
-holds it; and `not_open` when the charge is no longer pending or has
-expired.
+holds it; and `not_open` when the charge was not open at the issue time it is given (`issuedAtMs`, which the invoice routes take before the mint, as today, and step 4 takes as the request time), which today's insert decides: its status is neither `pending` nor `expired`, or its `expires_at` is not after the issue time. A charge that was open at the issue time and has expired since still gives `recorded`.
 Step 8 takes its locks in this order: the hash claim, the account row,
 then the `pos_charge` row; `recordInvoice` takes only the hash claim
 before its insert, so two writers of one hash meet at the claim and
@@ -1254,7 +1255,7 @@ also count against the budget in [Calls](#calls).
 | 1     | End lapsed windows | 0              | `open` payments whose `window_ends_at` has passed                                                        | Every tick, one conditional update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s, and a final read 10 min after the BOLT11 expiry. Only a successful read that reports the invoice unpaid closes a payment; a failed final read is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                                                                                |
 | 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds moves that proof to the successor order instead; when another row already holds the successor, the two rows merge as in step 4 of that section. An order without `sourceTxHash` yet stores nothing and is read again. |
-| 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores the proof through the same step. After one hour it logs `shop.proof.lookup_expired`; Orchestra's own detection still applies.                                                                                                                                                                                                                                                                         |
+| 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores the proof through the same step, or records its refusal, and sets `done_at`. After one hour it sets `done_at` and logs `shop.proof.lookup_expired`; Orchestra's own detection still applies. A failed read leaves the row open.                                                                                                                                                                       |
 | 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min, for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                                                                                                                                                                 |
 | 6     | Submits            | 1              | Unresolved proofs that may still be submitted and have a log index                                       | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 7     | Stuck proofs       | 0              | Unresolved proofs past `give_up_at`; held proofs are not touched                                         | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
@@ -1265,7 +1266,10 @@ ticks, one read each, so neither can starve the other. That is at most 30 reads 
 one container no payment or order is read faster than every 10 s. The
 two containers of a deploy each run their own ticks, so during a deploy
 a row can be read by both; their budgets together stay below
-Orchestra's limit, as [Calls](#calls) states. `next_history_at` is set when the first
+Orchestra's limit, as [Calls](#calls) states. One order can then be read
+by both containers less than 3 s apart, against Orchestra's guidance that
+one order should be polled no faster than every 3 s; the api accepts
+that for the overlap of a deploy, because the per-IP limit still holds. `next_history_at` is set when the first
 detail of a payment is issued and cleared when the order watch of its
 last offer ends. One read is one page; `history_offset` keeps the next
 offset, and a short page starts the next read at offset 0 again. Duty 3
