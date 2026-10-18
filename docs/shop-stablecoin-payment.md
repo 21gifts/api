@@ -542,7 +542,7 @@ as for `POST /pay/:username/invoice`. The checks run in this order:
 | 6     | A username without stablecoin rows (see Route details), or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` is not configured. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 7     | This account started 10 creations in the last minute, or the api started 60 in the last minute.                                                                   | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 | 8     | The mint fails, or the BOLT11 amount differs.                                                                                                                     | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | No pair commits.                                                                                                                                                  | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 9     | No pair commits, or `recordInvoice` fails with an error (step 4).                                                                                                 | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
 
 Orders 1, 2, 3, 5, and 8 are the checks and texts of
 `POST /pay/:username/invoice`. Order 4 comes before the range check, because a
@@ -611,7 +611,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    `shop.alert.duplicate_invoice`. On `recorded` or `this_charge` it goes
    on. On `not_open` the charge is no longer pending or has expired, and
    the procedure ends as step 8 ends for such a charge, without that
-   alert.
+   alert. When `recordInvoice` fails with an error, the api logs
+   `pos.invoice.record_failed`, as the invoice routes do, and writes nothing; a fetch then answers today's pinned Lightning request,
+   and `POST /pay/:username/payment` answers order 9.
    A payer creation never records against a charge, also not against one
    that appeared after step 2. It reads instead whether the hash is
    already recorded against a charge, with
