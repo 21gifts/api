@@ -4,6 +4,7 @@ import { readdir, readFile, rm, mkdir, writeFile } from 'node:fs/promises';
 import path from 'node:path';
 import { format, resolveConfig } from 'prettier';
 import { openBootStores } from '@/lib/boot-stores';
+import { setDiagnosticSink } from '@/lib/log';
 import type { SqlClient } from '@/lib/auth/sql';
 
 /**
@@ -1277,6 +1278,8 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
       const model = await readSchema(client);
       return await renderPages(model, sources, REPO_ROOT, external);
     } finally {
+      // openBootStores installs a process-wide sink that writes to this scratch database.
+      setDiagnosticSink(null);
       if (previousKek === undefined) delete process.env['NOSTR_NSEC_KEK'];
       else process.env['NOSTR_NSEC_KEK'] = previousKek;
       if (typeof sql.close === 'function') await sql.close();
@@ -1287,15 +1290,17 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
 /**
  * Writes every rendered page under the repository and deletes stale table pages only.
  * @param rendered - Path → markdown produced by {@link generate}.
+ * @param root - Directory the repo-relative paths resolve against.
  * @returns Counts of files written and stale table pages removed.
  */
-async function writeRendered(
+export async function writeRendered(
   rendered: Map<string, string>,
+  root: string = REPO_ROOT,
 ): Promise<{ written: number; removed: number }> {
-  const tablesDir = path.join(REPO_ROOT, 'docs', 'database', 'tables');
+  const tablesDir = path.join(root, 'docs', 'database', 'tables');
   await mkdir(tablesDir, { recursive: true });
   for (const [rel, body] of rendered) {
-    const abs = path.join(REPO_ROOT, ...rel.split('/'));
+    const abs = path.join(root, ...rel.split('/'));
     await mkdir(path.dirname(abs), { recursive: true });
     await writeFile(abs, body);
   }

@@ -1,4 +1,8 @@
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { logEvent } from '@/lib/log';
 import {
   GENERATED_HEADER,
   REPO_ROOT,
@@ -13,8 +17,10 @@ import {
   generate,
   isEnumCheck,
   readCommitted,
+  runCli,
   renderDefault,
   renderPages,
+  writeRendered,
   type ColumnRow,
   type ConstraintRow,
   type IndexRow,
@@ -41,6 +47,63 @@ describe('docs/database', () => {
     }
     expect(lines).toEqual([]);
   }, 120_000);
+
+  test('generation leaves no diagnostic sink on the dropped scratch database', async () => {
+    await generate(databaseUrl);
+    const warn = spyOn(console, 'warn');
+    try {
+      logEvent('schema.reference.probe');
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      const failed = warn.mock.calls.some((call) =>
+        String(call[0]).includes('diagnostic.write.failed'),
+      );
+      expect(failed).toBe(false);
+    } finally {
+      warn.mockRestore();
+    }
+  }, 120_000);
+});
+
+describe('runCli', () => {
+  test('rejects a wrong argument list and a missing DATABASE_URL', async () => {
+    const error = spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(await runCli([], { DATABASE_URL: databaseUrl })).toBe(2);
+      expect(await runCli(['--both'], { DATABASE_URL: databaseUrl })).toBe(2);
+      expect(await runCli(['--check', '--write'], { DATABASE_URL: databaseUrl })).toBe(2);
+      expect(await runCli(['--check'], {})).toBe(2);
+      expect(await runCli(['--check'], { DATABASE_URL: ' ' })).toBe(2);
+    } finally {
+      error.mockRestore();
+    }
+  });
+
+  test('--check passes against the committed pages', async () => {
+    expect(await runCli(['--check'], { DATABASE_URL: databaseUrl })).toBe(0);
+  }, 120_000);
+});
+
+describe('writeRendered', () => {
+  test('writes every page and removes only stale table pages', async () => {
+    const root = await mkdtemp(path.join(tmpdir(), 'db-schema-reference-'));
+    try {
+      const tables = path.join(root, 'docs', 'database', 'tables');
+      await mkdir(tables, { recursive: true });
+      await writeFile(path.join(tables, 'old.md'), 'stale');
+      await writeFile(path.join(tables, 'notes.txt'), 'kept');
+      const rendered = new Map([
+        ['docs/database/README.md', 'readme'],
+        ['docs/database/tables/gift.md', 'gift'],
+      ]);
+      expect(await writeRendered(rendered, root)).toEqual({ written: 2, removed: 1 });
+      expect((await readdir(tables)).sort()).toEqual(['gift.md', 'notes.txt']);
+      expect(await readFile(path.join(root, 'docs', 'database', 'README.md'), 'utf8')).toBe(
+        'readme',
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('isEnumCheck', () => {
