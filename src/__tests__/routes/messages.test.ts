@@ -12525,6 +12525,28 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
   });
 
+  it('deletes the map pin when the text of a shop without an address changes', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Neighborhood Espresso House',
+      address: null,
+    });
+    const res = await mount(auth, messages, { mapPush }).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe Sol' }),
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+    expect(JSON.parse(calls[0] ?? '{}')).toEqual({ origin: '21gifts', externalId: SHOP_ID });
+  });
+
   it('returns 400 when a pinned shop description is not longer than the name', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
