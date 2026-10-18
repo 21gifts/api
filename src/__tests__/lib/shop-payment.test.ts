@@ -29,8 +29,8 @@ import {
   SHOP_ASSETS,
   SHOP_METHODS,
   SHOP_LNURL_HEADERS,
-  SHOP_SETTLE_FAST_MS,
-  SHOP_SETTLE_SLOW_MS,
+  SHOP_SETTLE_FAST_INTERVAL_MS,
+  SHOP_SETTLE_SLOW_INTERVAL_MS,
   ShopPayments,
   btcAmount,
   candidatePairs,
@@ -2768,6 +2768,131 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     }
   });
 
+  /**
+   * Route-list fetches that wait until released; the first release answers
+   * the first fetch, later fetches never answer.
+   */
+  function heldRoutes(h: Harness): (result: OrchestraRoutesResult) => void {
+    const releases: ((result: OrchestraRoutesResult) => void)[] = [];
+    h.orchestra.routesImpl = () =>
+      new Promise((resolve) => {
+        releases.push(resolve);
+      });
+    return (result) => releases[0]?.(result);
+  }
+
+  it('a charge creation queued behind a running payer creation waits for its own run to start, then its full 8 s budget, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const release = heldRoutes(h);
+      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      clock = T0 + 5_000;
+      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
+      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      // Still queued: no budget wait has started.
+      expect(sleepCalls).toEqual([]);
+      clock = T0 + 7_000;
+      release({ ok: false });
+      expect(await payer).toEqual({ kind: 'unavailable' });
+      expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      // This charge's run took the lock at T0 + 7 s: the whole 8 s from there.
+      expect(sleepCalls).toEqual([8_000]);
+      expect(h.orchestra.routesCalls).toHaveLength(2);
+      sleepImpl = defaultSleep;
+    }
+  });
+
+  it('a charge creation queued behind a quote replacement waits for its own run to start, then its full 8 s budget, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const payment = await payerPayment(h);
+      // The cached route list expired, so the replacement reads it again.
+      clock = T0 + 60_001;
+      const release = heldRoutes(h);
+      const replacement = h.svc.currentQuote(h.account, USER, payment);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+      await h.store.transaction((tx) =>
+        tx.updatePayment(
+          payment.id,
+          {},
+          { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
+        ),
+      );
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      clock = T0 + 62_000;
+      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
+      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      expect(sleepCalls).toEqual([]);
+      clock = T0 + 64_000;
+      release({ ok: false });
+      expect(await replacement).toBeNull();
+      expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      expect(sleepCalls).toEqual([8_000]);
+      expect(h.orchestra.routesCalls).toHaveLength(3);
+      sleepImpl = defaultSleep;
+    }
+  });
+
+  it('a queued charge creation that re-reads and stops at once ends the wait right away, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const release = heldRoutes(h);
+      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      // The budget sleep never ends: only the stopped run ends the wait.
+      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      await h.pos.cancelPending(ACCOUNT_ID, clock);
+      release({ ok: false });
+      expect(await payer).toEqual({ kind: 'unavailable' });
+      const result = await answer;
+      if (timeout === null) {
+        expect(result).toEqual({ kind: 'today', pinSats: null });
+      } else {
+        expect((await bodyOf(result)).status).toBe(404);
+      }
+      expect(h.orchestra.routesCalls).toHaveLength(1);
+      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+    }
+  });
+
+  it('an earlier creation for the same charge that ended before its budget gives the next run its own 8 s, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      h.orchestra.routesResult = { ok: false };
+      expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({
+        kind: 'unavailable',
+      });
+      clock = T0 + 5_000;
+      h.orchestra.routesImpl = () => new Promise(() => undefined);
+      sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
+      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      expect(sleepCalls).toEqual([8_000]);
+      sleepImpl = defaultSleep;
+    }
+  });
+
   it('keeps the pin for a waiting charge: no payment (excluded username) or an ended one; no pin for accepted or paid', async () => {
     const h = await setup({ username: 'cb' });
     const charge = chargeRow();
@@ -3913,8 +4038,8 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     expect((await readPayment(h, payment.id)).nextSettleAt?.getTime()).toBe(T0 + 1_620_000);
     await h.svc.applySettlement(payment.id, null, T0 + 1_000);
     expect((await readPayment(h, payment.id)).nextSettleAt?.getTime()).toBe(T0 + 6_000);
-    expect(SHOP_SETTLE_FAST_MS).toBe(5_000);
-    expect(SHOP_SETTLE_SLOW_MS).toBe(30_000);
+    expect(SHOP_SETTLE_FAST_INTERVAL_MS).toBe(5_000);
+    expect(SHOP_SETTLE_SLOW_INTERVAL_MS).toBe(30_000);
   });
 
   it('a failed final read is retried at the same cadence and does not close', async () => {

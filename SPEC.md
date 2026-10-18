@@ -500,9 +500,15 @@ the 404 for no pending payment).
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
 for the username, and waits for it until the procedure's 8 s budget is
-used up, with or without `timeout`. When it joins a procedure that
-already runs, that procedure's budget counts, so the wait ends 8 s after
-that procedure started, not 8 s after the join.
+used up, with or without `timeout`. The wait follows the procedure for
+this charge. When it joins a procedure for the same charge that already
+runs, that procedure's budget counts, so the wait ends 8 s after that
+procedure started, not 8 s after the join. Otherwise the request's own
+run is that procedure: while it is queued behind another procedure of the
+account (a payer creation, another charge's creation, a quote
+replacement), the request waits for it to take the creation lock, and the
+8 s count from then. A run that re-reads and stops at once (the charge
+already has a payment, or is no longer pending) ends the wait right away.
 Whatever the outcome (a payment, a skipped or failed creation, a charge
 cancelled, paid, or expired meanwhile, or the 8 s used up), the api then
 reads the account's state again and answers from it: the open-amount pay

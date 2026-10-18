@@ -80,14 +80,14 @@ export const SHOP_API_CREATIONS_PER_MINUTE = 60;
 /** Spot quotes older than this are not used for the price check. */
 export const SHOP_SPOT_MAX_AGE_MS = 10 * 60_000;
 /**
- * Settlement reads every {@link SHOP_SETTLE_FAST_MS} for this long after
- * creation, then every {@link SHOP_SETTLE_SLOW_MS}.
+ * Settlement reads every {@link SHOP_SETTLE_FAST_INTERVAL_MS} for this long after
+ * creation, then every {@link SHOP_SETTLE_SLOW_INTERVAL_MS}.
  */
 export const SHOP_FAST_SETTLE_MS = 15 * 60_000;
 /** Settlement read interval during the first {@link SHOP_FAST_SETTLE_MS} (also the first read after creation). */
-export const SHOP_SETTLE_FAST_MS = 5_000;
+export const SHOP_SETTLE_FAST_INTERVAL_MS = 5_000;
 /** Settlement read interval after the first {@link SHOP_FAST_SETTLE_MS}. */
-export const SHOP_SETTLE_SLOW_MS = 30_000;
+export const SHOP_SETTLE_SLOW_INTERVAL_MS = 30_000;
 /** First order-status read after an order was found. */
 export const SHOP_FIRST_STATUS_MS = 10_000;
 /** One history read per payment at most this often (also the first read after a detail). */
@@ -1255,8 +1255,11 @@ export class ShopPayments {
   readonly #newId: () => string;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #locks = new Map<string, Promise<unknown>>();
-  /** Start of the creation procedure that holds an account's lock, by account id. */
-  readonly #creationStartedAt = new Map<string, number>();
+  /**
+   * The creation procedure that holds an account's lock, by account id:
+   * when it took the lock, and its charge (`null` for a payer creation).
+   */
+  readonly #runningCreation = new Map<string, { startMs: number; chargeId: string | null }>();
   readonly #noPairUntil = new Map<string, number>();
   readonly #apiCreations = new IpRateLimiter(SHOP_API_CREATIONS_PER_MINUTE);
   readonly #accountCreations = new IpRateLimiter(SHOP_ACCOUNT_CREATIONS_PER_MINUTE);
@@ -1618,20 +1621,28 @@ export class ShopPayments {
   }
 
   /**
-   * Steps 1 to 8 of the creation procedure.
+   * Steps 1 to 8 of the creation procedure. Step 1 queues the run behind the
+   * account's creation lock (a creation or a quote replacement); the run
+   * starts when it takes the lock.
    *
    * @param input - Charge or payer creation.
+   * @param onStart - Called with the clock when this run takes the lock,
+   *   before its re-read (the pay link counts its wait from here).
    * @returns The outcome.
    */
-  #create(input: ShopCreationInput): Promise<ShopCreation> {
+  #create(input: ShopCreationInput, onStart?: (startMs: number) => void): Promise<ShopCreation> {
     const { account } = input;
     return this.#withLock(account.id, async () => {
       const startMs = this.#deps.now();
-      this.#creationStartedAt.set(account.id, startMs);
+      this.#runningCreation.set(account.id, {
+        startMs,
+        chargeId: input.kind === 'charge' ? input.charge.id : null,
+      });
+      onStart?.(startMs);
       try {
         return await this.#createLocked(input, startMs);
       } finally {
-        this.#creationStartedAt.delete(account.id);
+        this.#runningCreation.delete(account.id);
       }
     });
   }
@@ -1889,7 +1900,7 @@ export class ShopPayments {
         endReason: null,
         windowEndsAt,
         replacements: 0,
-        nextSettleAt: new Date(nowMs + SHOP_SETTLE_FAST_MS),
+        nextSettleAt: new Date(nowMs + SHOP_SETTLE_FAST_INTERVAL_MS),
         nextHistoryAt: null,
         historyOffset: 0,
         createdAt: new Date(nowMs),
@@ -2017,12 +2028,25 @@ export class ShopPayments {
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
-      // Joining a procedure that already runs ends the wait when that
-      // procedure's 8 s budget is used up, not 8 s after the join.
-      const budgetEndMs =
-        (this.#creationStartedAt.get(account.id) ?? this.#deps.now()) + SHOP_CREATION_BUDGET_MS;
-      const creation = this.createForCharge(account, username, state.charge).catch(() => null);
-      const waitMs = budgetEndMs - this.#deps.now();
+      // The wait follows the creation procedure for this charge: joining
+      // one that already runs ends the wait when its 8 s budget is used up.
+      // Otherwise this request's own run is that procedure; while it is
+      // queued behind another holder of the lock (a payer creation, another
+      // charge's creation, a quote replacement), the request waits for it to
+      // take the lock, then for its budget. A run that re-reads and stops at
+      // once ends the wait right away.
+      const charge = state.charge;
+      const running = this.#runningCreation.get(account.id);
+      // The executor runs at once, so `creation` is this request's run.
+      let creation: Promise<ShopCreation | null> = Promise.resolve(null);
+      const ownStart = new Promise<number>((resolve) => {
+        creation = this.#create(
+          { kind: 'charge', account, username, charge, amountSats: charge.amountSats },
+          resolve,
+        ).catch(() => null);
+      });
+      const procedureStartMs = running?.chargeId === charge.id ? running.startMs : await ownStart;
+      const waitMs = procedureStartMs + SHOP_CREATION_BUDGET_MS - this.#deps.now();
       if (waitMs > 0) {
         await Promise.race([creation, this.#sleep(waitMs).then(() => null)]);
       }
@@ -2525,8 +2549,8 @@ export class ShopPayments {
       }
       const cadence =
         nowMs - payment.createdAt.getTime() < SHOP_FAST_SETTLE_MS
-          ? SHOP_SETTLE_FAST_MS
-          : SHOP_SETTLE_SLOW_MS;
+          ? SHOP_SETTLE_FAST_INTERVAL_MS
+          : SHOP_SETTLE_SLOW_INTERVAL_MS;
       const next = nowMs >= finalAtMs ? nowMs + cadence : Math.min(nowMs + cadence, finalAtMs);
       await tx.updatePayment(payment.id, {}, { nextSettleAt: new Date(next) });
     });
