@@ -81,9 +81,9 @@ it. What 21.gifts does with such a refund is outside this document.
    EIP-681 ERC-20 transfer to Orchestra's deposit address.
 5. The wallet pays and sends a proof: the transaction hash (`tx`) or the
    signed raw transaction (`hex`).
-6. The api checks the transfer on chain and submits it to Orchestra: a
-   `tx` after its receipt succeeded, a `hex` after it validated and sent
-   the transaction; a `hex` whose receipt later fails is refused.
+6. The api checks the transfer on chain and submits it to Orchestra
+   after its receipt succeeded; a `hex` transaction the api validates
+   and sends first.
    An Orchestra order for that transfer is **accepted**. The wallet is
    told the payment succeeded, and the sticker is free again. The api
    also finds orders that Orchestra created without a proof.
@@ -269,17 +269,17 @@ conditional update on the expected result, in the same database
 transaction as the payment change it causes. At most one proof of a
 payment is `accepted`.
 
-| From                                                       | To           | Trigger                                                                                                                                                                                                                                                                                                                                    |
-| ---------------------------------------------------------- | ------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.                                                                            |
-| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                                                                                                      |
-| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                                                                                                      |
-| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                                                                                            |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                                                                                               |
-| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                                                                                 |
-| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch` (for a `hex` proof only after its receipt was found, see [Calls](#calls)), or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
-| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                                                                                        |
-| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                                                                                  |
+| From                                                       | To           | Trigger                                                                                                                                                                                                                                                          |
+| ---------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.  |
+| null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                            |
+| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
+| null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                  |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
+| `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
+| `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)). |
+| null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                              |
+| `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                        |
 
 A proof whose payment is already `paid` is held: its order is
 expected to fail with `duplicate_lightning_invoice`, so it answers
@@ -694,7 +694,12 @@ Both writers of a payment hash claim it the same way:
 explicit transaction (`sql.begin`), also when `POST /pay/:username/invoice`
 and the invoice forward call it; and the transaction of step 8 of the
 creation procedure. The first statement of each transaction is
-`SELECT pg_advisory_xact_lock(hashtextextended($hash, 0))`. A following
+`SELECT pg_advisory_xact_lock($1, $2)`, the two-key form, as
+`admitWithinPlaces` in `src/lib/funding-store.ts` takes its lock in a
+transaction: `$1` is a fixed namespace constant for payment hashes, and
+`$2` is the first 32 bits of the hash as a signed integer. The two-key
+form never meets the one-key lock of `admitWithinPlaces`, and two
+hashes that share their first 32 bits only wait for each other. A following
 statement reads `pos_charge_invoice` and `shop_payment` for the hash. A
 row of another payment stops the writer before it ends or inserts
 anything: `recordInvoice` returns `false`, and the creation stops as a
@@ -883,7 +888,7 @@ asset equals `asset`, else from the oldest row (table in
 [Storing and submitting](#storing-and-submitting)). Before it answers, the
 request brings the row forward within its budget: a row without a log
 index reads the receipt once, as in [Verification of `tx`](#verification-of-tx),
-and fills in its log and value; an unresolved row whose
+and fills in its log and value; an unresolved row with a log index whose
 `last_submit_at` is empty or at least 2 s old is resubmitted, at most 5
 times per minute for one proof, under the rules of
 [Calls](#calls). A held row is not resubmitted. So a wallet whose
@@ -954,7 +959,8 @@ still submitted, because only Orchestra can fill or refund it.
    the proof `refused` and answers **400**. Any other error and any
    transport error answer **503**, and the watcher sends the transaction
    again.
-5. The proof is submitted once the transaction is sent. A receipt with a
+5. The proof is submitted once its receipt with status `0x1` is found,
+   so that Orchestra can see the deposit. A receipt with a
    status other than `0x1` records the proof `refused`. A transaction
    still unknown 10 minutes after the first send is recorded `refused`.
    An Orchestra order found later still moves it, as [States](#states)
@@ -1157,11 +1163,10 @@ absolute time in milliseconds.
   - HTTP 200 with `orderId`: the proof gets that order, and the returned
     `status` is stored as its `order_status`.
   - HTTP 400 with `error.code` `xchain_deposit_mismatch` (a transaction
-    without a positive matching deposit): refused, except for a `hex`
-    proof whose receipt has not been found yet. Orchestra may not see a
-    transaction that was just sent, so that proof stays unresolved, and
-    the watcher submits it again with a new idempotency key once its
-    receipt is found; a mismatch after the receipt refuses it.
+    without a positive matching deposit): refused. A
+    `hex` proof is submitted only after its receipt is found
+    ([Verification of `hex`](#verification-of-hex)), so a mismatch is
+    definitive for it too.
   - HTTP 409 with `error.code` `quote_expired` (the Lightning invoice
     expired): the proof is `late`, and the api stops submitting it.
   - Everything else leaves the proof unresolved: a timeout, HTTP 503
@@ -1218,7 +1223,7 @@ also count against the budget in [Calls](#calls).
 | 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds moves that proof to the successor order instead; when another row already holds the successor, the two rows merge as in step 4 of that section. An order without `sourceTxHash` yet stores nothing and is read again. |
 | 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification and stores the proof through the same step. After one hour it logs `shop.proof.lookup_expired`; Orchestra's own detection still applies.                                                                                                                                                                                                                                                                         |
 | 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min, for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                                                                                                                                                                 |
-| 6     | Submits            | 1              | Unresolved proofs that may still be submitted                                                            | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                                                                                      |
+| 6     | Submits            | 1              | Unresolved proofs that may still be submitted and have a log index                                       | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                                                                                      |
 | 7     | Stuck proofs       | 0              | Unresolved proofs past `give_up_at`; held proofs are not touched                                         | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | 8     | Order status       | 1, even ticks  | Proofs with an order whose `order_status` is not final                                                   | Status by `id` every 10 s for 10 min, then every 60 s, until a final status or 24 h after the order was found. Then it logs `shop.alert.order_stuck`.                                                                                                                                                                                                                                                                                                                                                                  |
 
