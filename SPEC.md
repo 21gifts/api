@@ -499,8 +499,8 @@ the 404 for no pending payment).
 
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
-for the username, and waits for it until the procedure's 8 s budget is
-used up, with or without `timeout`. A charge has at most one creation in
+for the username, and waits for it, at most 8 s, with or without
+`timeout`. A charge has at most one creation in
 flight, from the moment it is queued until it ends: requests for the same
 charge (and the creation `POST /pos` starts) share it instead of queueing
 another run. The wait ends at the earlier of 8 s after the request reached
