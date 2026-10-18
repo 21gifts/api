@@ -2287,7 +2287,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (parsed.value !== null) {
+        // A shop hidden by a concurrent request stays off the map.
+        if (parsed.value !== null && updated.deletedAt === null) {
           await syncShopOcpPlace({
             ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
             messageId: updated.id,
@@ -2536,15 +2537,23 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        await syncShopOcpPlace({
-          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-          messageId: updated.id,
-          text: updated.text,
-          parentId: updated.parentId ?? null,
-          place: updated.place ?? null,
-          removeWhenIncomplete: true,
-          textHasHashtagToken,
-        });
+        // A shop hidden by a concurrent request stays off the map.
+        if (updated.deletedAt === null) {
+          await syncShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+            text: updated.text,
+            parentId: updated.parentId ?? null,
+            place: updated.place ?? null,
+            removeWhenIncomplete: true,
+            textHasHashtagToken,
+          });
+        } else {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+          });
+        }
         return c.json(
           serializeMessage(
             updated,

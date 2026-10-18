@@ -4923,7 +4923,9 @@ count, no hide stamps). Logs `messages.place.updated` with
 unchanged. A real pin change appends `message_edit`. An identical pin
 does not. When `mapPush` is set, a non-null place write re-reads the row
 and PUTs a complete result to `/map/places`; an incomplete result after
-the write sends DELETE instead. Clearing the pin also sends DELETE.
+the write sends DELETE instead, a pin cleared concurrently sends nothing,
+and a note hidden concurrently sends DELETE. Clearing the pin also sends
+DELETE.
 
 ### `PATCH /messages/:id/shop-account`
 
