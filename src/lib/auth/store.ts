@@ -521,6 +521,13 @@ export interface AuthStore {
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
+   * Look up several accounts by id in one call.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in no particular order.
+   */
+  getAccounts(ids: readonly string[]): Promise<Account[]>;
+  /**
    * Up to two stored account ids whose string form starts with `prefix`
    * (case-insensitive). Does not consult view keys, linking keys, or pubkeys.
    * Does not require a UUID.
@@ -1097,6 +1104,23 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getAccount(id: string): Promise<Account | undefined> {
     return this.#accounts.get(id);
+  }
+
+  /**
+   * Accounts for `ids` from the in-memory map.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in first-seen order.
+   */
+  async getAccounts(ids: readonly string[]): Promise<Account[]> {
+    const found: Account[] = [];
+    for (const id of new Set(ids)) {
+      const account = this.#accounts.get(id);
+      if (account !== undefined) {
+        found.push(account);
+      }
+    }
+    return found;
   }
 
   /**

@@ -1868,6 +1868,7 @@ describe('GET /members/:accountId/replies', () => {
         accountId?: string;
         parentId?: string;
         payable: boolean;
+        authorCanReceive: boolean;
         replyCount?: number;
       }>;
     };
@@ -1875,10 +1876,12 @@ describe('GET /members/:accountId/replies', () => {
     expect(body.messages[0]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[0]?.parentId).toBe(OTHER_POST);
     expect(body.messages[0]?.payable).toBe(true);
+    expect(body.messages[0]?.authorCanReceive).toBe(true);
     expect(body.messages[0]).not.toHaveProperty('replyCount');
     expect(body.messages[1]?.accountId).toBe(ACCOUNT_ID);
     expect(body.messages[1]?.parentId).toBe(OTHER_POST);
     expect(body.messages[1]?.payable).toBe(false);
+    expect(body.messages[1]?.authorCanReceive).toBe(true);
     expect(body.messages[1]).not.toHaveProperty('replyCount');
   });
 
@@ -1911,10 +1914,13 @@ describe('GET /members/:accountId/replies', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    const body = (await res.json()) as { messages: Array<{ id: string; payable: boolean }> };
+    const body = (await res.json()) as {
+      messages: Array<{ id: string; payable: boolean; authorCanReceive: boolean }>;
+    };
     expect(body.messages).toHaveLength(1);
     expect(body.messages[0]?.id).toBe(MEMBER_REPLY_NEW);
     expect(body.messages[0]?.payable).toBe(false);
+    expect(body.messages[0]?.authorCanReceive).toBe(false);
   });
 
   it('lists member replies as not payable when eventId is empty', async () => {

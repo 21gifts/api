@@ -19,7 +19,7 @@ import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -618,14 +618,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               dropped += 1;
             }
           }
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            receivingAddress(account, deps.lnurlServer) !== null;
+          const pay = messagePay(kept, account, deps.lnurlServer);
           messages.push(
             serializeMessage(
               kept,
-              payable,
+              pay,
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
