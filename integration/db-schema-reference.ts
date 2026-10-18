@@ -949,12 +949,12 @@ function createTableNames(source: string): string[] {
 function renderReadme(model: SchemaModel, sources: Map<string, string[]>): string {
   const columnCount = model.tables.reduce((total, table) => total + table.columns.length, 0);
   const foreignKeyCount = model.tables.reduce(
-    (total, table) => total + table.foreignKeys.length,
+    (total, table) => total + constraintCount(table.foreignKeys),
     0,
   );
   const rows = model.tables.map((table) => {
     const paths = sources.get(table.name) ?? [];
-    return `| ${markdownCell(`[${codeSpan(table.name)}](tables/${table.name}.md)`)} | ${markdownCell(sourceLinks(paths, '../../'))} | ${table.columns.length} | ${table.foreignKeys.length} |`;
+    return `| ${markdownCell(`[${codeSpan(table.name)}](tables/${table.name}.md)`)} | ${markdownCell(sourceLinks(paths, '../../'))} | ${table.columns.length} | ${constraintCount(table.foreignKeys)} |`;
   });
   return [
     GENERATED_HEADER,
@@ -1060,6 +1060,15 @@ function renderReferencedBy(tableName: string, foreignKeys: readonly ForeignKeyM
  * @param foreignKeys - Column-level foreign keys of every table.
  * @returns Mermaid block, or null when the table has no relationship.
  */
+/**
+ * Number of foreign-key constraints, counting a composite key once.
+ * @param foreignKeys - Column-level foreign keys of one table.
+ * @returns Distinct constraints.
+ */
+function constraintCount(foreignKeys: readonly ForeignKeyModel[]): number {
+  return new Set(foreignKeys.map((foreignKey) => foreignKey.constraint)).size;
+}
+
 function renderRelations(
   tableName: string,
   foreignKeys: readonly ForeignKeyModel[],

@@ -571,6 +571,7 @@ describe('foreign key uniqueness', () => {
     const childPage = pages.get('docs/database/tables/child.md') ?? '';
     const edges = childPage.split('\n').filter((line) => line.includes('"child" '));
     expect(edges).toEqual(['    "child" |o--|| "parent" : "a, b"']);
+    expect(pages.get('docs/database/README.md')).toContain('- Foreign keys: 1');
   });
 
   test('does not treat a wider unique or a single covering column as uniqueness of the composite key', () => {
