@@ -616,11 +616,17 @@ One procedure creates a shop payment, for a charge or for a payer:
    already recorded against a charge, with
    `posStore.findChargeForPayment({ paymentHash })`; a hit stops it as a
    failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one
-   settlement can never confirm both a charge and a payer's payment. A
-   hash that `POST /pay/:username/invoice` records between this read and
-   the insert would need the LNURL server to repeat a hash within that
-   moment; that residual is accepted, like the other per-container
-   limits.
+   settlement can never confirm both a charge and a payer's payment. The read alone
+   leaves a moment before the insert, so both writers of a payment hash
+   claim it first: the shop payment insert of step 8 and
+   `posStore.recordInvoice`, also when `POST /pay/:username/invoice`
+   calls it, take `pg_advisory_xact_lock` on the hash in their
+   transaction and then check the other table, `pos_charge_invoice` or
+   `shop_payment`, under that lock. A hash the other table already holds
+   for another payment makes `recordInvoice` return `false` and makes
+   the insert stop as a failed mint (order 8) with
+   `shop.alert.duplicate_invoice`. One settlement can therefore never
+   confirm a charge and another payment, across both containers.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
    one Orchestra quote per candidate pair, within 3 s for the whole step;
    a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
@@ -639,7 +645,10 @@ One procedure creates a shop payment, for a charge or for a payer:
      gets no shop payment, and the sticker keeps today's behaviour.
    - For a payer, a pending charge means nothing is written, and the
      answer is order 4 (**409** `payment_open`). An `open` payer-opened
-     payment is ended with `end_reason` `replaced` before the insert.
+     payment is ended with `end_reason` `replaced` before the insert,
+     after the hash claim of step 4, taken first in this transaction, found
+     no other payment holding the hash,
+     so a `payment_hash` conflict ends nothing.
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
@@ -651,7 +660,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    holds the conflicting value, and the reads and the second insert named
    below run in the same transaction under the same locks. A conflict on `payment_hash`
    reads the payment that holds the hash. When it is this charge's own
-   shop payment, the conflict is handled like the lost insert below: the
+   shop payment, the conflict is handled like any other empty result below: the
    api uses that payment. Otherwise the LNURL server returned an invoice
    that another payment already holds: the procedure stops as after a
    failed mint (order 8) and logs `shop.alert.duplicate_invoice`. This is
@@ -1413,21 +1422,24 @@ page.
   When the first call ends in a timeout, a transport error, or another
   5xx, the page does not know whether a payment was opened, because an
   open payment it cannot see could be paid next to a second invoice.
-  From then on, until a call returns a payment, it handles every answer
-  of `POST /pay/:username/payment` for any amount as follows:
-  - It repeats the same call once. A new payer amount replaces any
-    payment the lost answer opened, so at most one stays open. Replacing
-    it is safe: the page never received that payment's invoice or quote,
-    so this payer cannot pay it, and like any replaced payer amount it
-    can only be paid by a wallet that fetched it before, which
-    [States](#states) handles; a page-side retry identifier is not
-    added, because the pay link already shows which payment is open and
-    replacement keeps one.
+  It repeats the same call once. A new payer
+  amount replaces any payment the lost answer opened, so at most one
+  stays open. Replacing
+  it is safe: the page never received that payment's invoice or quote,
+  so this payer cannot pay it, and like any replaced payer amount it
+  can only be paid by a wallet that fetched it before, which
+  [States](#states) handles; a page-side retry identifier is not
+  added, because the pay link already shows which payment is open and
+  replacement keeps one. From then on, until a call returns a payment,
+  it handles every answer of `POST /pay/:username/payment`, the repeat
+  and every "Try again" press included, for any amount as follows:
   - A payment ends this state and is shown.
   - A **409** `payment_open` reloads and shows the till charge, as on
     the first call.
   - A **503** `stablecoin_unavailable` or another 4xx makes the page
-    fetch the pay link. When it shows no open payer amount, the page
+    fetch the pay link, once at least 16 s have passed since the first
+    call was sent: the 8 s creation budget plus one wait on the creation
+    lock, so a creation the lost answer started has ended by then. When it shows no open payer amount, the page
     falls back to `POST /pay/:username/invoice`. When it shows one, or
     the fetch fails, the page shows "This payment could not be started.
     Try again." with a button that repeats the call.
@@ -1632,6 +1644,8 @@ The implementing change adds:
   `GET /pos`;
 - `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
+- the hash claim with `pg_advisory_xact_lock` in `recordInvoice` and in
+  the shop payment insert, with the check of the other table;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;
