@@ -1174,6 +1174,39 @@ describe('merging two rows of one deposit', () => {
     expect(await proofsOf(h)).toHaveLength(1);
   });
 
+  it('keeps a final status that the merged-away row holds for the kept order', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1 }),
+      proofRow({
+        id: uid(0x4e2),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 - 1_000),
+        nextStatusAt: new Date(T0 + 10_000),
+        createdAt: new Date(T0 - 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({ kind: 'order', orderId: 'o1', status: 'completed' });
+    const proof = await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000);
+    expect(proof).toMatchObject({
+      id: uid(0x4e2),
+      logIndex: 3,
+      providerOrder: 'o1',
+      orderStatus: 'completed',
+      nextStatusAt: null,
+      result: 'accepted',
+    });
+    expect(await proofsOf(h)).toHaveLength(1);
+    expect((await getPayment(h))?.status).toBe('accepted');
+  });
+
   it('refuses the newer row with tx_used when the order belongs to another offer', async () => {
     const h = harness();
     await seed(h);
@@ -1449,6 +1482,46 @@ describe('submitProofAttempt', () => {
   });
 });
 
+describe('submitProofAttempt with an order recorded meanwhile', () => {
+  it('applies only a final status of that same order', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow(),
+      proofRow({ id: uid(0x402), txHash: H2 }),
+      proofRow({ id: uid(0x403), txHash: txHash('a3') }),
+    );
+    const meanwhile = (id: string, answer: string) => async () => {
+      await h.store.transaction((tx) =>
+        tx.updateProof(id, {}, { providerOrder: `o-${id}`, orderStatus: 'processing' }),
+      );
+      return { kind: 'order', orderId: `o-${id}`, status: answer };
+    };
+    h.orchestra.submit.mockImplementationOnce(meanwhile(uid(0x401), 'completed'));
+    expect(await submitProof(h.shop, uid(0x401), 'watcher', T0 + 5_000)).toMatchObject({
+      orderStatus: 'completed',
+      result: 'accepted',
+    });
+    h.orchestra.submit.mockImplementationOnce(meanwhile(uid(0x402), 'swapping'));
+    expect(await submitProof(h.shop, uid(0x402), 'watcher', T0 + 5_000)).toMatchObject({
+      orderStatus: 'processing',
+      result: null,
+    });
+    h.orchestra.submit.mockImplementationOnce(async () => {
+      await h.store.transaction((tx) =>
+        tx.updateProof(uid(0x403), {}, { providerOrder: 'o-other', orderStatus: 'processing' }),
+      );
+      return { kind: 'order', orderId: 'o-new', status: 'completed' };
+    });
+    expect(await submitProof(h.shop, uid(0x403), 'watcher', T0 + 5_000)).toMatchObject({
+      providerOrder: 'o-other',
+      orderStatus: 'processing',
+      result: null,
+    });
+  });
+});
+
 describe('refuseHexProof and sendHexProof', () => {
   it('refuses through refuseProof, an accepted proof included, and stops its receipt reads', async () => {
     const h = harness();
@@ -1556,6 +1629,15 @@ describe('readProofReceipt', () => {
       logIndex: null,
     });
     expect(events().filter((event) => event === 'shop.alert.detected_mismatch')).toHaveLength(2);
+  });
+
+  it('reports an error when a merge deleted the row while the receipt was read', async () => {
+    const h = harness();
+    await seed(h);
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+    const deleted = proofRow({ source: 'detected', logIndex: null, transferAmount: null });
+    expect(await readProofReceipt(h.shop, deleted, POLYGON_RPC, 1_000)).toBe('error');
+    expect(await proofsOf(h)).toEqual([]);
   });
 
   it('reports filled when another call filled the row first', async () => {

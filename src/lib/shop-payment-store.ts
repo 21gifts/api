@@ -753,6 +753,8 @@ class InMemoryShopTx implements ShopTx {
   readonly #pos: PosStore;
 
   /**
+   * Bind the transaction view to the store's tables and the charge store.
+   *
    * @param tables - The store's tables (shared, mutated in place).
    * @param pos - Charge store that charge calls delegate to.
    */
@@ -1148,6 +1150,8 @@ export class InMemoryShopPaymentStore implements ShopPaymentStore {
   #tail: Promise<void> = Promise.resolve();
 
   /**
+   * Create empty tables whose charge calls go to `pos`.
+   *
    * @param pos - Charge store the charge calls delegate to.
    */
   constructor(pos: PosStore) {
@@ -1549,6 +1553,9 @@ class PostgresShopTx implements ShopTx {
   readonly #pos: PostgresPosStore;
 
   /**
+   * Bind the statements to one reserved transaction connection, with a
+   * `PostgresPosStore` on the same connection for the charge calls.
+   *
    * @param tx - The reserved transaction connection.
    */
   constructor(tx: MergeTx) {
@@ -2156,6 +2163,9 @@ export class PostgresShopPaymentStore implements ShopPaymentStore {
   readonly #db: MergeDb;
 
   /**
+   * Bind the store to the transaction port; each call runs on a `MergeDb`
+   * transaction, not on the boot SQL client.
+   *
    * @param _sql - The boot's SQL client (already migrated); every statement
    *   runs on `db` transactions instead.
    * @param db - Transaction port (`createBunDatabase(...).mergeDb`).

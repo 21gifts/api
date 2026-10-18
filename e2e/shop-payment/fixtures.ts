@@ -37,6 +37,7 @@ import {
   type WalletHttp,
 } from './tether-client';
 
+/** `Authorization` header of the debug token for the operator routes. */
 export const DEBUG = { authorization: `Bearer ${DEBUG_TOKEN}` };
 
 // ---------------------------------------------------------------------------
@@ -142,7 +143,12 @@ export interface Shop {
 
 let shopCounter = 0;
 
-/** Fresh username: lowercase, at most 32 characters, never `cb`/`invoice`/final `.`. */
+/**
+ * Fresh username: lowercase, at most 32 characters, never `cb`/`invoice`/final `.`.
+ *
+ * @param prefix - Leading part of the name.
+ * @returns A username no other run uses.
+ */
 export function freshUsername(prefix: string): string {
   shopCounter += 1;
   const stamp = `${Date.now().toString(36)}${process.pid.toString(36)}${shopCounter}`;
@@ -152,6 +158,10 @@ export function freshUsername(prefix: string): string {
 /**
  * Provision a shop over HTTP with the debug token and give it a verified
  * wallet (passkey claim, `PUT /me/wallet`, `POST /lnurlpay/:pubkey`).
+ *
+ * @param request - Playwright request context of the api.
+ * @param prefix - Leading part of the username.
+ * @returns The shop's username, name, session token, and wallet key.
  */
 export async function verifiedShop(request: APIRequestContext, prefix = 'shop'): Promise<Shop> {
   const username = freshUsername(prefix);
@@ -193,12 +203,24 @@ export async function verifiedShop(request: APIRequestContext, prefix = 'shop'):
   return { username, name, token, sparkPubkey };
 }
 
-/** The shop's sticker, as 21gifts/app prints it: `https://<domain>/pl/?lightning=<LNURL>`. */
+/**
+ * The shop's sticker, as 21gifts/app prints it: `https://<domain>/pl/?lightning=<LNURL>`.
+ *
+ * @param username - Shop username.
+ * @returns The sticker URL.
+ */
 export function sticker(username: string): string {
   return `${PUBLIC_BASE_URL}/pl/?lightning=${encodeLnurl(`${PUBLIC_BASE_URL}/.well-known/lnurlp/${username}`)}`;
 }
 
-/** `POST /pay/:username/payment`; returns the payment id. */
+/**
+ * `POST /pay/:username/payment`; expects 200.
+ *
+ * @param request - Playwright request context of the api.
+ * @param username - Shop username.
+ * @param amountSats - Amount the payer entered.
+ * @returns The payment id and its window end.
+ */
 export async function openPayerPayment(
   request: APIRequestContext,
   username: string,
@@ -209,7 +231,13 @@ export async function openPayerPayment(
   return (await res.json()) as { payment: string; expiresAt: string };
 }
 
-/** `GET /lnurlp/wait/:payment` without `since`. */
+/**
+ * `GET /lnurlp/wait/:payment` without `since`; expects 200.
+ *
+ * @param request - Playwright request context of the api.
+ * @param payment - Shop payment id.
+ * @returns The DFX status, the payment status, and the BOLT11 expiry.
+ */
 export async function paymentStatus(
   request: APIRequestContext,
   payment: string,
@@ -224,8 +252,20 @@ export async function paymentStatus(
 
 /** Client of `/__control`. */
 export class Control {
+  /**
+   * Bind the client to a Playwright request context.
+   *
+   * @param request - Request context that reaches the stand-ins.
+   */
   constructor(private readonly request: APIRequestContext) {}
 
+  /**
+   * Set how the stand-ins treat one shop (Orchestra answers, detection, mint).
+   *
+   * @param username - Shop username.
+   * @param behaviour - Fields to change; the rest keep their values.
+   * @returns Resolves once the stand-in answered 200.
+   */
   async behave(username: string, behaviour: Partial<ShopBehaviour>): Promise<void> {
     const res = await this.request.post(`${CONTROL_URL}/__control/shops/${username}`, {
       data: behaviour,
@@ -233,18 +273,36 @@ export class Control {
     expect(res.status()).toBe(200);
   }
 
+  /**
+   * What the stand-ins recorded for one shop.
+   *
+   * @param username - Shop username.
+   * @returns The shop's behaviour, quotes, orders, submits, reads, and invoices.
+   */
   async state(username: string): Promise<ShopState> {
     const res = await this.request.get(`${CONTROL_URL}/__control/shops/${username}`);
     expect(res.status()).toBe(200);
     return (await res.json()) as ShopState;
   }
 
+  /**
+   * Make a transfer on the chain stand-in.
+   *
+   * @param input - Chain, token, deposit address, amount, sender, and detection mode.
+   * @returns The bundle hash, user-operation hash, bundler receipt, and any detected order.
+   */
   async transfer(input: TransferRequest): Promise<TransferResult> {
     const res = await this.request.post(`${CONTROL_URL}/__control/transfer`, { data: input });
     expect(res.status(), await res.text()).toBe(200);
     return (await res.json()) as TransferResult;
   }
 
+  /**
+   * Mark a BOLT11 of the LNURL server stand-in paid.
+   *
+   * @param paymentHash - Payment hash of the invoice.
+   * @returns Resolves once the stand-in answered 200.
+   */
   async settleInvoice(paymentHash: string): Promise<void> {
     const res = await this.request.post(`${CONTROL_URL}/__control/invoices/${paymentHash}/settle`);
     expect(res.status()).toBe(200);
@@ -261,6 +319,11 @@ export class Control {
     return ((await res.json()) as { broadcasts: Broadcast[] }).broadcasts;
   }
 
+  /**
+   * Protocol violations the stand-ins saw (for example a changed body under one key).
+   *
+   * @returns The violations in arrival order.
+   */
   async violations(): Promise<string[]> {
     const res = await this.request.get(`${CONTROL_URL}/__control/violations`);
     expect(res.status()).toBe(200);
@@ -278,6 +341,9 @@ let clientCounter = 0;
  * `cf-connecting-ip`, as phones behind Cloudflare do, so the per-address
  * limits of parallel scenarios do not share one bucket. A transport error
  * or timeout throws, as axios does.
+ *
+ * @param request - Playwright request context.
+ * @returns The wallet's HTTP port.
  */
 export function walletHttp(request: APIRequestContext): WalletHttp {
   clientCounter += 1;
@@ -303,7 +369,14 @@ export function walletHttp(request: APIRequestContext): WalletHttp {
   };
 }
 
-/** {@link WalletBundler} over the chain stand-in. */
+/**
+ * {@link WalletBundler} over the chain stand-in.
+ *
+ * @param control - Stand-in control client.
+ * @param options - Detection, user-operation-only, and sender of each transfer.
+ * @param seen - Receives every transfer made.
+ * @returns The bundler port.
+ */
 export function standInBundler(
   control: Control,
   options: Pick<TransferRequest, 'detect' | 'userOpOnly' | 'from'> = {},
@@ -324,7 +397,15 @@ export function standInBundler(
   };
 }
 
-/** A Tether wallet over Playwright and the stand-ins. */
+/**
+ * A Tether wallet over Playwright and the stand-ins.
+ *
+ * @param request - Playwright request context.
+ * @param control - Stand-in control client.
+ * @param options - Detection, user-operation-only, and sender of each transfer.
+ * @param seen - Receives every transfer made.
+ * @returns The wallet.
+ */
 export function tetherWallet(
   request: APIRequestContext,
   control: Control,
@@ -345,7 +426,15 @@ function railById(id: string): Rail {
   return rail;
 }
 
-/** Scan the sticker and fetch one rail's detail, as a second phone would. */
+/**
+ * Scan the sticker and fetch one rail's detail, as a second phone would.
+ *
+ * @param request - Playwright request context.
+ * @param username - Shop username.
+ * @param railId - Rail of the wallet's fixed list.
+ * @returns The transfer detail.
+ * @throws Error when the sticker, the pay request, or the rail's detail is not usable.
+ */
 export async function fetchDetail(
   request: APIRequestContext,
   username: string,
@@ -371,6 +460,11 @@ export async function fetchDetail(
  * One proof request with `quote`, `method`, `asset`, and the given `tx` or
  * `hex`; a 5xx is returned, not thrown. `message` is the error text, or the
  * `txId` of a 2xx.
+ *
+ * @param request - Playwright request context.
+ * @param proof - Proof URL, quote, method, and asset of the wallet run.
+ * @param form - The `tx` hash, or `{ hex }`.
+ * @returns The status and the message.
  */
 export async function proofAnswer(
   request: APIRequestContext,
@@ -393,7 +487,12 @@ export async function proofAnswer(
   };
 }
 
-/** A wallet run as readable JSON for failure messages (amounts are bigint). */
+/**
+ * A wallet run as readable JSON for failure messages (amounts are bigint).
+ *
+ * @param run - Any wallet result.
+ * @returns Indented JSON with bigints as decimal strings.
+ */
 export function describeRun(run: unknown): string {
   return JSON.stringify(
     run,

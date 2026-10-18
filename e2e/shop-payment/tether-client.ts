@@ -169,6 +169,8 @@ function isRecord(value: unknown): value is Record<string, unknown> {
  * LNURL, a `lightning:` link) is not OpenCryptoPay.
  *
  * @returns The decoded pay-link URL, or `null`.
+ *
+ * @param text - Scanned QR text or link.
  */
 export function parseOpenCryptoPayLink(text: string): { lnurl: string; url: string } | null {
   let parsed: URL;
@@ -192,7 +194,12 @@ export function parseOpenCryptoPayLink(text: string): { lnurl: string; url: stri
   return null;
 }
 
-/** Decode an LNURL (bech32, hrp `lnurl`) to its URL, or `null`. */
+/**
+ * Decode an LNURL (bech32, hrp `lnurl`) to its URL, or `null`.
+ *
+ * @param lnurl - Bech32 LNURL in either case.
+ * @returns The URL, or `null` when it is not a valid LNURL.
+ */
 export function decodeLnurl(lnurl: string): string | null {
   try {
     const decoded = bech32.decode(lnurl.toLowerCase() as `${string}1${string}`, false);
@@ -207,7 +214,12 @@ export function decodeLnurl(lnurl: string): string | null {
   }
 }
 
-/** Encode a URL as an uppercase LNURL, as the sticker carries it. */
+/**
+ * Encode a URL as an uppercase LNURL, as the sticker carries it.
+ *
+ * @param url - URL to encode.
+ * @returns The LNURL in uppercase.
+ */
 export function encodeLnurl(url: string): string {
   return bech32.encode('lnurl', bech32.toWords(new TextEncoder().encode(url)), false).toUpperCase();
 }
@@ -215,6 +227,10 @@ export function encodeLnurl(url: string): string {
 /**
  * `withQuery` (ocp-api-module.js:69-140): `key=encodeURIComponent(value)`
  * joined by `&`, appended with `&` when the URL already has a `?`, else `?`.
+ *
+ * @param url - Base URL.
+ * @param params - Query keys and values.
+ * @returns The URL with the query appended.
  */
 export function withQuery(url: string, params: Readonly<Record<string, string>>): string {
   const query = Object.entries(params)
@@ -223,7 +239,12 @@ export function withQuery(url: string, params: Readonly<Record<string, string>>)
   return `${url}${url.includes('?') ? '&' : '?'}${query}`;
 }
 
-/** `isOpenCryptoPayPayment` (ocp-api-module.js:143-180). */
+/**
+ * `isOpenCryptoPayPayment` (ocp-api-module.js:143-180).
+ *
+ * @param body - Parsed response body.
+ * @returns `true` when `standard` is `OpenCryptoPay` or `possibleStandards` contains it.
+ */
 export function isOpenCryptoPayPayment(body: unknown): boolean {
   if (!isRecord(body)) {
     return false;
@@ -272,6 +293,11 @@ function readPayment(body: Record<string, unknown>): OcpPayment {
  * with an OpenCryptoPay body means nothing is pending, any other 404 an
  * invalid link ('payment: link not found', fn-getOCPPayment.txt:62-64);
  * every other status throws.
+ *
+ * @param http - Wallet HTTP port.
+ * @param url - Pay-link URL.
+ * @returns A payment, the plain LNURL body, no pending payment, or not found.
+ * @throws Error for any other status or no answer.
  */
 export async function getOpenCryptoPayPayment(
   http: WalletHttp,
@@ -294,7 +320,13 @@ export async function getOpenCryptoPayPayment(
 // ---------------------------------------------------------------------------
 // Rails.
 
-/** `acceptsRail` (ocp-route-module.js:47-107): exact method, `available`, asset by name. */
+/**
+ * `acceptsRail` (ocp-route-module.js:47-107): exact method, `available`, asset by name.
+ *
+ * @param entry - One `transferAmounts` entry.
+ * @param rail - Rail of the wallet's list.
+ * @returns `true` when the entry offers the rail.
+ */
 export function acceptsRail(entry: unknown, rail: Rail): boolean {
   if (!isRecord(entry) || entry['method'] !== rail.method || entry['available'] !== true) {
     return false;
@@ -303,7 +335,12 @@ export function acceptsRail(entry: unknown, rail: Rail): boolean {
   return Array.isArray(assets) && assets.some((a) => isRecord(a) && a['asset'] === rail.asset);
 }
 
-/** `payableOptions` (ocp-options-module.js:97-121): supported, not experimental, not withheld. */
+/**
+ * `payableOptions` (ocp-options-module.js:97-121): supported, not experimental, not withheld.
+ *
+ * @param rail - Rail of the wallet's list.
+ * @returns `true` when the wallet offers the rail.
+ */
 export function isPayable(rail: Rail): boolean {
   return rail.supported && rail.experimental !== true && rail.withheld !== true;
 }
@@ -315,7 +352,12 @@ export interface RailOption {
   amount: string;
 }
 
-/** `listOpenCryptoPayOptions` (ocp-route-module.js:748). */
+/**
+ * `listOpenCryptoPayOptions` (ocp-route-module.js:748).
+ *
+ * @param payment - The pay request.
+ * @returns The payable rails the pay request offers, with their amounts.
+ */
 export function listOpenCryptoPayOptions(payment: OcpPayment): RailOption[] {
   const options: RailOption[] = [];
   for (const rail of OPEN_CRYPTO_PAY_RAILS) {
@@ -351,6 +393,9 @@ export interface Eip681Transfer {
  * Parse `ethereum:<token>@<chainId>/transfer?address=<to>&uint256=<amount>`.
  * Only a complete request (token, chain id, `transfer`, recipient, and
  * amount) is returned; anything else is `null`.
+ *
+ * @param uri - EIP-681 URI.
+ * @returns The token, chain id, recipient, and amount, or `null`.
  */
 export function parseEip681(uri: string): Eip681Transfer | null {
   const match =
@@ -387,6 +432,11 @@ export function parseEip681(uri: string): Eip681Transfer | null {
  * ('provider uri names a different chain than the rail'), and its token
  * must be the wallet's own contract for that network ('… different token
  * than the rail pays').
+ *
+ * @param uri - The detail's `uri`.
+ * @param rail - Rail the detail was fetched for.
+ * @returns The recipient, amount in token units, chain id, and token, or
+ *   `null` when the URI is incomplete or names another chain or token.
  */
 export function parseTransferUri(
   uri: string,
@@ -411,7 +461,12 @@ export function parseTransferUri(
   };
 }
 
-/** `earliestExpiry` (ocp-route-module.js:317-383): the earliest parseable ISO, unparseable ones skipped. */
+/**
+ * `earliestExpiry` (ocp-route-module.js:317-383): the earliest parseable ISO, unparseable ones skipped.
+ *
+ * @param values - ISO timestamps, `null`, or `undefined`.
+ * @returns The earliest parseable timestamp, or `null` when none parses.
+ */
 export function earliestExpiry(...values: Array<string | null | undefined>): string | null {
   let best: { iso: string; at: number } | null = null;
   for (const value of values) {
@@ -444,6 +499,10 @@ function parseHttpUrl(value: string): URL | null {
  * is the proof URL when its path has a segment `tx` and its host equals the
  * callback's. Otherwise the callback with every path segment `cb` replaced
  * by `tx`, query kept; `null` when the callback has no `cb` segment.
+ *
+ * @param hint - The detail's `hint`, or `null`.
+ * @param callback - The pay request's `callback`, or `null`.
+ * @returns The proof URL, or `null`.
  */
 export function resolveSubmitUrl(hint: string | null, callback: string | null): string | null {
   const callbackUrl = callback === null ? null : parseHttpUrl(callback);
@@ -498,6 +557,16 @@ export type RailResult =
  * `method`, `asset`. HTTP 400 is `RAIL_UNAVAILABLE`, 404 `QUOTE_EXPIRED`,
  * any other error throws. Lightning reads `pr`; a `tx` rail reads `uri`,
  * `hint`, and `expiryDate`.
+ *
+ * @param http - Wallet HTTP port.
+ * @param paymentUrl - Pay-link URL first fetched.
+ * @param payment - The pay request.
+ * @param rail - Rail to pay.
+ * @returns The invoice or transfer detail, or an error result
+ *   (`RAIL_UNAVAILABLE` for HTTP 400 or an unusable detail, `QUOTE_EXPIRED`
+ *   for HTTP 404).
+ * @throws Error when the pay request has no callback or quote id, or the
+ *   detail call answers another error status.
  */
 export async function resolveOpenCryptoPayRail(
   http: WalletHttp,
@@ -561,7 +630,14 @@ export async function resolveOpenCryptoPayRail(
 // ---------------------------------------------------------------------------
 // Send.
 
-/** Advertised decimal amount to token units (`amountSmallest`), or `null`. */
+/**
+ * Advertised decimal amount to token units (`amountSmallest`), or `null`.
+ *
+ * @param amount - Decimal amount string.
+ * @param decimals - Decimals of the token.
+ * @returns The amount in token units, or `null` when it is not a plain decimal
+ *   or has more fraction digits than `decimals`.
+ */
 export function advertisedUnits(amount: string, decimals = USDT_DECIMALS): bigint | null {
   const match = /^(\d+)(?:\.(\d+))?$/.exec(amount);
   if (match === null) {
@@ -579,6 +655,9 @@ export function advertisedUnits(amount: string, decimals = USDT_DECIMALS): bigin
  * The hash the wallet proves with: the bundle transaction's (`hash` or
  * `transactionHash` of the bundler receipt), and the user-operation hash
  * only when the receipt has neither.
+ *
+ * @param result - User-operation hash and bundler receipt.
+ * @returns The hash the wallet sends as `tx`.
  */
 export function proofHash(result: {
   userOpHash: string;
@@ -600,6 +679,12 @@ export type SubmitResult =
  * (ocp-api-module.js:1194). HTTP 5xx or no answer throws ('submit: no
  * answer, retrying'); any status below 500 is final. Success is a 2xx with
  * a non-empty string `txId` ('submit: accepted without a txId' otherwise).
+ *
+ * @param http - Wallet HTTP port.
+ * @param proof - Proof URL, quote, method, and asset.
+ * @param txHash - Hash sent as `tx`.
+ * @returns `accepted` with the `txId`, or `rejected` with the status and message.
+ * @throws Error on a 5xx or no answer.
  */
 export async function submitOpenCryptoPayTransaction(
   http: WalletHttp,
@@ -643,6 +728,13 @@ export interface AttemptLog {
 /**
  * `submitWithRetries` (ocp-pending-proof-module.js:627-868): up to 3
  * attempts, pauses 1 s and 3 s, retrying only a thrown submit.
+ *
+ * @param http - Wallet HTTP port.
+ * @param clock - Wallet clock for the pauses.
+ * @param proof - Proof URL, quote, method, and asset.
+ * @param txHash - Hash sent as `tx`.
+ * @param log - Receives one entry per attempt.
+ * @returns The final answer, or `null` when every attempt threw.
  */
 export async function submitWithRetries(
   http: WalletHttp,
@@ -679,6 +771,12 @@ export async function submitWithRetries(
  * an OpenCryptoPay body ('the register cleared its pending sale') or an
  * answer naming a different `quote.payment` ('the register has moved on to
  * another sale', `isAnotherSale`); otherwise unconfirmed.
+ *
+ * @param http - Wallet HTTP port.
+ * @param clock - Wallet clock for the polls.
+ * @param proof - Pending proof with the pay-link URL and quote payment.
+ * @param polls - Receives one entry per poll.
+ * @returns `settled` or `unconfirmed`.
  */
 export async function waitForSettlement(
   http: WalletHttp,

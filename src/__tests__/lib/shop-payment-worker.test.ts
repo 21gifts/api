@@ -366,7 +366,24 @@ describe('duty 3: orders', () => {
       historyOffset: 200,
       nextHistoryAt: new Date(T0 + 10_000),
     });
-    h.clock.now = T0 + 120_000 + 30 * 60_000;
+    const ended = T0 + 120_000 + 30 * 60_000;
+    h.clock.now = ended;
+    // A failed read after the watch ended keeps the offset and reads again.
+    h.orchestra.history.mockResolvedValueOnce({ ok: false, reason: 'error' });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({
+      historyOffset: 200,
+      nextHistoryAt: new Date(ended + 10_000),
+    });
+    // So does a full page; the first successful short page ends the watch.
+    h.clock.now = ended + 10_000;
+    h.orchestra.history.mockResolvedValueOnce({ ok: true, orders: [], full: true });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({
+      historyOffset: 400,
+      nextHistoryAt: new Date(ended + 20_000),
+    });
+    h.clock.now = ended + 20_000;
     await runShopPaymentTick(h.shop, 1);
     expect(await getPayment(h)).toMatchObject({ historyOffset: 0, nextHistoryAt: null });
   });

@@ -974,6 +974,13 @@ describe('offer checks (Offer checks)', () => {
     expect(checkOffer(input({ maxAcceptedAmountIn: '1233999' }))).toBe('bounds');
     expect(checkOffer(input({ requiredAmountIn: 'x' }))).toBe('bounds');
     expect(checkOffer(input({ maxAcceptedAmountIn: '-1' }))).toBe('bounds');
+    // Each limit applies on its own.
+    expect(checkOffer(input({ requiredAmountIn: '1234001', maxAcceptedAmountIn: null }))).toBe(
+      'bounds',
+    );
+    expect(checkOffer(input({ requiredAmountIn: null, maxAcceptedAmountIn: '1233999' }))).toBe(
+      'bounds',
+    );
   });
 
   it('requires the transaction on the table chain id', () => {
@@ -1019,6 +1026,16 @@ describe('offer checks (Offer checks)', () => {
     expect(
       checkOffer(input({ transaction: { ...tx, data: erc20TransferData(deposit, 1_234_001n) } })),
     ).toBe('data');
+    // 68 bytes with another selector, non-zero address padding, or one byte more.
+    const good = erc20TransferData(deposit, 1_234_000n);
+    for (const data of [
+      `0xffffffff${good.slice(10)}`,
+      `0x23b872dd${good.slice(10)}`,
+      `${good.slice(0, 10)}ff${good.slice(12)}`,
+      `${good}00`,
+    ]) {
+      expect(checkOffer(input({ transaction: { ...tx, data } }))).toBe('data');
+    }
   });
 
   it('refuses a deposit address already used in the same batch', () => {
@@ -1179,6 +1196,14 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     expect((await evaluate(w, p.id))?.result).toBe('late');
     expect(eventsNamed('shop.proof.late')).toHaveLength(1);
     expect(eventsNamed('shop.alert.late_deposit')).toHaveLength(1);
+    // A closed payment is final.
+    expect(await readPayment(w.h, w.payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'window',
+      closedAt: new Date(T0),
+      acceptedAt: null,
+    });
+    expect(eventsNamed('shop.payment.accepted')).toHaveLength(0);
   });
 
   it('holds a proof whose amount is unknown or outside the bounds', async () => {
@@ -1321,7 +1346,11 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
       const refusing = new Proxy(tx, {
         get: (target, prop) => {
           if (prop === 'updateProof') {
-            return async () => 'conflict';
+            // Another step wins first: it records the proof refunded.
+            return async (id: string) => {
+              await target.updateProof(id, {}, { result: 'refunded', resolvedAt: new Date(clock) });
+              return 'conflict';
+            };
           }
           const value = (target as unknown as Record<string | symbol, unknown>)[prop];
           return typeof value === 'function' ? value.bind(target) : value;
@@ -1329,7 +1358,7 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
       });
       return evaluateProof(refusing, p.id, clock);
     });
-    expect(after?.result).toBeNull();
+    expect(after?.result).toBe('refunded');
     expect((await readPayment(w.h, w.payment.id)).status).toBe('open');
     expect(eventsNamed('shop.proof.accepted')).toHaveLength(0);
   });
@@ -2266,9 +2295,26 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     } as unknown as Parameters<InMemoryFxSpotStore['save']>[0]);
     const h = await setup({ fxSpot: fx });
     expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
-    expect(
-      eventsNamed('shop.offer.rejected').every((entry) => entry.fields?.['check'] === 'price'),
-    ).toBe(true);
+    const rejected = eventsNamed('shop.offer.rejected');
+    expect(rejected.length).toBeGreaterThan(0);
+    expect(rejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
+
+    // The last millisecond of the fresh window still applies the spot.
+    const edge = await setup({
+      fxSpot: {
+        latest: async () => ({
+          asOf: new Date(T0 - 599_999).toISOString(),
+          rates: { USD: '95238' },
+        }),
+      } as unknown as FxSpotStore,
+    });
+    const before = eventsNamed('shop.offer.rejected').length;
+    expect(await edge.svc.createForPayer(edge.account, USER, SATS)).toEqual({
+      kind: 'unavailable',
+    });
+    const edgeRejected = eventsNamed('shop.offer.rejected').slice(before);
+    expect(edgeRejected.length).toBeGreaterThan(0);
+    expect(edgeRejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
 
     const cases: (FxSpotStore | null)[] = [
       {
@@ -3056,6 +3102,8 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     h.orchestra.routesResult = { ok: false };
     clock = T0 + 60_001;
     const read = await h.svc.currentQuote(h.account, USER, payment);
+    // The cached list expired, so the replacement read the route list again.
+    expect(h.orchestra.routesCalls).toHaveLength(2);
     expect(read?.quote.transferAmounts).toHaveLength(1);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);

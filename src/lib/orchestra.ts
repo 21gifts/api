@@ -126,6 +126,8 @@ export interface OrchestraClientDeps {
   fetchImpl: FetchFn;
   /** Clock in epoch ms. */
   now: () => number;
+  /** Wait before a quote retry whose 429 paused the endpoint; default `setTimeout`. */
+  sleep?: (ms: number) => Promise<void>;
 }
 
 /** Page size of a history read. */
@@ -331,6 +333,7 @@ function pauseUntil(headers: Headers, now: number): number | null {
  */
 export class OrchestraClient {
   private readonly deps: OrchestraClientDeps;
+  private readonly sleep: (ms: number) => Promise<void>;
   private readonly attempts: Record<Group, Attempt[]> = {
     routes: [],
     quote: [],
@@ -353,6 +356,12 @@ export class OrchestraClient {
    */
   constructor(deps: OrchestraClientDeps) {
     this.deps = deps;
+    this.sleep =
+      deps.sleep ??
+      ((ms: number) =>
+        new Promise<void>((resolve) => {
+          setTimeout(resolve, ms);
+        }));
   }
 
   /**
@@ -403,8 +412,9 @@ export class OrchestraClient {
    * A transport error or timeout, HTTP 429, HTTP 409
    * `idempotency_in_progress`, and any 5xx are retried once with the same
    * key and body while `deadlineMs` has not passed; each attempt's timeout
-   * is the time left. A retry that the pause of a 429 or the budget blocks
-   * is not sent.
+   * is the time left. When a 429 paused the endpoint, the retry waits for
+   * the pause to end if it ends before `deadlineMs`, and is not sent
+   * otherwise. A retry that the budget blocks is not sent.
    *
    * @param request - Pair, sat amount, BOLT11, tag, and refund address.
    * @param idempotencyKey - `X-Idempotency-Key`, kept for the retry.
@@ -431,6 +441,13 @@ export class OrchestraClient {
       includeCalldata: true,
     };
     for (let attempt = 0; attempt < 2; attempt += 1) {
+      const resumeAtMs = this.pausedUntil.quote;
+      if (attempt > 0 && resumeAtMs > this.deps.now()) {
+        if (resumeAtMs >= deadlineMs) {
+          return { ok: false, reason: 'paused' };
+        }
+        await this.sleep(resumeAtMs - this.deps.now());
+      }
       const left = deadlineMs - this.deps.now();
       if (left <= 0) {
         break;

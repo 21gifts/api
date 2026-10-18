@@ -29,7 +29,7 @@ import {
   type Erc20TransferLog,
 } from '@/lib/evm-transfer';
 import { logEvent, type LogFields } from '@/lib/log';
-import type { OrchestraSubmitCaller } from '@/lib/orchestra';
+import { ORCHESTRA_FINAL_STATUSES, type OrchestraSubmitCaller } from '@/lib/orchestra';
 import { normalizeHex32 } from '@/lib/proof';
 import {
   SHOP_UNRESOLVED_LIMIT_MS,
@@ -525,8 +525,10 @@ function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
  * `refuseProof` (from any result the States table allows, an `accepted` one
  * included, which ends its payment with `proof_refused` unless another proof
  * takes its place) and is no longer read; nothing is deleted. The same offer:
- * the kept row takes every value of the other row it lacks, the other row is
- * deleted, then the values are written (the indexes are not deferrable).
+ * the kept row takes every value of the other row it lacks, and a final
+ * order status of either row for the kept order (a final status is terminal,
+ * so it is the newer one); the other row is deleted, then the values are
+ * written (the indexes are not deferrable).
  *
  * @param tx - Transaction (account locked).
  * @param filling - The row being filled in, as stored.
@@ -557,14 +559,22 @@ async function mergeDeposit(
   }
   const intended: ShopProof = { ...filling, ...patch };
   const [keep, other] = keepOf(intended, holder);
+  const order = keep.providerOrder ?? other.providerOrder;
+  // Both rows can hold the same order with statuses read at different times.
+  // A final status is terminal, so it is never older than the other one.
+  const finalStatus = [keep, other]
+    .filter((row) => row.providerOrder === order)
+    .map((row) => row.orderStatus)
+    .find((status) => status !== null && ORCHESTRA_FINAL_STATUSES.has(status));
   const merged: ShopProofPatch = {
     logIndex: keep.logIndex ?? other.logIndex,
     transferAmount: keep.transferAmount ?? other.transferAmount,
     userOpHash: keep.userOpHash ?? other.userOpHash,
-    providerOrder: keep.providerOrder ?? other.providerOrder,
-    orderStatus: keep.providerOrder === null ? other.orderStatus : keep.orderStatus,
+    providerOrder: order,
+    orderStatus:
+      finalStatus ?? (keep.providerOrder === null ? other.orderStatus : keep.orderStatus),
     orderFoundAt: keep.orderFoundAt ?? other.orderFoundAt,
-    nextStatusAt: keep.nextStatusAt ?? other.nextStatusAt,
+    nextStatusAt: finalStatus === undefined ? (keep.nextStatusAt ?? other.nextStatusAt) : null,
   };
   if (merged.logIndex !== null) {
     merged.nextReceiptAt = null;
@@ -844,7 +854,8 @@ async function rotateKey(tx: ShopTx, shop: ShopPayments, proof: ShopProof): Prom
  * One Orchestra submit of a proof, with the slot claim and the answer mapping
  * (Calls › Submit): claims the 2 s slot with a conditional update of
  * `last_submit_at`; an order is recorded (`recordProofOrder`, merge on an
- * order conflict); `xchain_deposit_mismatch` refuses; `409 quote_expired`
+ * order conflict); when another step recorded an order meanwhile, only a
+ * final status of that same order is applied; `xchain_deposit_mismatch` refuses; `409 quote_expired`
  * makes the proof `late` and stops submitting; a definitive unresolved
  * answer rotates the idempotency key.
  *
@@ -911,8 +922,14 @@ export async function submitProofAttempt(
       return null;
     }
     if (answer.kind === 'order') {
+      // Another step recorded an order meanwhile. Only a final status of
+      // that same order is applied; a status in flight may be older than
+      // the one that step stored.
       if (current.providerOrder !== null) {
-        return current;
+        return current.providerOrder === answer.orderId &&
+          ORCHESTRA_FINAL_STATUSES.has(answer.status)
+          ? applyProofOrder(tx, current, { orderId: answer.orderId, status: answer.status }, nowMs)
+          : current;
       }
       return applyProofOrder(
         tx,
@@ -1100,9 +1117,13 @@ export async function readProofReceipt(
     const nowMs = shop.deps.now();
     await lockPaymentAccount(tx, proof.paymentId);
     const current = await tx.getProof(proof.id);
-    const offer = await tx.getOffer(proof.offerId);
-    /* v8 ignore next 3 -- the proof was just read; its offer is a foreign key */
-    if (current === null || offer === null) {
+    // A same-offer merge can delete the row while the receipt is read.
+    if (current === null) {
+      return 'error';
+    }
+    const offer = await tx.getOffer(current.offerId);
+    /* v8 ignore next 3 -- a proof's offer is a foreign key */
+    if (offer === null) {
       return 'error';
     }
     if (current.logIndex !== null) {

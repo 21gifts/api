@@ -450,6 +450,56 @@ describe('OrchestraClient.quote', () => {
     expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ endpoint: 'quote' }]);
   });
 
+  it('sends the retry of a 429 once its pause ends before the deadline, with the same key', async () => {
+    const calls: Call[] = [];
+    const clock = { t: T0 };
+    const slept: number[] = [];
+    const queue: Responder[] = [
+      () => err(429, 'rate_limited', { 'Retry-After': '1' }),
+      () => json(QUOTE_BODY),
+    ];
+    const client = new OrchestraClient({
+      baseUrl: BASE,
+      apiKey: KEY,
+      fetchImpl: async (input, init) => {
+        calls.push({ url: String(input), init: init ?? {} });
+        return queue.shift()!();
+      },
+      now: () => clock.t,
+      sleep: async (ms) => {
+        slept.push(ms);
+        clock.t += ms;
+      },
+    });
+    expect((await client.quote(REQUEST, 'idem-p', T0 + 3000)).ok).toBe(true);
+    expect(slept).toEqual([1000]);
+    expect(calls).toHaveLength(2);
+    expect(headersOf(calls[1])).toEqual(headersOf(calls[0]));
+    expect(calls[1]?.init.body).toBe(calls[0]?.init.body);
+  });
+
+  it('waits for the pause with the default sleep', async () => {
+    vi.useFakeTimers({ toFake: ['setTimeout', 'Date'], now: T0 });
+    try {
+      const queue: Responder[] = [
+        () => err(429, 'rate_limited', { 'Retry-After': '1' }),
+        () => json(QUOTE_BODY),
+      ];
+      const client = new OrchestraClient({
+        baseUrl: BASE,
+        apiKey: KEY,
+        fetchImpl: async () => queue.shift()!(),
+        now: () => Date.now(),
+      });
+      const pending = client.quote(REQUEST, 'idem-d', T0 + 3000);
+      await vi.advanceTimersByTimeAsync(1000);
+      expect((await pending).ok).toBe(true);
+      expect(queue).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('keeps 240 quote calls per sliding minute', async () => {
     const { client, calls, clock } = harness([], () => json(QUOTE_BODY));
     expect(client.quoteBudgetLeft()).toBe(240);

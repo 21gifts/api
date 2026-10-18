@@ -400,7 +400,6 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       if (!lookup.ok) {
         return c.json({ error: lookup.error }, lookup.status);
       }
-      /* v8 ignore next 3 -- the route group gets the service whenever the LNURL server resolves */
       if (shop === undefined) {
         return c.json({ error: 'Not found' }, 404);
       }

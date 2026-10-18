@@ -1105,7 +1105,10 @@ rows by their own next-try column, oldest first:
 3. **Orders** (odd ticks): Orchestra history by the payment's BOLT11 every
    10 s, one page per read, from the first issued detail until 30 minutes
    after its last offer's `expiresAt`, also after the payment is paid or
-   closed. An order no proof holds is stored as a `detected` proof.
+   closed. An order no proof holds is stored as a `detected` proof. A
+   failed read changes nothing and is retried after 10 s at the same
+   offset; only a successful short page ends the reads once that watch has
+   ended.
 4. **Lookups:** `tx` hashes not yet found, after 10 s, 30 s, and 60 s, then
    every 2 min for one hour (`shop.proof.lookup_expired`).
 5. **Receipts:** `hex` proofs without a receipt and `detected` proofs
@@ -1131,6 +1134,8 @@ quotes 240, submits 30 (proof requests at most 20), status and history
 reads 50 together. An HTTP 429 pauses only the endpoint that answered it,
 until its `Retry-After` (seconds) or else its `X-RateLimit-Reset` (epoch
 ms): status and history pause separately although they share one budget.
+A quote that got the 429 sends its one retry once that pause ends, when it
+ends inside the step's time; otherwise the retry is not sent.
 
 ### `GET /pos`
 
@@ -1365,6 +1370,9 @@ Same account lookup as `GET /pay/:username`. Checks run in this order:
 
 Orders 4 and 6 run again under the account's creation lock (order 4 also
 inside the insert transaction); order 7 runs only there, once per creation.
+The route list is read before the mint, so an unreadable route list or one
+without a candidate pair answers order 9 before order 8 can apply; only "no
+Orchestra quote passes the offer checks" comes after the mint.
 The api-wide counter is asked first and the account counter only when it
 allows. Orders 7 and 9 do not depend on the client address.
 

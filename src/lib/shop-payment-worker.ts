@@ -263,9 +263,11 @@ async function handleHistoryOrder(
 
 /**
  * Duty 3 (odd ticks): one history page of the payment whose
- * `next_history_at` is due. A failed read is retried at the cadence; a
- * budget refusal waits for the next odd tick. The read stops when the order
- * watch of the payment's last offer with an issued detail has ended.
+ * `next_history_at` is due. A failed read is retried at the cadence and
+ * keeps the offset, also after the order watch ended; a budget refusal waits
+ * for the next odd tick. The read stops at the first successful short page
+ * once the order watch of the payment's last offer with an issued detail has
+ * ended.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
@@ -317,7 +319,9 @@ async function readOrders(shop: ShopPayments, nowMs: number): Promise<void> {
       : page.ok
         ? 0
         : payment.historyOffset,
-    nextHistoryAt: !full && watchEndMs <= afterMs ? null : new Date(afterMs + HISTORY_INTERVAL_MS),
+    // Only a successful short page ends the watch: a failed read changes nothing.
+    nextHistoryAt:
+      page.ok && !full && watchEndMs <= afterMs ? null : new Date(afterMs + HISTORY_INTERVAL_MS),
   };
   await underPaymentLock(shop, payment.id, async (tx) => {
     await tx.updatePayment(payment.id, {}, patch);

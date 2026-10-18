@@ -282,6 +282,8 @@ export class PlainJsonNumber {
   readonly text: string;
 
   /**
+   * Wrap digits that are already in plain notation.
+   *
    * @param text - Digits in plain notation, for example `0.00000001`.
    */
   constructor(text: string) {
@@ -804,9 +806,10 @@ export async function evaluateProof(
   if (status !== null && ORCHESTRA_FINAL_STATUSES.has(status)) {
     const target = FINAL_RESULT[status];
     /* v8 ignore next 3 -- every final status has a row in FINAL_RESULT */
-    if (target === undefined || proof.result === target) {
+    if (target === undefined) {
       return proof;
     }
+    // A proof already in its target result is not in FINAL_FROM[target].
     if (!FINAL_FROM[target].includes(proof.result)) {
       return proof;
     }
@@ -1217,6 +1220,8 @@ function withoutOpenAmount(
 /** Thrown out of the step-8 transaction when another payment holds the BOLT11's hash. */
 class HashHeldError extends Error {
   /**
+   * Name the payment that holds the hash.
+   *
    * @param holderId - Id of the payment that holds the hash.
    */
   constructor(readonly holderId: string) {
@@ -1241,6 +1246,9 @@ export class ShopPayments {
   #waiting = 0;
 
   /**
+   * Store the collaborators and install the default id source
+   * (`crypto.randomUUID`) and sleep (`setTimeout`) when none are given.
+   *
    * @param deps - Store, auth, LNURL server, config, Orchestra, spot, fetch, clock.
    */
   constructor(deps: ShopPaymentsDeps) {
@@ -1254,17 +1262,29 @@ export class ShopPayments {
         }));
   }
 
-  /** The store (routes and the watcher share it). */
+  /**
+   * The store (routes and the watcher share it).
+   *
+   * @returns The shop payment store.
+   */
   get store(): ShopPaymentStore {
     return this.#deps.store;
   }
 
-  /** The service's collaborators (read-only view for the proof and watcher modules). */
+  /**
+   * The service's collaborators (read-only view for the proof and watcher modules).
+   *
+   * @returns The collaborators given to the constructor.
+   */
   get deps(): Readonly<ShopPaymentsDeps> {
     return this.#deps;
   }
 
-  /** A fresh UUID. */
+  /**
+   * A fresh UUID.
+   *
+   * @returns A new id from the id source.
+   */
   newId(): string {
     return this.#newId();
   }
@@ -2217,8 +2237,11 @@ export class ShopPayments {
           }
           const quotes = await tx.quotesOf(paymentId);
           const quote = quotes[quotes.length - 1];
-          /* v8 ignore next -- every payment has its first quote */
-          return quote === undefined ? null : { payment, quote };
+          /* v8 ignore next 3 -- every payment has its first quote */
+          if (quote === undefined) {
+            return null;
+          }
+          return { payment, quote };
         }
         const quote = await this.#insertQuote(tx, counted, offers, nowMs);
         return { payment: counted, quote };

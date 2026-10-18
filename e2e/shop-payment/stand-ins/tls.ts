@@ -16,7 +16,11 @@ export interface TlsPair {
   key: string;
 }
 
-/** Generate a fresh self-signed pair for `127.0.0.1` and `localhost`. */
+/**
+ * Generate a fresh self-signed pair for `127.0.0.1` and `localhost`.
+ *
+ * @returns The PEM certificate and key.
+ */
 export function selfSignedPair(): TlsPair {
   const dir = mkdtempSync(join(tmpdir(), '21gifts-shop-e2e-tls-'));
   const keyPath = join(dir, 'key.pem');

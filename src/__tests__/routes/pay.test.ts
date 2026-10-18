@@ -1063,6 +1063,7 @@ describe('POST /pay/:username/payment', () => {
       fetchImpl?: (input: string | URL | Request) => Promise<Response>;
       maxSendable?: number;
       account?: boolean;
+      noShop?: boolean;
     } = {},
   ): Promise<{ app: Hono; auth: InMemoryAuthStore; urls: string[] }> {
     const auth = new InMemoryAuthStore();
@@ -1091,7 +1092,7 @@ describe('POST /pay/:username/payment', () => {
         posStore: opts.posStore ?? new InMemoryPosStore(),
         now: () => NOW_MS,
         ...(opts.lnurlServer === false ? {} : { lnurlServer: LNURL_SERVER }),
-        shopPayments: shop as unknown as ShopPayments,
+        ...(opts.noShop === true ? {} : { shopPayments: shop as unknown as ShopPayments }),
       }),
     );
     return { app, auth, urls };
@@ -1143,6 +1144,13 @@ describe('POST /pay/:username/payment', () => {
       expect(await res.json()).toEqual({ error: 'Not found' });
       expect(shop.createForPayer).not.toHaveBeenCalled();
     }
+  });
+
+  it('answers 404 when the route group has no shop payment service', async () => {
+    const { app } = await paymentApp({ noShop: true });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
   it('order 2: 502 when the pay request cannot be resolved', async () => {
