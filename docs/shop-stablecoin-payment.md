@@ -258,8 +258,8 @@ charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
-`orchestra_refunded`, `orchestra_failed`, `proof_refused`, or
-`expired_unpaid`. An `accepted` payment whose accepted proof becomes
+`orchestra_refunded`, `orchestra_failed`, `proof_refused`,
+`order_recovered`, or `expired_unpaid`. An `accepted` payment whose accepted proof becomes
 `refunded`, `failed`, or `refused` ends with `orchestra_refunded`,
 `orchestra_failed`, or `proof_refused`.
 
@@ -273,7 +273,7 @@ payment is `accepted`.
 | ---------------------------------------------------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | null, `refused`, `stuck`                                   | `accepted`   | The proof has a progressing order and a known amount within the bounds below, whichever comes last; the payment is neither `paid` nor closed; and no other proof of the payment is `accepted`. Filling in a value or a new order status re-evaluates the proof.  |
 | null, `refused`, `stuck`                                   | `superseded` | The same, while the payment is neither `paid` nor closed, but another proof of the payment is `accepted`. A unique-index conflict on the accepted proof is this case.                                                                                            |
-| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.                                                                                            |
+| `superseded`, `late`, `refused`, `stuck`, null             | `accepted`   | Its order becomes `completed`: it paid the BOLT11. In one transaction that first locks both rows ([Storing and submitting](#storing-and-submitting)), the proof that was `accepted` first moves to `superseded`, then this proof moves to `accepted`.            |
 | null, `refused`, `stuck`                                   | `late`       | The proof gets a progressing order after the payment closed, or its submit answers `409 quote_expired`. The api logs `shop.alert.late_deposit`.                                                                                                                  |
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `refunded`   | The order's status is or becomes `refunded`.                                                                                                                                                                                                                     |
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                       |
@@ -722,6 +722,13 @@ row; `this_charge` when the hash is already recorded against this charge
 or held by this charge's shop payment; `other_payment` when another
 charge's `pos_charge_invoice` row or another payment's `shop_payment`
 holds it; and `not_open` when the charge was not open at the issue time it is given (`issuedAtMs`, which the invoice routes take before the mint, as today, and step 4 takes as the request time), which today's insert decides: its status is neither `pending` nor `expired`, or its `expires_at` is not after the issue time. A charge that was open at the issue time and has expired since still gives `recorded`.
+A memory boot, without `DATABASE_URL`, keeps every row in one process,
+as `InMemoryPosStore` does today. There the claim is one in-process map from
+payment hash to the charge or shop payment that holds it, which
+`InMemoryPosStore.recordInvoice` and `InMemoryShopPaymentStore` share:
+each writer reads the map and adds its entry in one synchronous step,
+without an `await` in between, so the same rule and the same outcomes
+hold without PostgreSQL.
 Step 8 takes its locks in this order: the hash claim, the account row,
 then the `pos_charge` row; `recordInvoice` takes only the hash claim
 before its insert, so two writers of one hash meet at the claim and
@@ -1045,15 +1052,22 @@ duty, and the order duty.
    order whose `recoveredFromOperationId` the row holds) is already held
    by another row, both rows are one deposit; the successor pays the
    same quote-scoped deposit address, so both rows belong to the same
-   offer. In one transaction the api locks both rows
-   (`SELECT … FOR UPDATE`) in the order of their ids, keeps the row that
+   offer. In one transaction the api locks both rows, keeps the row that
    holds the successor with its own transaction, log index, and value,
    because the other row's transaction was replaced, and deletes the
    other row. When the deleted row was `accepted`, the kept row takes
-   `accepted` in the same transaction, unless its result is `refunded`,
-   `failed`, or `refused`; then the payment ends as for an accepted proof
-   that becomes that result ([States](#states)). The kept row's order
-   status then moves it as the table there states.
+   `accepted` in the same transaction only when the proof table in
+   [States](#states) would accept it: its order is progressing and its
+   amount is known and within the bounds, or its order is completed. When
+   the kept row is `refunded`, `failed`, or `refused`, the payment ends as
+   for an accepted proof that becomes that result. Otherwise the payment
+   ends with `end_reason` `order_recovered`, and the kept row moves later
+   as that table states, which can still accept the payment before it
+   closes.
+
+Steps 4 and 5 and the completion row of the proof table in
+[States](#states) change two proofs in one transaction. Each first locks
+both rows with one `SELECT … FOR UPDATE` ordered by id, so two of them never wait for each other in opposite order.
 
 A row without a log index gets it from the repeat path or from the
 receipts duty of the [Watcher](#watcher).
@@ -1329,7 +1343,7 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   status             text NOT NULL CHECK (status IN ('open', 'accepted', 'paid', 'ended')),
   end_reason         text CHECK (end_reason IN ('window', 'superseded', 'replaced', 'cancelled',
                        'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'proof_refused',
-                       'expired_unpaid')),
+                       'order_recovered', 'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
   replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
   next_settle_at     timestamptz,
@@ -1734,10 +1748,11 @@ The implementing change adds:
   explicit transaction, and in step 8 of the creation procedure, and the
   four outcomes `recordInvoice` returns instead of a boolean, and the
   failed-mint answer of the invoice route and the invoice forward on
-  `other_payment`;
+  `other_payment`, and the in-process hash map that the two in-memory
+  stores share on a memory boot;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
-  result, and the delete of a deleted charge's `pos_charge_invoice`
-  rows;
+  result, and the lock (`SELECT … FOR UPDATE`) and delete of a deleted
+  charge's row and its `pos_charge_invoice` rows;
 - the trimming of `canonicalGoalAmount` moved to a shared helper for
   the canonical decimal form, with the decimals as a parameter;
 - the `UUID` pattern of `src/lib/pos-store.ts` moved to a shared helper
