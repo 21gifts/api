@@ -1411,8 +1411,10 @@ page.
   any replaced payer amount it can only be paid by a wallet that fetched
   it before, which [States](#states) handles; a page-side retry
   identifier is not added, because the pay link already shows which
-  payment is open and replacement keeps one. When the repeat does not return a payment, it
-  shows "This payment could not be started. Try again." with a button
+  payment is open and replacement keeps one. A **409** `payment_open` on the repeat reloads
+  and shows the till charge, as on the first call. Any other answer of
+  the repeat that is not a payment, a 503 or another 4xx included, and a
+  repeat that ends without an answer show "This payment could not be started. Try again." with a button
   that repeats the call.
   After a success it fetches the pay link and checks that `quote.payment`
   is the payment it opened. When it is not, another payer replaced the amount, and the page shows
