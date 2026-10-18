@@ -1269,10 +1269,12 @@ absolute time in milliseconds.
   the final settlement read ends the payment. Orchestra leaves such an
   order `unfulfilled` for good, so the order-status duty stops for it
   (`next_status_at` is cleared) and logs no `shop.alert.order_stuck`,
-  because the successor's own proof is watched. In the same step it sets
-  the payment's `next_history_at` to now when it is empty, so the orders
-  duty reads the history again and stores the successor even after the
-  payment's order watch has ended. A replaced proof that was
+  because the successor's own proof is watched. In the same step it
+  stores the successor's id as the proof's `superseded_by_order`, sets the
+  payment's `successor_wait_until` to 24 h ahead when it is empty or
+  earlier, and sets its `next_history_at` to now when it is empty, so the
+  orders duty reads the history again and stores the successor even after
+  the payment's order watch has ended. A replaced proof that was
   never `accepted` stays held and answers a repeat with **503**, while the
   till and the payment page show the payment's state.
   A progressing status can make a proof `accepted`, as [States](#states)
@@ -1322,10 +1324,11 @@ by both containers less than 3 s apart, against Orchestra's guidance that
 one order should be polled no faster than every 3 s; the api accepts
 that for the overlap of a deploy, because the per-IP limit still holds. `next_history_at` is set when the first
 detail of a payment is issued and cleared when the order watch of its
-last offer ends; set again by the order-status duty for a successor
-([Calls](#calls)) after that watch ended, it stays set until a read has
-stored a proof for that successor, and at most 24 h, after which the
-duty logs `shop.alert.successor_missing` and clears it. One read is one page; `history_offset` keeps the next
+last offer ends, except while some proof of the payment has a
+`superseded_by_order` that no proof holds as `provider_order` and
+`successor_wait_until` has not passed ([Calls](#calls)). When that time
+passes first, the duty logs `shop.alert.successor_missing` and clears
+`next_history_at` and `successor_wait_until` together. One read is one page; `history_offset` keeps the next
 offset, and a short page starts the next read at offset 0 again. Duty 3
 reads one payment until the order watch of its last offer with an issued
 detail ends, also after the payment is paid or closed, because a later
@@ -1368,6 +1371,7 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   next_settle_at     timestamptz,
   next_history_at    timestamptz,
   history_offset     integer NOT NULL DEFAULT 0,
+  successor_wait_until timestamptz,
   created_at         timestamptz NOT NULL,
   accepted_at        timestamptz,
   paid_at            timestamptz,
@@ -1432,6 +1436,7 @@ CREATE TABLE IF NOT EXISTS shop_proof (
   result             text CHECK (result IN ('accepted', 'superseded', 'late', 'refunded', 'failed',
                        'refused', 'stuck')),
   provider_order     text,
+  superseded_by_order text,
   order_status       text,
   order_found_at     timestamptz,
   refusal            text CHECK (refusal IN ('mismatch', 'expired_order', 'hex_rejected', 'tx_used')),
