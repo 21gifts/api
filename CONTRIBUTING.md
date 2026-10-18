@@ -464,7 +464,6 @@ the default boot surface (today: `requestPayInvoice`, which needs a configured
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
 `resolveExternalProfileFields`, `ExternalIngestLimiter`, and
 `notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
-`publishExistingShopPlaces`, which has no observable map call on an empty default boot;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
 `recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
@@ -476,10 +475,15 @@ healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
 `DATABASE_URL`, `SPEND_API_TOKEN`, `NOSTR_NSEC_KEK`, `NOSTR_PUBLISH`,
 `NOSTR_PUBLISH_PUBLIC`, `NOSTR_RELAY_URL`, `NOSTR_RELAY_SPACE`,
 `NOSTR_RELAY_PUBLIC`, `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`,
-`VAPID_SUBJECT`, `TRANSLATE_URL`, and `TRANSLATE_API_KEY` to blank,
-`OCP_MAP_BASE_URL` and `OCP_PLACE_INGEST_TOKEN` to the local authenticated map
-stub, and `NIP57_PROBE` to `0`,
+`VAPID_SUBJECT`, `TRANSLATE_URL`, `TRANSLATE_API_KEY`, `OCP_MAP_BASE_URL`, and
+`OCP_PLACE_INGEST_TOKEN` to blank, and `NIP57_PROBE` to `0`,
 so those outcomes do not depend on the host environment.
+A second API instance on `127.0.0.1:3002` runs with `OCP_MAP_BASE_URL` and
+`OCP_PLACE_INGEST_TOKEN` pointing at the local authenticated map stub
+`e2e/ocp-map-stub.ts` on `127.0.0.1:3099` only for the map push tests in
+`e2e/ocp-places.spec.ts`; its empty boot store lets the
+`publishExistingShopPlaces` test assert that boot republishing makes zero map
+calls, and everything else uses the main instance.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.

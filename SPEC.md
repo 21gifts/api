@@ -4952,7 +4952,12 @@ Success → **200** live public message JSON (optional `shopAccount`
 `{ id, username, name }`, omitted when cleared, reply count, no hide
 stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
-unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
+unchanged. The write stores only `shop_account_id`. A real change appends
+`message_edit`. An unchanged account does not. The same account id with a new
+name or username is unchanged.
+When `mapPush` is set, a note hidden concurrently at the re-read sends DELETE;
+otherwise a re-read row with a complete shop place PUTs the current pin, while
+no place or an incomplete shop sends nothing.
 
 ### `PATCH /messages/:id/text`
 

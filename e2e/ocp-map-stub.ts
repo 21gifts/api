@@ -7,8 +7,17 @@ type RecordedCall = {
   body: Record<string, unknown>;
 };
 
+type AuthorizedCall = {
+  method: MapMethod;
+  body: unknown;
+  timestamp: string;
+};
+
 const calls = new Map<string, RecordedCall[]>();
+const authorizedCalls: AuthorizedCall[] = [];
+const bootCalls: AuthorizedCall[] = [];
 const places = new Set<string>();
+let bootClosed = false;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -32,8 +41,15 @@ Bun.serve({
       return Response.json({ ok: true });
     }
     if (request.method === 'GET' && url.pathname === '/_calls') {
-      const externalId = url.searchParams.get('externalId') ?? '';
-      return Response.json(calls.get(externalId) ?? []);
+      bootClosed = true;
+      const externalId = url.searchParams.get('externalId');
+      return Response.json(
+        externalId === null ? authorizedCalls : (calls.get(externalId) ?? []),
+      );
+    }
+    if (request.method === 'GET' && url.pathname === '/_boot') {
+      bootClosed = true;
+      return Response.json(bootCalls);
     }
     if (
       url.pathname !== '/map/places' ||
@@ -44,7 +60,18 @@ Bun.serve({
     if (request.headers.get('authorization') !== AUTHORIZATION) {
       return Response.json({ error: 'Unauthorized' }, { status: 401 });
     }
+    const method: MapMethod = request.method === 'PUT' ? 'PUT' : 'DELETE';
+    const authorizedCall: AuthorizedCall = {
+      method,
+      body: null,
+      timestamp: new Date().toISOString(),
+    };
+    authorizedCalls.push(authorizedCall);
+    if (!bootClosed) {
+      bootCalls.push(authorizedCall);
+    }
     const parsed: unknown = await request.json().catch(() => null);
+    authorizedCall.body = parsed;
     if (!isRecord(parsed)) {
       return Response.json({ error: 'Invalid body' }, { status: 400 });
     }
@@ -53,7 +80,6 @@ Bun.serve({
     if (key === null || typeof externalId !== 'string') {
       return Response.json({ error: 'Invalid body' }, { status: 400 });
     }
-    const method: MapMethod = request.method === 'PUT' ? 'PUT' : 'DELETE';
     const recorded = calls.get(externalId) ?? [];
     recorded.push({ method, body: parsed });
     calls.set(externalId, recorded);

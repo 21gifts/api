@@ -2,6 +2,27 @@ import { defineConfig } from '@playwright/test';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
+const sharedApiEnv = {
+  ...process.env,
+  DATABASE_URL: '',
+  NOSTR_NSEC_KEK: '',
+  NOSTR_PUBLISH: '',
+  NOSTR_PUBLISH_PUBLIC: '',
+  NOSTR_RELAY_URL: '',
+  NOSTR_RELAY_SPACE: '',
+  NOSTR_RELAY_PUBLIC: '',
+  SPEND_API_TOKEN: '',
+  VAPID_PUBLIC_KEY: '',
+  VAPID_PRIVATE_KEY: '',
+  VAPID_SUBJECT: '',
+  TRANSLATE_URL: '',
+  TRANSLATE_API_KEY: '',
+  DEBUG_TOKEN: 'e2e-debug-token',
+  DEBUG_READ_TOKEN: '',
+  NIP57_PROBE: '0',
+  WEBAUTHN_RP_ID: 'localhost',
+};
+
 /**
  * HTTP end-to-end tests against `bun src/index.ts` (request-only; no browser).
  * Docker runs the compiled `dist/index.js`; locally and in CI this boots source.
@@ -27,30 +48,29 @@ export default defineConfig({
       reuseExistingServer: !process.env['CI'],
       timeout: 60_000,
       env: {
-        ...process.env,
+        ...sharedApiEnv,
         BIND_ADDR: '127.0.0.1:3000',
         PUBLIC_BASE_URL: 'http://127.0.0.1:3000',
-        DATABASE_URL: '',
-        NOSTR_NSEC_KEK: '',
-        NOSTR_PUBLISH: '',
-        NOSTR_PUBLISH_PUBLIC: '',
-        NOSTR_RELAY_URL: '',
-        NOSTR_RELAY_SPACE: '',
-        NOSTR_RELAY_PUBLIC: '',
-        SPEND_API_TOKEN: '',
-        VAPID_PUBLIC_KEY: '',
-        VAPID_PRIVATE_KEY: '',
-        VAPID_SUBJECT: '',
-        TRANSLATE_URL: '',
-        TRANSLATE_API_KEY: '',
-        OCP_MAP_BASE_URL: 'http://127.0.0.1:3099',
-        OCP_PLACE_INGEST_TOKEN: 'e2e-ocp-token',
-        DEBUG_TOKEN: 'e2e-debug-token',
-        DEBUG_READ_TOKEN: '',
-        NIP57_PROBE: '0',
-        WEBAUTHN_RP_ID: 'localhost',
+        OCP_MAP_BASE_URL: '',
+        OCP_PLACE_INGEST_TOKEN: '',
         CORS_ALLOWED_ORIGINS: 'http://localhost:3000,http://127.0.0.1:3000',
         MEDIA_DIR: join(tmpdir(), '21gifts-e2e-media'),
+      },
+    },
+    {
+      command: 'bun src/index.ts',
+      url: 'http://127.0.0.1:3002/healthz',
+      reuseExistingServer: !process.env['CI'],
+      timeout: 60_000,
+      env: {
+        ...sharedApiEnv,
+        BIND_ADDR: '127.0.0.1:3002',
+        PUBLIC_BASE_URL: 'http://127.0.0.1:3002',
+        OCP_MAP_BASE_URL: 'http://127.0.0.1:3099',
+        OCP_PLACE_INGEST_TOKEN: 'e2e-ocp-token',
+        CORS_ALLOWED_ORIGINS:
+          'http://localhost:3000,http://127.0.0.1:3000,http://localhost:3002,http://127.0.0.1:3002',
+        MEDIA_DIR: join(tmpdir(), '21gifts-e2e-map-media'),
       },
     },
   ],

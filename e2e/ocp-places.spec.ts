@@ -12,6 +12,7 @@ const ADDRESS = {
 const PLACE = { lat: 47.376887, lng: 8.541694, label: 'Kiosk Lindenhof', address: ADDRESS };
 const SHOP_TEXT = 'Fresh coffee and snacks are served every day.\n\n#21GiftsShop';
 const MAP_STUB_URL = 'http://127.0.0.1:3099';
+const MAP_API_URL = 'http://127.0.0.1:3002';
 
 type MapCall = {
   method: 'PUT' | 'DELETE';
@@ -125,52 +126,58 @@ test('Function: shopTextProblem — POST /messages rejects a short shop descript
   });
 });
 
-test('Function: shopOcpPlaceInput — maps a complete shop note into the PUT body', async ({
-  request,
-}) => {
-  const id = await postCompleteShop(request);
-  expectCompletePut(await mapCalls(request, id), id);
-});
+test.describe('configured map API', () => {
+  test.describe.configure({ mode: 'serial' });
+  test.use({ baseURL: MAP_API_URL });
 
-test('Function: syncShopOcpPlace — sends one complete shop pin', async ({ request }) => {
-  const id = await postCompleteShop(request);
-  expectCompletePut(await mapCalls(request, id), id);
-});
-
-test('Function: removeShopOcpPlace — deletes a shop pin after a moderator clears it', async ({
-  request,
-}) => {
-  const id = await postCompleteShop(request);
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const auth = await staffPinSession(request, stamp);
-  const cleared = await request.patch(`/messages/${id}/place`, {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { place: null },
+  test('Function: publishExistingShopPlaces — boot republish of an empty store makes no map call', async ({
+    request,
+  }) => {
+    expect((await request.get('/healthz')).status()).toBe(200);
+    const response = await request.get(`${MAP_STUB_URL}/_boot`);
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toEqual([]);
   });
-  expect(cleared.status()).toBe(200);
-  const calls = await mapCalls(request, id);
-  expect(calls).toHaveLength(2);
-  expect(calls[1]).toEqual({
-    method: 'DELETE',
-    body: { origin: '21gifts', externalId: id },
+
+  test('Function: shopOcpPlaceInput — maps a complete shop note into the PUT body', async ({
+    request,
+  }) => {
+    const id = await postCompleteShop(request);
+    expectCompletePut(await mapCalls(request, id), id);
   });
-});
 
-test('Function: resolveMapPush — configured bearer records an authorized PUT', async ({
-  request,
-}) => {
-  const id = await postCompleteShop(request);
-  const calls = await mapCalls(request, id);
-  expect(calls).toHaveLength(1);
-  expect(calls[0]?.method).toBe('PUT');
-});
+  test('Function: syncShopOcpPlace — sends one complete shop pin', async ({ request }) => {
+    const id = await postCompleteShop(request);
+    expectCompletePut(await mapCalls(request, id), id);
+  });
 
-test('Function: publishExistingShopPlaces — empty boot store publishes no map call', async ({
-  request,
-}) => {
-  const id = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
-  expect(await mapCalls(request, id)).toEqual([]);
-  expect((await request.get('/healthz')).status()).toBe(200);
+  test('Function: removeShopOcpPlace — deletes a shop pin after a moderator clears it', async ({
+    request,
+  }) => {
+    const id = await postCompleteShop(request);
+    const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+    const auth = await staffPinSession(request, stamp);
+    const cleared = await request.patch(`/messages/${id}/place`, {
+      headers: { ...auth, 'content-type': 'application/json' },
+      data: { place: null },
+    });
+    expect(cleared.status()).toBe(200);
+    const calls = await mapCalls(request, id);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]).toEqual({
+      method: 'DELETE',
+      body: { origin: '21gifts', externalId: id },
+    });
+  });
+
+  test('Function: resolveMapPush — configured bearer records an authorized PUT', async ({
+    request,
+  }) => {
+    const id = await postCompleteShop(request);
+    const calls = await mapCalls(request, id);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe('PUT');
+  });
 });
 
 test('Function: isDevShopSeedTarget — default boot is healthy', async ({ request }) => {
