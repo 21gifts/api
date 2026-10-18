@@ -4,7 +4,7 @@
 > Product decisions live in [`CONCEPT.md`](./CONCEPT.md); this file owns
 > request/response contracts for routes that exist in code today.
 
-**Status**: living document. Last revised 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
+**Status**: living document. Last revised 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation.
 
 ---
 
@@ -70,7 +70,7 @@ only and does not `addSats`; no `notifyForumReply`). Optional `messageId` on
 CORS allows the configured origins (`CORS_ALLOWED_ORIGINS`, or the default
 surfaces `https://21.gifts`, `https://dev.21.gifts`, `https://staging.21.gifts`, `https://app.21.gifts`,
 `https://dev-app.21.gifts`, `https://staging-app.21.gifts`, and `http://localhost:3000`) and methods `GET`,
-`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization` and `Content-Type`.
+`POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`, with headers `Authorization`, `Content-Type`, `Time-Zone`, and `X-App-Build`.
 Sessions are sent as `Authorization: Bearer` headers — no cookies,
 credentials not enabled.
 
@@ -100,10 +100,10 @@ Public base URLs used in examples:
 | GET    | `/favicon.ico`                                       | none                                         | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/favicon.svg`                                       | none                                         | Brand mark (SVG favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/apple-touch-icon.png`                              | none                                         | Brand mark (Apple touch icon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
-| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
-| POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (always for a new account; a claim passes for the platform account or an allowlisted account)                                                                                                                                                                                                                                                            |
+| POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                               |
+| POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/auth/passkey/replace/begin`                        | Bearer                                       | 409 refusal after a valid Bearer (a recovery phrase cannot be replaced; no challenge)                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                                       | 409 refusal that deletes nothing and keeps the session                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                                       | Creation options for one extra seed passkey; 409 when walletRequired is already true stores a failed renew row and does not change the account; a 200 stores no row; no excludeCredentials.                                                                                                                                                                                                                                                                                                                                   |
@@ -252,6 +252,11 @@ Public base URLs used in examples:
 | POST   | `/me/events`                                         | Bearer                                       | `{ events: [{ name, at, path, props }] }` (at most 50) → `{ accepted, dropped }`; allow-listed interaction log; 30/account/min; 64 KiB                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Login switch `{ open, source, defaultOpen, allowlist }`; `source` is `stored` or `default` (`LOGINS_OPEN_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                            |
+| PUT    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Body `{ open }`. Stored value wins over `LOGINS_OPEN_DEFAULT`. Existing sessions are not touched                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/debug/logins/allowlist`                            | Bearer `DEBUG_TOKEN`                         | Body `{ accountId }`. Account may start a session while logins are closed. 404 for an unknown account                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| DELETE | `/debug/logins/allowlist/:accountId`                 | Bearer `DEBUG_TOKEN`                         | Remove one account from the login allowlist                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| DELETE | `/debug/sessions`                                    | Bearer `DEBUG_TOKEN`                         | Delete every `auth_session` row → `{ deleted }`; those bearers answer 401                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/debug/dump`                                        | `Authorization: Bearer`                      | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`                      | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/gifts`                                             | none                                         | Outbound gifts for one UTC day (`?day=`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
@@ -266,6 +271,40 @@ Public base URLs used in examples:
 | POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                     | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment }`, plus messageId only when the decision includes it.                                                                                                                                                                                                                                                                   |
 
 Auth column: "Bearer (X+)" means minimum role X — X or any higher role.
+
+### Login controls
+
+Two server-side request checks and one operator action for a release. The
+two checks only apply to the passkey steps that lead to a session:
+`POST /auth/passkey/register/begin` (new account and claim),
+`POST /auth/passkey/register/finish`, `POST /auth/passkey/authenticate/begin`
+(build check only), and `POST /auth/passkey/authenticate/finish`. The operator
+mint `POST /debug/accounts/:id/session` is exempt from both checks. Refusals
+are JSON `{ error, code }` with a stable `code`:
+
+| Check       | Status | `code`          | `error`                                             |
+| ----------- | ------ | --------------- | --------------------------------------------------- |
+| App build   | 403    | `app_outdated`  | `A new app version is ready. Reload the page.`      |
+| Logins open | 503    | `logins_closed` | `Logins are paused for an update. Try again later.` |
+
+- **App build.** When `APP_BUILD_REQUIRED` is set (trimmed, non-empty), the
+  request must carry the header `X-App-Build` with exactly that value
+  (trimmed, case-sensitive). The check runs before every other check. Unset
+  or blank → no check.
+- **Login switch.** `open` is the stored `app_setting` row `logins_open` once
+  `PUT /debug/logins` ran, otherwise `LOGINS_OPEN_DEFAULT` (`open` | `closed`,
+  default `open`; any other value stops the boot). While closed, only the
+  platform account (`isPlatform`) and accounts on `login_allowlist` may start a
+  session; a new registration is always refused. Finish steps check after the
+  passkey is verified and before any account, credential, or session write.
+  Existing sessions are not checked.
+- **End all sessions.** `DELETE /debug/sessions` deletes every `auth_session`
+  row and returns `{ deleted }`. Every bearer that held one answers 401 on its
+  next request.
+
+Storage: `app_setting` and `login_allowlist` (`docs/schema/login_gate.sql`),
+migrated at boot when `DATABASE_URL` is set and covered by `db_change`; in
+memory otherwise (a memory boot always starts from `LOGINS_OPEN_DEFAULT`).
 
 ## Role hierarchy
 
@@ -870,6 +909,13 @@ challenge row. On success the challenge stores `requestedName` as the
 normalised handle; `user.name` and `user.displayName` are that handle.
 `user.id` remains the pending account UUID encoded as UTF-8.
 
+When `APP_BUILD_REQUIRED` is set and `X-App-Build` differs, **Response**
+`403` `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }` before every other check (see Login controls). While the login
+switch is closed, **Response** `503` `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`:
+for a new account right after the JSON check, and for a claim after the
+`404` / `409` checks unless the provisioned account is the platform account
+or on the allowlist. A refused begin writes no challenge row.
+
 When `WEBAUTHN_RP_ID` is unset, blank, not on the allowlist (`21.gifts` /
 `dev.21.gifts` / `staging.21.gifts` / `localhost`), or no CORS origin matches that RP ID:
 
@@ -909,20 +955,22 @@ Body:
 must be in the RP ID's expected origins (CORS allowlist filtered to that RP
 ID).
 
-| Status | Body                                                                                              | When                                                                                                    |
-| ------ | ------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                              |
-| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                        |
-| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                         |
-| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                   |
-| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                      |
-| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                     |
-| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                             |
-| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                          |
-| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                       |
-| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                 |
-| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                   |
-| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session |
+| Status | Body                                                                                              | When                                                                                                                                                                                               |
+| ------ | ------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 403    | `{ "error": "A new app version is ready. Reload the page.", "code": "app_outdated" }`             | `APP_BUILD_REQUIRED` set and `X-App-Build` differs; checked first                                                                                                                                  |
+| 500    | `{ "error": "Server auth is not configured" }`                                                    | RP ID missing, not on the allowlist, or no matching origin                                                                                                                                         |
+| 503    | `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`       | Login switch closed after the passkey verified: always for a new account, and for a claim unless the account is the platform account or allowlisted; no account, credential, or session is written |
+| 400    | `{ "error": "Finish body is not valid JSON" }`                                                    | Body is not JSON                                                                                                                                                                                   |
+| 400    | `{ "error": "Expected a JSON body with challengeId and credential" }`                             | Missing body, or JSON that is not `{ challengeId, credential }`                                                                                                                                    |
+| 400    | `{ "error": "Unknown or expired challenge" }`                                                     | Unknown `challengeId`                                                                                                                                                                              |
+| 400    | `{ "error": "Challenge expired" }`                                                                | Past challenge TTL                                                                                                                                                                                 |
+| 400    | `{ "error": "Challenge already used" }`                                                           | Finish already attempted; challenge is consumed before verification                                                                                                                                |
+| 400    | `{ "error": "Wrong challenge type" }`                                                             | Challenge is not `register`                                                                                                                                                                        |
+| 400    | `{ "error": "Invalid origin" }`                                                                   | Missing or disallowed `Origin`                                                                                                                                                                     |
+| 400    | `{ "error": "Invalid passkey" }`                                                                  | Attestation verify failed or duplicate credential                                                                                                                                                  |
+| 400    | `{ "error": "Username must be 1–32 characters of a-z, 0-9, hyphen, underscore, or dot" }`         | Stored register name no longer normalizes; no credential and no session                                                                                                                            |
+| 403    | `{ "error": "You signed in with the wrong account. Please try again with the correct account." }` | Account with `sessionRefused`; no bearer is persisted                                                                                                                                              |
+| 409    | `{ "error": "Username is already in use" }`                                                       | Register-challenge name taken at finish, or the account row was not inserted; no credential, no session                                                                                            |
 
 **Response** `200`:
 
@@ -974,7 +1022,8 @@ A new register row is stored with `walletRequired: true` and `walletBackupSeenAt
 ### `POST /auth/passkey/authenticate/begin`
 
 Starts a discoverable-credential assertion. `allowCredentials` is empty.
-Same 500 as register begin when WebAuthn is unconfigured.
+Same 403 `app_outdated` and 500 as register begin. The login switch does not
+apply here, because the account is unknown until finish.
 
 **Response** `200`: `{ "challengeId", "options" }` where `options` is
 `PublicKeyCredentialRequestOptionsJSON`. `options.extensions.prf.eval.first`
@@ -990,8 +1039,12 @@ Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
 not stored. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
-and does not persist a bearer. Success body matches register finish
-(`linkingKey` is whatever the account currently has).
+and does not persist a bearer. Same 403 `app_outdated` as register finish,
+checked first. While the login switch is closed, an account that is neither
+the platform account nor allowlisted gets **503** `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`
+after the passkey verified, with no sign-count or session write. Success
+body matches register finish (`linkingKey` is whatever the account currently
+has).
 
 ### `POST /auth/passkey/replace/begin`
 
@@ -1387,7 +1440,8 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.posts.failed` on 503). Live-only top-level notes by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
 `serializeMessage` like signed-in `GET /messages` (`accountId`,
-`replyCount`, `payable` when a non-empty `eventId` and a receiving address are set;
+`replyCount`, `payable` when a non-empty `eventId` and a receiving address are set,
+`authorCanReceive` (true when the author has a receiving address, signed or not);
 optional `goalSats` omitted when unset, optional `goalRepayable: true` when
 the stored column is true (omitted when null; never false), optional
 `goalTermDays` when the stored column is not null (omitted when null), and when
@@ -1403,8 +1457,9 @@ Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 notes owned by the member under the assigned-shop rule described above,
 newest-first (`createdAt` desc, `id` desc), capped at 200. Body
 `{ "messages": [...] }` uses the same `serializeMessage` shape as the posts
-route, including `accountId`, attributed `replyCount`, and `payable` when a
-non-empty `eventId` and a non-blank Lightning Address are set; it omits
+route, including `accountId`, attributed `replyCount`, `payable` when a
+non-empty `eventId` and a non-blank Lightning Address are set, and
+`authorCanReceive` (true when the author has a receiving address, signed or not); it omits
 `parentId`.
 
 ### `GET /members/:accountId/credits`
@@ -1416,15 +1471,15 @@ assignment, no hashtag), newest-first (`createdAt` desc, `id` desc),
 capped at 200. Funded, unfunded, and still-live repaid notes all count;
 deleted notes and replies do not. Body `{ "messages": [...] }` uses the
 same `serializeMessage` shape as the posts route, including `accountId`,
-attributed `replyCount`, and `payable` when a non-empty `eventId` and a
-non-blank Lightning Address are set; it omits `parentId`.
+attributed `replyCount`, `payable` when a non-empty `eventId` and a
+non-blank Lightning Address are set, and `authorCanReceive` (true when the author has a receiving address, signed or not); it omits `parentId`.
 
 ### `GET /members/:accountId/replies`
 
 Bearer required. Same 401 / 409 / 404 / 503 as `GET /members/:accountId`
 (`members.replies.failed` on 503). Live-only replies by the member,
 newest-first, capped at 200. Body `{ "messages": [...] }` via
-`serializeMessage` with `payable` when a non-empty `eventId` and a receiving address are set, `accountId`, and optional
+`serializeMessage` with `payable` when a non-empty `eventId` and a receiving address are set, `authorCanReceive` (true when the author has a receiving address, signed or not), `accountId`, and optional
 `parentId` when set; omits `replyCount`. Replies never include `goalSats`,
 `goalRepayable`, or `goalTermDays`.
 Top-level notes by that member are not listed.
@@ -3922,6 +3977,96 @@ Success → **Response** `200`:
 
 `deleted` is `0` when the account had no failed row.
 
+### `GET /debug/logins`
+
+Operator read of the login switch (see Login controls). Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{
+  "open": false,
+  "source": "stored",
+  "defaultOpen": true,
+  "allowlist": [
+    { "accountId": "00000000-0000-4000-8000-000000000001", "createdAt": "2026-06-01T12:00:00.000Z" }
+  ]
+}
+```
+
+`source` is `stored` once `PUT /debug/logins` ran and `default` before that
+(then `open` equals `defaultOpen` from `LOGINS_OPEN_DEFAULT`). `allowlist` is
+oldest first; `createdAt` is ISO 8601.
+
+### `PUT /debug/logins`
+
+Operator set of the login switch. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "open": <boolean> }` with no other keys. Stores the value in
+`app_setting` (`logins_open`), which wins over `LOGINS_OPEN_DEFAULT` from
+then on. Existing sessions are not touched. Logs `debug.logins.set`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a non-boolean `open`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"open\" boolean" }`.
+
+Success → **Response** `200`: the same JSON as `GET /debug/logins`.
+
+### `POST /debug/logins/allowlist`
+
+Operator add of one account to the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+JSON body `{ "accountId": "<uuid>" }` with no other keys (any case, stored
+lower case). Logs `debug.logins.allowlist.add`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a missing or non-UUID `accountId`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"accountId\" uuid" }`.
+Unknown account → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "added": true, ...GET /debug/logins }`.
+`added` is `false` when the account was already listed (its first
+`createdAt` stays). Deleting the account removes its row.
+
+### `DELETE /debug/logins/allowlist/:accountId`
+
+Operator removal of one account from the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Does not end the account's sessions. Logs `debug.logins.allowlist.remove`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+`:accountId` not a UUID → **404** `{ "error": "Not found" }`.
+
+Success → **Response** `200`: `{ "removed": true, ...GET /debug/logins }`.
+`removed` is `false` when the account was not listed.
+
+### `DELETE /debug/sessions`
+
+Operator end of every member session. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
+end-user session); `DEBUG_READ_TOKEN` is not accepted.
+Deletes every `auth_session` row in one statement. Every bearer that held one
+answers 401 on its next request. The existing `trg_db_change` row trigger
+records each deleted row with the token hashed. Logs `debug.sessions.deleted`
+with the count.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+
+Success → **Response** `200`:
+
+```json
+{ "deleted": 12 }
+```
+
+`deleted` is `0` when no session existed.
+
 ### `GET /gifts`
 
 Public list of outbound gifts for one UTC calendar day. Query `day=YYYY-MM-DD`.
@@ -4530,6 +4675,10 @@ optional `place` (`{ lat, lng, label }` when a pin is stored;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a receiving address (see [Receiving address](#receiving-address)); null or empty `eventId` is not payable),
+`authorCanReceive` (true when the author has a receiving address, whether or
+not the note is signed yet; false for a missing or external author and on a
+soft-hidden row; a client shows that the member cannot receive yet instead of
+offering a payment that can only fail),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
 plus extras 1–9; always present), `photoTakenAts` (always present, length
 equals `photoCount`, null when unknown, `[]` when there are no stills) and
@@ -4544,7 +4693,7 @@ null, and `account_id` set, or `author_pubkey` set and that pubkey is a
 recorded zapper (`nostr_zapper` entitlement, checked via `isZapperPubkey` /
 an `EXISTS` subquery)). Visible external rows
 include `"via": "nostr"`; their pubkey, `role`, and `accountId` remain omitted,
-and `payable` is false. Rows with neither an account nor an author pubkey stay
+and `payable` and `authorCanReceive` are false. Rows with neither an account nor an author pubkey stay
 invisible. List JSON never includes photo
 or video bytes. Live list, single-note GET, and replies include
 `accountId` whenever the stored author id is non-null, with or without a
@@ -4614,6 +4763,7 @@ Success → **Response** `200`:
       "amountEur": null,
       "amountPhp": null,
       "payable": false,
+      "authorCanReceive": true,
       "hasPhoto": false,
       "photoCount": 0,
       "photoTakenAts": [],
@@ -4894,7 +5044,9 @@ JPEG/PNG/WebP bytes (≤ 1 MiB; MIME from magic bytes), `parentId` (null for
 top-level notes), and a timestamp. Text longer than **8000** after trim, or
 with disallowed C0/DEL controls, is rejected. Newlines (`\n`, `\r`) are
 allowed. The **200** body is the public message object itself (not wrapped
-in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
+in `{ messages }`), including `sats`, `payable`, `authorCanReceive` (a freshly
+created note is not signed yet, so `payable` is false while `authorCanReceive`
+is true when the author can receive), `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
@@ -5063,6 +5215,7 @@ Success → **Response** `200`:
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
   "payable": false,
+  "authorCanReceive": true,
   "hasPhoto": false,
   "photoCount": 0,
   "photoTakenAts": [],
@@ -5436,16 +5589,17 @@ public message JSON (`photoCount` 0–10 always present;
 stills; `photoTakenAt` only when `photoCount` is 1; `hasPhoto` still means
 photo 0 exists) with
 `payable` when a member row has a non-empty `eventId` and the author has a
-receiving address (see [Receiving address](#receiving-address)), and no `replyCount`. Items include `accountId` whenever
+receiving address (see [Receiving address](#receiving-address)),
+`authorCanReceive` when the author has a receiving address, signed or not, and no `replyCount`. Items include `accountId` whenever
 the stored author id is non-null, with or without a session. External replies
-set `via: "nostr"`, keep `payable: false`, and omit `accountId`, `role`, and the
+set `via: "nostr"`, keep `payable: false` and `authorCanReceive: false`, and omit `accountId`, `role`, and the
 pubkey. Replies never include `goalSats`, `goalRepayable`, or `goalTermDays`.
 Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`).
 
 Unsigned/non-staff: hidden children are omitted. A founder/moderator Bearer
 is **200** `{ "messages" }` from `listReplies(id, limit, true)` including
-hidden attributed children with hide stamps and `payable: false`, whether
+hidden attributed children with hide stamps, `payable: false`, and `authorCanReceive: false`, whether
 the parent is live or hidden (live children stay live serialize).
 
 `:id` is not a UUID, the parent is missing, or (unsigned/non-staff) the
@@ -5474,6 +5628,7 @@ Success → **Response** `200`:
       "createdAt": "2026-08-28T12:01:00.000Z",
       "sats": 0,
       "payable": false,
+      "authorCanReceive": true,
       "hasPhoto": false,
       "photoCount": 0,
       "photoTakenAts": [],
@@ -5557,7 +5712,7 @@ Public list of live top-level notes for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
 200, newest first (`createdAt` desc, `id` desc). Each item includes
-`replyCount` of live attributed children, `payable` false, `via: "nostr"`,
+`replyCount` of live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`,
 and omits `role`. **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_posts.failed`). A serialize failure skips that row
 and still returns 200.
@@ -5568,7 +5723,7 @@ Public list of live, unassigned top-level `#21GiftsShop` notes for an external
 author. No Bearer. Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at 200,
 newest first (`createdAt` desc, `id` desc). Each item includes `replyCount` of
-live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
+live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits `role`.
 **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_shops.failed`). A serialize failure skips that row and
 still returns 200.
@@ -5579,7 +5734,7 @@ Public list of live top-level credit notes for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at 200,
 newest first (`createdAt` desc, `id` desc). Each item includes `replyCount` of
-live attributed children, `payable` false, `via: "nostr"`, and omits `role`.
+live attributed children, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits `role`.
 **503** `{ "error": "Messages are unavailable" }`
 (`messages.external_credits.failed`). A serialize failure skips that row and
 still returns 200.
@@ -5590,7 +5745,7 @@ Public list of live public replies for an external author. No Bearer.
 Registered **before** `GET /messages/:id`. Same 404 gate as
 `GET /messages/:id/external-profile`. **200** `{ "messages" }` capped at
 200, newest first (`createdAt` desc, `id` desc). Each item includes
-`parentId`, omits `replyCount`, `payable` false, `via: "nostr"`, and omits
+`parentId`, omits `replyCount`, `payable` and `authorCanReceive` false, `via: "nostr"`, and omits
 `role`. A non-zapper author's list is empty. **503**
 `{ "error": "Messages are unavailable" }` (`messages.external_replies.failed`).
 A serialize failure skips that row and still returns 200.
@@ -5614,7 +5769,7 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` when a pin is stored and omitted when unset,
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
 stored and omitted when unset, even when `accountId` is omitted,
-`payable`, `hasPhoto`, `photoCount`
+`payable`, `authorCanReceive`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
 stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
@@ -5625,12 +5780,12 @@ session, and omits it for an external author. Live JSON also omits
 soft-hidden row is still **404** `{ "error": "Not found" }` with no hide
 stamps in the body. A founder/moderator Bearer (`roleAtLeast(...,
 'moderator')`, no `forum.read`) of a hidden row is **200** public JSON plus
-`deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`, and
-`accountId` for 21gifts authors. A live reply with `accountId` null
+`deletedAt` ISO, `deletedBy.{id,name,role}`, `payable: false`,
+`authorCanReceive: false`, and `accountId` for 21gifts authors. A live reply with `accountId` null
 returns **200** only when `authorPubkey` is set and that pubkey is a recorded
 zapper (checked via `isZapperPubkey` on every read, including during a
 `sinceSats` poll loop); that **200** includes `via: "nostr"`, omits `role`,
-and sets `payable` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
+and sets `payable` and `authorCanReceive` false. Otherwise (no `authorPubkey`, or an `authorPubkey`
 that is not yet a recorded zapper) it is **404** `{ "error": "Not found" }`
 (same body as missing/hidden). A top-level note (parent id null), on both the
 live public body and the founder/moderator hidden body, includes `replyCount`
@@ -5682,6 +5837,7 @@ Success (including `sinceSats` timeout with unchanged sats) → **Response**
   "createdAt": "2026-08-28T12:00:00.000Z",
   "sats": 0,
   "payable": false,
+  "authorCanReceive": true,
   "hasPhoto": false,
   "photoCount": 0,
   "photoTakenAts": [],
@@ -5864,7 +6020,7 @@ authorPubkey !== null` (the same rule as public message JSON), and
 `role` null; null `deletedBy` is `{ id: null, name: null, role: null }`).
 Includes `accountId` for a 21gifts author and omits it for an external row.
 Never includes `authorPubkey`, `eventId`, `nostrPublishState`,
-`payable`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
+`payable`, `authorCanReceive`, author `role`, `nostrEvent`, `claimedUntil`, `contentFp`, nsec,
 or photo/video bytes. Public list/GET/photo stay **404** for hidden rows.
 A founder/moderator session may GET the hidden permalink and photo/video.
 No staff UNHIDE session route (`POST /debug/messages/:id/restore` remains
@@ -6041,7 +6197,8 @@ Success → **Response** `200`:
       "lastSats": 0,
       "unread": true,
       "unreadMessageCount": 1,
-      "accountId": "<uuid>"
+      "accountId": "<uuid>",
+      "canReceive": true
     }
   ],
   "unreadCount": 1
@@ -6060,7 +6217,11 @@ Per-row `unread` is `unreadMessageCount > 0` (outbound-only listed rows,
 including contact tickets, are `false`). List GET does not stamp
 last-read. `accountId` is the
 counterpart 21.gifts account. It is omitted for Damus-only counterparts
-(never JSON `null`).
+(never JSON `null`). `canReceive` is always present: true when that
+counterpart has a receiving address (see [Receiving address](#receiving-address)),
+false for a counterpart without a 21.gifts account, a missing account, and the moderator group.
+The same row shape is returned by `POST /conversations` and
+`GET /conversations/moderator-group`.
 
 ### `GET /conversations/moderator-group`
 
@@ -6263,8 +6424,8 @@ The counterpart's address is the receiving address
 
 **400** `{ "error": "The author's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`
 for Damus threads, no counterpart, no counterpart receiving address or profile
-note, LNURL `noZap`, or a non-NIP-57 invoice. The same text without `code` when
-the counterpart's profile note is not signed yet or has no Nostr key. **400** `{ "error": "Could not start the Bitcoin payment" }`
+note, a profile note that is not signed yet, a counterpart without a Nostr key,
+LNURL `noZap`, or a non-NIP-57 invoice. **400** `{ "error": "Could not start the Bitcoin payment" }`
 when LNURL is unreachable or another transport failure. **400**
 `{ "error": "Cannot message yourself" }`. **429** Too many payments. **503**
 `{ "error": "Messages are unavailable" }` without a KEK. **503**
@@ -6488,6 +6649,9 @@ following Monday in that zone. `logged` is false and `status` is null
 when the owner has not recorded that period.
 
 Success → **Response** `200` `{ "reviewWeek": { "start" }, "habits" }`.
+Each comment carries `canReceive`: true when its author has a receiving
+address (see [Receiving address](#receiving-address)); each author is looked
+up once per request.
 Store failure → **503** `{ "error": "Habits are unavailable" }`.
 
 ### `POST /habits`
@@ -6537,7 +6701,7 @@ rule as `POST /pay/:username/invoice`.
 
 Donating to the caller's own comment is **400**
 `{ "error": "Cannot donate to yourself" }`. An author without a receiving
-address (no verified in-app wallet, or the LNURL server is off) is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment" }`. The existing invoice
+address (no verified in-app wallet, or the LNURL server is off) is **409** `{ "error": "The author's wallet cannot receive this Bitcoin payment", "code": "cannot_receive" }`. The existing invoice
 limiter answers **429** `{ "error": "Too many payments" }`. A failed
 mint, or a BOLT11 that is missing, not a safe integer amount, or not the
 requested amount, is **502**
@@ -6572,7 +6736,8 @@ Used by `POST /messages/:id/invoice` (forum gift and compose-target posting
 fee), `POST /conversations/:id/invoice`, `POST /messages/:id/repayment`,
 `POST /messages/:id/repayment/due`, `canReceive` on `GET /messages/:id/repayment`, `GET /me/loans`,
 `GET /pay/:username`, `POST /pay/:username/invoice`, `POST /pos`, the
-`payable` flag on forum and member feeds, account JSON `lightningAddress`
+`payable` and `authorCanReceive` flags on forum and member feeds,
+`canReceive` on `GET /conversations` rows and `GET /habits` comments, account JSON `lightningAddress`
 (owner, public card, member card, funding detail, debug), spend pings, the
 Nostr kind 0 `lud16` (members without a verified wallet publish none), and
 the zap receipt ingest (the LNURL `nostrPubkey` that must sign a receipt).
@@ -6580,16 +6745,20 @@ Only a verified wallet clears `lightning-address` from `missing`, so a member
 without one cannot post (`POST /messages`, `GET /messages/compose-target`).
 
 A **400** that means "needs a wallet" or "cannot receive" carries a
-machine-readable `code` next to `error`. Clients decide by `code`, not by the
+machine-readable `code` next to `error`, as does the **409** of a habit
+donation to an author who cannot receive. Clients decide by `code`, not by the
 status or the text:
 
 - `"code": "wallet_required"`: the caller must set up and verify the in-app
   wallet first (`POST /pos`).
 - `"code": "cannot_receive"`: the recipient cannot receive. It has no member
   account, no verified wallet, or its wallet refuses the zap (forum gift and
-  compose-target posting fee, conversation invoice, repayment).
+  compose-target posting fee, conversation invoice, repayment, habit
+  donation). On `POST /conversations/:id/invoice` it also covers a counterpart
+  whose profile note is not signed yet or who has no Nostr key.
 
-Other 400s on the same routes (for example an unsigned note) carry no `code`.
+Other 400s on the same routes (for example an unsigned forum note on
+`POST /messages/:id/invoice`) carry no `code`.
 
 Spend lookups (`POST /invoices`, `GET /invoices/eligible`,
 `GET /invoices/passkey`, `GET /invoices/posted`) take the same address form

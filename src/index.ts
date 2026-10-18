@@ -148,6 +148,7 @@ if (import.meta.main) {
     pushStore,
     posStore,
     env: process.env,
+    ...(boot.loginGateStore === undefined ? {} : { loginGateStore: boot.loginGateStore }),
     messageStore: forumMessages,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),

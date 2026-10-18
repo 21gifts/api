@@ -755,6 +755,19 @@ describe('CORS', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'http.request')).toBe(false);
   });
 
+  it('allows X-App-Build on the passkey preflight', async () => {
+    const res = await createApp().request('/auth/passkey/authenticate/finish', {
+      method: 'OPTIONS',
+      headers: {
+        origin: 'https://app.21.gifts',
+        'access-control-request-method': 'POST',
+        'access-control-request-headers': 'content-type, x-app-build',
+      },
+    });
+    expect(res.status).toBe(204);
+    expect(res.headers.get('access-control-allow-headers')).toMatch(/x-app-build/i);
+  });
+
   it('allows DELETE on the point-of-sale preflight', async () => {
     const res = await createApp().request('/pos', {
       method: 'OPTIONS',

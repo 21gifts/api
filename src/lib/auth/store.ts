@@ -521,6 +521,13 @@ export interface AuthStore {
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
+   * Look up several accounts by id in one call.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in no particular order.
+   */
+  getAccounts(ids: readonly string[]): Promise<Account[]>;
+  /**
    * Up to two stored account ids whose string form starts with `prefix`
    * (case-insensitive). Does not consult view keys, linking keys, or pubkeys.
    * Does not require a UUID.
@@ -613,6 +620,13 @@ export interface AuthStore {
   setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined>;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Promise<Session | undefined>;
+  /**
+   * Delete every session row (operator `DELETE /debug/sessions`). Bearers
+   * that held one answer 401 from then on.
+   *
+   * @returns How many rows were deleted.
+   */
+  deleteAllSessions(): Promise<number>;
   /** Persist a freshly issued passkey ceremony challenge. */
   createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void>;
   /** Look up a passkey challenge by id, or `undefined` if unknown. */
@@ -1093,6 +1107,23 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   /**
+   * Accounts for `ids` from the in-memory map.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in first-seen order.
+   */
+  async getAccounts(ids: readonly string[]): Promise<Account[]> {
+    const found: Account[] = [];
+    for (const id of new Set(ids)) {
+      const account = this.#accounts.get(id);
+      if (account !== undefined) {
+        found.push(account);
+      }
+    }
+    return found;
+  }
+
+  /**
    * Up to two stored account ids whose string form starts with `prefix`
    * (case-insensitive). Scans `#accounts` values only.
    *
@@ -1268,6 +1299,12 @@ export class InMemoryAuthStore implements AuthStore {
     }
     await this.createSession(session);
     return true;
+  }
+
+  async deleteAllSessions(): Promise<number> {
+    const count = this.#sessions.size;
+    this.#sessions.clear();
+    return count;
   }
 
   async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {

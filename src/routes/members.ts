@@ -11,7 +11,7 @@ import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { isOperatorBearer } from '@/lib/debug-token';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { fundingReviewedAt, fundingReviewedByName } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
@@ -228,14 +228,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               dropped += 1;
             }
           }
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            receivingAddress(account, deps.lnurlServer) !== null;
+          const pay = messagePay(kept, account, deps.lnurlServer);
           messages.push(
             serializeMessage(
               kept,
-              payable,
+              pay,
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
@@ -288,16 +285,12 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           }
           const author =
             kept.accountId === null ? undefined : await deps.authStore.getAccount(kept.accountId);
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            author !== undefined &&
-            receivingAddress(author, deps.lnurlServer) !== null;
+          const pay = messagePay(kept, author, deps.lnurlServer);
           const role = kept.accountId === null ? undefined : (author?.role ?? 'basis');
           messages.push(
             serializeMessage(
               kept,
-              payable,
+              pay,
               role,
               Math.max(0, row.replyCount - dropped),
               true,
@@ -348,14 +341,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
               dropped += 1;
             }
           }
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            receivingAddress(account, deps.lnurlServer) !== null;
+          const pay = messagePay(kept, account, deps.lnurlServer);
           messages.push(
             serializeMessage(
               kept,
-              payable,
+              pay,
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
@@ -399,14 +389,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             continue;
           }
           try {
-            const payable =
-              kept.eventId !== null &&
-              kept.eventId !== '' &&
-              receivingAddress(account, deps.lnurlServer) !== null;
+            const pay = messagePay(kept, account, deps.lnurlServer);
             messages.push(
               serializeMessage(
                 kept,
-                payable,
+                pay,
                 account.role,
                 undefined,
                 true,
@@ -452,14 +439,11 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (typeof profileId === 'string' && profileId.trim() !== '') {
           const row = await deps.messageStore.getById(profileId);
           if (row !== undefined && row.deletedAt === null) {
-            const payable =
-              row.eventId !== null &&
-              row.eventId !== '' &&
-              receivingAddress(account, deps.lnurlServer) !== null;
+            const pay = messagePay(row, account, deps.lnurlServer);
             const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
             profileMessage = serializeMessage(
               row,
-              payable,
+              pay,
               account.role,
               children.length,
               true,

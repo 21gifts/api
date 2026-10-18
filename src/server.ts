@@ -56,6 +56,9 @@ import { debugPushRoutes } from '@/routes/debug-push';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
+import { debugLoginsRoutes } from '@/routes/debug-logins';
+import { LoginGate, resolveLoginsOpenDefault, resolveRequiredAppBuild } from '@/lib/login-gate';
+import { InMemoryLoginGateStore, type LoginGateStore } from '@/lib/login-gate-store';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
 import { fundingRoutes } from '@/routes/funding';
@@ -272,6 +275,13 @@ export interface AppDeps {
    */
   fxSpotStore?: FxSpotStore;
   /**
+   * Operator login switch and allowlist (default: empty
+   * {@link InMemoryLoginGateStore}, so the switch starts at
+   * `LOGINS_OPEN_DEFAULT`). Boot injects `PostgresLoginGateStore` when
+   * `DATABASE_URL` is set.
+   */
+  loginGateStore?: LoginGateStore;
+  /**
    * Member forum messages (default: empty {@link InMemoryMessageStore}).
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
@@ -435,7 +445,12 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   `POST /me/wallet/report`; SQL boot injects {@link PostgresWalletStore}),
  *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
  *   mounts `POST /me/events`; SQL boot injects
- *   {@link PostgresMemberEventStore}).
+ *   {@link PostgresMemberEventStore}), and loginGateStore (optional; default
+ *   {@link InMemoryLoginGateStore}; with `LOGINS_OPEN_DEFAULT` and
+ *   `APP_BUILD_REQUIRED` from env it gates the session-creating `/auth`
+ *   routes and backs `/debug/logins` and `DELETE /debug/sessions`).
+ * @throws {@link Error}
+ * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`.
  * @throws {@link Error}
  * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
@@ -456,6 +471,11 @@ export function createApp(deps: AppDeps = {}): Hono {
   const fxSpotStore = deps.fxSpotStore ?? new InMemoryFxSpotStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const env = deps.env ?? process.env;
+  const loginGate = new LoginGate(
+    deps.loginGateStore ?? new InMemoryLoginGateStore(),
+    resolveLoginsOpenDefault(env),
+  );
+  const requiredAppBuild = resolveRequiredAppBuild(env);
   const invoiceRateCaps =
     deps.invoiceRateCaps === undefined ? resolveTestInvoiceRateCaps(env) : deps.invoiceRateCaps;
   if (invoiceRateCaps !== null) {
@@ -587,7 +607,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       await next();
       return;
     }
-    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone'];
+    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone', 'X-App-Build'];
     if (lnurlServer !== null && c.req.path.startsWith('/lnurlpay/')) {
       allowHeaders.push('X-Breez-Signature', 'X-Breez-Timestamp');
     }
@@ -673,6 +693,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       passkeyCeremony,
       messages: messageStore,
       fundingStore,
+      loginGate,
+      requiredAppBuild,
       ...receivingDeps,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
@@ -746,6 +768,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
+  app.route('/debug', debugLoginsRoutes({ authStore: store, loginGate, now, debugToken }));
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
   app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));

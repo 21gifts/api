@@ -9,7 +9,12 @@ import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
-import { lnurlServerFetch, receivingAddress, type ReceivingAccount } from '@/lib/receiving-address';
+import {
+  CANNOT_RECEIVE,
+  lnurlServerFetch,
+  receivingAddress,
+  type ReceivingAccount,
+} from '@/lib/receiving-address';
 import {
   comparePeriod,
   dayKey,
@@ -158,6 +163,7 @@ function publicComments(
     createdAt: number;
     deletedAt: number | null;
   }>,
+  receivers: ReadonlyMap<string, boolean>,
 ): Array<{
   id: string;
   habitId: string;
@@ -166,6 +172,7 @@ function publicComments(
   text: string;
   week: string;
   createdAt: number;
+  canReceive: boolean;
 }> {
   return comments.map((comment) => ({
     id: comment.id,
@@ -175,7 +182,28 @@ function publicComments(
     text: comment.text,
     week: comment.week,
     createdAt: comment.createdAt,
+    canReceive: receivers.get(comment.accountId) === true,
   }));
+}
+
+/**
+ * Whether each comment author can receive ({@link receivingAddress} non-null),
+ * from one bulk account lookup for all distinct authors. An author the lookup
+ * does not return cannot receive.
+ */
+async function commentReceivers(
+  habits: ReadonlyArray<{ comments: ReadonlyArray<{ accountId: string }> }>,
+  getAccounts: (ids: readonly string[]) => Promise<Array<{ id: string } & ReceivingAccount>>,
+  lnurlServer: LnurlServerConfig | undefined,
+): Promise<Map<string, boolean>> {
+  const ids = [
+    ...new Set(habits.flatMap((habit) => habit.comments.map((comment) => comment.accountId))),
+  ];
+  const receivers = new Map<string, boolean>();
+  for (const author of await getAccounts(ids)) {
+    receivers.set(author.id, receivingAddress(author, lnurlServer) !== null);
+  }
+  return receivers;
 }
 
 /**
@@ -196,6 +224,7 @@ export function memberHabitRoutes(deps: {
         } & ReceivingAccount)
       | undefined
     >;
+    getAccounts(ids: readonly string[]): Promise<Array<{ id: string } & ReceivingAccount>>;
     getAccountByUsername: AuthStore['getAccountByUsername'];
   };
   now: () => number;
@@ -244,8 +273,13 @@ export function memberHabitRoutes(deps: {
         }
         return 0;
       });
+      const receivers = await commentReceivers(
+        listed,
+        (ids) => deps.authStore.getAccounts(ids),
+        deps.lnurlServer,
+      );
       const habits = listed.map((habit) => {
-        const comments = publicComments(habit.comments);
+        const comments = publicComments(habit.comments, receivers);
         const body = {
           id: habit.id,
           accountId: habit.accountId,
@@ -483,7 +517,13 @@ export function memberHabitRoutes(deps: {
       const author = await deps.authStore.getAccount(comment.accountId);
       const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
       if (receiving === null) {
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 409);
+        return c.json(
+          {
+            error: "The author's wallet cannot receive this Bitcoin payment",
+            code: CANNOT_RECEIVE,
+          },
+          409,
+        );
       }
       if (!invoiceLimiter.allow(account.id, nowMs)) {
         return c.json({ error: 'Too many payments' }, 429);

@@ -104,6 +104,8 @@ bun run e2e             # Playwright against bun src/index.ts
 | `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `staging.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
 | `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                                             |
 | `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                                           |
+| `LOGINS_OPEN_DEFAULT`  | no                | Login switch until an operator sets it: `open` (default) or `closed`. Any other value stops the boot. Not a secret.                                      |
+| `APP_BUILD_REQUIRED`   | no                | App build id that session-creating requests must send in `X-App-Build`. Unset or blank → no check. Not a secret.                                         |
 
 ## Documentation
 
