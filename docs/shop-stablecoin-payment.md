@@ -604,15 +604,14 @@ One procedure creates a shop payment, for a charge or for a payer:
    and the procedure ends. Only when no shop payment holds the hash, and
    only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
-   charge amount, as the invoice forward does. When `recordInvoice`
-   returns `false`, the api reads the `pos_charge_invoice` row for that
-   hash. When it belongs to another charge, the procedure stops as after a
-   failed mint (order 8) and logs `shop.alert.duplicate_invoice`. When it belongs to this
-   charge, the procedure goes on. When there is no row,
-   the api reads `shop_payment` for the hash: a hit stops as a failed
-   mint (order 8) with `shop.alert.duplicate_invoice`; otherwise the
-   charge is no longer pending or has expired, and the procedure ends as
-   step 8 ends for such a charge, without that alert.
+   charge amount, as the invoice forward does. `recordInvoice` returns
+   its outcome from inside its claim transaction, as the
+   [Payment hash claim](#payment-hash-claim) states. On `other_payment`
+   the procedure stops as after a failed mint (order 8) and logs
+   `shop.alert.duplicate_invoice`. On `recorded` or `this_charge` it goes
+   on. On `not_open` the charge is no longer pending or has expired, and
+   the procedure ends as step 8 ends for such a charge, without that
+   alert.
    A payer creation never records against a charge, also not against one
    that appeared after step 2. It reads instead whether the hash is
    already recorded against a charge, with
@@ -661,7 +660,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    that another payment already holds: the procedure stops as after a
    failed mint (order 8) and logs `shop.alert.duplicate_invoice`. The hash claim makes this branch a backstop. For a charge it then also deletes
    the `pos_charge_invoice` row for that hash when step 4's
-   `recordInvoice` inserted it (returned `true`); a row this attempt did
+   `recordInvoice` inserted it (returned `recorded`); a row this attempt did
    not insert stays, whichever charge it belongs to. It writes nothing
    else. Any other
    empty result, a conflict on another of the payment's unique indexes
@@ -704,23 +703,37 @@ form never meets the one-key lock of `admitWithinPlaces`, and two
 hashes that share their first 32 bits only wait for each other. A following
 statement reads `pos_charge_invoice` and `shop_payment` for the hash. A
 row of another payment stops the writer before it ends or inserts
-anything: `recordInvoice` returns `false`, and the creation stops as a
+anything: `recordInvoice` returns `other_payment`, and the creation stops as a
 failed mint (order 8) with `shop.alert.duplicate_invoice`. A row of the
 same charge or the same shop payment is handled as steps 4 and 8 state.
+`recordInvoice` returns one of four outcomes instead of today's
+boolean, decided inside its transaction: `recorded` when it inserted the
+row; `this_charge` when the hash is already recorded against this charge
+or held by this charge's shop payment; `other_payment` when another
+charge's `pos_charge_invoice` row or another payment's `shop_payment`
+holds it; and `not_open` when the charge is no longer pending or has
+expired.
 Step 8 takes its locks in this order: the hash claim, the account row,
 then the `pos_charge` row; `recordInvoice` takes only the hash claim
 before its insert, so two writers of one hash meet at the claim and
 never wait for a lock the other took first. When `recordInvoice` returns
-`false` because another charge or a shop payment holds the hash, neither invoice route hands
+`other_payment`, neither the invoice route nor the invoice forward hands
 out that BOLT11, and both log `shop.alert.duplicate_invoice`: the
 invoice route `POST /pay/:username/invoice` answers as for a failed
 mint, **502** `{ "error": "Lightning Address could not be resolved" }`,
 and the invoice forward `GET /lnurlp/:username/invoice` answers as when
 its upstream fails, **503**
 `{ "error": "Lightning address service is unavailable" }`
-(`src/routes/lnurl-server.ts`). One
+(`src/routes/lnurl-server.ts`). On every other outcome both hand it out as
+today. One
 settlement can therefore never confirm a charge and another payment, and
-no payer gets another payment's invoice.
+no payer of a charge gets another payment's invoice. Both routes call
+`recordInvoice` only for a pending charge, as today, and check nothing
+without one. A BOLT11 that a shop payment holds then reaches a plain payer
+only when the LNURL server mints the same payment hash twice; paying it
+settles that shop payment once, Orchestra's later payment of the same
+BOLT11 fails, and a stablecoin deposit for it goes to the refund address,
+as for any order that cannot pay ([States](#states)).
 
 ## Quotes
 
@@ -1687,8 +1700,9 @@ The implementing change adds:
   environment table and in its `webServer.env` pin list;
 - the [Payment hash claim](#payment-hash-claim) in `recordInvoice`, as an
   explicit transaction, and in step 8 of the creation procedure, and the
-  failed-mint answer of the invoice route and the invoice forward when
-  `recordInvoice` returns `false` for a hash another payment holds;
+  four outcomes `recordInvoice` returns instead of a boolean, and the
+  failed-mint answer of the invoice route and the invoice forward on
+  `other_payment`;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;
