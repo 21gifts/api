@@ -676,6 +676,7 @@ database.
 ```bash
 bun run typecheck
 bun run lint
+node --test scripts/db-change-notice.test.mjs
 bun run handbook:check
 bun run e2e:check
 bun run test:coverage
@@ -702,7 +703,7 @@ This is a **public** repository. GitHub-hosted runners execute the heavy suite
 gate, the Postgres driver test, the production build, and the end-to-end HTTP
 tests). A38 does not replace those GitHub checks. The author report only
 covers the light local job in `.github/a38.json` (`bun install --frozen-lockfile`,
-then `bun run lint`, with `CI=true`). Do not run Vitest, the Postgres driver
+then `bun run lint` and `node --test scripts/db-change-notice.test.mjs`, with `CI=true`). Do not run Vitest, the Postgres driver
 test, the production build, or Playwright locally for A38.
 
 Draft pull requests run the GitHub CI jobs. GitHub holds fork runs from

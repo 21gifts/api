@@ -86,9 +86,12 @@ jobs:
               const baseFilename = file.previous_filename ?? file.filename;
               const headFile = `${process.env.GITHUB_WORKSPACE}/notice-head/${file.filename}`;
               const baseFile = `${process.env.GITHUB_WORKSPACE}/notice-base/${baseFilename}`;
+              // Head and base text together: removing the only database import is a change to access too.
               try {
-                const content = readFileSync(existsSync(headFile) ? headFile : baseFile, 'utf8');
-                return { ...file, content };
+                const texts = [headFile, baseFile]
+                  .filter((name) => existsSync(name))
+                  .map((name) => readFileSync(name, 'utf8'));
+                return texts.length > 0 ? { ...file, content: texts.join('\n') } : file;
               } catch {
                 return file;
               }

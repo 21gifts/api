@@ -245,7 +245,10 @@ function stripUnclosedRegions(text) {
  */
 export function visibleBody(body) {
   const source = body ?? '';
-  return stripUnclosedRegions(stripDetails(stripHtmlComments(stripCode(stripFencedCode(source)))));
+  // Remaining HTML tags go last: a marker inside a tag, such as a multi-line `title="…"`, is not shown.
+  return stripUnclosedRegions(
+    stripDetails(stripHtmlComments(stripCode(stripFencedCode(source)))),
+  ).replace(/<\/?[A-Za-z][^<>]*>/g, '');
 }
 
 /**
