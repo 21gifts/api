@@ -4,51 +4,59 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 42
-- Columns: 382
-- Foreign keys: 40
+- Tables: 50
+- Columns: 445
+- Foreign keys: 46
 
-| Table                                                                            | Source                                                               | Columns | Foreign keys |
-| -------------------------------------------------------------------------------- | -------------------------------------------------------------------- | ------- | ------------ |
-| [`account`](tables/account.md)                                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 29      | 1            |
-| [`account_image`](tables/account_image.md)                                       | [src/lib/banner-store.ts](../../src/lib/banner-store.ts)             | 4       | 1            |
-| [`address_verification`](tables/address_verification.md)                         | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 4       | 1            |
-| [`api_log`](tables/api_log.md)                                                   | [src/lib/api-log.ts](../../src/lib/api-log.ts)                       | 14      | 1            |
-| [`auth_session`](tables/auth_session.md)                                         | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 3       | 1            |
-| [`btc_usd_daily`](tables/btc_usd_daily.md)                                       | [src/lib/btc-usd-store.ts](../../src/lib/btc-usd-store.ts)           | 4       | 0            |
-| [`contact`](tables/contact.md)                                                   | [src/lib/contact-store.ts](../../src/lib/contact-store.ts)           | 5       | 1            |
-| [`conversation`](tables/conversation.md)                                         | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts) | 7       | 2            |
-| [`conversation_message`](tables/conversation_message.md)                         | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts) | 23      | 3            |
-| [`conversation_message_extra_photo`](tables/conversation_message_extra_photo.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts) | 5       | 1            |
-| [`conversation_message_translation`](tables/conversation_message_translation.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts) | 5       | 1            |
-| [`conversation_read`](tables/conversation_read.md)                               | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts) | 3       | 2            |
-| [`daily_roster`](tables/daily_roster.md)                                         | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts) | 4       | 0            |
-| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts) | 4       | 0            |
-| [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                   | 7       | 0            |
-| [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)         | 5       | 0            |
-| [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)           | 8       | 2            |
-| [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                   | 19      | 0            |
-| [`member_habit`](tables/member_habit.md)                                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts) | 11      | 1            |
-| [`member_habit_comment`](tables/member_habit_comment.md)                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts) | 8       | 2            |
-| [`member_habit_log`](tables/member_habit_log.md)                                 | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts) | 3       | 1            |
-| [`member_habit_revision`](tables/member_habit_revision.md)                       | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts) | 4       | 1            |
-| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 47      | 3            |
-| [`message_edit`](tables/message_edit.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 7       | 1            |
-| [`message_extra_photo`](tables/message_extra_photo.md)                           | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 5       | 1            |
-| [`message_invoice`](tables/message_invoice.md)                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 23      | 0            |
-| [`message_repayment`](tables/message_repayment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 5       | 1            |
-| [`message_translation`](tables/message_translation.md)                           | [src/lib/translation-store.ts](../../src/lib/translation-store.ts)   | 5       | 1            |
-| [`nostr_blocked_pubkey`](tables/nostr_blocked_pubkey.md)                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 4       | 0            |
-| [`nostr_zap_ingest`](tables/nostr_zap_ingest.md)                                 | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 14      | 0            |
-| [`nostr_zap_payment`](tables/nostr_zap_payment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 3       | 0            |
-| [`nostr_zap_receipt`](tables/nostr_zap_receipt.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 9       | 2            |
-| [`nostr_zapper`](tables/nostr_zapper.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)           | 3       | 0            |
-| [`notification`](tables/notification.md)                                         | [src/lib/notification-store.ts](../../src/lib/notification-store.ts) | 10      | 2            |
-| [`passkey_challenge`](tables/passkey_challenge.md)                               | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 7       | 0            |
-| [`passkey_credential`](tables/passkey_credential.md)                             | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 5       | 1            |
-| [`passkey_renew_attempt`](tables/passkey_renew_attempt.md)                       | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)               | 23      | 1            |
-| [`pos_charge`](tables/pos_charge.md)                                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                   | 6       | 1            |
-| [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                 | 11      | 1            |
-| [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                 | 5       | 1            |
-| [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)               | 5       | 2            |
-| [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)         | 6       | 0            |
+| Table                                                                            | Source                                                                 | Columns | Foreign keys |
+| -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
+| [`account`](tables/account.md)                                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 33      | 1            |
+| [`account_image`](tables/account_image.md)                                       | [src/lib/banner-store.ts](../../src/lib/banner-store.ts)               | 4       | 1            |
+| [`address_verification`](tables/address_verification.md)                         | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
+| [`api_log`](tables/api_log.md)                                                   | [src/lib/api-log.ts](../../src/lib/api-log.ts)                         | 14      | 1            |
+| [`app_setting`](tables/app_setting.md)                                           | [src/lib/login-gate-store.ts](../../src/lib/login-gate-store.ts)       | 3       | 0            |
+| [`auth_session`](tables/auth_session.md)                                         | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 3       | 1            |
+| [`btc_fiat_spot`](tables/btc_fiat_spot.md)                                       | [src/lib/fx-spot-store.ts](../../src/lib/fx-spot-store.ts)             | 7       | 0            |
+| [`btc_usd_daily`](tables/btc_usd_daily.md)                                       | [src/lib/btc-usd-store.ts](../../src/lib/btc-usd-store.ts)             | 4       | 0            |
+| [`contact`](tables/contact.md)                                                   | [src/lib/contact-store.ts](../../src/lib/contact-store.ts)             | 5       | 1            |
+| [`conversation`](tables/conversation.md)                                         | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 7       | 2            |
+| [`conversation_message`](tables/conversation_message.md)                         | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 23      | 3            |
+| [`conversation_message_extra_photo`](tables/conversation_message_extra_photo.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 5       | 1            |
+| [`conversation_message_translation`](tables/conversation_message_translation.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 5       | 1            |
+| [`conversation_read`](tables/conversation_read.md)                               | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 3       | 2            |
+| [`daily_roster`](tables/daily_roster.md)                                         | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
+| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
+| [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                     | 7       | 0            |
+| [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
+| [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |
+| [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                     | 19      | 0            |
+| [`login_allowlist`](tables/login_allowlist.md)                                   | [src/lib/login-gate-store.ts](../../src/lib/login-gate-store.ts)       | 2       | 1            |
+| [`member_event`](tables/member_event.md)                                         | [src/lib/member-event-store.ts](../../src/lib/member-event-store.ts)   | 7       | 1            |
+| [`member_habit`](tables/member_habit.md)                                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 11      | 1            |
+| [`member_habit_comment`](tables/member_habit_comment.md)                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 8       | 2            |
+| [`member_habit_log`](tables/member_habit_log.md)                                 | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 3       | 1            |
+| [`member_habit_revision`](tables/member_habit_revision.md)                       | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 4       | 1            |
+| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 48      | 3            |
+| [`message_edit`](tables/message_edit.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 7       | 1            |
+| [`message_extra_photo`](tables/message_extra_photo.md)                           | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 5       | 1            |
+| [`message_invoice`](tables/message_invoice.md)                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 24      | 0            |
+| [`message_repayment`](tables/message_repayment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 5       | 1            |
+| [`message_translation`](tables/message_translation.md)                           | [src/lib/translation-store.ts](../../src/lib/translation-store.ts)     | 5       | 1            |
+| [`nostr_blocked_pubkey`](tables/nostr_blocked_pubkey.md)                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 4       | 0            |
+| [`nostr_zap_ingest`](tables/nostr_zap_ingest.md)                                 | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 14      | 0            |
+| [`nostr_zap_payment`](tables/nostr_zap_payment.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 3       | 0            |
+| [`nostr_zap_receipt`](tables/nostr_zap_receipt.md)                               | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 9       | 2            |
+| [`nostr_zapper`](tables/nostr_zapper.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 3       | 0            |
+| [`notification`](tables/notification.md)                                         | [src/lib/notification-store.ts](../../src/lib/notification-store.ts)   | 10      | 2            |
+| [`passkey_challenge`](tables/passkey_challenge.md)                               | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 7       | 0            |
+| [`passkey_credential`](tables/passkey_credential.md)                             | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |
+| [`passkey_renew_attempt`](tables/passkey_renew_attempt.md)                       | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 23      | 1            |
+| [`pos_charge`](tables/pos_charge.md)                                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 8       | 1            |
+| [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
+| [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 11      | 1            |
+| [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 5       | 1            |
+| [`spark_invoice`](tables/spark_invoice.md)                                       | [src/lib/spark-invoice-store.ts](../../src/lib/spark-invoice-store.ts) | 10      | 0            |
+| [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)                 | 5       | 2            |
+| [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)           | 6       | 0            |
+| [`wallet_balance_snapshot`](tables/wallet_balance_snapshot.md)                   | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 5       | 1            |
+| [`wallet_payment`](tables/wallet_payment.md)                                     | [src/lib/wallet-store.ts](../../src/lib/wallet-store.ts)               | 18      | 2            |

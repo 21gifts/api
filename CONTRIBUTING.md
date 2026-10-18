@@ -642,7 +642,7 @@ file also requires `bun run db:docs`. Do not hand-edit `docs/database/`.
 
 ### Database change notice (hard requirement)
 
-A PR into `develop` that changes the database or database access **must**
+A PR into `develop` or `staging` that changes the database or database access **must**
 contain the exact line `⚠️ 🗄️ Attention: database change` in the visible part
 of the PR description (not inside `<details>`, an HTML comment or a code
 fence). The CI job "Database change notice" fails otherwise. It triggers on
@@ -779,16 +779,16 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger                                                           | Action                                                                                                                                                                         |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
-| `db-change-notice.yaml` | PR into `develop` or `staging` (opened, edited, synchronize, reopened)         | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code                                 |
-| `loan-e2e.yml`         | `workflow_dispatch` only                                          | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
-| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
-| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
-| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
-| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
-| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml` and `db-change-notice.yaml`, and sets ready; never checks out the PR code                                                     |
+| Workflow                | Trigger                                                                | Action                                                                                                                                                                         |
+| ----------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ci.yaml`               | PR (including drafts); not `ready_for_review`                          | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
+| `db-change-notice.yaml` | PR into `develop` or `staging` (opened, edited, synchronize, reopened) | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code                                 |
+| `loan-e2e.yml`          | `workflow_dispatch` only                                               | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
+| `deploy-dev.yaml`       | push to `develop`                                                      | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
+| `deploy-staging.yaml`   | push to `staging`                                                      | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
+| `deploy-prd.yaml`       | push to `main`                                                         | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
+| `auto-release-pr.yaml`  | push to `develop` or `staging`                                         | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
+| `a38-guard.yml`         | `pull_request_target`; PR comments; schedule; `workflow_dispatch`      | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml` and `db-change-notice.yaml`, and sets ready; never checks out the PR code                         |
 
 Images target `linux/arm64`. Every deploy also pushes the image as
 `21gifts/api:<tag>-<sha>`, where `<tag>` is that workflow's moving tag (`beta`,

@@ -8,7 +8,7 @@ name: Database change notice
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
-    branches: [develop]
+    branches: [develop, staging]
 
 permissions:
   contents: read

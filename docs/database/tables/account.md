@@ -13,7 +13,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `role`                         | Free text          | `text`                     | No       | –           | –                            |
 | `name`                         | Free text          | `text`                     | Yes      | –           | –                            |
 | `lightning_address`            | Free text          | `text`                     | Yes      | –           | –                            |
-| `lightning_address_verified`   | Boolean            | `boolean`                  | No       | –           | –                            |
+| `lightning_address_verified`   | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `forum_laws_dismissed`         | Boolean            | `boolean`                  | No       | –           | –                            |
 | `created_at`                   | Date/time          | `timestamp with time zone` | No       | –           | –                            |
 | `rules_agreed_at`              | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
@@ -22,6 +22,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `nostr_kek_id`                 | Integer            | `integer`                  | No       | `1`         | –                            |
 | `nostr_key_custody`            | ENUM               | `text`                     | No       | `custodial` | –                            |
 | `nostr_key_created_at`         | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
+| `wallet_intro_seen`            | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `view_key`                     | Free text          | `text`                     | Yes      | –           | –                            |
 | `is_platform`                  | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `name_skipped_at`              | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
@@ -37,6 +38,9 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `wallet_required`              | Boolean            | `boolean`                  | No       | `false`     | –                            |
 | `wallet_backup_seen_at`        | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
 | `staff_tag`                    | ENUM               | `text`                     | Yes      | –           | –                            |
+| `spark_pubkey`                 | Free text          | `text`                     | Yes      | –           | –                            |
+| `spark_pubkey_verified_at`     | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
+| `notify_hearts`                | Boolean            | `boolean`                  | No       | `true`      | –                            |
 
 ## Indexes
 
@@ -49,37 +53,44 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `linking_key`        | Yes    | –                                                                     | `CREATE UNIQUE INDEX account_linking_key_key ON public.account USING btree (linking_key)`                                                                                             |
 | `nostr_pubkey`       | Yes    | `(nostr_pubkey IS NOT NULL)`                                          | `CREATE UNIQUE INDEX account_nostr_pubkey_uidx ON public.account USING btree (nostr_pubkey) WHERE (nostr_pubkey IS NOT NULL)`                                                         |
 | `profile_message_id` | Yes    | `(profile_message_id IS NOT NULL)`                                    | `CREATE UNIQUE INDEX account_profile_message_uidx ON public.account USING btree (profile_message_id) WHERE (profile_message_id IS NOT NULL)`                                          |
+| `spark_pubkey`       | No     | `(spark_pubkey IS NOT NULL)`                                          | `CREATE INDEX account_spark_pubkey_idx ON public.account USING btree (spark_pubkey) WHERE (spark_pubkey IS NOT NULL)`                                                                 |
+| `spark_pubkey`       | Yes    | `(spark_pubkey_verified_at IS NOT NULL)`                              | `CREATE UNIQUE INDEX account_spark_pubkey_verified_uidx ON public.account USING btree (spark_pubkey) WHERE (spark_pubkey_verified_at IS NOT NULL)`                                    |
 | `view_key`           | Yes    | `(view_key IS NOT NULL)`                                              | `CREATE UNIQUE INDEX account_view_key_uidx ON public.account USING btree (view_key) WHERE (view_key IS NOT NULL)`                                                                     |
 
 ## Referenced by
 
-| Table                   | Column                 | Points to |
-| ----------------------- | ---------------------- | --------- |
-| `account_image`         | `account_id`           | `id`      |
-| `address_verification`  | `account_id`           | `id`      |
-| `api_log`               | `account_id`           | `id`      |
-| `auth_session`          | `account_id`           | `id`      |
-| `contact`               | `account_id`           | `id`      |
-| `conversation`          | `account_a`            | `id`      |
-| `conversation`          | `account_b`            | `id`      |
-| `conversation_message`  | `actor_account_id`     | `id`      |
-| `conversation_message`  | `sender_account_id`    | `id`      |
-| `conversation_read`     | `account_id`           | `id`      |
-| `funding_grant`         | `account_id`           | `id`      |
-| `funding_grant`         | `decided_by`           | `id`      |
-| `member_habit`          | `account_id`           | `id`      |
-| `member_habit_comment`  | `account_id`           | `id`      |
-| `message`               | `account_id`           | `id`      |
-| `message`               | `shop_account_id`      | `id`      |
-| `notification`          | `actor_account_id`     | `id`      |
-| `notification`          | `recipient_account_id` | `id`      |
-| `passkey_credential`    | `account_id`           | `id`      |
-| `passkey_renew_attempt` | `account_id`           | `id`      |
-| `pos_charge`            | `account_id`           | `id`      |
-| `push_outbox`           | `account_id`           | `id`      |
-| `push_subscription`     | `account_id`           | `id`      |
-| `trust_edge`            | `actor_id`             | `id`      |
-| `trust_edge`            | `subject_id`           | `id`      |
+| Table                     | Column                    | Points to |
+| ------------------------- | ------------------------- | --------- |
+| `account_image`           | `account_id`              | `id`      |
+| `address_verification`    | `account_id`              | `id`      |
+| `api_log`                 | `account_id`              | `id`      |
+| `auth_session`            | `account_id`              | `id`      |
+| `contact`                 | `account_id`              | `id`      |
+| `conversation`            | `account_a`               | `id`      |
+| `conversation`            | `account_b`               | `id`      |
+| `conversation_message`    | `actor_account_id`        | `id`      |
+| `conversation_message`    | `sender_account_id`       | `id`      |
+| `conversation_read`       | `account_id`              | `id`      |
+| `funding_grant`           | `account_id`              | `id`      |
+| `funding_grant`           | `decided_by`              | `id`      |
+| `login_allowlist`         | `account_id`              | `id`      |
+| `member_event`            | `account_id`              | `id`      |
+| `member_habit`            | `account_id`              | `id`      |
+| `member_habit_comment`    | `account_id`              | `id`      |
+| `message`                 | `account_id`              | `id`      |
+| `message`                 | `shop_account_id`         | `id`      |
+| `notification`            | `actor_account_id`        | `id`      |
+| `notification`            | `recipient_account_id`    | `id`      |
+| `passkey_credential`      | `account_id`              | `id`      |
+| `passkey_renew_attempt`   | `account_id`              | `id`      |
+| `pos_charge`              | `account_id`              | `id`      |
+| `push_outbox`             | `account_id`              | `id`      |
+| `push_subscription`       | `account_id`              | `id`      |
+| `trust_edge`              | `actor_id`                | `id`      |
+| `trust_edge`              | `subject_id`              | `id`      |
+| `wallet_balance_snapshot` | `account_id`              | `id`      |
+| `wallet_payment`          | `account_id`              | `id`      |
+| `wallet_payment`          | `counterparty_account_id` | `id`      |
 
 ## Relations
 
@@ -98,6 +109,8 @@ erDiagram
     "conversation_read" }o--|| "account" : "account_id"
     "funding_grant" |o--|| "account" : "account_id"
     "funding_grant" }o--o| "account" : "decided_by"
+    "login_allowlist" |o--|| "account" : "account_id"
+    "member_event" }o--|| "account" : "account_id"
     "member_habit" }o--|| "account" : "account_id"
     "member_habit_comment" }o--|| "account" : "account_id"
     "message" }o--o| "account" : "account_id"
@@ -111,4 +124,7 @@ erDiagram
     "push_subscription" }o--|| "account" : "account_id"
     "trust_edge" }o--|| "account" : "actor_id"
     "trust_edge" }o--|| "account" : "subject_id"
+    "wallet_balance_snapshot" }o--|| "account" : "account_id"
+    "wallet_payment" }o--o| "account" : "counterparty_account_id"
+    "wallet_payment" }o--|| "account" : "account_id"
 ```
