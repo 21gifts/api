@@ -608,25 +608,20 @@ One procedure creates a shop payment, for a charge or for a payer:
    returns `false`, the api reads the `pos_charge_invoice` row for that
    hash. When it belongs to another charge, the procedure stops as after a
    failed mint (order 8) and logs `shop.alert.duplicate_invoice`. When it belongs to this
-   charge, the procedure goes on. When there is no row, the charge is no
-   longer pending or has expired, and the procedure ends as step 8 ends
-   for such a charge, without `shop.alert.duplicate_invoice`.
+   charge, the procedure goes on. When there is no row,
+   the api reads `shop_payment` for the hash: a hit stops as a failed
+   mint (order 8) with `shop.alert.duplicate_invoice`; otherwise the
+   charge is no longer pending or has expired, and the procedure ends as
+   step 8 ends for such a charge, without that alert.
    A payer creation never records against a charge, also not against one
    that appeared after step 2. It reads instead whether the hash is
    already recorded against a charge, with
    `posStore.findChargeForPayment({ paymentHash })`; a hit stops it as a
    failed mint (order 8) with `shop.alert.duplicate_invoice`, so that one
-   settlement can never confirm both a charge and a payer's payment. The read alone
-   leaves a moment before the insert, so both writers of a payment hash
-   claim it first: the shop payment insert of step 8 and
-   `posStore.recordInvoice`, also when `POST /pay/:username/invoice`
-   calls it, take `pg_advisory_xact_lock` on the hash in their
-   transaction and then check the other table, `pos_charge_invoice` or
-   `shop_payment`, under that lock. A hash the other table already holds
-   for another payment makes `recordInvoice` return `false` and makes
-   the insert stop as a failed mint (order 8) with
-   `shop.alert.duplicate_invoice`. One settlement can therefore never
-   confirm a charge and another payment, across both containers.
+   settlement can never confirm both a charge and a payer's payment. These reads
+   run before the insert; the [Payment hash claim](#payment-hash-claim)
+   closes the moment between them and the insert, across both
+   containers.
 5. In parallel, read `eth_gasPrice` for each candidate chain and request
    one Orchestra quote per candidate pair, within 3 s for the whole step;
    a retry runs only while that time lasts. Pairs beyond what the quote share of the Orchestra
@@ -637,8 +632,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    own wait, so during a deploy an account can see two creations in 60 s. Until then a fetch answers today's pinned Lightning request, and
    `POST /pay/:username/payment` answers order 9.
 8. Insert the payment with its BOLT11, its first quote, and its offers in
-   one database transaction that first locks the account row, as
-   `POST /pos` does. In that transaction:
+   one database transaction that first takes the
+   [Payment hash claim](#payment-hash-claim) and then locks the account
+   row, as `POST /pos` does. In that transaction:
    - For a charge, the api locks the `pos_charge` row too
      (`SELECT … FOR UPDATE`) and inserts only while the charge is still
      `pending`. A charge that was cancelled, expired, or paid meanwhile
@@ -646,9 +642,9 @@ One procedure creates a shop payment, for a charge or for a payer:
    - For a payer, a pending charge means nothing is written, and the
      answer is order 4 (**409** `payment_open`). An `open` payer-opened
      payment is ended with `end_reason` `replaced` before the insert,
-     after the hash claim of step 4, taken first in this transaction, found
-     no other payment holding the hash,
-     so a `payment_hash` conflict ends nothing.
+     after the hash claim found no
+     other payment holding the hash, so a `payment_hash` conflict ends
+     nothing.
 
    The implementing change adds this transactional port to the shop
    payment store, the way `MergeDb.begin` wraps `sql.begin` for
@@ -663,8 +659,7 @@ One procedure creates a shop payment, for a charge or for a payer:
    shop payment, the conflict is handled like any other empty result below: the
    api uses that payment. Otherwise the LNURL server returned an invoice
    that another payment already holds: the procedure stops as after a
-   failed mint (order 8) and logs `shop.alert.duplicate_invoice`. This is
-   the race step 4's check cannot see. For a charge it then also deletes
+   failed mint (order 8) and logs `shop.alert.duplicate_invoice`. The hash claim makes this branch a backstop. For a charge it then also deletes
    the `pos_charge_invoice` row for that hash when step 4's
    `recordInvoice` inserted it (returned `true`); a row this attempt did
    not insert stays, whichever charge it belongs to. It writes nothing
@@ -681,10 +676,35 @@ One procedure creates a shop payment, for a charge or for a payer:
    more. No answer ever carries another payer's amount.
 
 The procedure stays within 8 s: 1 s for the route list, 4 s for the
-mint, and 3 s for the quotes. Every external call runs outside the
+mint, and 3 s for the quotes. Waits on the creation lock and on the
+locks of step 8 come on top, so step 8 also checks, after it holds its
+locks, that its request arrived less than 16 s ago; otherwise it writes
+nothing and answers order 9. No creation therefore inserts a payment
+more than 16 s after its request arrived. Every external call runs outside the
 database transaction. A losing caller's BOLT11 stays recorded against the
 charge and can still pay the charge. Its Orchestra quotes are never shown
 and expire unused.
+
+### Payment hash claim
+
+A payment hash belongs to one payment only, either a charge's
+`pos_charge_invoice` row or a `shop_payment`, across both containers.
+Both writers of a payment hash claim it the same way:
+`posStore.recordInvoice`, which the implementing change turns into an
+explicit transaction (`sql.begin`), also when `POST /pay/:username/invoice`
+and the invoice forward call it; and the transaction of step 8 of the
+creation procedure. The first statement of each transaction is
+`SELECT pg_advisory_xact_lock(hashtextextended($hash, 0))`. A following
+statement reads `pos_charge_invoice` and `shop_payment` for the hash. A
+row of another payment stops the writer before it ends or inserts
+anything: `recordInvoice` returns `false`, and the creation stops as a
+failed mint (order 8) with `shop.alert.duplicate_invoice`. A row of the
+same charge or the same shop payment is handled as steps 4 and 8 state.
+Step 8 takes its locks in this order: the hash claim, the account row,
+then the `pos_charge` row; `recordInvoice` takes only the hash claim
+before its insert, so two writers of one hash meet at the claim and
+never wait for a lock the other took first. One settlement can therefore
+never confirm a charge and another payment.
 
 ## Quotes
 
@@ -1437,9 +1457,12 @@ page.
   - A **409** `payment_open` reloads and shows the till charge, as on
     the first call.
   - A **503** `stablecoin_unavailable` or another 4xx makes the page
-    fetch the pay link, once at least 16 s have passed since the first
-    call was sent: the 8 s creation budget plus one wait on the creation
-    lock, so a creation the lost answer started has ended by then. When it shows no open payer amount, the page
+    fetch the pay link, once at least 20 s have passed since the most
+    recent call that ended in a timeout, a transport error, or another
+    5xx: a creation inserts no payment more than 16 s after its request
+    arrived ([Creation procedure](#creation-procedure)), so by then every
+    creation the page started has inserted its payment or written
+    nothing. When it shows no open payer amount, the page
     falls back to `POST /pay/:username/invoice`. When it shows one, or
     the fetch fails, the page shows "This payment could not be started.
     Try again." with a button that repeats the call.
@@ -1644,8 +1667,8 @@ The implementing change adds:
   `GET /pos`;
 - `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
-- the hash claim with `pg_advisory_xact_lock` in `recordInvoice` and in
-  the shop payment insert, with the check of the other table;
+- the [Payment hash claim](#payment-hash-claim) in `recordInvoice`, as an
+  explicit transaction, and in step 8 of the creation procedure;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;
