@@ -29,5 +29,5 @@ None.
 
 ```mermaid
 erDiagram
-    "wallet_balance_snapshot" }o--|| "account" : "account_id"
+    "wallet_balance_snapshot" }o..|| "account" : "account_id"
 ```

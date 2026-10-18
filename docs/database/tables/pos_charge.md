@@ -36,6 +36,6 @@ Source: [src/lib/pos-store.ts](../../../src/lib/pos-store.ts)
 
 ```mermaid
 erDiagram
-    "pos_charge" }o--|| "account" : "account_id"
-    "pos_charge_invoice" }o--|| "pos_charge" : "charge_id"
+    "pos_charge" }o..|| "account" : "account_id"
+    "pos_charge_invoice" }o..|| "pos_charge" : "charge_id"
 ```

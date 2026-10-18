@@ -32,5 +32,5 @@ None.
 ```mermaid
 erDiagram
     "funding_grant" |o--|| "account" : "account_id"
-    "funding_grant" }o--o| "account" : "decided_by"
+    "funding_grant" }o..o| "account" : "decided_by"
 ```

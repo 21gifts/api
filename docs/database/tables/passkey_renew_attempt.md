@@ -47,5 +47,5 @@ None.
 
 ```mermaid
 erDiagram
-    "passkey_renew_attempt" }o--|| "account" : "account_id"
+    "passkey_renew_attempt" }o..|| "account" : "account_id"
 ```

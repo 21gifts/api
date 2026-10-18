@@ -38,8 +38,8 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 
 ```mermaid
 erDiagram
-    "conversation" }o--o| "account" : "account_b"
-    "conversation" }o--|| "account" : "account_a"
-    "conversation_message" }o--|| "conversation" : "conversation_id"
+    "conversation" }o..o| "account" : "account_b"
+    "conversation" }o..|| "account" : "account_a"
+    "conversation_message" }o..|| "conversation" : "conversation_id"
     "conversation_read" }o--|| "conversation" : "conversation_id"
 ```

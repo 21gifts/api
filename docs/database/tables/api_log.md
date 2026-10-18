@@ -39,5 +39,5 @@ None.
 
 ```mermaid
 erDiagram
-    "api_log" }o--o| "account" : "account_id"
+    "api_log" }o..o| "account" : "account_id"
 ```

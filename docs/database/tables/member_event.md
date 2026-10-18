@@ -31,5 +31,5 @@ None.
 
 ```mermaid
 erDiagram
-    "member_event" }o--|| "account" : "account_id"
+    "member_event" }o..|| "account" : "account_id"
 ```

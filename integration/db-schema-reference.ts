@@ -80,6 +80,7 @@ export type ForeignKeyModel = {
   refColumn: string;
   nullable: boolean;
   unique: boolean;
+  identifying: boolean;
 };
 
 /**
@@ -277,16 +278,21 @@ export function renderDefault(columnDefault: string | null, isIdentity: boolean)
  * side is `||` when the foreign-key column is NOT NULL or `o|` when it is nullable
  * (`|o--||` / `|o--o|`).
  * Many-to-one stays `}o--||` / `}o--o|`.
+ * The line is solid (`--`) for an identifying relationship, whose columns are all part of the child's
+ * primary key, and dashed (`..`) otherwise, as Mermaid defines them.
  * @param fkNullable - Whether the foreign-key column accepts NULL.
  * @param fkUnique - Whether the foreign-key column set is unique.
+ * @param fkIdentifying - Whether every foreign-key column is part of the child's primary key.
  * @returns Mermaid relationship symbol.
  */
 export function cardinality(
   fkNullable: boolean,
   fkUnique: boolean,
-): '}o--o|' | '}o--||' | '|o--o|' | '|o--||' {
-  if (!fkUnique) return fkNullable ? '}o--o|' : '}o--||';
-  return fkNullable ? '|o--o|' : '|o--||';
+  fkIdentifying: boolean,
+): `${'}o' | '|o'}${'--' | '..'}${'o|' | '||'}` {
+  const child = fkUnique ? '|o' : '}o';
+  const line = fkIdentifying ? '--' : '..';
+  return `${child}${line}${fkNullable ? 'o|' : '||'}`;
 }
 
 /**
@@ -537,9 +543,11 @@ export function buildSchemaModel(
         definition: row.definition,
       }));
 
+    const primaryKey = tableConstraints.find((row) => row.type === 'p')?.columns ?? [];
     const foreignKeys: ForeignKeyModel[] = [];
     for (const constraint of foreignKeyConstraints) {
       const unique = columnsAreUnique(tableName, constraint.columns, constraints, indexes);
+      const identifying = constraint.columns.every((column) => primaryKey.includes(column));
       constraint.columns.forEach((column, index) => {
         const refTable = constraint.ref_table;
         const refColumn = constraint.ref_columns[index];
@@ -552,6 +560,7 @@ export function buildSchemaModel(
           refColumn,
           nullable: columnModels.find((model) => model.name === column)?.nullable ?? false,
           unique,
+          identifying,
         });
       });
     }
@@ -1075,7 +1084,7 @@ function renderRelations(
     ...new Set(
       [...edges.values()].map(
         ({ key, columns, nullable }) =>
-          `    "${escapeMermaid(key.table)}" ${cardinality(nullable, key.unique)} "${escapeMermaid(key.refTable)}" : "${escapeMermaid(columns.join(', '))}"`,
+          `    "${escapeMermaid(key.table)}" ${cardinality(nullable, key.unique, key.identifying)} "${escapeMermaid(key.refTable)}" : "${escapeMermaid(columns.join(', '))}"`,
       ),
     ),
   ].sort(compareText);

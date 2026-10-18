@@ -53,9 +53,9 @@ Source: [src/lib/conversation-store.ts](../../../src/lib/conversation-store.ts)
 
 ```mermaid
 erDiagram
-    "conversation_message" }o--o| "account" : "actor_account_id"
-    "conversation_message" }o--o| "account" : "sender_account_id"
-    "conversation_message" }o--|| "conversation" : "conversation_id"
+    "conversation_message" }o..o| "account" : "actor_account_id"
+    "conversation_message" }o..o| "account" : "sender_account_id"
+    "conversation_message" }o..|| "conversation" : "conversation_id"
     "conversation_message_extra_photo" }o--|| "conversation_message" : "message_id"
     "conversation_message_translation" }o--|| "conversation_message" : "message_id"
 ```

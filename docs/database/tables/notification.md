@@ -35,6 +35,6 @@ None.
 
 ```mermaid
 erDiagram
-    "notification" }o--|| "account" : "actor_account_id"
-    "notification" }o--|| "account" : "recipient_account_id"
+    "notification" }o..|| "account" : "actor_account_id"
+    "notification" }o..|| "account" : "recipient_account_id"
 ```

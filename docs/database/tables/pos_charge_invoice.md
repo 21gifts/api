@@ -27,5 +27,5 @@ None.
 
 ```mermaid
 erDiagram
-    "pos_charge_invoice" }o--|| "pos_charge" : "charge_id"
+    "pos_charge_invoice" }o..|| "pos_charge" : "charge_id"
 ```

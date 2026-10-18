@@ -30,6 +30,6 @@ None.
 
 ```mermaid
 erDiagram
-    "trust_edge" }o--|| "account" : "actor_id"
-    "trust_edge" }o--|| "account" : "subject_id"
+    "trust_edge" }o..|| "account" : "actor_id"
+    "trust_edge" }o..|| "account" : "subject_id"
 ```

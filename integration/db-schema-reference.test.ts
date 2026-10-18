@@ -256,10 +256,12 @@ describe('renderDefault', () => {
 
 describe('cardinality', () => {
   test('covers every nullability and uniqueness pair', () => {
-    expect(cardinality(true, false)).toBe('}o--o|');
-    expect(cardinality(false, false)).toBe('}o--||');
-    expect(cardinality(true, true)).toBe('|o--o|');
-    expect(cardinality(false, true)).toBe('|o--||');
+    expect(cardinality(true, false, false)).toBe('}o..o|');
+    expect(cardinality(false, false, false)).toBe('}o..||');
+    expect(cardinality(true, true, false)).toBe('|o..o|');
+    expect(cardinality(false, true, false)).toBe('|o..||');
+    expect(cardinality(false, false, true)).toBe('}o--||');
+    expect(cardinality(false, true, true)).toBe('|o--||');
   });
 });
 
@@ -445,7 +447,7 @@ describe('buildSchemaModel and renderPages', () => {
     expect(readme).toContain('- Foreign keys: 1');
     expect(giftPage).toContain('## Relations');
     expect(giftPage).toContain('erDiagram');
-    expect(giftPage).toContain('}o--||');
+    expect(giftPage).toContain('}o..||');
     expect(giftPage).toMatch(/\| Columns +\| Unique +\| Where +\| Definition +\|/);
     expect(giftPage).toContain(
       '`CREATE INDEX gift_note_search_idx ON public.gift USING btree (lower(note) DESC) INCLUDE (account_id) WHERE (note IS NOT NULL)`',

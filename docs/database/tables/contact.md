@@ -29,5 +29,5 @@ None.
 
 ```mermaid
 erDiagram
-    "contact" }o--|| "account" : "account_id"
+    "contact" }o..|| "account" : "account_id"
 ```

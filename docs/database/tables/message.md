@@ -90,14 +90,14 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 
 ```mermaid
 erDiagram
-    "account" |o--o| "message" : "profile_message_id"
-    "message" }o--o| "account" : "account_id"
-    "message" }o--o| "account" : "shop_account_id"
-    "message" }o--o| "message" : "parent_id"
-    "message_edit" }o--|| "message" : "message_id"
+    "account" |o..o| "message" : "profile_message_id"
+    "message" }o..o| "account" : "account_id"
+    "message" }o..o| "account" : "shop_account_id"
+    "message" }o..o| "message" : "parent_id"
+    "message_edit" }o..|| "message" : "message_id"
     "message_extra_photo" }o--|| "message" : "message_id"
     "message_repayment" }o--|| "message" : "message_id"
     "message_translation" }o--|| "message" : "message_id"
-    "nostr_zap_receipt" |o--o| "message" : "gift_reply_id"
-    "nostr_zap_receipt" }o--|| "message" : "message_id"
+    "nostr_zap_receipt" |o..o| "message" : "gift_reply_id"
+    "nostr_zap_receipt" }o..|| "message" : "message_id"
 ```

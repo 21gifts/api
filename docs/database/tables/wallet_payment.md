@@ -42,6 +42,6 @@ None.
 
 ```mermaid
 erDiagram
-    "wallet_payment" }o--o| "account" : "counterparty_account_id"
     "wallet_payment" }o--|| "account" : "account_id"
+    "wallet_payment" }o..o| "account" : "counterparty_account_id"
 ```

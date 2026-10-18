@@ -34,6 +34,6 @@ None.
 
 ```mermaid
 erDiagram
-    "nostr_zap_receipt" |o--o| "message" : "gift_reply_id"
-    "nostr_zap_receipt" }o--|| "message" : "message_id"
+    "nostr_zap_receipt" |o..o| "message" : "gift_reply_id"
+    "nostr_zap_receipt" }o..|| "message" : "message_id"
 ```

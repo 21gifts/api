@@ -31,6 +31,6 @@ None.
 
 ```mermaid
 erDiagram
-    "member_habit_comment" }o--|| "account" : "account_id"
-    "member_habit_comment" }o--|| "member_habit" : "habit_id"
+    "member_habit_comment" }o..|| "account" : "account_id"
+    "member_habit_comment" }o..|| "member_habit" : "habit_id"
 ```

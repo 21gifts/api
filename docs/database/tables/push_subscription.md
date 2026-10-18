@@ -29,5 +29,5 @@ None.
 
 ```mermaid
 erDiagram
-    "push_subscription" }o--|| "account" : "account_id"
+    "push_subscription" }o..|| "account" : "account_id"
 ```

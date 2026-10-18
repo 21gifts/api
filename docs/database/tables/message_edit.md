@@ -31,5 +31,5 @@ None.
 
 ```mermaid
 erDiagram
-    "message_edit" }o--|| "message" : "message_id"
+    "message_edit" }o..|| "message" : "message_id"
 ```

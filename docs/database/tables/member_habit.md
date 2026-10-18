@@ -38,8 +38,8 @@ Source: [src/lib/member-habit-store.ts](../../../src/lib/member-habit-store.ts)
 
 ```mermaid
 erDiagram
-    "member_habit" }o--|| "account" : "account_id"
-    "member_habit_comment" }o--|| "member_habit" : "habit_id"
+    "member_habit" }o..|| "account" : "account_id"
+    "member_habit_comment" }o..|| "member_habit" : "habit_id"
     "member_habit_log" }o--|| "member_habit" : "habit_id"
     "member_habit_revision" }o--|| "member_habit" : "habit_id"
 ```

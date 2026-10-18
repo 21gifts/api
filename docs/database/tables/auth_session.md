@@ -26,5 +26,5 @@ None.
 
 ```mermaid
 erDiagram
-    "auth_session" }o--|| "account" : "account_id"
+    "auth_session" }o..|| "account" : "account_id"
 ```

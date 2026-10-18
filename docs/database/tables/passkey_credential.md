@@ -28,5 +28,5 @@ None.
 
 ```mermaid
 erDiagram
-    "passkey_credential" }o--|| "account" : "account_id"
+    "passkey_credential" }o..|| "account" : "account_id"
 ```

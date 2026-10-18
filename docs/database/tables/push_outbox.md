@@ -35,5 +35,5 @@ None.
 
 ```mermaid
 erDiagram
-    "push_outbox" }o--|| "account" : "account_id"
+    "push_outbox" }o..|| "account" : "account_id"
 ```
