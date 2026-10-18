@@ -34,6 +34,7 @@ import { normalizeHex32 } from '@/lib/proof';
 import {
   SHOP_UNRESOLVED_LIMIT_MS,
   evaluateProof,
+  lockAccountOf,
   recordProofOrder,
   refuseProof,
   shopError,
@@ -47,7 +48,6 @@ import type {
   ShopPayment,
   ShopProof,
   ShopProofPatch,
-  ShopProofResult,
   ShopProofSource,
   ShopQuote,
   ShopTx,
@@ -64,7 +64,7 @@ export const SHOP_PROOF_ORCHESTRA_MS = 10_000;
 export const SHOP_SUBMIT_SLOT_MS = 2_000;
 /** Resubmits of one proof that repeats may trigger per minute. */
 export const SHOP_REPEAT_SUBMITS_PER_MINUTE = 5;
-/** Open lookup rows per quote. */
+/** Lookup rows per quote, done ones included (Verification of `tx`, step 2). */
 export const SHOP_MAX_LOOKUPS_PER_QUOTE = 4;
 /** First lookup of a stored lookup row. */
 export const SHOP_FIRST_LOOKUP_MS = 10_000;
@@ -95,8 +95,6 @@ const TOO_MANY = 'Too many requests';
 const SENT_ANYWAY = ['already known', 'nonce too low'];
 /** Substrings of a send error that refuse the proof. */
 const SEND_REJECTED = ['insufficient funds', 'invalid', 'intrinsic gas'];
-/** Results a `tx_used` refusal may move a proof from (`accepted` is left to its order). */
-const TX_USED_FROM: readonly (ShopProofResult | null)[] = [null, 'stuck', 'late', 'superseded'];
 
 /** Query of `GET /lnurlp/tx/:username` as the route read it. */
 export interface ShopProofQuery {
@@ -219,7 +217,9 @@ function callTimeout(shop: ShopPayments, deadlineMs: number, limitMs: number): n
 }
 
 /**
- * Lock the account of a payment inside `tx`.
+ * Lock the account of a payment inside `tx` (`lockAccountOf`: the payment is
+ * read again after the lock, so an account merge that moved it meanwhile
+ * locks the account it moved to).
  *
  * @param tx - Transaction.
  * @param paymentId - Payment id.
@@ -230,7 +230,7 @@ async function lockPaymentAccount(tx: ShopTx, paymentId: string): Promise<void> 
   if (payment === null) {
     return;
   }
-  await tx.lockAccount(payment.accountId);
+  await lockAccountOf(tx, paymentId, payment.accountId);
 }
 
 /**
@@ -346,8 +346,9 @@ function offerTransfer(logs: readonly EvmLog[], offer: ShopOffer): Erc20Transfer
  * Verification of `tx` (contract steps 1, 3, 4, and 5): the transaction
  * receipt, else the ERC-4337 user-operation receipt; a failed transfer; the
  * `Transfer` log to an offer's deposit address that no proof of another
- * quote holds, preferring the log whose value is the offer's `amountIn`.
- * A failed RPC call counts as not found.
+ * quote holds, preferring the log whose value is the offer's `amountIn`,
+ * else the first such log in receipt (log-index) order. A failed RPC call
+ * counts as not found.
  *
  * @param shop - Service (fetch, clock).
  * @param input - Quote offers, method, asset, endpoint, hash, deadline, and call limit.
@@ -424,12 +425,15 @@ export async function verifyTxProof(
   const stored = await shop.store.transaction((tx) =>
     tx.findProofs({ chainId: input.method.chainId, txHash }),
   );
-  const free = matches.filter(
-    (match) =>
-      !stored.some(
-        (proof) => proof.logIndex === match.transfer.logIndex && !quoteOfferIds.has(proof.offerId),
-      ),
-  );
+  const free = matches
+    .filter(
+      (match) =>
+        !stored.some(
+          (proof) =>
+            proof.logIndex === match.transfer.logIndex && !quoteOfferIds.has(proof.offerId),
+        ),
+    )
+    .sort((a, b) => a.transfer.logIndex - b.transfer.logIndex);
   const pick =
     free.find((match) => match.transfer.value === BigInt(match.offer.amountIn)) ?? free[0];
   if (pick === undefined) {
@@ -517,7 +521,10 @@ function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
 /**
  * Step 3 and 4 of Storing and submitting: a row being filled in collides
  * with `holder`, which already holds the log index or the order. Another
- * offer's row: the filled row is `refused` with `tx_used`. The same offer:
+ * offer's row: the filled row is `refused` with `tx_used` through
+ * `refuseProof` (from any result the States table allows, an `accepted` one
+ * included, which ends its payment with `proof_refused` unless another proof
+ * takes its place) and is no longer read; nothing is deleted. The same offer:
  * the kept row takes every value of the other row it lacks, the other row is
  * deleted, then the values are written (the indexes are not deferrable).
  *
@@ -536,22 +543,17 @@ async function mergeDeposit(
   nowMs: number,
 ): Promise<ShopProof> {
   if (holder.offerId !== filling.offerId) {
-    const refused = await tx.updateProof(
-      filling.id,
-      { results: TX_USED_FROM },
-      {
-        result: 'refused',
-        refusal: 'tx_used',
-        resolvedAt: new Date(nowMs),
-        nextSubmitAt: null,
-        nextReceiptAt: null,
-      },
-    );
-    if (refused === null || refused === 'conflict') {
+    const refused = await refuseProof(tx, filling.id, 'tx_used', nowMs);
+    /* v8 ignore next 3 -- the row being filled in was read in this transaction */
+    if (refused === null) {
       return filling;
     }
-    proofLog('shop.proof.refused', refused, { refusal: 'tx_used' });
-    return refused;
+    if (refused.result !== 'refused') {
+      return refused;
+    }
+    const stopped = await tx.updateProof(refused.id, {}, { nextReceiptAt: null });
+    /* v8 ignore next -- the row was refused in this transaction; clearing a schedule clashes with no index */
+    return stopped === null || stopped === 'conflict' ? refused : stopped;
   }
   const intended: ShopProof = { ...filling, ...patch };
   const [keep, other] = keepOf(intended, holder);
@@ -646,7 +648,8 @@ export async function applyProofOrder(
  * @param tx - Transaction (account locked).
  * @param proof - The proof that was to take the order.
  * @param orderId - Order id.
- * @param status - The order status to write, or `null` to keep the proof's.
+ * @param status - The order status to write, or `null` to take the holder's
+ *   (the status travels with the order id).
  * @param nowMs - Clock.
  * @returns The surviving row.
  */
@@ -669,7 +672,7 @@ async function mergeOrderHolder(
     proof,
     {
       providerOrder: orderId,
-      orderStatus: status ?? proof.orderStatus,
+      orderStatus: status ?? holder.orderStatus,
       orderFoundAt: proof.orderFoundAt ?? new Date(nowMs),
       nextStatusAt: new Date(nowMs + SHOP_FIRST_STATUS_MS),
     },
@@ -679,8 +682,11 @@ async function mergeOrderHolder(
 }
 
 /**
- * Follow `supersededByOperationId`: the proof's order becomes the successor,
- * whose status the next status read fetches.
+ * Follow `supersededByOperationId`: the proof's order becomes the successor.
+ * Its status is unknown (`null`, which holds the proof) until the next status
+ * read, which is due at once; the predecessor's status is not carried over.
+ * When another row holds the successor, the rows merge and the kept row
+ * takes the holder's status.
  *
  * @param tx - Transaction (account locked).
  * @param proof - Stored proof with an order.
@@ -697,7 +703,7 @@ export async function followProofOrder(
   const updated = await tx.updateProof(
     proof.id,
     {},
-    { providerOrder: successorId, nextStatusAt: new Date(nowMs) },
+    { providerOrder: successorId, orderStatus: null, nextStatusAt: new Date(nowMs) },
   );
   if (updated === 'conflict') {
     return mergeOrderHolder(tx, proof, successorId, null, nowMs);
@@ -711,8 +717,13 @@ export async function followProofOrder(
  * the route, the lookup duty, and the orders duty: a stored row of the same
  * offer and transaction is reused (filling in a missing log index, value,
  * user-operation hash, and order); otherwise a row is inserted with
- * `give_up_at` 24 h ahead. A lost insert answers from the winning row.
- * The submit (step 2) is the caller's.
+ * `give_up_at` 24 h ahead. An order is given only to a row without one: a
+ * second order of the same transaction and offer gets its own unlogged row,
+ * and while another unlogged row of that offer and transaction exists (the
+ * unlogged index admits one) the order is not stored yet, so the orders duty
+ * stores it on a later read, once the receipts duty filled that row's log
+ * index. A lost insert answers from the winning row. The submit (step 2) is
+ * the caller's.
  *
  * @param shop - Service (store, ids, clock).
  * @param candidate - The verified deposit.
@@ -734,11 +745,18 @@ export function storeProof(
     }
     const sameTx = await tx.findProofs({ chainId: offer.chainId, txHash: candidate.txHash });
     const sameOffer = sameTx.filter((row) => row.offerId === offer.id);
+    const unlogged = sameOffer.find((row) => row.logIndex === null);
+    const takesOrder = (row: ShopProof): boolean =>
+      candidate.order === null || row.providerOrder === null;
     const existing =
       candidate.logIndex === null
-        ? (sameOffer.find((row) => row.logIndex === null) ?? sameOffer[0])
-        : (sameOffer.find((row) => row.logIndex === candidate.logIndex) ??
-          sameOffer.find((row) => row.logIndex === null));
+        ? unlogged !== undefined && takesOrder(unlogged)
+          ? unlogged
+          : sameOffer.find(takesOrder)
+        : (sameOffer.find((row) => row.logIndex === candidate.logIndex) ?? unlogged);
+    if (existing === undefined && unlogged !== undefined) {
+      return { proof: unlogged, created: false };
+    }
     if (existing !== undefined) {
       const patch: ShopProofPatch = {};
       if (existing.logIndex === null && candidate.logIndex !== null) {
@@ -833,8 +851,9 @@ async function rotateKey(tx: ShopTx, shop: ShopPayments, proof: ShopProof): Prom
  * @param shop - Service.
  * @param proofId - Proof id.
  * @param caller - Budget share of the call.
- * @param deadlineMs - No submit starts at or after this instant; the call's
- *   timeout is the time left, at most {@link SHOP_PROOF_ORCHESTRA_MS}.
+ * @param deadlineMs - No submit starts at or after this instant (checked when
+ *   the slot is claimed and again right before the call); the call's timeout
+ *   is the time left, at most {@link SHOP_PROOF_ORCHESTRA_MS}.
  * @returns The proof afterwards and whether a submit was sent.
  */
 export async function submitProofAttempt(
@@ -844,8 +863,8 @@ export async function submitProofAttempt(
   deadlineMs: number,
 ): Promise<ShopSubmitAttempt> {
   const { orchestra } = shop.deps;
-  const claimMs = shop.deps.now();
   const claim = await shop.store.transaction(async (tx) => {
+    const claimMs = shop.deps.now();
     const proof = await tx.getProof(proofId);
     if (proof === null) {
       return null;
@@ -867,7 +886,7 @@ export async function submitProofAttempt(
     return { proof: null, sent: false };
   }
   const { offer } = claim;
-  if (orchestra === null || offer === null) {
+  if (orchestra === null || offer === null || deadlineMs - shop.deps.now() <= 0) {
     return { proof: claim.proof, sent: false };
   }
   const answer = await orchestra.submit(
@@ -1111,8 +1130,9 @@ export async function readProofReceipt(
 
 /**
  * Store a lookup row for a hash whose receipt was not found: at most
- * {@link SHOP_MAX_LOOKUPS_PER_QUOTE} open rows per quote, counted and
- * inserted under the quote's row lock. An existing row for the hash is kept.
+ * {@link SHOP_MAX_LOOKUPS_PER_QUOTE} rows per quote, done ones included,
+ * counted and inserted under the quote's row lock. An existing row for the
+ * hash is kept.
  *
  * @param shop - Service.
  * @param quote - The quote.
@@ -1133,7 +1153,7 @@ async function recordLookup(
     if ((await tx.findLookup(method.chainId, hash, quote.id)) !== null) {
       return;
     }
-    if ((await tx.countOpenLookups(quote.id)) >= SHOP_MAX_LOOKUPS_PER_QUOTE) {
+    if ((await tx.countLookups(quote.id)) >= SHOP_MAX_LOOKUPS_PER_QUOTE) {
       return;
     }
     await tx.insertLookup({
@@ -1317,19 +1337,31 @@ async function submitForRequest(
     created ? 'proof-first' : 'proof-repeat',
     deadlineMs,
   );
-  /* v8 ignore next -- the proof was stored by this request or read just now */
-  return after ?? proof;
+  return after ?? reread(shop, proof);
 }
 
 /**
- * Re-read one proof.
+ * Re-read one proof. When a same-offer merge deleted it, the request answers
+ * from the kept row (Storing and submitting, step 4): the row of the same
+ * offer and transaction, the `accepted` one first, else the oldest, as the
+ * repeat rule picks.
  *
  * @param shop - Service.
  * @param proof - The proof as last seen.
- * @returns The stored row, or the given one when it was merged away.
+ * @returns The stored row, the row it was merged into, or the given one when
+ *   no row of its offer and transaction is left.
  */
-async function reread(shop: ShopPayments, proof: ShopProof): Promise<ShopProof> {
-  return (await shop.store.transaction((tx) => tx.getProof(proof.id))) ?? proof;
+function reread(shop: ShopPayments, proof: ShopProof): Promise<ShopProof> {
+  return shop.store.transaction(async (tx) => {
+    const current = await tx.getProof(proof.id);
+    if (current !== null) {
+      return current;
+    }
+    const kept = (await tx.findProofs({ chainId: proof.chainId, txHash: proof.txHash })).filter(
+      (row) => row.offerId === proof.offerId,
+    );
+    return kept.find((row) => row.result === 'accepted') ?? kept[0] ?? proof;
+  });
 }
 
 /**
@@ -1402,7 +1434,9 @@ async function requestContext(
  * Over the rate limit only a stored row answers; anything else is **503**
  * `Too many requests`. Without shop configuration, or without an RPC
  * endpoint for the method's chain, a stored row is answered as it stands
- * and a new proof is **404** `Quote expired`.
+ * and a new proof is **503** `Payment is being confirmed` with nothing
+ * stored: the quote is this account's, only its verification cannot run
+ * now, and the wallet retries.
  *
  * @param shop - Service.
  * @param account - The username's account.
@@ -1444,7 +1478,7 @@ export async function handleShopProof(
     );
   }
   if (url === undefined) {
-    return shopError(404, QUOTE_EXPIRED);
+    return shopError(503, BEING_CONFIRMED);
   }
   return form.kind === 'tx'
     ? newTxProof(shop, context, method, query.asset, form.hash, url, deadlineMs)
@@ -1452,7 +1486,9 @@ export async function handleShopProof(
 }
 
 /**
- * A `tx` proof that is not a repeat: verify, store, submit.
+ * A `tx` proof that is not a repeat: verify, store, close the hash's lookup
+ * row (only once the proof is stored, so a failure in between leaves the
+ * lookup open for the watcher), submit.
  *
  * @param shop - Service.
  * @param context - Quote context.
@@ -1491,7 +1527,6 @@ async function newTxProof(
     case 'used':
       return shopError(400, TX_USED);
   }
-  await closeLookup(shop, method.chainId, hash, context.quote.id);
   const { proof, created } = await storeProof(shop, {
     offer: verified.offer,
     paymentId: context.payment.id,
@@ -1503,6 +1538,7 @@ async function newTxProof(
     transferAmount: verified.transferAmount,
     order: null,
   });
+  await closeLookup(shop, method.chainId, hash, context.quote.id);
   return proofResponse(await submitForRequest(shop, proof, created, deadlineMs));
 }
 

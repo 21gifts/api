@@ -219,11 +219,22 @@ test('settlement: timeout=0 every 3 s for 30 s; settled on OCP 404 or another qu
   ]);
   expect(await waitForSettlement(moved, instantClock(), PROOF, [])).toBe('settled');
 
-  // A plain 404 is not "nothing pending"; it stays unconfirmed after 30 s.
+  // A plain 404 is not "nothing pending": the wallet keeps polling every 3 s
+  // (at 0 s, 3 s, ..., 27 s, the last poll before the 30 s budget) and then
+  // reports unconfirmed. The script holds more answers than polls, so an early
+  // stop or an early `settled` would fail here.
+  const plainUrls: string[] = [];
   const plain = scripted(
     Array.from({ length: 20 }, () => ({ status: 404, body: { error: 'Not found' } })),
+    plainUrls,
   );
   const waited = instantClock();
-  expect(await waitForSettlement(plain, waited, PROOF, [])).toBe('unconfirmed');
-  expect(waited.slept.reduce((sum, ms) => sum + ms, 0)).toBeLessThan(30_000);
+  const plainPolls: Array<{ kind: string; saleId: string | null }> = [];
+  expect(await waitForSettlement(plain, waited, PROOF, plainPolls)).toBe('unconfirmed');
+  expect(waited.slept).toEqual(Array.from({ length: 9 }, () => 3_000));
+  expect(plainUrls).toHaveLength(10);
+  expect(plainPolls).toHaveLength(10);
+  expect(plainPolls).toEqual(
+    Array.from({ length: 10 }, () => ({ kind: 'not-found', saleId: null })),
+  );
 });

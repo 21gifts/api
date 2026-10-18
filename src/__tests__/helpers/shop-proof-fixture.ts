@@ -28,31 +28,58 @@ export function uid(n: number): string {
   return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
 }
 
+/** Id of the shop account. */
 export const ACCOUNT_ID = uid(0xa1);
+/** Id of another account. */
 export const OTHER_ACCOUNT_ID = uid(0xa2);
+/** Id of the seeded shop payment. */
 export const PAYMENT_ID = uid(1);
+/** Id of another shop payment. */
 export const OTHER_PAYMENT_ID = uid(2);
+/** Id of the seeded quote. */
 export const QUOTE_ID = uid(0x101);
+/** Id of another quote. */
 export const OTHER_QUOTE_ID = uid(0x102);
+/** Id of the Polygon USDT offer. */
 export const OFFER_USDT = uid(0x201);
+/** Id of the Polygon USDC offer. */
 export const OFFER_USDC = uid(0x202);
+/** Id of the Ethereum USDT offer. */
 export const OFFER_ETH = uid(0x203);
+/** Id of an offer of the other quote. */
 export const OFFER_OTHER = uid(0x204);
 
+/** Fake Polygon RPC endpoint. */
 export const POLYGON_RPC = 'https://rpc.polygon.test';
+/** Fake Ethereum RPC endpoint. */
 export const ETH_RPC = 'https://rpc.eth.test';
+/** Polygon USDT contract of the method table. */
 export const POLYGON_USDT = '0xc2132d05d31c914a87c6611c10748aeb04b58e8f';
+/** Polygon USDC contract of the method table. */
 export const POLYGON_USDC = '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359';
+/** Ethereum USDT contract of the method table. */
 export const ETH_USDT = '0xdac17f958d2ee523a2206206994597c13d831ec7';
+/** Deposit address of the USDT offer. */
 export const DEPOSIT_USDT = `0x${'11'.repeat(20)}`;
+/** Deposit address of the USDC offer. */
 export const DEPOSIT_USDC = `0x${'22'.repeat(20)}`;
+/** Deposit address of the Ethereum offer. */
 export const DEPOSIT_ETH = `0x${'33'.repeat(20)}`;
+/** Deposit address of the other quote's offer. */
 export const DEPOSIT_OTHER = `0x${'44'.repeat(20)}`;
+/** Address of the paying wallet. */
 export const PAYER = `0x${'55'.repeat(20)}`;
+/** Offer `amountIn` in base units. */
 export const AMOUNT_IN = '2100000';
+/** Payment hash of the seeded BOLT11. */
 export const PAYMENT_HASH = 'ab'.repeat(32);
 
-/** A transaction hash `0x` + 64 hex built from one byte. */
+/**
+ * A transaction hash `0x` + 64 hex built from one byte.
+ *
+ * @param byte - Two hex characters repeated 32 times.
+ * @returns The hash.
+ */
 export function txHash(byte: string): string {
   return `0x${byte.repeat(32)}`;
 }
@@ -330,6 +357,7 @@ export async function seed(h: Harness, payment: Partial<ShopPayment> = {}): Prom
  *
  * @param h - Harness.
  * @param rows - Rows.
+ * @throws Error when a row clashes with a unique index.
  */
 export async function insertProofs(h: Harness, ...rows: ShopProof[]): Promise<void> {
   await h.store.transaction(async (tx) => {
@@ -437,14 +465,17 @@ export function receiptJson(
  * @param bundleHash - Bundle transaction hash.
  * @param success - User-operation success.
  * @param logs - The user operation's logs.
+ * @param bundle - The nested bundle receipt's `status` and `logs`, when the
+ *   bundler sends them.
  * @returns The JSON receipt.
  */
 export function userOpReceiptJson(
   bundleHash: string,
   success: boolean,
   logs: readonly unknown[],
+  bundle: { status: string; logs: readonly unknown[] } | null = null,
 ): Record<string, unknown> {
-  return { success, receipt: { transactionHash: bundleHash }, logs };
+  return { success, receipt: { transactionHash: bundleHash, ...bundle }, logs };
 }
 
 const signer = privateKeyToAccount(`0x${'42'.repeat(32)}`);
@@ -499,6 +530,7 @@ export async function signedTransfer(
 /**
  * Collect the event names that `logEvent` printed through `console.warn`.
  *
+ * @param warn - The `console.warn` spy.
  * @returns The spy's calls as `{ event, ...fields }`.
  */
 export function loggedEvents(warn: { mock: { calls: unknown[][] } }): Record<string, unknown>[] {

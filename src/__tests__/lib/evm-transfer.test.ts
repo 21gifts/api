@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { keccak256, serializeTransaction, toRlp, type Hex } from 'viem';
+import { keccak256, parseTransaction, serializeTransaction, toRlp, type Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import {
   decodeSignedEvmTransaction,
@@ -295,7 +295,26 @@ describe('decodeSignedEvmTransaction', () => {
     expect(decodeSignedEvmTransaction(raw(signed))).toBeNull();
   });
 
-  it('rejects an EIP-4844 envelope', () => {
+  it('rejects a signed EIP-4844 transaction by its type', () => {
+    const signed = serializeTransaction(
+      {
+        type: 'eip4844',
+        chainId: 1,
+        maxFeePerGas: 1n,
+        maxFeePerBlobGas: 1n,
+        to: TOKEN,
+        data: DATA as Hex,
+        blobVersionedHashes: [`0x01${'ab'.repeat(31)}`],
+      },
+      { ...SIG, yParity: 0 },
+    );
+    // A well-formed, signed 0x03 envelope: only the type allowlist refuses it.
+    expect(signed.slice(0, 4)).toBe('0x03');
+    expect(parseTransaction(signed)).toMatchObject({ type: 'eip4844', ...SIG, yParity: 0 });
+    expect(decodeSignedEvmTransaction(raw(signed))).toBeNull();
+  });
+
+  it('rejects a 0x03 type byte followed by a legacy body', () => {
     expect(decodeSignedEvmTransaction(`03${EIP155_EXAMPLE.slice(2)}`)).toBeNull();
   });
 

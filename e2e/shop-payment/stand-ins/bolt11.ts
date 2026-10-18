@@ -70,6 +70,8 @@ export interface MintedInvoice {
  * @param description - `d` field.
  * @param expirySeconds - `x` field.
  * @param nowSeconds - Timestamp field.
+ * @returns The invoice (`pr`), its payment hash and preimage, its amount, and its expiry.
+ * @throws Error when `amountMsat` is not a positive whole number of sats.
  */
 export async function mintBolt11(
   amountMsat: number,

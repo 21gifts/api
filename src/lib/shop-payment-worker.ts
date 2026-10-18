@@ -14,6 +14,7 @@ import { verifyLightningPayment } from '@/lib/pos-paid-worker';
 import {
   SHOP_ORDER_WATCH_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
+  lockAccountOf,
   shopMethodByName,
   type ShopPayments,
 } from '@/lib/shop-payment';
@@ -82,7 +83,8 @@ const ACCEPTED_LONG_MS = 60 * 60_000;
 const acceptedLongSeen = new WeakMap<ShopPayments, Set<string>>();
 
 /**
- * Lock the account of a payment and run `run` in one transaction.
+ * Lock the account of a payment (`lockAccountOf`, which follows an account
+ * merge that moved the payment) and run `run` in one transaction.
  *
  * @param shop - Service.
  * @param paymentId - Payment id.
@@ -97,7 +99,7 @@ function underPaymentLock<T>(
   return shop.store.transaction(async (tx) => {
     const payment = await tx.getPayment(paymentId);
     if (payment !== null) {
-      await tx.lockAccount(payment.accountId);
+      await lockAccountOf(tx, paymentId, payment.accountId);
     }
     return run(tx);
   });
@@ -203,7 +205,11 @@ function normalizeTxHash(value: string): string | null {
 
 /**
  * One order of a history page: unknown orders become `detected` proofs; an
- * order recovered from one a proof holds moves that proof to it.
+ * order recovered from one a proof holds moves that proof to it, and when
+ * another row already holds the recovered order (stored as `detected` from an
+ * earlier page) the two rows merge as in step 4 of Storing and submitting,
+ * or the moved row is refused with `tx_used` when that row belongs to
+ * another offer.
  *
  * @param shop - Service.
  * @param payment - The payment read.
@@ -222,15 +228,13 @@ async function handleHistoryOrder(
   }
   const recovered = order.recoveredFromOperationId;
   const handled = await underPaymentLock(shop, payment.id, async (tx) => {
-    if ((await tx.findProofs({ providerOrder: order.id })).length > 0) {
-      return true;
-    }
-    if (recovered === null) {
-      return false;
-    }
-    const [prior] = await tx.findProofs({ providerOrder: recovered });
+    const [holder] = await tx.findProofs({ providerOrder: order.id });
+    const [prior] =
+      recovered === null || recovered === order.id
+        ? []
+        : await tx.findProofs({ providerOrder: recovered });
     if (prior === undefined) {
-      return false;
+      return holder !== undefined;
     }
     const nowMs = shop.deps.now();
     await tx.updateProof(prior.id, {}, { nextStatusAt: new Date(nowMs + SHOP_FIRST_STATUS_MS) });

@@ -15,6 +15,7 @@
 import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { expect, type APIRequestContext } from '@playwright/test';
 import type {
+  Broadcast,
   ShopBehaviour,
   ShopState,
   TransferRequest,
@@ -247,6 +248,17 @@ export class Control {
   async settleInvoice(paymentHash: string): Promise<void> {
     const res = await this.request.post(`${CONTROL_URL}/__control/invoices/${paymentHash}/settle`);
     expect(res.status()).toBe(200);
+  }
+
+  /**
+   * Every `eth_sendRawTransaction` the RPC stand-ins received.
+   *
+   * @returns The broadcasts in arrival order.
+   */
+  async broadcasts(): Promise<Broadcast[]> {
+    const res = await this.request.get(`${CONTROL_URL}/__control/broadcasts`);
+    expect(res.status()).toBe(200);
+    return ((await res.json()) as { broadcasts: Broadcast[] }).broadcasts;
   }
 
   async violations(): Promise<string[]> {

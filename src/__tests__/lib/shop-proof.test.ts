@@ -220,25 +220,37 @@ describe('handleShopProof request checks', () => {
     expect(h.orchestra.submit).not.toHaveBeenCalled();
   });
 
-  it('without shop config answers a stored row as it stands and a new proof 404', async () => {
+  it('without shop config answers a stored row as it stands and a new proof 503', async () => {
     const h = harness({ config: false });
     await seed(h);
     await insertProofs(
       h,
       proofRow({ txHash: H1, logIndex: null, source: 'detected', transferAmount: null }),
+      proofRow({ id: uid(0x402), txHash: txHash('a3'), result: 'accepted', providerOrder: 'o1' }),
     );
     expect((await prove(h, { tx: H1 })).status).toBe(503);
-    expect(await answer(await prove(h, { tx: H2 }))).toMatchObject({
-      status: 404,
-      body: { reason: 'Quote expired' },
+    expect(await answer(await prove(h, { tx: txHash('a3') }))).toEqual({
+      status: 200,
+      body: { txId: txHash('a3') },
     });
+    expect(await answer(await prove(h, { tx: H2 }))).toMatchObject({
+      status: 503,
+      body: { reason: 'Payment is being confirmed' },
+    });
+    expect(await proofsOf(h)).toHaveLength(2);
     expect(h.rpcCalls).toEqual([]);
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
   });
 
-  it('answers 404 for a method whose chain has no RPC endpoint', async () => {
+  it('answers 503 for a new proof of a method whose chain has no RPC endpoint', async () => {
     const h = harness();
     await seed(h);
-    expect((await prove(h, { method: 'base', tx: H1 })).status).toBe(404);
+    expect(await answer(await prove(h, { method: 'base', tx: H1 }))).toMatchObject({
+      status: 503,
+      body: { reason: 'Payment is being confirmed' },
+    });
+    expect(await proofsOf(h)).toEqual([]);
+    expect(h.rpcCalls).toEqual([]);
   });
 });
 
@@ -302,6 +314,19 @@ describe('handleShopProof with tx', () => {
     ]);
   });
 
+  it('takes the fallback log in receipt order across the offers of the method', async () => {
+    const h = harness();
+    await seed(h);
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [
+      usdtLog(5n, 2),
+      transferLog(POLYGON_USDC, DEPOSIT_USDC, 7n, 1),
+    ]);
+    await prove(h, { tx: H1, asset: null });
+    expect(
+      (await proofsOf(h)).map((row) => [row.offerId, row.logIndex, row.transferAmount]),
+    ).toEqual([[OFFER_USDC, 1, '7']]);
+  });
+
   it('counts only offers of the requested asset', async () => {
     const h = harness();
     await seed(h);
@@ -332,6 +357,26 @@ describe('handleShopProof with tx', () => {
       'eth_getTransactionReceipt',
       'eth_getUserOperationReceipt',
     ]);
+  });
+
+  it('caps a quote at 4 lookup rows, done ones included', async () => {
+    const h = harness();
+    await seed(h);
+    for (const byte of ['c1', 'c2', 'c3', 'c4']) {
+      await prove(h, { tx: txHash(byte) });
+    }
+    await h.store.transaction(async (tx) => {
+      for (const row of await tx.dueLookups(T0 + 60_000, 10)) {
+        await tx.updateLookup(row.id, { doneAt: new Date(T0) });
+      }
+    });
+    expect(await answer(await prove(h, { tx: txHash('c5') }))).toMatchObject({
+      status: 503,
+      body: { reason: 'Transfer not found yet' },
+    });
+    expect(
+      await h.store.transaction((tx) => tx.findLookup(137, txHash('c5'), QUOTE_ID)),
+    ).toBeNull();
   });
 
   it('counts an RPC failure as not found', async () => {
@@ -372,6 +417,16 @@ describe('handleShopProof with tx', () => {
       result: userOpReceiptJson(BUNDLE, false, [usdtLog()]),
     });
     expect((await prove(h, { tx: H2 })).status).toBe(400);
+    h.rpc['eth_getUserOperationReceipt'] = () => ({
+      result: userOpReceiptJson(BUNDLE, false, [usdtLog()], {
+        status: '0x1',
+        logs: [usdtLog(BigInt(AMOUNT_IN), 7)],
+      }),
+    });
+    expect(await answer(await prove(h, { tx: txHash('a4') }))).toMatchObject({
+      status: 400,
+      body: { reason: 'Payment was not accepted' },
+    });
     h.rpc['eth_getTransactionReceipt'] = receiptFor(txHash('a3'), [
       transferLog(POLYGON_USDT, DEPOSIT_OTHER, 1n, 1),
       transferLog(ETH_USDT, DEPOSIT_USDT, 1n, 2),
@@ -397,6 +452,21 @@ describe('handleShopProof with tx', () => {
     expect((await answer(await prove(h, { tx: H1 }))).body['reason']).toBe(
       'Transaction already used',
     );
+  });
+
+  it('takes a successful user operation from a bundle whose own status is 0x0, with its own log', async () => {
+    const h = harness();
+    await seed(h);
+    h.rpc['eth_getUserOperationReceipt'] = () => ({
+      result: userOpReceiptJson(BUNDLE, true, [usdtLog(BigInt(AMOUNT_IN), 4)], {
+        status: '0x0',
+        logs: [usdtLog(BigInt(AMOUNT_IN), 9)],
+      }),
+    });
+    expect((await prove(h, { tx: H1 })).status).toBe(503);
+    expect(await proofsOf(h)).toEqual([
+      expect.objectContaining({ txHash: BUNDLE, userOpHash: H1, logIndex: 4 }),
+    ]);
   });
 
   it('verifies a user-operation hash and finds it again by user_op_hash', async () => {
@@ -453,6 +523,35 @@ describe('handleShopProof with tx', () => {
       result: 'accepted',
     });
     expect(h.orchestra.submit).not.toHaveBeenCalled();
+  });
+
+  it('leaves the lookup row open when storing the proof fails', async () => {
+    const h = harness();
+    await seed(h);
+    await prove(h, { tx: H1 });
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+    const original = h.store.transaction.bind(h.store);
+    vi.spyOn(h.store, 'transaction').mockImplementation((run) =>
+      original((tx) =>
+        run(
+          new Proxy(tx, {
+            get(target, key) {
+              if (key === 'insertProof') {
+                return () => Promise.reject(new Error('store down'));
+              }
+              const value: unknown = Reflect.get(target, key);
+              return typeof value === 'function' ? value.bind(target) : value;
+            },
+          }),
+        ),
+      ),
+    );
+    await expect(prove(h, { tx: H1 })).rejects.toThrow('store down');
+    vi.mocked(h.store.transaction).mockRestore();
+    expect(
+      (await h.store.transaction((tx) => tx.findLookup(137, H1, QUOTE_ID)))?.doneAt,
+    ).toBeNull();
+    expect(await proofsOf(h)).toEqual([]);
   });
 
   it('closes an open lookup row once the receipt is found, and leaves a done one', async () => {
@@ -576,29 +675,53 @@ describe('handleShopProof repeats', () => {
     expect(h.orchestra.submit.mock.calls[0]?.[3]).toBe('proof-repeat');
   });
 
-  it('answers from the row as last read when the receipt merged it into another row', async () => {
+  it.each([
+    ['a held kept row with 503', 'refunding', 503],
+    ['an accepted kept row with 200', 'processing', 200],
+  ])(
+    'answers from the kept row when the receipt merged the row away: %s',
+    async (_name, orderStatus, status) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(
+        h,
+        proofRow({
+          id: uid(0x4f1),
+          source: 'detected',
+          txHash: H1,
+          logIndex: null,
+          transferAmount: null,
+        }),
+        proofRow({
+          id: uid(0x4f2),
+          txHash: H1,
+          providerOrder: 'o1',
+          orderStatus,
+          createdAt: new Date(T0 + 1),
+        }),
+      );
+      h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+      expect((await prove(h, { tx: H1 })).status).toBe(status);
+      expect((await proofsOf(h)).map((row) => row.id)).toEqual([uid(0x4f2)]);
+      expect(h.orchestra.submit).not.toHaveBeenCalled();
+    },
+  );
+
+  it('answers from the row as last read when no row of its offer and transaction is left', async () => {
     const h = harness();
     await seed(h);
     await insertProofs(
       h,
-      proofRow({
-        id: uid(0x4f1),
-        source: 'detected',
-        txHash: H1,
-        logIndex: null,
-        transferAmount: null,
-      }),
-      proofRow({
-        id: uid(0x4f2),
-        txHash: H1,
-        providerOrder: 'o1',
-        orderStatus: 'refunding',
-        createdAt: new Date(T0 + 1),
-      }),
+      proofRow({ source: 'detected', txHash: H1, logIndex: null, transferAmount: null }),
     );
-    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
-    expect((await prove(h, { tx: H1 })).status).toBe(503);
-    expect((await proofsOf(h)).map((row) => row.id)).toEqual([uid(0x4f2)]);
+    h.rpc['eth_getTransactionReceipt'] = () => {
+      void h.store.transaction((tx) => tx.deleteProof(uid(0x401)));
+      return { result: null };
+    };
+    expect(await answer(await prove(h, { tx: H1 }))).toMatchObject({
+      status: 503,
+      body: { reason: 'Payment is being confirmed' },
+    });
     expect(h.orchestra.submit).not.toHaveBeenCalled();
   });
 
@@ -862,6 +985,63 @@ describe('storeProof', () => {
     expect(proof).toMatchObject({ id: uid(0x401), providerOrder: 'o1', result: 'accepted' });
   });
 
+  it('stores a second order of the same transaction and offer in its own row', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(h, proofRow({ txHash: H1, providerOrder: 'o1', orderStatus: 'processing' }));
+    const detected = {
+      ...candidate,
+      source: 'detected' as const,
+      logIndex: null,
+      transferAmount: null,
+      order: { orderId: 'o2', status: 'processing' },
+    };
+    const second = await storeProof(h.shop, detected);
+    expect(second.created).toBe(true);
+    expect(second.proof).toMatchObject({ logIndex: null, providerOrder: 'o2' });
+    expect((await proofsOf(h)).map((row) => row.providerOrder).sort()).toEqual(['o1', 'o2']);
+    const third = await storeProof(h.shop, {
+      ...detected,
+      order: { orderId: 'o3', status: 'processing' },
+    });
+    expect(third).toEqual({ proof: second.proof, created: false });
+    expect((await proofsOf(h)).map((row) => row.providerOrder).sort()).toEqual(['o1', 'o2']);
+  });
+
+  it('reuses an unlogged row without an order for an order, and any unlogged row for hex', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ txHash: H1, providerOrder: 'o1', orderStatus: 'processing' }),
+      proofRow({
+        id: uid(0x402),
+        source: 'hex',
+        txHash: H1,
+        logIndex: null,
+        rawHex: 'ab',
+        createdAt: new Date(T0 + 1),
+      }),
+    );
+    const order = { orderId: 'o2', status: 'refunding' };
+    const { proof } = await storeProof(h.shop, {
+      ...candidate,
+      source: 'detected',
+      logIndex: null,
+      transferAmount: null,
+      order,
+    });
+    expect(proof).toMatchObject({ id: uid(0x402), providerOrder: 'o2' });
+    expect(
+      await storeProof(h.shop, {
+        ...candidate,
+        source: 'hex',
+        logIndex: null,
+        rawHex: 'ab',
+      }),
+    ).toEqual({ proof, created: false });
+  });
+
   it('answers a lost insert from the winning row', async () => {
     const h = harness();
     await seed(h);
@@ -1020,15 +1200,23 @@ describe('merging two rows of one deposit', () => {
     });
   });
 
-  it('leaves an accepted row to its order when the successor belongs to another offer', async () => {
+  it('refuses an accepted row with tx_used when the successor belongs to another offer, and ends its payment', async () => {
     const h = harness();
-    await seed(h);
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
     const accepted = proofRow({
       id: uid(0x4e1),
       txHash: H1,
       providerOrder: 'o1',
-      orderStatus: 'processing',
+      orderStatus: 'refunding',
       result: 'accepted',
+      nextReceiptAt: new Date(T0),
+    });
+    const failed = proofRow({
+      id: uid(0x4e3),
+      txHash: txHash('a3'),
+      providerOrder: 'o3',
+      orderStatus: 'failed',
+      result: 'failed',
     });
     await insertProofs(
       h,
@@ -1038,11 +1226,22 @@ describe('merging two rows of one deposit', () => {
         offerId: OFFER_USDC,
         txHash: H2,
         providerOrder: 'o2',
-        orderStatus: 'processing',
+        orderStatus: 'refunding',
       }),
+      failed,
     );
     const after = await h.store.transaction((tx) => followProofOrder(tx, accepted, 'o2', T0));
-    expect(after).toEqual(accepted);
+    expect(after).toMatchObject({
+      id: uid(0x4e1),
+      providerOrder: 'o1',
+      result: 'refused',
+      refusal: 'tx_used',
+      nextReceiptAt: null,
+    });
+    expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+    expect((await getProof(h, uid(0x4e2)))?.providerOrder).toBe('o2');
+    const kept = await h.store.transaction((tx) => followProofOrder(tx, failed, 'o2', T0));
+    expect(kept).toMatchObject({ id: uid(0x4e3), providerOrder: 'o3', result: 'failed' });
   });
 
   it('follows a successor order, or merges into the row that holds it', async () => {
@@ -1072,15 +1271,20 @@ describe('merging two rows of one deposit', () => {
     const moved = await h.store.transaction((tx) => followProofOrder(tx, first, 'o2', T0 + 1_000));
     expect(moved).toMatchObject({
       providerOrder: 'o2',
-      orderStatus: 'processing',
+      orderStatus: null,
       nextStatusAt: new Date(T0 + 1_000),
+      result: null,
     });
-    const merged = await h.store.transaction((tx) => followProofOrder(tx, moved, 'o3', T0 + 2_000));
+    const merged = await h.store.transaction((tx) =>
+      followProofOrder(tx, { ...moved, orderStatus: 'processing' }, 'o3', T0 + 2_000),
+    );
     expect(merged).toMatchObject({
       id: uid(0x4e1),
       providerOrder: 'o3',
-      orderStatus: 'processing',
+      orderStatus: 'refunding',
+      result: null,
     });
+    expect((await answer(proofResponse(merged))).status).toBe(503);
     expect(await proofsOf(h)).toHaveLength(1);
   });
 
@@ -1129,6 +1333,22 @@ describe('submitProofAttempt', () => {
     expect((await submitProofAttempt(off.shop, uid(0x401), 'watcher', T0 + 5_000)).sent).toBe(
       false,
     );
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
+  });
+
+  it('starts no submit once the deadline passed during the slot claim', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(h, proofRow());
+    const readings = [T0];
+    Object.defineProperty(h.clock, 'now', {
+      get: () => readings.shift() ?? T0 + 5_000,
+      configurable: true,
+    });
+    expect(await submitProofAttempt(h.shop, uid(0x401), 'proof-first', T0 + 5_000)).toEqual({
+      proof: expect.objectContaining({ id: uid(0x401), lastSubmitAt: new Date(T0) }),
+      sent: false,
+    });
     expect(h.orchestra.submit).not.toHaveBeenCalled();
   });
 

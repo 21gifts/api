@@ -399,7 +399,10 @@ stays on `GET /.well-known/nostr.json` only.
 Every error body on this route has the five fields of the shop payment
 error body ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)):
 `statusCode`, `message`, `error`, `status` (`ERROR`), and `reason`, the
-last four except `status` carrying the same text.
+last four except `status` carrying the same text. The one exception is the
+404 for no pending payment (under `timeout` below): it adds the shop's
+OpenCryptoPay fields, and its `error` is `Not Found` while `message` and
+`reason` are `No pending payment found`, as in the standard's example.
 
 Username invalid (`normalizeUsername` returns null), unknown
 (`getAccountByUsername` undefined), an account without a verified wallet,
@@ -428,7 +431,7 @@ For a verified wallet key, the LNURL server being unreachable, another
 non-2xx status, unparsable JSON, or a document `walletPayRequest` rejects
 → **Response** `503` with the text `Lightning Address could not be resolved`.
 
-Success → **Response** `200`. When the LNURL server does not resolve, the
+Success → **Response** `200`. When the LNURL server is not configured, the
 route is the 404 above. When it resolves, the shop payment rules below
 decide between today's pay request and the OpenCryptoPay pay request.
 
@@ -436,9 +439,10 @@ decide between today's pay request and the OpenCryptoPay pay request.
 metadata are not rewritten. A waiting charge rewrites only `minSendable`
 and `maxSendable`, both to the charge amount in millisats. A waiting charge
 is an unexpired pending till charge with no shop payment, or whose shop
-payment is `open` or `ended`. A pending charge whose shop payment is
-`accepted` or `paid` does not pin, so the response is the unpinned pay
-request, and any LNURL wallet can still pay the sticker.
+payment is `ended`. A charge whose shop payment is `open` is answered as
+the open amount below. A pending charge whose shop payment is `accepted` or `paid` does not pin, so
+the response is the unpinned pay request, and any LNURL wallet can still
+pay the sticker.
 
 **Open amount.** The account's open amount is its shop payment whose
 status is `open` while `now` is before its `window_ends_at`. An account has
@@ -480,21 +484,27 @@ had fewer than 4 replacements, and stablecoin rows are on for the
 username. The replacement runs under the account's creation lock, within
 4 s: route list, Orchestra quotes, and offer checks for the same sats and
 the same BOLT11. It then increments `shop_payment.replacements` with one
-conditional update (`status` `open`, `replacements` unchanged, more than
+conditional update (`status` `open`, `replacements` unchanged, at least
 45 s left in the window) and inserts the new quote only when that update
 changed the row; otherwise it answers with the quote that is current then.
 When no new offer passes, the new quote is Lightning-only (its expiry is
 `window_ends_at`); a Lightning-only quote is never replaced. A current quote
 whose expiry has passed and that is not replaced gets a new Lightning-only
 quote row, which is not a replacement. `quote.payment` never changes for a
-payment. When the payment stops being open between these steps, the
-response is today's unpinned pay request.
+payment. When the payment stops being `open` between these steps, the api
+reads the account's state again and answers as without an open amount from
+it: a charge that is still waiting keeps today's pinned pay request, and
+anything else gets today's unpinned one (or, with `timeout` or `method`,
+the 404 for no pending payment).
 
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
 for the username, and waits for it until 8 s after the request started.
-When the payment exists by then, the response is the open-amount pay
-request. Otherwise it is today's pinned pay request.
+Whatever the outcome (a payment, a skipped or failed creation, a charge
+cancelled, paid, or expired meanwhile, or the 8 s used up), the api then
+reads the account's state again and answers from it: the open-amount pay
+request when the payment is open by then, today's pinned pay request while
+the charge is still waiting, and otherwise today's unpinned one.
 
 **`timeout`.** When the query has `timeout` (any value, also empty), the
 value is a whole number of seconds: only digits count, values above 10
@@ -719,7 +729,7 @@ waits for the first:
 
 1. In one transaction, end a lapsed `open` payment of the account with
    `end_reason` `window`. For a charge, stop with its existing shop
-   payment, or when the charge is no longer pending and unexpired. For a
+   payment, or when the charge is no longer pending or has expired. For a
    payer, stop with 409 `payment_open` when a charge is pending.
 2. Stop unless stablecoin rows are on for the username, unless the
    account's 60 s no-pair wait has passed, and unless the api-wide counter
@@ -755,17 +765,23 @@ waits for the first:
 7. None kept → stop and start the 60 s no-pair wait.
 8. In one transaction under the account row lock (`SELECT … FOR UPDATE`),
    and for a charge also the charge row lock: a charge that is no longer
-   pending and unexpired gets nothing; a payer with a pending charge gets
-   409 `payment_open`. An `open` payment of the account ends (`window` when
-   its window passed, else `superseded` for a charge or `replaced` for a
-   payer), then the payment is inserted with its first quote and offers.
+   pending or has expired gets nothing; a payer with a pending charge gets
+   409 `payment_open`. When the account's `open` payment is this charge's
+   own payment, it is used and nothing is inserted. Before anything is
+   ended, the payment that holds the BOLT11's payment hash is read: this
+   charge's own payment is used; any other holder rolls the whole
+   transaction back, logs `shop.alert.duplicate_invoice`, deletes the
+   charge invoice row only when step 4 of this attempt inserted it, and
+   ends as a failed mint, so nothing else is written and an `open` payment
+   stays `open`. Otherwise an `open` payment of the account ends (`window`
+   when its window passed, else `superseded` for a charge or `replaced` for
+   a payer), then the payment is inserted with its first quote and offers.
    The window ends at the charge's `expiresAt`, or five minutes after
    creation for a payer. An offer whose deposit address another offer holds
    is dropped (`shop.alert.shared_deposit_address`) and the quote holds only
    the inserted offers. A lost insert on the payment hash that the charge's
-   own payment holds uses that payment; another holder logs
-   `shop.alert.duplicate_invoice`, deletes the charge invoice row that step
-   4 inserted, and ends as a failed mint.
+   own payment holds uses that payment; a holder that appeared after the
+   check rolls back as above, including the end of the `open` payment.
 
 Every external call runs outside a database transaction. The quote expiry
 (`quote.expiration`) is the earliest of `window_ends_at` and every offer's
@@ -870,7 +886,10 @@ rate limit gets **Response** `503` `Too many requests` for every case
 above and for a proof that is not stored yet; a stored proof is answered
 from its row as it stands. Without the stablecoin configuration or without
 an RPC endpoint for the method's chain, a stored proof is answered as it
-stands and a new one → **Response** `404` `Quote expired`.
+stands and a new one → **Response** `503` `Payment is being confirmed`,
+with nothing stored or sent: the quote is this username's, only its
+verification cannot run now, and the wallet retries. 404 `Quote expired`
+stays bound to quote membership.
 
 The whole request stays within 18 s; each RPC call times out after 3 s and
 Orchestra gets at most 10 s. A step the budget no longer allows is left to
@@ -893,8 +912,8 @@ A hash only proofs of other quotes hold is not a repeat.
 
 **Verification of `tx`.** `eth_getTransactionReceipt`, else
 `eth_getUserOperationReceipt` with the same hash; a failed RPC call counts
-as not found. Neither found → a lookup row (at most 4 open rows per quote,
-counted under the quote's row lock) and **Response** `503`
+as not found. Neither found → a lookup row (at most 4 rows per quote, done
+ones included, counted under the quote's row lock) and **Response** `503`
 `Transfer not found yet`; the watcher keeps looking. A receipt that did not succeed (`status` not
 `0x1`, or a user operation whose `success` is not `true`) → **Response**
 `400` `Payment was not accepted`. The ERC-20 `Transfer` logs to an offer's
@@ -952,6 +971,41 @@ already paid, is held and answers 503 until its order is final. Acceptance
 moves the payment to `accepted`, so it stops being the open amount and the
 next pay-link poll with `timeout` is the 404 for no pending payment.
 `txId` is the transaction hash; Orchestra's order id is never sent.
+
+A `completed` order makes its proof `accepted` (from unresolved,
+`superseded`, `late`, `refused`, or `stuck`) and, in the same transaction,
+makes the proof that was accepted first `superseded`. The other final
+statuses map as follows: `refunded` → `refunded`, `failed` and
+`fallback_delivered` → `failed` (`shop.alert.order_failed`), and `expired`
+→ `refused` with `refusal` `expired_order`; each moves only from the
+results the States table allows. A progressing order of a proof whose
+payment is already closed makes the proof `late`
+(`shop.alert.late_deposit`). When the proof that was `accepted` leaves
+`accepted`, another eligible proof of the payment takes its place, or else
+the payment ends (`orchestra_refunded`, `orchestra_failed`, or
+`proof_refused`). The amount of a `hex` proof is the amount in its
+verified transfer `data`; a `tx` or `detected` proof's is the value of its
+`Transfer` log.
+
+**One deposit, two rows.** Every path that stores a proof (the route, the
+lookup duty, and the order duty) first reuses a stored row of the same
+offer and transaction, which takes a missing log index, value,
+user-operation hash, or order. An order goes only to a row that has none:
+a second order of the same transaction and offer gets its own row, and
+while an unlogged row of that offer and transaction still exists, the
+order is stored on a later history read, once that row has its log index.
+When a submit or a filled-in log index or order shows that two rows hold
+one deposit, rows of the same offer merge in one transaction: the
+`accepted` row is kept, else the row that holds an order, else the older
+one; it takes the log index,
+value, and order of the other row that it lacks, and the order's status
+travels with `provider_order`. When the other row belongs to another offer, the newer
+row is recorded `refused` with `refusal` `tx_used`, from any result the
+States table allows for `refused`; an `accepted` one included, which lets
+another proof take its place or ends the payment with `proof_refused`.
+Following `supersededByOperationId` moves a proof to the successor order
+with its status unknown (the proof is held) until the next status read,
+which is due at once; the predecessor's status is never carried over.
 
 ### `GET /lnurlp/wait/:payment`
 
@@ -1036,7 +1090,11 @@ rows by their own next-try column, oldest first:
    charge watch (`verifyLightningPayment`) for payments that are neither
    paid nor closed, `accepted` and charge-backed payments first, every 5 s
    for 15 minutes after creation, then every 30 s, and a final read 10
-   minutes after the BOLT11 expiry. Settled → `paid`, and `markPaid` for its
+   minutes after the BOLT11 expiry. Each read is applied under the lock of
+   the payment's account; when an account merge moved the payment between
+   the unlocked read and the lock, the account it moved to is locked
+   instead (`lockAccountOf`, at most two locks; a payment still moving is
+   left for the next tick). Settled → `paid`, and `markPaid` for its
    charge (a charge already paid by another invoice logs
    `shop.alert.double_settled`; a cancelled charge logs
    `shop.alert.cancelled_settled` and stays cancelled). Only a successful
@@ -1056,19 +1114,23 @@ rows by their own next-try column, oldest first:
    node still does not know it 10 minutes after its first send.
 6. **Submits:** unresolved proofs after 10 s, 30 s, and 60 s, then every
    5 min.
-7. **Stuck proofs:** an unresolved proof 24 h after it was stored becomes
-   `stuck` (`shop.alert.proof_stuck`); `POST /debug/shop-proofs/:id/retry`
-   moves it back.
+7. **Stuck proofs:** an unresolved proof past its `give_up_at` (24 h after
+   it was stored, or after an operator retry) becomes `stuck`
+   (`shop.alert.proof_stuck`); `POST /debug/shop-proofs/:id/retry` moves it
+   back.
 8. **Order status** (even ticks): Orchestra status by order id every 10 s
    for 10 minutes, then every 60 s, until a final status or 24 h after the
    order was found (`shop.alert.order_stuck`). An order with
-   `supersededByOperationId` is followed by its successor.
+   `supersededByOperationId` is followed by its successor, whose status the
+   next read fetches (see One deposit, two rows).
 
 A rejecting tick logs `shop.worker.tick.failed`.
 
 Orchestra calls also count against the in-process budgets per minute:
 quotes 240, submits 30 (proof requests at most 20), status and history
-reads 50 together.
+reads 50 together. An HTTP 429 pauses only the endpoint that answered it,
+until its `Retry-After` (seconds) or else its `X-RateLimit-Reset` (epoch
+ms): status and history pause separately although they share one budget.
 
 ### `GET /pos`
 

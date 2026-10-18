@@ -1,6 +1,6 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
-import type { FetchFn } from '@/lib/lnurlp';
+import { LNURLP_METADATA_TIMEOUT_MS, type FetchFn } from '@/lib/lnurlp';
 
 const ADDRESS = 'alice@example.com';
 const PR = 'lnbc10n1ptest';
@@ -226,6 +226,30 @@ describe('requestGiftInvoice', () => {
       };
     }
 
+    it('hands the resolve the time left, and the callback what is left after the resolve', async () => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      const seen: Seen[] = [];
+      let clock = 1_000;
+      const result = await requestGiftInvoice({
+        address: ADDRESS,
+        amountMsat: 1000,
+        fetchImpl: provider(seen, () => {
+          clock += 2_500;
+        }),
+        deadlineMs: 10_000,
+        now: () => clock,
+      });
+      expect(result).toEqual({ ok: true, pr: PR });
+      expect(seen).toHaveLength(2);
+      // The resolve's own metadata timeout, then the wrapper's: resolve at
+      // 1000 gets 9000 ms, the callback at 3500 gets 6500 ms.
+      expect(timeout.mock.calls).toEqual([[LNURLP_METADATA_TIMEOUT_MS], [9_000], [6_500]]);
+      // The wrapper's signal replaces the resolve's own on the wire.
+      expect(seen[0]?.init?.signal).toBe(timeout.mock.results[1]?.value);
+      expect(seen[1]?.init?.signal).toBe(timeout.mock.results[2]?.value);
+      timeout.mockRestore();
+    });
+
     it('hands both calls an abort signal and keeps their other options', async () => {
       const seen: Seen[] = [];
       const result = await requestGiftInvoice({
@@ -273,6 +297,20 @@ describe('requestGiftInvoice', () => {
       expect(seen.map((call) => call.url)).toEqual([
         'https://example.com/.well-known/lnurlp/alice',
       ]);
+    });
+
+    it('without a deadline, sets no timeout of its own on either call', async () => {
+      const timeout = vi.spyOn(AbortSignal, 'timeout');
+      const seen: Seen[] = [];
+      expect(
+        await requestGiftInvoice({ address: ADDRESS, amountMsat: 1000, fetchImpl: provider(seen) }),
+      ).toEqual({ ok: true, pr: PR });
+      expect(seen).toHaveLength(2);
+      // Only the resolve's own metadata timeout applies; the callback gets none.
+      expect(timeout.mock.calls).toEqual([[LNURLP_METADATA_TIMEOUT_MS]]);
+      expect(seen[0]?.init?.signal).toBe(timeout.mock.results[0]?.value);
+      expect(seen[1]?.init?.signal).toBeUndefined();
+      timeout.mockRestore();
     });
 
     it('defaults the clock to Date.now', async () => {

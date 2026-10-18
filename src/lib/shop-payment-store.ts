@@ -427,8 +427,11 @@ export interface ShopTx {
   /** Proofs due for a watcher duty at `nowMs`, at most `limit`. */
   dueProofs(duty: ShopProofDuty, nowMs: number, limit: number): Promise<ShopProof[]>;
 
-  /** Lookup rows of a quote that are not done. */
-  countOpenLookups(quoteId: string): Promise<number>;
+  /**
+   * Every lookup row of a quote, done or not: the count the cap of 4 lookup
+   * rows per quote is checked against.
+   */
+  countLookups(quoteId: string): Promise<number>;
   /**
    * Insert a lookup row.
    *
@@ -1075,9 +1078,9 @@ class InMemoryShopTx implements ShopTx {
     );
   }
 
-  /** Lookups of the quote without `doneAt`. */
-  async countOpenLookups(quoteId: string): Promise<number> {
-    return this.#t.lookups.filter((row) => row.quoteId === quoteId && row.doneAt === null).length;
+  /** Lookups of the quote, done or not. */
+  async countLookups(quoteId: string): Promise<number> {
+    return this.#t.lookups.filter((row) => row.quoteId === quoteId).length;
   }
 
   /** Store a copy unless the id or `(chainId, hash, quoteId)` exists. */
@@ -2059,16 +2062,16 @@ LIMIT $2`,
     return rows.map(mapProof);
   }
 
-  /** `count(*)` of the quote's lookups with `done_at IS NULL`. */
-  async countOpenLookups(quoteId: string): Promise<number> {
+  /** `count(*)` of every lookup row of the quote, done or not. */
+  async countLookups(quoteId: string): Promise<number> {
     if (!UUID_PATTERN.test(quoteId)) {
       return 0;
     }
-    const rows = await this.#tx.query<{ open: SqlInt }>(
-      `SELECT count(*) AS open FROM shop_proof_lookup WHERE quote_id = $1 AND done_at IS NULL`,
+    const rows = await this.#tx.query<{ total: SqlInt }>(
+      `SELECT count(*) AS total FROM shop_proof_lookup WHERE quote_id = $1`,
       [quoteId],
     );
-    return Number(rows[0]?.open ?? 0);
+    return Number(rows[0]?.total ?? 0);
   }
 
   /** `INSERT … ON CONFLICT DO NOTHING RETURNING id`. */

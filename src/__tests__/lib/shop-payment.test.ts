@@ -1619,6 +1619,31 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     });
   });
 
+  it('refuseProof: tx_used refuses an accepted proof and ends the payment with proof_refused when no other proof takes over', async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    const p = await addProof(w, {
+      result: 'accepted',
+      providerOrder: crypto.randomUUID(),
+      orderStatus: 'refunding',
+    });
+    const after = await w.h.store.transaction((tx) => refuseProof(tx, p.id, 'tx_used', clock));
+    expect(after).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      resolvedAt: new Date(clock),
+      nextSubmitAt: null,
+    });
+    expect(await proof(w, p.id)).toMatchObject({ result: 'refused', refusal: 'tx_used' });
+    expect(await readPayment(w.h, w.payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'proof_refused',
+      endedAt: new Date(clock),
+    });
+    expect(eventsNamed('shop.proof.refused').map((entry) => entry.fields)).toEqual([
+      { paymentId: w.payment.id, proofId: p.id, refusal: 'tx_used' },
+    ]);
+  });
+
   it('refuseProof: another proof with a progressing order takes over; the payment stays accepted', async () => {
     const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
     const p = await addProof(w, {
@@ -1637,7 +1662,7 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
   });
 
-  it('refuseProof: a refused proof whose own order is progressing is accepted again by the table row', async () => {
+  it('refuseProof: a refused proof whose own order is progressing stays refused and the payment ends', async () => {
     const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
     const p = await addProof(w, {
       result: 'accepted',
@@ -1646,8 +1671,10 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     });
     await w.h.store.transaction((tx) => refuseProof(tx, p.id, 'hex_rejected', clock));
     expect(eventsNamed('shop.proof.refused')).toHaveLength(1);
-    expect((await proof(w, p.id)).result).toBe('accepted');
-    expect((await readPayment(w.h, w.payment.id)).status).toBe('accepted');
+    expect((await proof(w, p.id)).result).toBe('refused');
+    const ended = await readPayment(w.h, w.payment.id);
+    expect(ended.status).toBe('ended');
+    expect(ended.endReason).toBe('proof_refused');
   });
 });
 
@@ -1874,7 +1901,21 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(first.kind).toBe('payment');
     expect(second.kind).toBe('payment');
     const firstId = first.kind === 'payment' ? first.payment.id : '';
-    expect(await readPayment(h, firstId)).toMatchObject({ status: 'ended', endReason: 'replaced' });
+    const secondId = second.kind === 'payment' ? second.payment.id : '';
+    expect(firstId).not.toBe(secondId);
+    expect(await readPayment(h, firstId)).toMatchObject({
+      amountSats: 1000,
+      status: 'ended',
+      endReason: 'replaced',
+      endedAt: new Date(T0),
+    });
+    expect(await readPayment(h, secondId)).toMatchObject({
+      amountSats: 2000,
+      status: 'open',
+      endReason: null,
+    });
+    expect((await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID)))?.id).toBe(secondId);
+    expect(h.net.issued).toHaveLength(2);
   });
 
   it('step 2 ends a lapsed open payment with window and stops for a charge that is no longer pending', async () => {
@@ -2302,22 +2343,36 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const payer = await payerPayment(h);
     const charge = chargeRow();
     await h.pos.create(charge);
-    await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge);
+    expect(created).toMatchObject({
+      kind: 'payment',
+      payment: { posChargeId: charge.id, status: 'open', amountSats: CHARGE_SATS },
+    });
+    expect(created.kind === 'payment' && created.payment.id).not.toBe(payer.id);
     expect(await readPayment(h, payer.id)).toMatchObject({
       status: 'ended',
       endReason: 'superseded',
     });
 
+    // The payer's window lapses while the charge's quotes run: `window`.
     const h2 = await setup();
     const lapsing = await payerPayment(h2);
+    const charge2 = chargeRow({ expiresAt: new Date(T0 + 299_000 + POS_CHARGE_TTL_MS) });
     clock = T0 + 299_000;
+    await h2.pos.create(charge2);
     h2.orchestra.onQuote = async () => {
+      h2.orchestra.onQuote = null;
       clock = T0 + 300_000;
     };
-    await payerPayment(h2);
+    const created2 = await h2.svc.createForCharge(h2.account, USER, charge2);
+    expect(created2).toMatchObject({
+      kind: 'payment',
+      payment: { posChargeId: charge2.id, status: 'open' },
+    });
     expect(await readPayment(h2, lapsing.id)).toMatchObject({
       status: 'ended',
       endReason: 'window',
+      endedAt: new Date(T0 + 300_000),
     });
   });
 
@@ -2430,6 +2485,100 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       );
     };
     expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+  });
+
+  it('step 8: a held hash writes nothing else: the payer’s earlier open payment stays open', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    const hash = nextHash();
+    h.net.nextHash = hash;
+    const holder = paymentRow({
+      accountId: crypto.randomUUID(),
+      paymentHash: hash,
+      status: 'paid',
+      paidAt: new Date(clock),
+    });
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      await h.store.transaction((tx) => tx.insertPayment(holder));
+    };
+    expect(await h.svc.createForPayer(h.account, USER, 2000)).toEqual({ kind: 'mint_failed' });
+    expect(await readPayment(h, earlier.id)).toMatchObject({
+      status: 'open',
+      endReason: null,
+      endedAt: null,
+    });
+    expect((await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID)))?.id).toBe(earlier.id);
+    expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: holder.id },
+    ]);
+  });
+
+  it.each([true, false])(
+    'step 8: a hash another account takes after the check rolls back the end of the open payment (charge invoice inserted by us: %s)',
+    async (insertedByUs) => {
+      const h = await setup();
+      const earlier = await payerPayment(h);
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      const hash = nextHash();
+      if (!insertedByUs) {
+        await h.pos.recordInvoice(charge.id, hash, clock);
+      }
+      h.net.nextHash = hash;
+      const holder = paymentRow({ accountId: crypto.randomUUID(), paymentHash: hash });
+      h.store.hooks.insertPayment = async (tx) => {
+        // The other account's insert commits between the check and this insert.
+        await tx.insertPayment(holder);
+        return false;
+      };
+      expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'mint_failed' });
+      delete h.store.hooks.insertPayment;
+      expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+      expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+        { paymentId: holder.id },
+      ]);
+      expect((await h.pos.findChargeForPayment({ paymentHash: hash }))?.id).toBe(
+        insertedByUs ? undefined : charge.id,
+      );
+    },
+  );
+
+  it('step 8: any other failure of the insert transaction is rethrown and rolls back', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    h.store.hooks.insertPayment = async () => {
+      throw new Error('disk');
+    };
+    await expect(h.svc.createForPayer(h.account, USER, 2000)).rejects.toThrow('disk');
+    delete h.store.hooks.insertPayment;
+    expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+    expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
+  });
+
+  it('step 8: this charge’s own payment taking the hash after the check is used', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    let own: ShopPayment | null = null;
+    h.store.hooks.insertPayment = async (tx, ...args) => {
+      const [row] = args as unknown as [ShopPayment];
+      own = paymentRow({
+        posChargeId: charge.id,
+        paymentHash: row.paymentHash,
+        status: 'accepted',
+        acceptedAt: new Date(clock),
+      });
+      await tx.insertPayment(own);
+      return false;
+    };
+    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({
+      kind: 'payment',
+      payment: own,
+    });
+    expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
   });
 
   it.each(['payer', 'charge'] as const)(
@@ -2723,6 +2872,76 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(simplified.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
   });
 
+  it('answers from the state after a creation that was skipped: a charge cancelled meanwhile is unpinned', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      await h.pos.cancelPending(ACCOUNT_ID, clock);
+    };
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+      kind: 'today',
+      pinSats: null,
+    });
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+  });
+
+  it('answers from the state after the 8 s budget: a charge paid meanwhile is unpinned, and the 404 with timeout', async () => {
+    for (const timeout of [null, '1'] as const) {
+      const h = await setup();
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      h.orchestra.routesImpl = () => new Promise(() => undefined);
+      sleepImpl = async (ms) => {
+        if (ms !== 8_000) {
+          return defaultSleep(ms);
+        }
+        await h.pos.markPaid(charge.id, clock);
+      };
+      const answer = await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      if (timeout === null) {
+        expect(answer).toEqual({ kind: 'today', pinSats: null });
+      } else {
+        expect((await bodyOf(answer)).status).toBe(404);
+      }
+    }
+  });
+
+  it('keeps the pin when the charge’s open payment ends during the fetch while the charge still waits', async () => {
+    for (const query of [
+      NO_QUERY,
+      { ...NO_QUERY, timeout: '0' },
+      { ...NO_QUERY, method: 'Polygon', asset: 'USDT' },
+    ]) {
+      const h = await setup();
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      const created = await h.svc.createForCharge(h.account, USER, charge);
+      expect(created.kind).toBe('payment');
+      let ended = false;
+      h.store.hooks.getPayment = async (tx, ...args) => {
+        const row = await tx.getPayment(...(args as unknown as [string]));
+        if (!ended && row !== null) {
+          ended = true;
+          // Another request ends it (`window`) between the state read and the quote read.
+          return endPayment(tx, row, 'window', clock);
+        }
+        return row;
+      };
+      const answer = await h.svc.payLink(h.account, USER, METADATA, query);
+      expect(ended).toBe(true);
+      if (query === NO_QUERY) {
+        expect(answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      } else {
+        // With `timeout` an ended payment is nothing waiting; the simplified flow has no open amount.
+        const { status, json } = await bodyOf(answer);
+        expect(status).toBe(404);
+        expect(json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
+      }
+    }
+  });
+
   it('answers the 404 to a request with timeout whose payment left open during the fetch', async () => {
     const h = await setup();
     await payerPayment(h);
@@ -2865,8 +3084,10 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(first!.id);
     clock = T0 + 90_000;
     const fallback = await h.svc.currentQuote(h.account, USER, payment);
-    expect(fallback?.quote.transferAmounts).toHaveLength(1);
+    expect(fallback?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(fallback?.quote.expiresAt).toEqual(payment.windowEndsAt);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
+    expect((await readPayment(h, payment.id)).replacements).toBe(4);
   });
 
   it('does not replace when stablecoins are off for the username; an expired quote falls back to Lightning-only', async () => {
@@ -2874,7 +3095,9 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     const payment = await payerPayment(h);
     clock = T0 + 90_000;
     const read = await h.svc.currentQuote(h.account, 'cb', payment);
-    expect(read?.quote.transferAmounts).toHaveLength(1);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
@@ -2882,14 +3105,25 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     const h = await setup();
     const payment = await payerPayment(h);
     const [first] = await quotesOf(h, payment.id);
+    // Another container's replacement wins meanwhile: it counts and inserts a newer quote.
+    const newer: ShopQuote = {
+      id: crypto.randomUUID(),
+      paymentId: payment.id,
+      expiresAt: new Date(T0 + 140_000),
+      transferAmounts: [lightningTransferAmount(SATS)],
+      createdAt: new Date(T0 + 50_000),
+    };
     h.orchestra.onQuote = async () => {
       h.orchestra.onQuote = null;
-      await h.store.transaction((tx) => tx.updatePayment(payment.id, {}, { replacements: 1 }));
+      await h.store.transaction(async (tx) => {
+        await tx.updatePayment(payment.id, {}, { replacements: 1 });
+        await tx.insertQuote(newer);
+      });
     };
     clock = T0 + 50_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
-    expect(read?.quote.id).toBe(first!.id);
-    expect(await quotesOf(h, payment.id)).toHaveLength(1);
+    expect(read?.quote.id).toBe(newer.id);
+    expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([first!.id, newer.id]);
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
@@ -2903,7 +3137,8 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     clock = T0 + 50_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
     // The old quote expired at T0 + 90 s: the fallback row answers.
-    expect(read?.quote.transferAmounts).toHaveLength(1);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
@@ -3274,6 +3509,16 @@ describe('till hooks (By a till charge, Till)', () => {
     await vi.waitFor(async () => {
       expect(await h.svc.shopPaymentOfCharge(charge.id)).toMatchObject({ status: 'open' });
     });
+    const own = await h.svc.shopPaymentOfCharge(charge.id);
+    expect(own?.id).not.toBe(payer.id);
+    expect(await readPayment(h, payer.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'superseded',
+    });
+    expect(await readPayment(h, own!.id)).toMatchObject({
+      posChargeId: charge.id,
+      amountSats: CHARGE_SATS,
+    });
   });
 
   it('POST /pos ends a lapsed open payment with window', async () => {
@@ -3281,12 +3526,18 @@ describe('till hooks (By a till charge, Till)', () => {
     const payment = paymentRow();
     await h.store.transaction((tx) => tx.insertPayment(payment));
     clock = T0 + 300_000;
-    expect(await h.svc.createCharge(h.account, chargeRow())).toBe(true);
+    const charge = chargeRow();
+    expect(await h.svc.createCharge(h.account, charge)).toBe(true);
     expect(await readPayment(h, payment.id)).toMatchObject({
       status: 'ended',
       endReason: 'window',
+      endedAt: new Date(T0 + 300_000),
     });
+    // An excluded username starts no background creation: give one a chance to run.
+    await new Promise((resolve) => setTimeout(resolve, 10));
     expect(h.orchestra.routesCalls).toHaveLength(0);
+    expect(h.net.issued).toHaveLength(0);
+    expect(await h.svc.shopPaymentOfCharge(charge.id)).toBeNull();
   });
 
   it('POST /pos refuses a second pending charge and changes nothing', async () => {
@@ -3394,8 +3645,14 @@ describe('till hooks (By a till charge, Till)', () => {
       acceptedAt: new Date(T0),
     });
     await h.store.transaction((tx) => tx.insertPayment(payment));
-    await h.svc.chargePaid(charge, null, clock);
-    expect((await readPayment(h, payment.id)).status).toBe('accepted');
+    expect((await h.svc.chargePaid(charge, null, clock))?.status).toBe('paid');
+    expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('paid');
+    expect(await readPayment(h, payment.id)).toMatchObject({
+      status: 'accepted',
+      endReason: null,
+      endedAt: null,
+      paidAt: null,
+    });
 
     const lone = chargeRow({ accountId: crypto.randomUUID() });
     await h.pos.create(lone);
@@ -3421,6 +3678,75 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     const h = await setup();
     await h.svc.applySettlement(crypto.randomUUID(), true, clock);
     expect(eventsNamed('shop.payment.paid')).toHaveLength(0);
+  });
+
+  it('a payment a merge moved before the lock: locks the account it moved to, then settles', async () => {
+    const { h, payment } = await withPayment();
+    const stale = crypto.randomUUID();
+    let reads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      const row = await tx.getPayment(...(args as unknown as [string]));
+      reads += 1;
+      // The unlocked peek still sees the merged account.
+      return reads === 1 && row !== null ? { ...row, accountId: stale } : row;
+    };
+    const locked: string[] = [];
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      const [accountId] = args as unknown as [string];
+      locked.push(accountId);
+      return tx.lockAccount(accountId);
+    };
+    await h.svc.applySettlement(payment.id, true, clock);
+    expect(locked).toEqual([stale, ACCOUNT_ID]);
+    expect((await readPayment(h, payment.id)).status).toBe('paid');
+  });
+
+  it('a payment that keeps moving after two account locks is left for the next tick', async () => {
+    const { h, payment } = await withPayment();
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      const row = await tx.getPayment(...(args as unknown as [string]));
+      return row === null ? null : { ...row, accountId: crypto.randomUUID() };
+    };
+    const locked: string[] = [];
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      const [accountId] = args as unknown as [string];
+      locked.push(accountId);
+      return tx.lockAccount(accountId);
+    };
+    let rowLocks = 0;
+    h.store.hooks.lockPayment = async (tx, ...args) => {
+      rowLocks += 1;
+      return tx.lockPayment(...(args as unknown as [string]));
+    };
+    await h.svc.applySettlement(payment.id, true, clock);
+    expect(locked).toHaveLength(2);
+    expect(rowLocks).toBe(0);
+    delete h.store.hooks.getPayment;
+    expect(await readPayment(h, payment.id)).toEqual(payment);
+  });
+
+  it('a payment gone after the peek is left alone', async () => {
+    const { h, payment } = await withPayment();
+    let reads = 0;
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      reads += 1;
+      return reads === 1 ? tx.getPayment(...(args as unknown as [string])) : null;
+    };
+    await h.svc.applySettlement(payment.id, true, clock);
+    expect(reads).toBe(2);
+    delete h.store.hooks.getPayment;
+    expect(await readPayment(h, payment.id)).toEqual(payment);
+  });
+
+  it('a payment already paid is left unchanged', async () => {
+    const { h, payment } = await withPayment({
+      status: 'paid',
+      paidAt: new Date(T0),
+      nextSettleAt: null,
+    });
+    await h.svc.applySettlement(payment.id, false, T0 + 10_000_000);
+    expect(await readPayment(h, payment.id)).toEqual(payment);
+    expect(eventsNamed('shop.payment.closed')).toHaveLength(0);
   });
 
   it.each(['open', 'accepted', 'ended'] as const)(
@@ -3477,9 +3803,17 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
       charge,
     );
     await h.pos.cancelPending(ACCOUNT_ID, clock);
+    clock = T0 + 30_000;
     await h.svc.applySettlement(payment.id, true, clock);
     expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(1);
     expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('cancelled');
+    expect(await readPayment(h, payment.id)).toMatchObject({
+      status: 'paid',
+      paidAt: new Date(T0 + 30_000),
+      endedAt: null,
+      endReason: null,
+      nextSettleAt: null,
+    });
   });
 
   it('settles a payment whose charge row is gone', async () => {
@@ -3545,8 +3879,18 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     expect(await readPayment(h, payment.id)).toMatchObject({
       status: 'ended',
       endReason: 'expired_unpaid',
+      endedAt: new Date(T0 + 4_200_000),
+      closedAt: new Date(T0 + 4_200_000),
+      nextSettleAt: null,
     });
     expect(eventsNamed('shop.alert.accepted_unpaid')).toHaveLength(1);
+    // Closed is final: a later settled read changes nothing.
+    await h.svc.applySettlement(payment.id, true, T0 + 4_300_000);
+    expect(await readPayment(h, payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'expired_unpaid',
+      paidAt: null,
+    });
   });
 
   it('markPaymentPaid and endPayment change nothing on a closed or non-open payment', async () => {

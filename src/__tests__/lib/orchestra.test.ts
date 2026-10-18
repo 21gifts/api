@@ -800,11 +800,48 @@ describe('OrchestraClient.history', () => {
     ]);
   });
 
-  it('answers budget while reads are paused by a 429', async () => {
-    const { client, calls } = harness([() => err(429, 'r', { 'Retry-After': '30' })]);
+  it('pauses only status after a status 429; history is still sent', async () => {
+    const { client, calls, clock } = harness([
+      () => err(429, 'r', { 'Retry-After': '30' }),
+      () => json({ orders: [] }),
+      () => json({ order: null }),
+    ]);
     expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: true, orders: [], full: false });
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/v1/orchestration/status',
+      '/v1/orchestration/history',
+    ]);
+    clock.t = T0 + 30_000;
+    expect(await client.status('ord', 5000)).toEqual({ ok: true, order: null });
+    expect(calls).toHaveLength(3);
+  });
+
+  it('pauses only history after a history 429; status is still sent', async () => {
+    const { client, calls } = harness([
+      () => err(429, 'r', { 'Retry-After': '30' }),
+      () => json({ order: null }),
+    ]);
+    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'error' });
     expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'budget' });
-    expect(calls).toHaveLength(1);
+    expect(await client.status('ord', 5000)).toEqual({ ok: true, order: null });
+    expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
+      '/v1/orchestration/history',
+      '/v1/orchestration/status',
+    ]);
+  });
+
+  it('still counts both paused and unpaused reads against the shared budget', async () => {
+    const { client, calls } = harness([() => err(429, 'r', { 'Retry-After': '30' })], () =>
+      json({ orders: [] }),
+    );
+    await client.status('ord', 5000);
+    for (let i = 1; i < ORCHESTRA_STATUS_READS_PER_MINUTE; i += 1) {
+      expect((await client.history(BOLT11, 0, 5000)).ok).toBe(true);
+    }
+    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'budget' });
+    expect(calls).toHaveLength(ORCHESTRA_STATUS_READS_PER_MINUTE);
   });
 });
 

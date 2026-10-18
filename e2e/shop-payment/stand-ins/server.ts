@@ -32,6 +32,7 @@ import {
 } from 'viem';
 import { mintBolt11 } from './bolt11';
 import type {
+  Broadcast,
   ControlOrder,
   ControlQuote,
   DetectMode,
@@ -190,7 +191,17 @@ const submits: Array<{ username: string; quoteId: string; txHash: string; status
 const statusReads = new Map<string, number>();
 const historyReads = new Map<string, number>();
 const receiptReads = new Map<string, number>();
-const idempotency = new Map<string, { body: string; status: number; answer: unknown }>();
+/**
+ * Orchestra's idempotency store per `<endpoint>:<key>`: the body the key was
+ * first used with, and its stored answer, or `null` while that first request
+ * still runs.
+ */
+const idempotency = new Map<
+  string,
+  { body: string; stored: { status: number; answer: unknown } | null }
+>();
+/** Every `eth_sendRawTransaction` the api sent, in order, with the hash of its raw transaction. */
+const broadcasts: Broadcast[] = [];
 const chains = new Map<number, { txs: Map<string, ChainTx>; userOps: Map<string, UserOp> }>();
 for (const chainId of RPC_CHAIN_IDS) {
   chains.set(chainId, { txs: new Map(), userOps: new Map() });
@@ -411,20 +422,34 @@ async function idempotent(
     violation(`orchestra ${endpoint}: Content-Type is not application/json`);
   }
   const scoped = `${endpoint}:${key}`;
-  const stored = idempotency.get(scoped);
-  if (stored !== undefined) {
-    if (stored.body !== text) {
+  const entry = idempotency.get(scoped);
+  if (entry !== undefined) {
+    if (entry.body !== text) {
       violation(`orchestra ${endpoint}: body changed under one idempotency key`);
       return orchestraError(409, 'idempotency_conflict', 'Body differs for this key');
     }
-    return json(stored.answer, stored.status, { 'x-idempotency-replayed': 'true' });
+    if (entry.stored === null) {
+      return orchestraError(409, 'idempotency_in_progress', 'A request with this key is running');
+    }
+    return json(entry.stored.answer, entry.stored.status, { 'x-idempotency-replayed': 'true' });
   }
-  const { status, answer } = await run();
-  // A 5xx is retried with the same key and is not stored.
-  if (status < 500) {
-    idempotency.set(scoped, { body: text, status, answer });
+  // The key is claimed before the request runs, so a second request with it
+  // meanwhile gets 409 idempotency_in_progress.
+  idempotency.set(scoped, { body: text, stored: null });
+  let result: { status: number; answer: unknown };
+  try {
+    result = await run();
+  } catch (error) {
+    idempotency.delete(scoped);
+    throw error;
   }
-  return json(answer, status);
+  // A 5xx and a 429 are retried with the same key and are not stored.
+  if (result.status >= 500 || result.status === 429) {
+    idempotency.delete(scoped);
+  } else {
+    idempotency.set(scoped, { body: text, stored: result });
+  }
+  return json(result.answer, result.status);
 }
 
 async function quoteRoute(req: Request): Promise<Response> {
@@ -738,6 +763,7 @@ function rpc(chainId: number) {
         }
         const raw = first as `0x${string}`;
         const hash = keccak256(raw);
+        broadcasts.push({ chainId, hash });
         const known = chain.txs.get(hash);
         if (known !== undefined) {
           return json({ jsonrpc: '2.0', id, error: { code: -32000, message: 'already known' } });
@@ -1007,6 +1033,9 @@ async function control(req: Request): Promise<Response> {
   try {
     if (parts[1] === 'violations' && req.method === 'GET') {
       return json({ violations });
+    }
+    if (parts[1] === 'broadcasts' && req.method === 'GET') {
+      return json({ broadcasts });
     }
     if (parts[1] === 'shops' && parts.length === 3) {
       const username = parts[2] ?? '';

@@ -55,6 +55,10 @@ test('a signed raw transaction (hex) is checked, broadcast, submitted, and accep
   expect(answer).toEqual({ status: 200, message: keccak256(raw) });
   const state = await control.state(shop.username);
   expect(state.submits.map((s) => s.txHash)).toContain(keccak256(raw));
+  // Broadcast exactly once, on the method's chain.
+  expect((await control.broadcasts()).filter((b) => b.hash === keccak256(raw))).toEqual([
+    { chainId: detail.chainId, hash: keccak256(raw) },
+  ]);
   await expect
     .poll(async () => (await paymentStatus(request, opened.payment)).paymentStatus, {
       timeout: 30_000,
@@ -85,6 +89,8 @@ test('a hex transfer to another address is refused and never broadcast', async (
     message: 'Payment was not accepted',
   });
   expect((await control.state(shop.username)).submits).toEqual([]);
+  // Nothing is broadcast: no eth_sendRawTransaction carried this transaction.
+  expect((await control.broadcasts()).filter((b) => b.hash === keccak256(raw))).toEqual([]);
 });
 
 test('POST /debug/shop-proofs/:id/retry needs the debug token and a stored proof', async ({

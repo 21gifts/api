@@ -282,6 +282,77 @@ describe('duty 3: orders', () => {
     });
   });
 
+  it('merges a moved proof into the row that already holds the recovered order', async () => {
+    const h = harness();
+    await seed(h, { nextHistoryAt: new Date(T0), status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      proofRow({
+        txHash: H1,
+        providerOrder: 'o-old',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 - 1_000),
+        result: 'accepted',
+      }),
+      proofRow({
+        id: uid(0x402),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        providerOrder: 'o-next',
+        orderStatus: 'confirming',
+        orderFoundAt: new Date(T0 - 500),
+        createdAt: new Date(T0 + 1),
+      }),
+      proofRow({
+        id: uid(0x403),
+        txHash: H2,
+        providerOrder: 'o-self',
+        orderStatus: 'processing',
+        createdAt: new Date(T0 + 2),
+      }),
+    );
+    h.orchestra.history.mockResolvedValueOnce({
+      ok: true,
+      full: false,
+      orders: [
+        {
+          id: 'o-next',
+          quoteId: 'q-usdt-pol',
+          status: 'swapping',
+          sourceTxHash: H1,
+          recoveredFromOperationId: 'o-old',
+          supersededByOperationId: null,
+        },
+        {
+          id: 'o-self',
+          quoteId: 'q-usdt-pol',
+          status: 'refunded',
+          sourceTxHash: H2,
+          recoveredFromOperationId: 'o-self',
+          supersededByOperationId: null,
+        },
+      ],
+    });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await proofsOf(h)).toEqual([
+      expect.objectContaining({
+        id: uid(0x401),
+        logIndex: 3,
+        providerOrder: 'o-next',
+        orderStatus: 'swapping',
+        result: 'accepted',
+      }),
+      expect.objectContaining({
+        id: uid(0x403),
+        providerOrder: 'o-self',
+        orderStatus: 'processing',
+      }),
+    ]);
+    expect((await getPayment(h))?.status).toBe('accepted');
+  });
+
   it('stops after the order watch of the last detailed offer, waits on budget, and retries an error', async () => {
     const h = harness();
     await seed(h, { nextHistoryAt: new Date(T0), historyOffset: 200 });
@@ -647,6 +718,11 @@ describe('duty 8: order status', () => {
       result: 'accepted',
       nextStatusAt: new Date(T0 + 10_000),
     });
+    expect(await getPayment(h)).toMatchObject({
+      status: 'accepted',
+      acceptedAt: new Date(T0),
+      endReason: null,
+    });
     h.clock.now = T0 + 600_000;
     await runShopPaymentTick(h.shop, 2);
     expect((await getProof(h, uid(0x401)))?.nextStatusAt?.getTime()).toBe(T0 + 660_000);
@@ -657,7 +733,11 @@ describe('duty 8: order status', () => {
     });
     await runShopPaymentTick(h.shop, 2);
     expect(await getProof(h, uid(0x401))).toMatchObject({ result: 'refunded', nextStatusAt: null });
-    expect((await getPayment(h))?.endReason).toBe('orchestra_refunded');
+    expect(await getPayment(h)).toMatchObject({
+      status: 'ended',
+      endReason: 'orchestra_refunded',
+      endedAt: new Date(T0 + 660_000),
+    });
   });
 
   it('stops reading a final order or one followed for 24 h without a call', async () => {
@@ -717,7 +797,7 @@ describe('duty 8: order status', () => {
     await runShopPaymentTick(h.shop, 2);
     expect(await getProof(h, uid(0x401))).toMatchObject({
       providerOrder: 'o9',
-      orderStatus: 'processing',
+      orderStatus: null,
       result: null,
       nextStatusAt: new Date(T0 + 10_000),
     });

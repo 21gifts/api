@@ -88,3 +88,10 @@ export interface ShopState {
   /** Receipt reads (`eth_getTransactionReceipt` and `eth_getUserOperationReceipt`) per hash. */
   receiptReads: Record<string, number>;
 }
+
+/** One `eth_sendRawTransaction` request the RPC stand-ins received (`GET /__control/broadcasts`). */
+export interface Broadcast {
+  chainId: number;
+  /** `keccak256` of the raw transaction the request carried. */
+  hash: string;
+}

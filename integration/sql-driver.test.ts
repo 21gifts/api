@@ -2769,7 +2769,7 @@ describe('PostgresShopPaymentStore', () => {
         };
         expect(await tx.insertLookup(lookup)).toBe(true);
         expect(await tx.insertLookup({ ...lookup, id: crypto.randomUUID() })).toBe(false);
-        expect(await tx.countOpenLookups(quoteId)).toBe(1);
+        expect(await tx.countLookups(quoteId)).toBe(1);
         expect(await tx.findLookup(1, lookup.hash, quoteId)).toEqual(lookup);
         expect((await tx.dueLookups(now, 100_000)).some((row) => row.id === lookup.id)).toBe(true);
         expect(await tx.updateLookup(lookup.id, { tries: 1, doneAt: new Date(now) })).toEqual({
@@ -2777,7 +2777,9 @@ describe('PostgresShopPaymentStore', () => {
           tries: 1,
           doneAt: new Date(now),
         });
-        expect(await tx.countOpenLookups(quoteId)).toBe(0);
+        // A done row still counts against the cap of 4 rows per quote.
+        expect(await tx.countLookups(quoteId)).toBe(1);
+        expect(await tx.countLookups(crypto.randomUUID())).toBe(0);
 
         expect(
           await tx.updatePayment(payment.id, { statuses: ['accepted'] }, { replacements: 1 }),

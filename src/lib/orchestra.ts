@@ -312,7 +312,8 @@ function pauseUntil(headers: Headers, now: number): number | null {
  * {@link ORCHESTRA_SUBMITS_PER_MINUTE}, and status plus history together
  * {@link ORCHESTRA_STATUS_READS_PER_MINUTE}; routes have none. Every attempt
  * sent counts, retries included. A call its budget refuses is not sent and
- * logs `shop.orchestra.budget_exhausted`. An HTTP 429 pauses its group until
+ * logs `shop.orchestra.budget_exhausted`. An HTTP 429 pauses only the
+ * endpoint that answered it, even where endpoints share a budget, until
  * `Retry-After` (seconds) or else `X-RateLimit-Reset` (epoch ms) and logs
  * `shop.orchestra.rate_limited`; a 429 with neither header does not pause.
  * Every non-2xx answer and every transport error logs `shop.orchestra.error`
@@ -336,11 +337,13 @@ export class OrchestraClient {
     submit: [],
     read: [],
   };
-  private readonly pausedUntil: Record<Group, number> = {
+  /** Pause end per endpoint: a 429 pauses only the endpoint that answered it. */
+  private readonly pausedUntil: Record<Endpoint, number> = {
     routes: 0,
     quote: 0,
     submit: 0,
-    read: 0,
+    history: 0,
+    status: 0,
   };
 
   /**
@@ -646,7 +649,7 @@ export class OrchestraClient {
   private gate(endpoint: Endpoint, caller: OrchestraSubmitCaller | null): Gate {
     const group = GROUP_OF[endpoint];
     const now = this.deps.now();
-    if (now < this.pausedUntil[group]) {
+    if (now < this.pausedUntil[endpoint]) {
       return 'paused';
     }
     const window = this.window(group, now);
@@ -727,7 +730,7 @@ export class OrchestraClient {
     if (response.status === 429) {
       const until = pauseUntil(response.headers, this.deps.now());
       if (until !== null) {
-        this.pausedUntil[group] = Math.max(this.pausedUntil[group], until);
+        this.pausedUntil[endpoint] = Math.max(this.pausedUntil[endpoint], until);
       }
       logEvent('shop.orchestra.rate_limited', { endpoint });
     }

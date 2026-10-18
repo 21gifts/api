@@ -3926,11 +3926,21 @@ test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores 
 // not mounted; each test asserts that default-boot outcome. The `shop-payment` project
 // (e2e/shop-payment/) runs these exports against stand-ins.
 
+/** `GET /.well-known/lnurlp/:username` for a username with no verified wallet: `shopErrorBody(404, 'Not found')`. */
+const UNKNOWN_PAY_LINK = {
+  statusCode: 404,
+  message: 'Not found',
+  error: 'Not found',
+  status: 'ERROR',
+  reason: 'Not found',
+};
+
 async function proofRouteOff(request: APIRequestContext): Promise<void> {
   const res = await request.get(
     '/lnurlp/tx/e2e-shop?quote=00000000-0000-4000-8000-000000000000&method=Polygon&tx=0x00',
   );
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 }
 
 async function callbackRouteOff(request: APIRequestContext): Promise<void> {
@@ -3938,11 +3948,13 @@ async function callbackRouteOff(request: APIRequestContext): Promise<void> {
     '/lnurlp/cb/e2e-shop?quote=00000000-0000-4000-8000-000000000000&method=Polygon&asset=USDT',
   );
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 }
 
 async function payLinkOff(request: APIRequestContext): Promise<void> {
   const res = await request.get('/.well-known/lnurlp/e2e-shop?timeout=0');
   expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual(UNKNOWN_PAY_LINK);
 }
 
 async function payerPaymentOff(request: APIRequestContext): Promise<void> {
@@ -3954,6 +3966,7 @@ async function payerPaymentOff(request: APIRequestContext): Promise<void> {
 async function waitRouteOff(request: APIRequestContext): Promise<void> {
   const res = await request.get('/lnurlp/wait/00000000-0000-4000-8000-000000000000');
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 }
 
 async function retryRouteOff(request: APIRequestContext): Promise<void> {
@@ -3961,6 +3974,7 @@ async function retryRouteOff(request: APIRequestContext): Promise<void> {
     headers: DEBUG,
   });
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 }
 
 async function repaymentNeedsSession(request: APIRequestContext): Promise<void> {
@@ -4339,6 +4353,12 @@ test('Function: markPaymentPaid — GET /lnurlp/wait/:payment is 404 when the LN
 });
 
 test('Function: endPayment — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: lockAccountOf — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
   request,
 }) => {
   await waitRouteOff(request);

@@ -24,10 +24,19 @@ interface FakeCatalogColumn {
   column_name: string;
 }
 
+interface FakeShopRow {
+  id: string;
+  account_id: string;
+  status: 'open' | 'accepted' | 'paid' | 'ended';
+  closed_at: string | null;
+}
+
 interface FakeDatabaseOptions {
   platform?: boolean;
   bothGrants?: boolean;
   shopPayments?: readonly { id: string }[];
+  /** Stateful `shop_payment` rows: the open check filters them and the column move updates them. */
+  shopRows?: FakeShopRow[];
   lock?: readonly FakeLockRow[];
   fromRole?: string;
   intoRole?: string;
@@ -76,7 +85,27 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
             return (options.bothGrants ? [{ account_id: FROM }, { account_id: INTO }] : []) as T[];
           }
           if (text.includes('FROM shop_payment')) {
+            if (options.shopRows !== undefined) {
+              return options.shopRows
+                .filter(
+                  (row) =>
+                    row.account_id === params[0] && row.status !== 'paid' && row.closed_at === null,
+                )
+                .slice(0, 1)
+                .map((row) => ({ id: row.id })) as T[];
+            }
             return (options.shopPayments ?? []) as T[];
+          }
+          if (
+            options.shopRows !== undefined &&
+            text === 'UPDATE "public"."shop_payment" SET "account_id" = $1 WHERE "account_id" = $2'
+          ) {
+            for (const row of options.shopRows) {
+              if (row.account_id === params[1]) {
+                row.account_id = String(params[0]);
+              }
+            }
+            return [];
           }
           if (text.includes('count(*)')) {
             return (options.messageCount ?? [{ n: 1 }]) as T[];
@@ -287,11 +316,41 @@ describe('mergeAccounts', () => {
   });
 
   it('moves paid or closed shop payments with the account', async () => {
-    const { db, queries } = fakeDatabase();
+    const shopRows: FakeShopRow[] = [
+      { id: 'sp-paid', account_id: FROM, status: 'paid', closed_at: null },
+      { id: 'sp-closed', account_id: FROM, status: 'ended', closed_at: '2026-10-17T10:00:00Z' },
+      {
+        id: 'sp-accepted-closed',
+        account_id: FROM,
+        status: 'accepted',
+        closed_at: '2026-10-17T10:00:00Z',
+      },
+      { id: 'sp-into', account_id: INTO, status: 'open', closed_at: null },
+    ];
+    const { db, queries } = fakeDatabase({
+      shopRows,
+      columns: [
+        { schema_name: 'public', table_name: 'message', column_name: 'account_id' },
+        { schema_name: 'public', table_name: 'shop_payment', column_name: 'account_id' },
+      ],
+    });
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
       ok: true,
       messages: 1,
     });
+    // The open check passes on paid or closed rows, and the column move takes them along.
+    expect(shopRows.map((row) => [row.id, row.account_id])).toEqual([
+      ['sp-paid', INTO],
+      ['sp-closed', INTO],
+      ['sp-accepted-closed', INTO],
+      ['sp-into', INTO],
+    ]);
+    const move = queries.find(
+      (query) =>
+        query.text ===
+        'UPDATE "public"."shop_payment" SET "account_id" = $1 WHERE "account_id" = $2',
+    );
+    expect(move?.params).toEqual([INTO, FROM]);
     const check = queries.findIndex((query) => query.text.includes('FROM shop_payment'));
     const grants = queries.findIndex((query) =>
       query.text.includes('SELECT account_id FROM funding_grant'),
@@ -310,10 +369,16 @@ describe('mergeAccounts', () => {
     expect(invoices).toBeGreaterThanOrEqual(0);
     expect(charge).toBe(invoices + 1);
     expect(queries[invoices]?.params).toEqual([FROM, INTO]);
-    expect(queries[invoices]?.text).toContain('SELECT id FROM pos_charge');
-    expect(queries[invoices]?.text).toContain(
-      "SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'",
+    expect(queries[charge]?.params).toEqual([FROM, INTO]);
+    const flat = (index: number): string =>
+      (queries[index]?.text ?? '').replace(/\s+/g, ' ').trim();
+    // Only the merged account's pending charge, and only while the kept account has one.
+    const pendingOfFrom =
+      "FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' )";
+    expect(flat(invoices)).toBe(
+      `DELETE FROM pos_charge_invoice WHERE charge_id IN ( SELECT id ${pendingOfFrom} )`,
     );
+    expect(flat(charge)).toBe(`DELETE ${pendingOfFrom}`);
   });
 
   it('rejects a composite account foreign key before deleting the source', async () => {

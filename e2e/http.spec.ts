@@ -1338,19 +1338,23 @@ test('POST /pay/:username/payment is 404 for an unknown username on default boot
 test('GET /lnurlp/cb/:username is 404 when LNURL server is off', async ({ request }) => {
   const res = await request.get('/lnurlp/cb/:username');
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
 
 test('GET /lnurlp/tx/:username is 404 when LNURL server is off', async ({ request }) => {
   const res = await request.get('/lnurlp/tx/:username');
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
 
 test('GET /lnurlp/wait/:payment is 404 when LNURL server is off', async ({ request }) => {
   const res = await request.get('/lnurlp/wait/:payment');
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
 
 test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async ({ request }) => {
   const res = await request.post('/debug/shop-proofs/:id/retry', { headers: DEBUG });
   expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });

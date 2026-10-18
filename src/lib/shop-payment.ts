@@ -22,7 +22,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent, type LogFields } from '@/lib/log';
 import type { OrchestraClient, OrchestraQuote, OrchestraRouteAsset } from '@/lib/orchestra';
 import { ORCHESTRA_FINAL_STATUSES, ORCHESTRA_PROGRESSING_STATUSES } from '@/lib/orchestra';
-import type { PosCharge } from '@/lib/pos-charge';
+import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type {
   ShopAsset,
@@ -42,8 +42,6 @@ import { WAIT_SATS_POLL_MS } from '@/routes/messages';
 
 // ─── Lifetimes ────────────────────────────────────────────────────────────
 
-/** Window of a payer-opened payment (the charge TTL, five minutes). */
-export const SHOP_WINDOW_MS = 5 * 60_000;
 /** A transfer sent at `quote.expiration` has this long before Orchestra's `expiresAt`. */
 export const SHOP_FUNDING_MARGIN_MS = 30_000;
 /** A fetch replaces a quote with less than this left, and never in the window's last stretch. */
@@ -849,7 +847,7 @@ export async function evaluateProof(
       shopLog('shop.alert.order_failed', ids);
     }
     if (proof.result === 'accepted') {
-      await paymentLostAcceptance(tx, payment.id, target, nowMs);
+      await paymentLostAcceptance(tx, payment.id, proof.id, target, nowMs);
     }
     return updated;
   }
@@ -900,21 +898,29 @@ export async function evaluateProof(
 
 /**
  * The accepted proof of a payment left `accepted`: another proof that may
- * take its place is accepted; otherwise an `accepted` payment ends.
+ * take its place is accepted; otherwise an `accepted` payment ends. The proof
+ * that just lost acceptance is not re-evaluated here: only a new order status
+ * or a newly filled-in value re-evaluates a proof.
  *
  * @param tx - Transaction.
  * @param paymentId - Payment id.
+ * @param lostProofId - The proof that left `accepted`.
  * @param result - The result the accepted proof moved to.
  * @param nowMs - Clock.
  */
 async function paymentLostAcceptance(
   tx: ShopTx,
   paymentId: string,
+  lostProofId: string,
   result: ShopProofResult,
   nowMs: number,
 ): Promise<void> {
   for (const other of await tx.proofsOf(paymentId)) {
-    if (OPEN_RESULTS.includes(other.result) && other.orderStatus !== null) {
+    if (
+      other.id !== lostProofId &&
+      OPEN_RESULTS.includes(other.result) &&
+      other.orderStatus !== null
+    ) {
       const evaluated = await evaluateProof(tx, other.id, nowMs);
       if (evaluated?.result === 'accepted') {
         return;
@@ -956,14 +962,16 @@ function isUnknownOrderStatus(status: string): boolean {
 }
 
 /**
- * Record a proof `refused` (a `hex` transaction rejected or reverted, or a
- * submit refused with `xchain_deposit_mismatch`), from the results the
+ * Record a proof `refused` (a `hex` transaction rejected or reverted, a
+ * submit refused with `xchain_deposit_mismatch`, or the newer of two rows
+ * that hold one deposit as `tx_used`), from the results the
  * States table allows, and end an `accepted` payment that loses its only
  * accepted proof. Runs inside `tx` with the payment's account locked.
  *
  * @param tx - Transaction.
  * @param proofId - Proof id.
- * @param refusal - Why it was refused.
+ * @param refusal - Why it was refused: `hex_rejected`, `mismatch`, or
+ *   `tx_used`.
  * @param nowMs - Clock.
  * @returns The refused proof, or the unchanged proof when its result does
  *   not allow the move, or `null` when it does not exist.
@@ -971,7 +979,7 @@ function isUnknownOrderStatus(status: string): boolean {
 export async function refuseProof(
   tx: ShopTx,
   proofId: string,
-  refusal: 'mismatch' | 'hex_rejected',
+  refusal: 'mismatch' | 'hex_rejected' | 'tx_used',
   nowMs: number,
 ): Promise<ShopProof | null> {
   const proof = await tx.getProof(proofId);
@@ -993,7 +1001,7 @@ export async function refuseProof(
   }
   shopLog('shop.proof.refused', { paymentId: proof.paymentId, proofId, refusal });
   if (proof.result === 'accepted') {
-    await paymentLostAcceptance(tx, proof.paymentId, 'refused', nowMs);
+    await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
   }
   return refused;
 }
@@ -1161,6 +1169,60 @@ type LinkState =
   | { kind: 'open'; payment: ShopPayment }
   | { kind: 'charge'; charge: PosCharge; payment: ShopPayment | null }
   | { kind: 'none' };
+
+/**
+ * Whether a pay-link state counts as something waiting for a request with
+ * `timeout`: an open amount, or a pending charge whose shop payment is
+ * missing or `open`.
+ *
+ * @param state - The state.
+ * @returns `true` when waiting.
+ */
+function linkReady(state: LinkState): boolean {
+  return (
+    state.kind === 'open' ||
+    (state.kind === 'charge' && (state.payment === null || state.payment.status === 'open'))
+  );
+}
+
+/**
+ * The pay-link answer without an open amount: the 404 for a request with
+ * `timeout` while nothing waits and for the simplified flow, otherwise
+ * today's request, pinned to a waiting charge's amount (a charge with no
+ * shop payment, or one that is `open` or `ended`).
+ *
+ * @param state - The state (never `open`).
+ * @param username - Shop username.
+ * @param name - Shop name.
+ * @param query - Pay-link query.
+ * @returns The answer.
+ */
+function withoutOpenAmount(
+  state: Exclude<LinkState, { kind: 'open' }>,
+  username: string,
+  name: string,
+  query: ShopPayLinkQuery,
+): ShopPayLinkAnswer {
+  if (query.method !== null || (query.timeout !== null && !linkReady(state))) {
+    return { kind: 'response', response: shopResponse(noPendingPaymentBody(username, name), 404) };
+  }
+  if (state.kind === 'charge') {
+    const status = state.payment?.status;
+    const pinned = status === undefined || status === 'ended' || status === 'open';
+    return { kind: 'today', pinSats: pinned ? state.charge.amountSats : null };
+  }
+  return { kind: 'today', pinSats: null };
+}
+
+/** Thrown out of the step-8 transaction when another payment holds the BOLT11's hash. */
+class HashHeldError extends Error {
+  /**
+   * @param holderId - Id of the payment that holds the hash.
+   */
+  constructor(readonly holderId: string) {
+    super('payment hash held');
+  }
+}
 
 /**
  * Shop payment service: one instance per process, created at boot when the
@@ -1731,6 +1793,46 @@ export class ShopPayments {
     offers: readonly ShopOffer[],
     recordedByUs: boolean,
   ): Promise<ShopCreation> {
+    try {
+      return await this.#insertPaymentTx(input, paymentId, minted, offers);
+    } catch (error) {
+      if (!(error instanceof HashHeldError)) {
+        throw error;
+      }
+      // The transaction rolled back: an open payment it ended stays open.
+      logEvent('shop.alert.duplicate_invoice', { paymentId: error.holderId });
+      if (input.kind === 'charge' && recordedByUs) {
+        await this.#deps.store.transaction((tx) => tx.deleteChargeInvoice(minted.paymentHash));
+      }
+      return { kind: 'mint_failed' };
+    }
+  }
+
+  /**
+   * The transaction of {@link ShopPayments.#insertPayment}.
+   *
+   * @param input - Charge or payer creation.
+   * @param paymentId - Id chosen before the quotes.
+   * @param minted - The BOLT11.
+   * @param offers - Offers that passed the checks.
+   * @returns The outcome.
+   * @throws {@link HashHeldError} when another payment holds the hash, so the
+   *   transaction rolls back every write it made.
+   */
+  async #insertPaymentTx(
+    input:
+      | {
+          kind: 'charge';
+          account: Account;
+          username: string;
+          charge: PosCharge;
+          amountSats: number;
+        }
+      | { kind: 'payer'; account: Account; username: string; amountSats: number },
+    paymentId: string,
+    minted: { bolt11: string; paymentHash: string; expiresAtMs: number },
+    offers: readonly ShopOffer[],
+  ): Promise<ShopCreation> {
     return this.#deps.store.transaction(async (tx): Promise<ShopCreation> => {
       const nowMs = this.#deps.now();
       const accountId = input.account.id;
@@ -1746,7 +1848,7 @@ export class ShopPayments {
         if ((await tx.pendingCharge(accountId, nowMs)) !== null) {
           return { kind: 'pending_charge' };
         }
-        windowEndsAt = new Date(nowMs + SHOP_WINDOW_MS);
+        windowEndsAt = new Date(nowMs + POS_CHARGE_TTL_MS);
       }
       const payment: ShopPayment = {
         id: paymentId,
@@ -1769,10 +1871,26 @@ export class ShopPayments {
         endedAt: null,
         closedAt: null,
       };
+      /** This charge's own payment when it holds the hash; throws for any other holder. */
+      const hashHolder = async (): Promise<ShopPayment | null> => {
+        const holder = await tx.paymentForHash(payment.paymentHash);
+        if (holder === null) {
+          return null;
+        }
+        if (input.kind === 'charge' && holder.posChargeId === input.charge.id) {
+          return holder;
+        }
+        throw new HashHeldError(holder.id);
+      };
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const open = await tx.openPayment(accountId);
         if (open !== null && input.kind === 'charge' && open.posChargeId === input.charge.id) {
           return { kind: 'payment', payment: open };
+        }
+        // Checked before ending anything, so a held hash writes nothing.
+        const held = await hashHolder();
+        if (held !== null) {
+          return { kind: 'payment', payment: held };
         }
         if (open !== null) {
           const reason: ShopEndReason =
@@ -1788,16 +1906,11 @@ export class ShopPayments {
           logEvent('shop.payment.opened', { paymentId: payment.id });
           return { kind: 'payment', payment };
         }
-        const holder = await tx.paymentForHash(payment.paymentHash);
+        // A holder that appeared after the check (another account's insert)
+        // throws here and rolls back the end above.
+        const holder = await hashHolder();
         if (holder !== null) {
-          if (input.kind === 'charge' && holder.posChargeId === input.charge.id) {
-            return { kind: 'payment', payment: holder };
-          }
-          logEvent('shop.alert.duplicate_invoice', { paymentId: holder.id });
-          if (input.kind === 'charge' && recordedByUs) {
-            await tx.deleteChargeInvoice(payment.paymentHash);
-          }
-          return { kind: 'mint_failed' };
+          return { kind: 'payment', payment: holder };
         }
         if (input.kind === 'charge') {
           const own = await tx.paymentForCharge(input.charge.id);
@@ -1858,13 +1971,10 @@ export class ShopPayments {
     if (query.timeout !== null) {
       const parsed = /^[0-9]+$/.test(query.timeout) ? Number(query.timeout) : 0;
       const waitMs = Math.min(parsed, SHOP_MAX_TIMEOUT_SECONDS) * 1000;
-      const ready = (s: LinkState): boolean =>
-        s.kind === 'open' ||
-        (s.kind === 'charge' && (s.payment === null || s.payment.status === 'open'));
-      if (!ready(state) && waitMs > 0 && this.#waiting < SHOP_MAX_WAITING_REQUESTS) {
+      if (!linkReady(state) && waitMs > 0 && this.#waiting < SHOP_MAX_WAITING_REQUESTS) {
         this.#waiting += 1;
         try {
-          while (!ready(state) && this.#deps.now() - startMs < waitMs) {
+          while (!linkReady(state) && this.#deps.now() - startMs < waitMs) {
             await this.#sleep(WAIT_SATS_POLL_MS);
             state = await this.#linkState(account.id, this.#deps.now());
           }
@@ -1872,7 +1982,7 @@ export class ShopPayments {
           this.#waiting -= 1;
         }
       }
-      if (!ready(state)) {
+      if (!linkReady(state)) {
         return {
           kind: 'response',
           response: shopResponse(noPendingPaymentBody(username, name), 404),
@@ -1880,35 +1990,18 @@ export class ShopPayments {
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
-      const created = await Promise.race([
+      await Promise.race([
         this.createForCharge(account, username, state.charge).catch(() => null),
         this.#sleep(SHOP_CREATION_BUDGET_MS).then(() => null),
       ]);
-      if (created?.kind === 'payment') {
-        state = await this.#linkState(account.id, this.#deps.now());
-      }
+      // Whatever the outcome (a payment, a charge cancelled, expired, or
+      // paid meanwhile, or the 8 s budget), answer from the state now.
+      state = await this.#linkState(account.id, this.#deps.now());
     }
     if (state.kind === 'open') {
       return this.#openAmountAnswer(account, username, name, metadata, state.payment, query);
     }
-    if (state.kind === 'charge') {
-      const status = state.payment?.status;
-      const pinned = status === undefined || status === 'ended' || status === 'open';
-      if (query.method !== null) {
-        return {
-          kind: 'response',
-          response: shopResponse(noPendingPaymentBody(username, name), 404),
-        };
-      }
-      return { kind: 'today', pinSats: pinned ? state.charge.amountSats : null };
-    }
-    if (query.method !== null) {
-      return {
-        kind: 'response',
-        response: shopResponse(noPendingPaymentBody(username, name), 404),
-      };
-    }
-    return { kind: 'today', pinSats: null };
+    return withoutOpenAmount(state, username, name, query);
   }
 
   /**
@@ -1932,10 +2025,17 @@ export class ShopPayments {
   ): Promise<ShopPayLinkAnswer> {
     const current = await this.currentQuote(account, username, payment);
     if (current === null) {
-      // The payment left `open` meanwhile: answer as without an open amount.
-      return query.method === null && query.timeout === null
-        ? { kind: 'today', pinSats: null }
-        : { kind: 'response', response: shopResponse(noPendingPaymentBody(username, name), 404) };
+      // The payment left `open` meanwhile: answer as without an open amount,
+      // from the state now, so a charge still waiting keeps its pin. A state
+      // that reads `open` again is a race with another creation; it answers
+      // as with nothing waiting.
+      const state = await this.#linkState(account.id, this.#deps.now());
+      return withoutOpenAmount(
+        state.kind === 'open' ? { kind: 'none' } : state,
+        username,
+        name,
+        query,
+      );
     }
     if (query.method !== null) {
       const response = await this.callback(account, username, {
@@ -2346,6 +2446,14 @@ export class ShopPayments {
    * scheduled; the final read, 10 minutes after the BOLT11 expiry, closes the
    * payment (an `accepted` one ends with `expired_unpaid`).
    *
+   * The account to lock comes from an unlocked read. An account merge can
+   * move the payment before the lock is taken, so the payment is read again
+   * under the account lock; when it moved, the new account is locked and the
+   * payment read again, at most twice. Only then is the payment row locked,
+   * so this never holds a payment row while it waits for an account (a merge
+   * takes the account locks first). A payment that keeps moving is left for
+   * the next tick.
+   *
    * @param paymentId - Payment id.
    * @param settled - Read result: `true` settled, `false` unpaid, `null` failed.
    * @param nowMs - Clock.
@@ -2356,10 +2464,15 @@ export class ShopPayments {
       if (peek === null) {
         return;
       }
-      await tx.lockAccount(peek.accountId);
+      if (!(await lockAccountOf(tx, paymentId, peek.accountId))) {
+        return;
+      }
       const payment = await tx.lockPayment(paymentId);
-      /* v8 ignore next 3 -- the row was just read */
-      if (payment === null || payment.status === 'paid' || payment.closedAt !== null) {
+      /* v8 ignore next 3 -- the row was just read under its account lock, and no path deletes a payment */
+      if (payment === null) {
+        return;
+      }
+      if (payment.status === 'paid' || payment.closedAt !== null) {
         return;
       }
       if (settled === true) {
@@ -2379,6 +2492,39 @@ export class ShopPayments {
 }
 
 // ─── Payment transitions ──────────────────────────────────────────────────
+
+/**
+ * Lock the account a payment belongs to, starting from an account id read
+ * without a lock. After each account lock the payment is read again; when an
+ * account merge moved it meanwhile, the account it moved to is locked, at
+ * most twice in all. While the matching account lock is held no merge can
+ * move the payment, because a merge locks both of its accounts first.
+ *
+ * @param tx - Transaction.
+ * @param paymentId - Payment id.
+ * @param peekedAccountId - The payment's account from the unlocked read.
+ * @returns `true` when the payment's current account is locked; `false`
+ *   when the payment is gone or still moved after the second lock.
+ */
+export async function lockAccountOf(
+  tx: ShopTx,
+  paymentId: string,
+  peekedAccountId: string,
+): Promise<boolean> {
+  let accountId = peekedAccountId;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await tx.lockAccount(accountId);
+    const current = await tx.getPayment(paymentId);
+    if (current === null) {
+      return false;
+    }
+    if (current.accountId === accountId) {
+      return true;
+    }
+    accountId = current.accountId;
+  }
+  return false;
+}
 
 /**
  * End an `open` payment with a reason.

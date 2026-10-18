@@ -346,6 +346,25 @@ describe('InMemoryShopPaymentStore', () => {
       expect((await tx.paymentForCharge(uid(0x501)))?.id).toBe(uid(1));
       expect(await tx.paymentForCharge(uid(0x502))).toBeNull();
       expect((await tx.paymentForHash('c'.repeat(64)))?.id).toBe(uid(3));
+      // The hash alone refuses: new id, other account, no charge, not open.
+      expect(
+        await tx.insertPayment(
+          payment({ id: uid(5), accountId: ACC2, status: 'ended', endReason: 'window' }),
+        ),
+      ).toBe(false);
+      expect(await tx.getPayment(uid(5))).toBeNull();
+      // The same row with a fresh hash is stored, so only the hash refused it.
+      expect(
+        await tx.insertPayment(
+          payment({
+            id: uid(5),
+            accountId: ACC2,
+            status: 'ended',
+            endReason: 'window',
+            paymentHash: 'e'.repeat(64),
+          }),
+        ),
+      ).toBe(true);
     });
   });
 
@@ -396,6 +415,8 @@ describe('InMemoryShopPaymentStore', () => {
       expect(updated).toEqual(payment({ replacements: 3, nextSettleAt: null }));
       updated?.createdAt.setTime(0);
       expect((await tx.getPayment(uid(1)))?.createdAt.getTime()).toBe(T0);
+      // The stored row carries the patch, and `status: undefined` left `open`.
+      expect(await tx.getPayment(uid(1))).toEqual(payment({ replacements: 3, nextSettleAt: null }));
     });
   });
 
@@ -440,6 +461,9 @@ describe('InMemoryShopPaymentStore', () => {
       expect(ended).toEqual([
         payment({ status: 'ended', endReason: 'window', endedAt: new Date(T0 + 300_000) }),
       ]);
+      expect(await tx.getPayment(uid(1))).toEqual(
+        payment({ status: 'ended', endReason: 'window', endedAt: new Date(T0 + 300_000) }),
+      );
       expect((await tx.getPayment(uid(2)))?.status).toBe('open');
       expect((await tx.getPayment(uid(3)))?.status).toBe('accepted');
     });
@@ -697,6 +721,10 @@ describe('InMemoryShopPaymentStore', () => {
         await tx.updateProof(uid(0x302), {}, { providerOrder: 'o2', result: 'accepted' }),
       ).toBe('conflict');
       expect((await tx.getProof(uid(0x302)))?.providerOrder).toBeNull();
+      // Seed `late`, so skipping an undefined `result` differs from writing null.
+      expect(await tx.updateProof(uid(0x302), {}, { result: 'late' })).toMatchObject({
+        result: 'late',
+      });
       const patch = {
         tries: 2,
         lastSubmitAt: new Date(T0 + 20),
@@ -708,8 +736,15 @@ describe('InMemoryShopPaymentStore', () => {
         patch,
       );
       expect(updated).toEqual(
-        proof({ id: uid(0x302), logIndex: 1, tries: 2, lastSubmitAt: new Date(T0 + 20) }),
+        proof({
+          id: uid(0x302),
+          logIndex: 1,
+          tries: 2,
+          lastSubmitAt: new Date(T0 + 20),
+          result: 'late',
+        }),
       );
+      expect((await tx.getProof(uid(0x302)))?.result).toBe('late');
       expect(
         await tx.updateProof(
           uid(0x301),
@@ -804,7 +839,6 @@ describe('InMemoryShopPaymentStore', () => {
           lookup({ id: uid(0x404), quoteId: uid(0x102), nextTryAt: new Date(T0) }),
         ),
       ).toBe(true);
-      expect(await tx.countOpenLookups(uid(0x101))).toBe(3);
       expect(await tx.updateLookup(uid(0x404), { doneAt: new Date(T0) })).toEqual(
         lookup({
           id: uid(0x404),
@@ -814,7 +848,10 @@ describe('InMemoryShopPaymentStore', () => {
         }),
       );
       expect(await tx.updateLookup(uid(0x4ff), { tries: 1 })).toBeNull();
-      expect(await tx.countOpenLookups(uid(0x102))).toBe(0);
+      // The cap counts done rows too.
+      expect(await tx.countLookups(uid(0x102))).toBe(1);
+      expect(await tx.countLookups(uid(0x101))).toBe(3);
+      expect(await tx.countLookups(uid(0x1ff))).toBe(0);
       const found = await tx.findLookup(1, lookup().hash, uid(0x101));
       expect(found).toEqual(lookup());
       found?.nextTryAt.setTime(0);
@@ -1016,7 +1053,7 @@ describe('PostgresShopPaymentStore', () => {
       expect(await t.proofsOf('nope')).toEqual([]);
       expect(await t.updateProof('nope', {}, { tries: 1 })).toBeNull();
       await t.deleteProof('nope');
-      expect(await t.countOpenLookups('nope')).toBe(0);
+      expect(await t.countLookups('nope')).toBe(0);
       expect(await t.findLookup(1, '0x', 'nope')).toBeNull();
       expect(await t.updateLookup('nope', { tries: 1 })).toBeNull();
     });
@@ -1530,13 +1567,13 @@ describe('PostgresShopPaymentStore', () => {
   it('lookups: count, insert, find, update, and due', async () => {
     const { tx, store } = postgresStore();
     tx.respond = (text) => {
-      if (text.includes('count(*)')) return [{ open: '2' }];
+      if (text.includes('count(*)')) return [{ total: '2' }];
       if (text.startsWith('INSERT')) return [{ id: uid(0x401) }];
       return [lookupSqlRow({ tries: '1', done_at: ISO(1) })];
     };
     const mapped = lookup({ tries: 1, doneAt: new Date(T0 + 1) });
     await store.transaction(async (t) => {
-      expect(await t.countOpenLookups(uid(0x101))).toBe(2);
+      expect(await t.countLookups(uid(0x101))).toBe(2);
       expect(await t.insertLookup(lookup())).toBe(true);
       expect(await t.findLookup(1, '0xf', uid(0x101))).toEqual(mapped);
       expect(await t.updateLookup(uid(0x401), { tries: 1, doneAt: new Date(T0 + 1) })).toEqual(
@@ -1544,13 +1581,13 @@ describe('PostgresShopPaymentStore', () => {
       );
       expect(await t.dueLookups(T0, 4)).toEqual([mapped]);
       tx.respond = () => [];
-      expect(await t.countOpenLookups(uid(0x101))).toBe(0);
+      expect(await t.countLookups(uid(0x101))).toBe(0);
       expect(await t.insertLookup(lookup())).toBe(false);
       expect(await t.findLookup(1, '0xf', uid(0x101))).toBeNull();
       expect(await t.updateLookup(uid(0x401), {})).toBeNull();
     });
     expect(tx.calls[0]).toEqual({
-      text: 'SELECT count(*) AS open FROM shop_proof_lookup WHERE quote_id = $1 AND done_at IS NULL',
+      text: 'SELECT count(*) AS total FROM shop_proof_lookup WHERE quote_id = $1',
       params: [uid(0x101)],
     });
     expect(tx.calls[1]?.text).toMatch(/\$10\)\nON CONFLICT DO NOTHING\nRETURNING id/);
@@ -1574,5 +1611,19 @@ describe('PostgresShopPaymentStore', () => {
       /WHERE done_at IS NULL AND next_try_at <= \$1\nORDER BY next_try_at, id\nLIMIT \$2/,
     );
     expect(tx.calls[8]?.text).toMatch(/SET id = id WHERE id = \$1/);
+  });
+
+  it('countLookups counts every lookup row of the quote, done or not', async () => {
+    const { tx, store } = postgresStore();
+    tx.respond = () => [{ total: '5' }];
+    await store.transaction(async (t) => {
+      expect(await t.countLookups(uid(0x101))).toBe(5);
+    });
+    expect(tx.calls).toEqual([
+      {
+        text: 'SELECT count(*) AS total FROM shop_proof_lookup WHERE quote_id = $1',
+        params: [uid(0x101)],
+      },
+    ]);
   });
 });

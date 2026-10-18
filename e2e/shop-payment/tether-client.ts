@@ -23,8 +23,9 @@ export const PAY_REQUEST_TIMEOUT_MS = 20_000;
 export const LNURL_TIMEOUT_MS = 10_000;
 /** Pauses before attempts 2 and 3 of a proof (ocp-pending-proof-module.js:1613). */
 export const PROOF_RETRY_PAUSES_MS: readonly number[] = [1_000, 3_000];
-/** Settlement poll interval and total wait (ocp-pending-proof-module.js:1565-1567). */
+/** Settlement poll interval (ocp-pending-proof-module.js:1565-1567). */
 export const SETTLEMENT_POLL_MS = 3_000;
+/** Settlement poll total wait (ocp-pending-proof-module.js:1565-1567). */
 export const SETTLEMENT_WAIT_MS = 30_000;
 
 /** One rail of `OPEN_CRYPTO_PAY_RAILS` (tether-methods.md, D:1561889-1561949). */
