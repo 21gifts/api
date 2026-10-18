@@ -155,6 +155,7 @@ function extractEndpoints() {
     'debug-trust.ts': '/debug/trust-edges',
     'debug-catalog.ts': '/debug/dump',
     'debug-shop-proofs.ts': '/debug/shop-proofs',
+    'debug-logins.ts': '/debug',
     'well-known.ts': '/.well-known',
     'spend-instruction-route.ts': '/spend',
     'lnurl-server.ts': '',

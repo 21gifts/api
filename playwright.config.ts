@@ -72,6 +72,8 @@ const PINNED_OFF = {
   TRANSLATE_API_KEY: '',
   OCP_MAP_BASE_URL: '',
   OCP_PLACE_INGEST_TOKEN: '',
+  LOGINS_OPEN_DEFAULT: '',
+  APP_BUILD_REQUIRED: '',
   // Refused port: GET /fx/spot stays the empty result, independent of the network.
   BTC_FIAT_SPOT_URL: 'http://127.0.0.1:9/',
   DEBUG_READ_TOKEN: '',
