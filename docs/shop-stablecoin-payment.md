@@ -600,13 +600,14 @@ One procedure creates a shop payment, for a charge or for a payer:
    holds stops it the same way, as a failed mint (order 8), and logs
    `shop.alert.duplicate_invoice`, so that another payment's invoice is
    never recorded against a charge. When the charge's own shop payment
-   holds it, the api uses that payment, as step 8 states for a conflict.
-   Only then, and only for a charge, record the payment hash against that
+   holds it, the api uses that payment, as step 8 states for a conflict,
+   and the procedure ends. Only when no shop payment holds the hash, and
+   only for a charge, record the payment hash against that
    charge's id with `posStore.recordInvoice`, when the amount equals the
    charge amount, as the invoice forward does. When `recordInvoice`
    returns `false`, the api reads the `pos_charge_invoice` row for that
-   hash. When it belongs to another charge, the procedure stops the same
-   way as for a hash a shop payment holds. When it belongs to this
+   hash. When it belongs to another charge, the procedure stops as after a
+   failed mint (order 8) and logs `shop.alert.duplicate_invoice`. When it belongs to this
    charge, the procedure goes on. When there is no row, the charge is no
    longer pending or has expired, and the procedure ends as step 8 ends
    for such a charge, without `shop.alert.duplicate_invoice`.
