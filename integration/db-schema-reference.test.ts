@@ -550,6 +550,27 @@ describe('foreign key uniqueness', () => {
     expect(foreignKeys.every((foreignKey) => foreignKey.unique)).toBe(true);
   });
 
+  test('draws a composite foreign key as one relationship labelled with all its columns', async () => {
+    const model = buildSchemaModel(
+      [
+        textColumn('parent', 'a', 1),
+        textColumn('parent', 'b', 2),
+        textColumn('child', 'a', 1),
+        textColumn('child', 'b', 2),
+      ],
+      [
+        key('parent', 'parent_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_pkey', 'p', ['a', 'b'], null, []),
+        key('child', 'child_parent_fkey', 'f', ['a', 'b'], 'parent', ['a', 'b']),
+      ],
+      [],
+    );
+    const pages = await renderPages(model, new Map(), REPO_ROOT);
+    const childPage = pages.get('docs/database/tables/child.md') ?? '';
+    const edges = childPage.split('\n').filter((line) => line.includes('"child" '));
+    expect(edges).toEqual(['    "child" |o--|| "parent" : "a, b"']);
+  });
+
   test('does not treat a wider unique or a single covering column as uniqueness of the composite key', () => {
     const wider = buildSchemaModel(
       [

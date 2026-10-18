@@ -74,6 +74,7 @@ export type ColumnModel = {
  */
 export type ForeignKeyModel = {
   table: string;
+  constraint: string;
   column: string;
   refTable: string;
   refColumn: string;
@@ -545,6 +546,7 @@ export function buildSchemaModel(
         if (refTable === null || refColumn === undefined) return;
         foreignKeys.push({
           table: tableName,
+          constraint: constraint.name,
           column,
           refTable,
           refColumn,
@@ -1041,18 +1043,40 @@ function renderReferencedBy(tableName: string, foreignKeys: readonly ForeignKeyM
   return ['| Table | Column | Points to |', '| --- | --- | --- |', ...rows].join('\n');
 }
 
+/**
+ * Mermaid relationships of one table, one edge per foreign-key constraint.
+ * A composite key is one edge labelled with all its columns; it is optional when any of them
+ * accepts NULL, because such a row is not checked against the referenced table.
+ * @param tableName - Table whose page is rendered.
+ * @param foreignKeys - Column-level foreign keys of every table.
+ * @returns Mermaid block, or null when the table has no relationship.
+ */
 function renderRelations(
   tableName: string,
   foreignKeys: readonly ForeignKeyModel[],
 ): string | null {
+  const edges = new Map<string, { key: ForeignKeyModel; columns: string[]; nullable: boolean }>();
+  for (const foreignKey of foreignKeys) {
+    if (foreignKey.table !== tableName && foreignKey.refTable !== tableName) continue;
+    const id = `${foreignKey.table}\u0000${foreignKey.constraint}`;
+    const edge = edges.get(id);
+    if (edge === undefined) {
+      edges.set(id, {
+        key: foreignKey,
+        columns: [foreignKey.column],
+        nullable: foreignKey.nullable,
+      });
+      continue;
+    }
+    edge.columns.push(foreignKey.column);
+    edge.nullable ||= foreignKey.nullable;
+  }
   const lines = [
     ...new Set(
-      foreignKeys
-        .filter((foreignKey) => foreignKey.table === tableName || foreignKey.refTable === tableName)
-        .map(
-          (foreignKey) =>
-            `    "${escapeMermaid(foreignKey.table)}" ${cardinality(foreignKey.nullable, foreignKey.unique)} "${escapeMermaid(foreignKey.refTable)}" : "${escapeMermaid(foreignKey.column)}"`,
-        ),
+      [...edges.values()].map(
+        ({ key, columns, nullable }) =>
+          `    "${escapeMermaid(key.table)}" ${cardinality(nullable, key.unique)} "${escapeMermaid(key.refTable)}" : "${escapeMermaid(columns.join(', '))}"`,
+      ),
     ),
   ].sort(compareText);
   if (lines.length === 0) return null;
