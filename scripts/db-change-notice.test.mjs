@@ -110,6 +110,58 @@ describe('patch triggers under src', () => {
   });
 });
 
+describe('file content triggers under src', () => {
+  it('triggers when the file imports the SQL client and the patch line is plain', () => {
+    const result = evaluate({
+      body: '',
+      files: [
+        {
+          filename: 'src/lib/gift.ts',
+          status: 'modified',
+          patch: diffWith('+export const label = "new";'),
+          content:
+            "import type { SqlClient } from '@/lib/auth/sql';\n" + "export const label = 'new';\n",
+        },
+      ],
+    });
+    assert.deepEqual(result.triggers, ['src/lib/gift.ts']);
+    assert.equal(result.required, true);
+    assert.equal(result.ok, false);
+  });
+
+  it('does not trigger for a plain patch when the file does not access the database', () => {
+    const result = evaluate({
+      body: '',
+      files: [
+        {
+          filename: 'src/lib/gift.ts',
+          status: 'modified',
+          patch: diffWith('+export const label = "new";'),
+          content: "export const label = 'new';\n",
+        },
+      ],
+    });
+    assert.deepEqual(result, { required: false, ok: true, triggers: [] });
+  });
+
+  it('counts database content read from the base for a removed file', () => {
+    const result = evaluate({
+      body: '',
+      files: [
+        {
+          filename: 'src/lib/legacy-store.ts',
+          status: 'removed',
+          patch: diffWith('-export const label = "old";'),
+          content:
+            "import type { SqlClient } from '../auth/sql';\n" + "export const label = 'old';\n",
+        },
+      ],
+    });
+    assert.deepEqual(result.triggers, ['src/lib/legacy-store.ts']);
+    assert.equal(result.required, true);
+  });
+});
+
 describe('non-triggers', () => {
   it('ignores SQL under src/__tests__', () => {
     for (const filename of ['src/__tests__/gift.test.ts', 'src/lib/__tests__/gift.test.ts']) {
@@ -252,6 +304,12 @@ describe('marker visibility', () => {
   it('a four-backtick opener is not closed by a three-backtick line', () => {
     const body = `\`\`\`\`\n\`\`\`\n${MARKER}\n\`\`\`\``;
     assert.equal(isMarkerVisible(body), false);
+  });
+
+  it('hides a marker inside inline code that spans lines in one paragraph', () => {
+    const body = `\`\n${MARKER}\n\``;
+    assert.equal(isMarkerVisible(body), false);
+    assert.equal(visibleBody(body).includes(PLAIN_MARKER), false);
   });
 });
 

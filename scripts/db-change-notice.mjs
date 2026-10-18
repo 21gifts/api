@@ -40,6 +40,19 @@ const DATABASE_LINE_PATTERNS = [
 ];
 
 /**
+ * Patterns that mark a source file as accessing the database.
+ * @type {RegExp[]}
+ */
+const DATABASE_FILE_PATTERNS = [
+  /^\s*import\s+(?:type\s+)?[\w$*{},\s]+?\bfrom\s*['"]@\/lib\/auth\/sql['"]/m,
+  /^\s*import\s+(?:type\s+)?[\w$*{},\s]+?\bfrom\s*['"]\.\/sql['"]/m,
+  /^\s*import\s+(?:type\s+)?[\w$*{},\s]+?\bfrom\s*['"](?:\.\.?\/)+(?:[^'"]*\/)?auth\/sql['"]/m,
+  /^\s*import\s+(?:type\s+)?\{[^}]*\bSQL\b[^}]*\}\s*from\s*['"]bun['"]/m,
+  /_SCHEMA_SQL/,
+  /migrate\w*Schema/,
+];
+
+/**
  * Patterns that mark hunk text as a database call or schema helper.
  * Used when any explicit hunk of the patch contains an anchor on a changed or context line:
  * every explicit hunk that has a changed line then triggers. The implicit leading hunk does
@@ -102,28 +115,32 @@ function stripFencedCode(text) {
   return kept.join('\n');
 }
 
-// A run of N backticks opens a span and closes at the next run of exactly N on
-// the same line. An unmatched run stays. The span, backticks included, is removed.
-function stripInlineCode(line) {
+// A run of N backticks opens a span and closes at the next run of exactly N in the
+// same paragraph. An unmatched run stays. The span, backticks included, is removed.
+function stripInlineCode(paragraph) {
   let kept = '';
   let index = 0;
-  while (index < line.length) {
-    if (line[index] !== '`') {
-      kept += line[index];
+  while (index < paragraph.length) {
+    if (paragraph[index] !== '`') {
+      kept += paragraph[index];
       index += 1;
       continue;
     }
     let length = 0;
-    while (index + length < line.length && line[index + length] === '`') length += 1;
+    while (index + length < paragraph.length && paragraph[index + length] === '`') {
+      length += 1;
+    }
     let cursor = index + length;
     let close = -1;
-    while (cursor < line.length) {
-      if (line[cursor] !== '`') {
+    while (cursor < paragraph.length) {
+      if (paragraph[cursor] !== '`') {
         cursor += 1;
         continue;
       }
       let run = 0;
-      while (cursor + run < line.length && line[cursor + run] === '`') run += 1;
+      while (cursor + run < paragraph.length && paragraph[cursor + run] === '`') {
+        run += 1;
+      }
       if (run === length) {
         close = cursor;
         break;
@@ -131,7 +148,7 @@ function stripInlineCode(line) {
       cursor += run;
     }
     if (close === -1) {
-      kept += line.slice(index, index + length);
+      kept += paragraph.slice(index, index + length);
       index += length;
       continue;
     }
@@ -157,11 +174,28 @@ function stripCode(input) {
       afterIndentedCode = true;
       continue;
     }
-    kept.push(stripInlineCode(line));
+    kept.push(line);
     afterBlank = blank;
     afterIndentedCode = false;
   }
-  return kept.join('\n');
+
+  const visible = [];
+  let paragraph = [];
+  const flushParagraph = () => {
+    if (paragraph.length === 0) return;
+    visible.push(...stripInlineCode(paragraph.join('\n')).split('\n'));
+    paragraph = [];
+  };
+  for (const line of kept) {
+    if (line.trim() === '') {
+      flushParagraph();
+      visible.push(line);
+      continue;
+    }
+    paragraph.push(line);
+  }
+  flushParagraph();
+  return visible.join('\n');
 }
 
 /**
@@ -247,6 +281,15 @@ function isPathTrigger(filename) {
  */
 function isInspectedSource(filename) {
   return /^src\/.+\.ts$/.test(filename) && !filename.includes('/__tests__/');
+}
+
+/**
+ * Whether the complete source file imports a database client or defines schema work.
+ * @param {string} content
+ * @returns {boolean}
+ */
+function contentTouchesDatabase(content) {
+  return DATABASE_FILE_PATTERNS.some((pattern) => pattern.test(content));
 }
 
 /**
@@ -354,7 +397,12 @@ function patchTouchesDatabase(patch) {
  * A rename also triggers when `previous_filename` is a path trigger.
  * A rename scans the patch when either the current path or `previous_filename` is an
  * inspected source. An absent patch stays fail-closed.
- * @param {{ filename: string, previous_filename?: string, patch?: string }} file
+ * @param {{
+ *   filename: string,
+ *   previous_filename?: string,
+ *   patch?: string,
+ *   content?: string,
+ * }} file
  * @returns {boolean}
  */
 function fileTriggers(file) {
@@ -366,6 +414,7 @@ function fileTriggers(file) {
     isInspectedSource(file.filename) ||
     (typeof file.previous_filename === 'string' && isInspectedSource(file.previous_filename));
   if (!inspected) return false;
+  if (typeof file.content === 'string' && contentTouchesDatabase(file.content)) return true;
   return patchTouchesDatabase(file.patch);
 }
 
@@ -379,6 +428,7 @@ function fileTriggers(file) {
  *     previous_filename?: string,
  *     status?: string,
  *     patch?: string,
+ *     content?: string,
  *   }>,
  * }} input
  * @returns {{ required: boolean, ok: boolean, triggers: string[] }}

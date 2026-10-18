@@ -651,7 +651,13 @@ changes under `docs/schema/`, `docs/database/`, `integration/`,
 remove SQL or database calls (`*_SCHEMA_SQL`, `migrate*Schema`, `.query(`,
 `.execute(`, `.unsafe(`, `.begin(`, `SELECT … FROM`, `INSERT INTO`,
 `UPDATE … SET`, `DELETE FROM`, `CREATE/ALTER/DROP`, `ON CONFLICT`, triggers).
-The check re-runs when the PR text is edited.
+It also triggers when the changed source file imports the SQL client from
+`@/lib/auth/sql`, `./sql`, or a relative `auth/sql` path, imports `SQL` from
+`bun`, or contains `_SCHEMA_SQL` or a `migrate*Schema` helper, regardless of
+which line changed. Removed files are inspected from the base revision. The
+check re-runs when the PR text is edited. This check is a safety net; it does
+not replace the author's own judgement about whether a change affects the
+database.
 
 ### Tests
 
