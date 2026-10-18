@@ -1063,8 +1063,12 @@ duty, and the order duty.
    same quote-scoped deposit address, so both rows belong to the same
    offer. In one transaction the api locks both rows, keeps the row that
    holds the successor with its own transaction, log index, and value,
-   because the other row's transaction was replaced, and deletes the
-   other row. When the deleted row was `accepted`, the kept row takes
+   because the other row's transaction was replaced, takes the other
+   row's `user_op_hash` when it has none, as in step 4, and deletes the
+   other row. A repeat by the replaced transaction's own hash then finds
+   no stored row and is verified again like a new proof: a transaction
+   that never reached the chain answers **503** as not found yet, and one
+   that did is a second deposit with its own row. When the deleted row was `accepted`, the kept row takes
    `accepted` in the same transaction only when the proof table in
    [States](#states) would accept it, including its condition on the
    payment: its result is null, `refused`, or `stuck` and its order is
