@@ -251,7 +251,10 @@ The final settlement read sets `closed_at` on a payment that is not
 in time can be confirmed after the window. Nothing else changes a
 status. `db_change` keeps every earlier value.
 
-The step that moves a charge-backed payment to `paid` also runs
+The step that moves a charge-backed payment to `paid` takes the account
+row lock first, then the `pos_charge` row, then the `shop_payment` row,
+the order the charge watch uses, so the two never wait for each other in
+opposite order. It also runs
 `markPaid` for its charge, so the till sees the charge paid even after
 the charge's own watch has ended. That watch ends 10 minutes after the
 charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
@@ -279,6 +282,7 @@ payment is `accepted`.
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                        |
 | `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)).                  |
 | null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                               |
+| `superseded`                                               | null         | Step 5 of [Storing and submitting](#storing-and-submitting) deletes the `accepted` proof this proof gave way to, and this proof does not take `accepted` there.                                                                                                                   |
 | `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                         |
 
 A proof whose payment is already `paid` is held: its order is
@@ -1007,7 +1011,10 @@ still submitted, because only Orchestra can fill or refund it.
 5. The proof is submitted once its receipt with status `0x1` is found,
    so that Orchestra can see the deposit. A receipt with a
    status other than `0x1` records the proof `refused`. A transaction
-   still unknown 10 minutes after the first send is recorded `refused`.
+   that is still unknown keeps the proof unresolved: the receipts duty
+   sends and reads it for up to 24 h, so a transaction mined late is still
+   submitted, and after `give_up_at` the proof becomes `stuck` like any
+   unresolved proof.
    An Orchestra order found later still moves it, as [States](#states)
    states.
 
@@ -1062,7 +1069,8 @@ duty, and the order duty.
    progressing with a known amount within the bounds while the payment is
    neither `paid` nor closed, or its order is completed. A `superseded`
    kept row counts as null here, because the proof it gave way to is the
-   deleted row. When the deleted row was `accepted`, the payment is
+   deleted row; when it does not take `accepted`, it moves to null in the
+   same transaction. When the deleted row was `accepted`, the payment is
    `accepted`, and the kept row does not take `accepted`, the payment
    ends: as for an accepted proof that
    becomes that result when the kept row is `refunded`, `failed`, or
