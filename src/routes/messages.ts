@@ -2412,7 +2412,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (updated.place !== null && updated.place !== undefined) {
+        // A shop hidden by a concurrent request stays off the map.
+        if (updated.deletedAt !== null) {
+          await removeShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: updated.id,
+          });
+        } else if (updated.place !== null && updated.place !== undefined) {
           await syncShopOcpPlace({
             ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
             messageId: updated.id,

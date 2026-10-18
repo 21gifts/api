@@ -3382,7 +3382,7 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 - **Purpose:** DELETE `/map/places` with `{ origin: "21gifts", externalId }`. No-op when mapPush is missing.
 - **Inputs:** Optional map push and the forum message id used as `externalId`.
 - **Returns / side effects:** Resolves after the DELETE. A non-2xx answer logs `ocp.place.failed` with numeric `status`, and a thrown fetch logs `ocp.place.failed` with the allowlisted error name and an allowlisted `code` or `errno` from the error or its cause, never the message, the address, or the bearer. It does not throw. Timeout is 5000 ms.
-- **Used by:** `messagesRoutes` when a place is cleared and when a top-level shop note that had a place is deleted.
+- **Used by:** `messagesRoutes` when a place is cleared, when a top-level shop note that had a place is deleted, and when PATCH place, text, or shop-account re-reads a note hidden by a concurrent request; `syncShopOcpPlace` with `removeWhenIncomplete`.
 
 ## Function: isDevShopSeedTarget
 
