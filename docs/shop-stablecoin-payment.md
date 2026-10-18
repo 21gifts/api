@@ -261,8 +261,7 @@ charge expires (`POS_PAID_WATCH_MS` in `src/lib/pos-paid-worker.ts`).
 
 `end_reason` is one of `window`, `superseded` (by `POST /pos`),
 `replaced` (by a new payer amount), `cancelled`, `charge_paid`,
-`orchestra_refunded`, `orchestra_failed`, `proof_refused`,
-`order_recovered`, or `expired_unpaid`. An `accepted` payment whose accepted proof becomes
+`orchestra_refunded`, `orchestra_failed`, `proof_refused`, or `expired_unpaid`. An `accepted` payment whose accepted proof becomes
 `refunded`, `failed`, or `refused` ends with `orchestra_refunded`,
 `orchestra_failed`, or `proof_refused`.
 
@@ -282,7 +281,6 @@ payment is `accepted`.
 | `accepted`, `superseded`, `late`, `refused`, `stuck`, null | `failed`     | The order's status is or becomes `failed` or `fallback_delivered`. The api logs `shop.alert.order_failed`.                                                                                                                                                                        |
 | `accepted`, `superseded`, `late`, `stuck`, null            | `refused`    | The order's status is `expired` (no deposit), Orchestra refuses the submit with `400 xchain_deposit_mismatch`, or a `hex` transaction is rejected or reverts. `refusal` stores which of these, or `tx_used` ([Storing and submitting](#storing-and-submitting)).                  |
 | null                                                       | `stuck`      | An unresolved proof passes `give_up_at`. A held proof is followed by the order-status duty instead.                                                                                                                                                                               |
-| `superseded`                                               | null         | Step 5 of [Storing and submitting](#storing-and-submitting) deletes the `accepted` proof this proof gave way to, and this proof does not take `accepted` there.                                                                                                                   |
 | `stuck`                                                    | null         | An operator runs `POST /debug/shop-proofs/:id/retry`, which sets `give_up_at` 24 h ahead.                                                                                                                                                                                         |
 
 A proof whose payment is already `paid` is held: its order is
@@ -1057,38 +1055,8 @@ duty, and the order duty.
    keeps any value the kept row already has, deletes the other
    row, then writes those values onto the kept row, because the unique
    indexes are not deferrable. It answers from the kept row.
-5. When the orders duty or the status read finds that the successor of a
-   row's order (the order whose `recoveredFromOperationId` the row holds,
-   or the row's order's `supersededByOperationId`) is already held by
-   another row, and the row's own transaction has no receipt with status
-   `0x1`, both rows are one deposit; the successor pays the
-   same quote-scoped deposit address, so both rows belong to the same
-   offer. In one transaction the api locks both rows, keeps the row that
-   holds the successor with its own transaction, log index, and value,
-   because the other row's transaction was replaced, takes the other
-   row's `user_op_hash` when it has none, as in step 4, and deletes the
-   other row. A repeat by the replaced transaction's own hash then finds
-   no stored row and is verified again like a new proof, and answers
-   **503** as not found yet while that transaction has no receipt. When the deleted row was `accepted`, the kept row takes
-   `accepted` in the same transaction only when the proof table in
-   [States](#states) would accept it, including its condition on the
-   payment: its result is null, `refused`, or `stuck` and its order is
-   progressing with a known amount within the bounds while the payment is
-   neither `paid` nor closed, or its order is completed. A `superseded`
-   kept row counts as null here, because the proof it gave way to is the
-   deleted row; when it does not take `accepted`, it moves to null in the
-   same transaction. When the deleted row was `accepted`, the payment is
-   `accepted`, and the kept row does not take `accepted`, the payment
-   ends: as for an accepted proof that
-   becomes that result when the kept row is `refunded`, `failed`, or
-   `refused`, otherwise with `end_reason` `order_recovered`. A `paid` or
-   closed payment keeps its status and `end_reason`. When the deleted row
-   was not `accepted`, the payment's status does not change. The kept row then
-   moves as that table states, which can still accept an `ended` payment
-   before it closes.
 
-Steps 4 and 5 and the completion row of the proof table in
-[States](#states) can change two proofs in one transaction. Each first
+Step 4 and the completion row of the proof table in [States](#states) can change two proofs in one transaction. Each first
 locks every row it changes with one `SELECT … FOR UPDATE` ordered by id, so two of them never wait for each other in opposite order.
 
 A row without a log index gets it from the repeat path or from the
@@ -1280,11 +1248,14 @@ absolute time in milliseconds.
   api stores `order.status` as `order_status`. Final statuses are
   `completed`, `refunded`, `failed`, `fallback_delivered`, and `expired`;
   [States](#states) states what each does to the proof. `unfulfilled` can resume and is watched like a status in progress. When
-  `supersededByOperationId` is set and the proof's own transaction has
-  no receipt with status `0x1`, the api moves the proof to that order,
-  through step 5 of [Storing and submitting](#storing-and-submitting)
-  when another row already holds it. A proof whose own transaction has
-  such a receipt was not replaced and keeps its order.
+  `supersededByOperationId` is set, the api does not move the proof to
+  that order: the orders duty stores the successor order, which carries
+  its own `sourceTxHash`, as its own proof, so every row keeps its own
+  transaction and order, and the proof table decides which proof is
+  `accepted`. The proof of the replaced deposit keeps its `unfulfilled` order: it
+  is held like any proof with that status, or, when it was already
+  `accepted`, stays `accepted` until another proof's order completes or
+  the final settlement read ends the payment.
   A progressing status can make a proof `accepted`, as [States](#states)
   states. `refunding`, `unfulfilled`, and an unknown status hold a proof that is
   not `accepted`: it answers **503** and is not accepted until [States](#states) accepts
@@ -1311,16 +1282,16 @@ next-try column, oldest first, and what is left waits for the next tick.
 A cadence below is the earliest next try, not a promise. Orchestra calls
 also count against the budget in [Calls](#calls).
 
-| Order | Duty               | Calls          | Rows                                                                                                     | Cadence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| ----- | ------------------ | -------------- | -------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1     | End lapsed windows | 0              | `open` payments whose `window_ends_at` has passed                                                        | Every tick, one conditional update.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s, and a final read 10 min after the BOLT11 expiry. Only a successful read that reports the invoice unpaid closes a payment; a failed final read is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                                                                                                                                               |
-| 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds moves that proof to the successor order instead, under the condition of the status read in [Calls](#calls); when another row already holds the successor, the two rows merge as step 5 of that section states. An order without `sourceTxHash` yet stores nothing and is read again. |
-| 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification; a verified transfer is stored through the same step, and a refusal (steps 3 and 5 of [Verification of `tx`](#verification-of-tx)) stores nothing. Either way the duty sets `done_at`. After one hour it sets `done_at` and logs `shop.proof.lookup_expired`; Orchestra's own detection still applies. A failed read leaves the row open.                                                                                                                                       |
-| 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min: a `hex` proof while it is unresolved and before its `give_up_at`, a `detected` proof for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                                                                                                                                           |
-| 6     | Submits            | 1              | Unresolved proofs that may still be submitted and have a log index                                       | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| 7     | Stuck proofs       | 0              | Unresolved proofs past `give_up_at`; held proofs are not touched                                         | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| 8     | Order status       | 1, even ticks  | Proofs with an order whose `order_status` is not final                                                   | Status by `id` every 10 s for 10 min, then every 60 s, until a final status or 24 h after the order was found. Then it logs `shop.alert.order_stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| Order | Duty               | Calls          | Rows                                                                                                     | Cadence                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----- | ------------------ | -------------- | -------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | End lapsed windows | 0              | `open` payments whose `window_ends_at` has passed                                                        | Every tick, one conditional update.                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| 2     | Settlement         | 8, in parallel | Payments that are not `paid` and not closed; `accepted` and charge-backed payments first                 | Every 5 s for 15 min after creation, then every 30 s, and a final read 10 min after the BOLT11 expiry. Only a successful read that reports the invoice unpaid closes a payment; a failed final read is retried at the same cadence. Closing an `accepted` payment ends it with `expired_unpaid` and logs `shop.alert.accepted_unpaid`. The LUD-21 `/verify` read the charge watch uses.                                                                        |
+| 3     | Orders             | 1, odd ticks   | Payments with `next_history_at` due, oldest first, paid and closed ones included                         | History by the payment's BOLT11 every 10 s, one page per read. An order whose id no proof holds as `provider_order` is stored through [Storing and submitting](#storing-and-submitting) as a `detected` proof, and duty 8 takes it over. An order whose `recoveredFromOperationId` a proof holds is stored the same way, as its own proof, as the status read in [Calls](#calls) states. An order without `sourceTxHash` yet stores nothing and is read again. |
+| 4     | Lookups            | 4              | `shop_proof_lookup` rows that are not done                                                               | After 10 s, 30 s, and 60 s, then every 2 min for one hour. A found receipt runs the `tx` verification; a verified transfer is stored through the same step, and a refusal (steps 3 and 5 of [Verification of `tx`](#verification-of-tx)) stores nothing. Either way the duty sets `done_at`. After one hour it sets `done_at` and logs `shop.proof.lookup_expired`; Orchestra's own detection still applies. A failed read leaves the row open.                |
+| 5     | Receipts           | 4              | `hex` proofs whose transaction is not found or has no receipt, and `detected` proofs without a log index | Read the receipt, or send a `hex` transaction again, after 30 s, then every 2 min: a `hex` proof while it is unresolved and before its `give_up_at`, a `detected` proof for at most 24 h. A receipt fills the log index and value, or refuses as [Verification of `hex`](#verification-of-hex) states. A `detected` proof whose receipt has no matching transfer log stays held, stops being read, and logs `shop.alert.detected_mismatch`.                    |
+| 6     | Submits            | 1              | Unresolved proofs that may still be submitted and have a log index                                       | Submit after 10 s, 30 s, and 60 s, then every 5 min, under the key rule and the submit budget in [Calls](#calls).                                                                                                                                                                                                                                                                                                                                              |
+| 7     | Stuck proofs       | 0              | Unresolved proofs past `give_up_at`; held proofs are not touched                                         | Mark `stuck` and log `shop.alert.proof_stuck`.                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| 8     | Order status       | 1, even ticks  | Proofs with an order whose `order_status` is not final                                                   | Status by `id` every 10 s for 10 min, then every 60 s, until a final status or 24 h after the order was found. Then it logs `shop.alert.order_stuck`.                                                                                                                                                                                                                                                                                                          |
 
 Duties 3 and 8 take turns: duty 3 reads on odd ticks and duty 8 on even
 ticks, one read each, so neither can starve the other. That is at most 30 reads per minute, within the status budget, and in
@@ -1369,7 +1340,7 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   status             text NOT NULL CHECK (status IN ('open', 'accepted', 'paid', 'ended')),
   end_reason         text CHECK (end_reason IN ('window', 'superseded', 'replaced', 'cancelled',
                        'charge_paid', 'orchestra_refunded', 'orchestra_failed', 'proof_refused',
-                       'order_recovered', 'expired_unpaid')),
+                       'expired_unpaid')),
   window_ends_at     timestamptz NOT NULL,
   replacements       integer NOT NULL DEFAULT 0 CHECK (replacements BETWEEN 0 AND 4),
   next_settle_at     timestamptz,
