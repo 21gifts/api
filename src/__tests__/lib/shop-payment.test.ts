@@ -2904,7 +2904,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
-      expect(sleepCalls).toEqual([8_000]);
+      expect(sleepCalls).toEqual([4_000, 8_000]);
       expect(h.orchestra.routesCalls).toHaveLength(2);
       // The charge's creation goes on in the background once the lock is free.
       release({ ok: false });
@@ -3465,6 +3465,137 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       return [...rows, newer];
     };
     expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(newer.id);
+  });
+
+  /** Hold the account's creation lock: a payer creation whose route list never answers. */
+  async function holdLock(h: Harness): Promise<void> {
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    const before = h.orchestra.routesCalls.length;
+    void h.svc.createForPayer(h.account, USER, SATS + 1);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(before + 1));
+  }
+
+  it('a replacement queued behind a held lock: the fetch answers the still-valid quote 4 s after its arrival, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const payment = await payerPayment(h);
+      const [first] = await quotesOf(h, payment.id);
+      // The cached route list expired, so the lock holder reads it again and hangs.
+      clock = T0 + 61_000;
+      await holdLock(h);
+      sleepImpl = (ms) => (ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
+      const answer = await bodyOf(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }),
+      );
+      expect(answer.status).toBe(200);
+      expect((answer.json['quote'] as Record<string, string>)['id']).toBe(first!.id);
+      expect(sleepCalls).toEqual([4_000]);
+      expect((await readPayment(h, payment.id)).replacements).toBe(0);
+      expect(await quotesOf(h, payment.id)).toHaveLength(1);
+      sleepImpl = defaultSleep;
+    }
+  });
+
+  it('a replacement queued behind a held lock: an expired quote gets the Lightning-only row after 4 s', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    clock = T0 + 95_000;
+    await holdLock(h);
+    sleepImpl = (ms) => (ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
+    expect(sleepCalls).toEqual([4_000]);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+  });
+
+  it('a replacement that ends within the wait answers its new quote, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const payment = await payerPayment(h);
+      const [first] = await quotesOf(h, payment.id);
+      clock = T0 + 50_000;
+      const answer = await bodyOf(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }),
+      );
+      const quote = answer.json['quote'] as Record<string, string>;
+      expect(quote['id']).not.toBe(first!.id);
+      expect(quote['expiration']).toBe(new Date(T0 + 50_000 + 90_000).toISOString());
+      // The 4 s wait never ended: the replacement did.
+      expect(sleepCalls).toEqual([4_000]);
+      expect((await readPayment(h, payment.id)).replacements).toBe(1);
+    }
+  });
+
+  it('a fetch that joins a replacement running for 4 s or more answers the current state at once', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [first] = await quotesOf(h, payment.id);
+    clock = T0 + 61_000;
+    h.orchestra.routesImpl = () => new Promise(() => undefined);
+    const held = h.svc.currentQuote(h.account, USER, payment);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+    clock = T0 + 65_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.id).toBe(first!.id);
+    // Only the first fetch waited; the second joined the same replacement.
+    expect(sleepCalls).toEqual([4_000]);
+    expect(h.orchestra.routesCalls).toHaveLength(2);
+    void held;
+  });
+
+  it('a queued replacement re-reads under the lock: a payment no longer open, or one no longer replaceable, is answered as it stands', async () => {
+    for (const change of ['ended', 'used up'] as const) {
+      clock = T0;
+      const h = await setup();
+      const payment = await payerPayment(h);
+      const [first] = await quotesOf(h, payment.id);
+      clock = T0 + 61_000;
+      let release = (_result: OrchestraRoutesResult): void => undefined;
+      h.orchestra.routesImpl = () =>
+        new Promise((resolve) => {
+          release = resolve;
+        });
+      const payer = h.svc.createForPayer(h.account, USER, SATS + 1);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+      // The fetch's replacement is queued behind the payer creation.
+      const read = h.svc.currentQuote(h.account, USER, payment);
+      await vi.waitFor(() => expect(sleepCalls).toEqual([4_000]));
+      await h.store.transaction((tx) =>
+        change === 'ended'
+          ? tx.updatePayment(
+              payment.id,
+              {},
+              { status: 'ended', endReason: 'cancelled', endedAt: new Date(clock) },
+            )
+          : tx.updatePayment(payment.id, {}, { replacements: 4 }),
+      );
+      release({ ok: false });
+      expect(await payer).toEqual({ kind: 'unavailable' });
+      const answer = await read;
+      expect(answer === null ? null : answer.quote.id).toBe(change === 'ended' ? null : first!.id);
+      // The replacement read nothing more from Orchestra.
+      expect(h.orchestra.routesCalls).toHaveLength(2);
+      sleepCalls = [];
+    }
+  });
+
+  it('a replacement that throws: the fetch answers the current quote', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [first] = await quotesOf(h, payment.id);
+    h.store.hooks.updatePayment = async () => {
+      throw new Error('store down');
+    };
+    clock = T0 + 50_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    delete h.store.hooks.updatePayment;
+    expect(read?.quote.id).toBe(first!.id);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
   it('answers null for a payment that is no longer open', async () => {

@@ -22,7 +22,7 @@ import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
-import { logEvent } from '@/lib/log';
+import { errorLogFields, logEvent } from '@/lib/log';
 import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
@@ -419,7 +419,15 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       if (!shop.offersStablecoins(lookup.username)) {
         return c.json(STABLECOIN_UNAVAILABLE, 503);
       }
-      const created = await shop.createForPayer(lookup.account, lookup.username, parsed.amountSats);
+      let created: Awaited<ReturnType<ShopPayments['createForPayer']>>;
+      try {
+        created = await shop.createForPayer(lookup.account, lookup.username, parsed.amountSats);
+      } catch (error) {
+        // A store failure: the page cannot tell whether a payment opened, so
+        // it repeats the request, as after any other 5xx.
+        logEvent('pay.failed', { username: lookup.username, ...errorLogFields(error) });
+        return c.json({ error: 'Lightning Address could not be resolved' }, 502);
+      }
       switch (created.kind) {
         case 'payment':
           return c.json(

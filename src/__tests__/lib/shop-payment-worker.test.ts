@@ -5,6 +5,7 @@ import {
   runShopPaymentTick,
   startShopPaymentWorker,
 } from '@/lib/shop-payment-worker';
+import { retryStuckProof } from '@/lib/shop-proof';
 import type { ShopProofLookup } from '@/lib/shop-payment-store';
 import {
   AMOUNT_IN,
@@ -586,6 +587,7 @@ describe('duty 5: receipts', () => {
         logIndex: null,
         transferAmount: null,
         createdAt: new Date(T0 - 86_400_000),
+        giveUpAt: new Date(T0),
       }),
       proofRow({ ...due, id: uid(0x403), txHash: txHash('a3'), source: 'hex', rawHex: 'ab' }),
       proofRow({
@@ -639,6 +641,32 @@ describe('duty 5: receipts', () => {
     expect(await getProof(h, uid(0x403))).toMatchObject({
       sentAt: null,
       nextReceiptAt: new Date(T0 + 120_000),
+    });
+  });
+
+  it('sends a retried stuck hex proof that was never sent, also when it was stored more than 24 h ago', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({
+        source: 'hex',
+        rawHex: 'ab',
+        logIndex: null,
+        result: 'stuck',
+        createdAt: new Date(T0 - 90_000_000),
+        giveUpAt: new Date(T0 - 3_600_000),
+        nextReceiptAt: null,
+      }),
+    );
+    expect(await retryStuckProof(h.shop, uid(0x401))).toBe('retried');
+    h.rpc['eth_sendRawTransaction'] = () => ({ result: H1 });
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls.map((call) => call.method)).toEqual(['eth_sendRawTransaction']);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      result: null,
+      sentAt: new Date(T0),
+      nextReceiptAt: new Date(T0 + 30_000),
     });
   });
 

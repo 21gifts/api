@@ -14,7 +14,7 @@ import { readCappedText } from '@/lib/capped-body';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
-import { logEvent } from '@/lib/log';
+import { errorLogFields, logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
   LNURL_BODY_LIMIT_BYTES,
@@ -63,6 +63,23 @@ const UNCONFIRMED = { error: 'Wallet registration could not be confirmed' } as c
 
 /** Route name for diagnostic logs (never a path or query). */
 type LnurlServerRouteName = 'register' | 'recover' | 'metadata' | 'invoice' | 'verify';
+
+/** Shop route name for diagnostic logs (never a path or query). */
+type ShopRouteName = 'callback' | 'proof' | 'wait';
+
+/**
+ * Log a store or service failure on a shop route and answer it with the
+ * shared error body, so CORS and `no-store` still apply.
+ *
+ * @param route - Shop route name.
+ * @param error - What was thrown.
+ * @param text - Error text of the 503.
+ * @returns The 503 response.
+ */
+function shopRouteFailed(route: ShopRouteName, error: unknown, text: string): Response {
+  logEvent('lnurl_server.failed', { route, ...errorLogFields(error) });
+  return shopError(503, text);
+}
 
 /**
  * Raw query substring of a request URL (`?…` inclusive), or `''`.
@@ -445,64 +462,77 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
       if (c.req.method !== 'GET') {
         return c.notFound();
       }
-      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
-      if (!callbackLimiter.allow(clientIp, deps.now())) {
-        return shopError(503, 'Too many requests');
+      try {
+        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        if (!callbackLimiter.allow(clientIp, deps.now())) {
+          return shopError(503, 'Too many requests');
+        }
+        const found = await shopAccount(deps, c.req.param('username'));
+        if (found === null) {
+          return shopError(404, 'Not found');
+        }
+        return await shop.callback(found.account, found.username, {
+          amount: c.req.query('amount') ?? null,
+          quote: c.req.query('quote') ?? null,
+          method: c.req.query('method') ?? null,
+          asset: c.req.query('asset') ?? null,
+          repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'amount']),
+        });
+      } catch (error) {
+        return shopRouteFailed('callback', error, UNAVAILABLE.error);
       }
-      const found = await shopAccount(deps, c.req.param('username'));
-      if (found === null) {
-        return shopError(404, 'Not found');
-      }
-      return shop.callback(found.account, found.username, {
-        amount: c.req.query('amount') ?? null,
-        quote: c.req.query('quote') ?? null,
-        method: c.req.query('method') ?? null,
-        asset: c.req.query('asset') ?? null,
-        repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'amount']),
-      });
     })
     .get('/lnurlp/tx/:username', async (c) => {
       if (c.req.method !== 'GET') {
         return c.notFound();
       }
-      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
-      const overLimit = !proofLimiter.allow(clientIp, deps.now());
-      const found = await shopAccount(deps, c.req.param('username'));
-      if (found === null) {
-        return overLimit ? shopError(503, 'Too many requests') : shopError(404, 'Not found');
+      try {
+        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        const overLimit = !proofLimiter.allow(clientIp, deps.now());
+        const found = await shopAccount(deps, c.req.param('username'));
+        if (found === null) {
+          return overLimit ? shopError(503, 'Too many requests') : shopError(404, 'Not found');
+        }
+        return await handleShopProof(
+          shop,
+          found.account,
+          found.username,
+          {
+            quote: c.req.query('quote') ?? null,
+            method: c.req.query('method') ?? null,
+            asset: c.req.query('asset') ?? null,
+            tx: c.req.query('tx') ?? null,
+            hex: c.req.query('hex') ?? null,
+            repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'tx', 'hex']),
+          },
+          overLimit,
+        );
+      } catch (error) {
+        // A 5xx, so the wallet repeats the proof, as it does after any 5xx.
+        return shopRouteFailed('proof', error, 'Payment is being confirmed');
       }
-      return handleShopProof(
-        shop,
-        found.account,
-        found.username,
-        {
-          quote: c.req.query('quote') ?? null,
-          method: c.req.query('method') ?? null,
-          asset: c.req.query('asset') ?? null,
-          tx: c.req.query('tx') ?? null,
-          hex: c.req.query('hex') ?? null,
-          repeated: repeatedKey(c.req.queries(), ['quote', 'method', 'asset', 'tx', 'hex']),
-        },
-        overLimit,
-      );
     })
     .get('/lnurlp/wait/:payment', async (c) => {
       if (c.req.method !== 'GET') {
         return c.notFound();
       }
-      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
-      if (!waitLimiter.allow(clientIp, deps.now())) {
-        return shopError(429, 'Too many requests');
+      try {
+        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        if (!waitLimiter.allow(clientIp, deps.now())) {
+          return shopError(429, 'Too many requests');
+        }
+        const paymentId = normalizeUuid(c.req.param('payment'));
+        const body =
+          paymentId === null
+            ? null
+            : await shop.wait(
+                paymentId,
+                c.req.query('since') ?? null,
+                deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS,
+              );
+        return body === null ? shopError(404, 'Not found') : shopResponse(body, 200);
+      } catch (error) {
+        return shopRouteFailed('wait', error, UNAVAILABLE.error);
       }
-      const paymentId = normalizeUuid(c.req.param('payment'));
-      const body =
-        paymentId === null
-          ? null
-          : await shop.wait(
-              paymentId,
-              c.req.query('since') ?? null,
-              deps.waitTimeoutMs ?? WAIT_SATS_TIMEOUT_MS,
-            );
-      return body === null ? shopError(404, 'Not found') : shopResponse(body, 200);
     });
 }

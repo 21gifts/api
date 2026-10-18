@@ -213,6 +213,7 @@ api/
 │       ├── helpers/
 │       │   ├── fake-passkey.ts   # PasskeyCeremony test double
 │       │   ├── address-ref.ts    # Expected `addressRef` of a console line
+│       │   ├── shop-proof-fixture.ts # Shop payment rows, RPC fakes, and the harness of the proof, worker, and shop route tests
 │       │   └── wallet-lnurl.ts   # Verified-wallet account, LNURL server config, and BOLT11 test vectors
 │       ├── integration/
 │       │   ├── auth-flow.test.ts

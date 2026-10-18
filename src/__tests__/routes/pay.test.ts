@@ -1295,6 +1295,29 @@ describe('POST /pay/:username/payment', () => {
     expect(events()).toContain('pay.invoice_failed');
   });
 
+  it('502 and pay.failed when the creation throws (a store failure)', async () => {
+    const shop = stubShop();
+    shop.createForPayer.mockRejectedValue(
+      Object.assign(new Error('terminating connection'), { code: '57P01' }),
+    );
+    const { app } = await paymentApp({ shop });
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    const logged = warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+    expect(logged).toContainEqual(
+      expect.objectContaining({
+        event: 'pay.failed',
+        username: 'ada',
+        name: 'Error',
+        code: '57P01',
+      }),
+    );
+  });
+
   it('orders 7 and 9: 503 stablecoin_unavailable when the creation is refused or commits no pair', async () => {
     for (const creation of [{ kind: 'unavailable' }, { kind: 'skipped' }] as ShopCreation[]) {
       const { app } = await paymentApp({ shop: stubShop(creation) });

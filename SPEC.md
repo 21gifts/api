@@ -487,6 +487,13 @@ the same BOLT11. It then increments `shop_payment.replacements` with one
 conditional update (`status` `open`, `replacements` unchanged, at least
 45 s left in the window) and inserts the new quote only when that update
 changed the row; otherwise it answers with the quote that is current then.
+A second fetch in the same process joins the running replacement. A fetch
+waits for the replacement at most until the earlier of 4 s after it
+arrived and 4 s after the replacement took the lock; a replacement still
+queued behind a creation or a stalled lock holder therefore costs the
+fetch at most 4 s. After that wait the fetch answers from the state then
+(the current quote while it is valid, else the Lightning-only row below),
+and the replacement finishes in the background.
 When no new offer passes, the new quote is Lightning-only (its expiry is
 `window_ends_at`); a Lightning-only quote is never replaced. A current quote
 whose expiry has passed and that is not replaced gets a new Lightning-only
@@ -839,7 +846,9 @@ so `GET /lnurlp/cb/invoice` stays the invoice forward of the username
 request is answered 404. Rate limit 120/min/client; over it →
 **Response** `503` with the text `Too many requests` (not 429, because
 Tether Wallet reads a 4xx here as final). All errors use the shop payment
-error body.
+error body. A store or service failure → **Response** `503` `Lightning
+address service is unavailable` (logs `lnurl_server.failed` with `route`
+`callback`).
 
 Invalid username, the username `invoice`, unknown account, or no verified
 wallet → **Response** `404` `Not found`.
@@ -883,7 +892,10 @@ detail while the quote is valid.
 Shop payment proof. No auth. Mounted only when `LNURL_SERVER_URL` and
 `PUBLIC_BASE_URL` resolve. CORS `*`, methods `GET, OPTIONS`,
 `Cache-Control: no-store`. A `HEAD` request is answered 404. Rate limit
-120/min/client. All errors use the shop payment error body.
+120/min/client. All errors use the shop payment error body. A store or
+service failure → **Response** `503` `Payment is being confirmed` (logs
+`lnurl_server.failed` with `route` `proof`), so the wallet repeats the
+proof as after any 5xx.
 
 Invalid username, the username `invoice`, unknown account, or no verified
 wallet → **Response** `404` `Not found`.
@@ -1027,7 +1039,9 @@ Shop payment status for the payment page. No auth. Mounted only when
 `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. CORS `*`,
 `Cache-Control: no-store`. A `HEAD` request is answered 404. Rate limit
 120/min/client; over it → **Response** `429` `Too many requests` with the
-shop payment error body.
+shop payment error body. A store failure → **Response** `503` `Lightning
+address service is unavailable` with that body (logs `lnurl_server.failed`
+with `route` `wait`).
 
 `:payment` that is not a UUID (`normalizeUuid`; any letter case, looked up
 in lowercase) or no shop payment → **Response** `404` `Not found` with the
@@ -1126,7 +1140,8 @@ rows by their own next-try column, oldest first:
 4. **Lookups:** `tx` hashes not yet found, after 10 s, 30 s, and 60 s, then
    every 2 min for one hour (`shop.proof.lookup_expired`).
 5. **Receipts:** `hex` proofs without a receipt and `detected` proofs
-   without a log index, after 30 s, then every 2 min, for at most 24 h. A
+   without a log index, after 30 s, then every 2 min, until `give_up_at`
+   (24 h after it was stored, or after an operator retry). A
    `hex` transaction without a receipt is sent again, and refused when the
    node still does not know it 10 minutes after its first send.
 6. **Submits:** unresolved proofs after 10 s, 30 s, and 60 s, then every
@@ -1384,6 +1399,10 @@ Same account lookup as `GET /pay/:username`. Checks run in this order:
 
 Orders 4 and 6 run again under the account's creation lock (order 4 also
 inside the insert transaction); order 7 runs only there, once per creation.
+A store failure during the creation → **Response** `502` `{ "error":
+"Lightning Address could not be resolved" }` (logs `pay.failed`), the
+answer of order 2: the page cannot tell whether a payment opened, so it
+repeats the request as after any other 5xx.
 The route list is read before the mint, so an unreadable route list or one
 without a candidate pair answers order 9 before order 8 can apply; only "no
 Orchestra quote passes the offer checks" comes after the mint.

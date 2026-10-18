@@ -469,7 +469,8 @@ async function lookups(shop: ShopPayments, nowMs: number): Promise<void> {
  * One receipt row: send a `hex` transaction that was never sent, otherwise
  * read the receipt; a `hex` transaction without a receipt is sent again, and
  * refused when the node still does not know it 10 minutes after its first
- * send. Reading stops after 24 h.
+ * send. Reading stops at `give_up_at`: 24 h after the proof was stored, or
+ * 24 h after an operator retry moved it ahead.
  *
  * @param shop - Service.
  * @param proof - Proof with a due `next_receipt_at`.
@@ -484,7 +485,7 @@ async function readReceipt(
 ): Promise<void> {
   const later: ShopProofPatch = { nextReceiptAt: new Date(nowMs + SLOW_READ_MS) };
   const url = shop.deps.config?.evmRpc.get(proof.chainId);
-  if (nowMs - proof.createdAt.getTime() >= SHOP_UNRESOLVED_LIMIT_MS || proof.logIndex !== null) {
+  if (nowMs >= proof.giveUpAt.getTime() || proof.logIndex !== null) {
     await patchProof(shop, proof, { nextReceiptAt: null });
     return;
   }

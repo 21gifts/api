@@ -1291,6 +1291,30 @@ describe('shop payment routes', () => {
     return { app, store };
   }
 
+  async function expectStoreFailure(
+    res: Response,
+    warnSpy: ReturnType<typeof vi.spyOn>,
+    route: string,
+    text: string,
+  ): Promise<void> {
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(await res.json()).toEqual(shopErrorBody(503, text));
+    expect(parsedEvents(warnSpy)).toContainEqual(
+      expect.objectContaining({
+        event: 'lnurl_server.failed',
+        route,
+        name: 'Error',
+        code: '57P01',
+      }),
+    );
+  }
+
+  function storeError(): Error {
+    return Object.assign(new Error('terminating connection'), { code: '57P01' });
+  }
+
   it('does not mount the shop routes without the service', async () => {
     const store = new InMemoryAuthStore();
     await seedWallet(store, { id: ACCOUNT_ID, username: 'ada', verified: true });
@@ -1333,6 +1357,18 @@ describe('shop payment routes', () => {
   });
 
   describe('GET /lnurlp/cb/:username', () => {
+    it('answers 503 with the shared body and logs when the service throws', async () => {
+      const h = harness();
+      vi.spyOn(h.shop, 'callback').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request('/lnurlp/cb/ada?amount=1000'),
+        warn,
+        'callback',
+        'Lightning address service is unavailable',
+      );
+    });
+
     it('answers the LNURL amount path from the real service', async () => {
       const h = harness();
       const { app } = await shopApp(h.shop);
@@ -1398,6 +1434,18 @@ describe('shop payment routes', () => {
   });
 
   describe('GET /lnurlp/tx/:username', () => {
+    it('answers 503 Payment is being confirmed and logs when the proof handler throws', async () => {
+      const h = harness();
+      vi.spyOn(shopProof, 'handleShopProof').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request(`/lnurlp/tx/ada?quote=${QUOTE_ID}&method=Polygon&tx=${txHash('a1')}`),
+        warn,
+        'proof',
+        'Payment is being confirmed',
+      );
+    });
+
     it('answers 404 Quote expired for a quote this username does not have', async () => {
       const h = harness();
       await seed(h);
@@ -1466,6 +1514,18 @@ describe('shop payment routes', () => {
   });
 
   describe('GET /lnurlp/wait/:payment', () => {
+    it('answers 503 with the shared body and logs when the store throws', async () => {
+      const h = harness();
+      vi.spyOn(h.shop, 'wait').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request(`/lnurlp/wait/${PAYMENT_ID}`),
+        warn,
+        'wait',
+        'Lightning address service is unavailable',
+      );
+    });
+
     it('answers the stored payment at once without since', async () => {
       const h = harness();
       await seed(h);

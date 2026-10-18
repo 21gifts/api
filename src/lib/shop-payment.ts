@@ -1254,6 +1254,21 @@ interface ShopChargeCreation {
   startMs: number | null;
 }
 
+/** An open payment with its newest quote. */
+interface ShopCurrentQuote {
+  readonly payment: ShopPayment;
+  readonly quote: ShopQuote;
+}
+
+/**
+ * The in-flight quote replacement of one payment: its outcome, and when it
+ * took the account's creation lock (`null` while it is still queued).
+ */
+interface ShopReplacement {
+  readonly promise: Promise<ShopCurrentQuote | null>;
+  startMs: number | null;
+}
+
 /**
  * Shop payment service: one instance per process, created at boot when the
  * LNURL server resolves. Holds the per-account creation locks, the two
@@ -1271,6 +1286,11 @@ export class ShopPayments {
    * keeps its in-flight work.
    */
   readonly #chargeCreations = new Map<string, ShopChargeCreation>();
+  /**
+   * The in-flight quote replacement of each payment, by payment id, from the
+   * moment it is queued until it ends. A second fetch joins it.
+   */
+  readonly #replacements = new Map<string, ShopReplacement>();
   readonly #noPairUntil = new Map<string, number>();
   readonly #apiCreations = new IpRateLimiter(SHOP_API_CREATIONS_PER_MINUTE);
   readonly #accountCreations = new IpRateLimiter(SHOP_ACCOUNT_CREATIONS_PER_MINUTE);
@@ -2155,7 +2175,23 @@ export class ShopPayments {
       this.#replaceable(read.payment, read.quote, this.#deps.now()) &&
       this.offersStablecoins(username)
     ) {
-      read = await this.#replace(account, read.payment.id);
+      // The fetch starts or joins the payment's replacement and waits until
+      // it ends, at most until the earlier of 4 s after this fetch reached
+      // this step and 4 s after the replacement took the account's lock. A
+      // replacement still queued (behind a creation or a stalled holder)
+      // takes the lock at or after the arrival, so its budget never ends
+      // earlier. A replacement that outlasts the wait goes on in the
+      // background, and the fetch answers from the state now.
+      const arrivalMs = this.#deps.now();
+      const replacement = this.#replacement(account, read.payment.id);
+      const outcome = replacement.promise.then(
+        (value) => ({ value }),
+        () => null,
+      );
+      const waitMs = (replacement.startMs ?? arrivalMs) + SHOP_REPLACEMENT_BUDGET_MS - arrivalMs;
+      const ended =
+        waitMs > 0 ? await Promise.race([outcome, this.#sleep(waitMs).then(() => null)]) : null;
+      read = ended === null ? await this.#readCurrent(payment.id) : ended.value;
       if (read === null) {
         return null;
       }
@@ -2227,6 +2263,31 @@ export class ShopPayments {
   }
 
   /**
+   * The payment's in-flight replacement: the one already queued or running,
+   * or a new run queued now and registered until it ends (also on a throw).
+   *
+   * @param account - Shop account.
+   * @param paymentId - Payment id.
+   * @returns The in-flight replacement.
+   */
+  #replacement(account: Account, paymentId: string): ShopReplacement {
+    const running = this.#replacements.get(paymentId);
+    if (running !== undefined) {
+      return running;
+    }
+    const entry: ShopReplacement = {
+      startMs: null,
+      promise: this.#replace(account, paymentId, (startMs) => {
+        entry.startMs = startMs;
+      }).finally(() => {
+        this.#replacements.delete(paymentId);
+      }),
+    };
+    this.#replacements.set(paymentId, entry);
+    return entry;
+  }
+
+  /**
    * Replace the current quote under the creation lock: route list, quotes,
    * and offer checks for the same sats and BOLT11 within 4 s, then one
    * transaction that increments `replacements` conditionally and inserts the
@@ -2240,9 +2301,11 @@ export class ShopPayments {
   #replace(
     account: Account,
     paymentId: string,
-  ): Promise<{ payment: ShopPayment; quote: ShopQuote } | null> {
+    onStart: (startMs: number) => void,
+  ): Promise<ShopCurrentQuote | null> {
     return this.#withLock(account.id, async () => {
       const startMs = this.#deps.now();
+      onStart(startMs);
       const read = await this.#readCurrent(paymentId);
       if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
         return read;
