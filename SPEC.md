@@ -499,7 +499,10 @@ the 404 for no pending payment).
 
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
-for the username, and waits for it until 8 s after the request started.
+for the username, and waits for it until the procedure's 8 s budget is
+used up, with or without `timeout`. When it joins a procedure that
+already runs, that procedure's budget counts, so the wait ends 8 s after
+that procedure started, not 8 s after the join.
 Whatever the outcome (a payment, a skipped or failed creation, a charge
 cancelled, paid, or expired meanwhile, or the 8 s used up), the api then
 reads the account's state again and answers from it: the open-amount pay
@@ -1034,7 +1037,7 @@ when `status` is not `Pending`, the answer is immediate. With
 `?since=<paymentStatus>`, the request waits while the stored status still
 equals `since` and `status` is `Pending`, re-reading every
 `WAIT_SATS_POLL_MS` (250 ms) for up to `WAIT_SATS_TIMEOUT_MS` (25 s), both
-from `src/routes/messages.ts`, then answers with the state on hand.
+from `src/lib/message.ts`, then answers with the state on hand.
 
 ### Point-of-sale paid detection
 

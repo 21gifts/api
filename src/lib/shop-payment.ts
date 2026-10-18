@@ -71,12 +71,6 @@ export const SHOP_REPLACEMENT_BUDGET_MS = 4_000;
 export const SHOP_NO_PAIR_WAIT_MS = 60_000;
 /** Largest honoured `timeout` on the pay link, in seconds. */
 export const SHOP_MAX_TIMEOUT_SECONDS = 10;
-/**
- * The creation wait of a pay-link request without `timeout` ends this long
- * after the request started, so the answer stays below the 10 s a plain
- * LNURL wallet waits.
- */
-export const SHOP_PAY_LINK_ANSWER_MS = 9_500;
 /** Pay-link requests that may wait at the same time in one process. */
 export const SHOP_MAX_WAITING_REQUESTS = 50;
 /** Creations one account may start per minute. */
@@ -85,8 +79,15 @@ export const SHOP_ACCOUNT_CREATIONS_PER_MINUTE = 10;
 export const SHOP_API_CREATIONS_PER_MINUTE = 60;
 /** Spot quotes older than this are not used for the price check. */
 export const SHOP_SPOT_MAX_AGE_MS = 10 * 60_000;
-/** Settlement reads every 5 s for this long after creation, then every 30 s. */
+/**
+ * Settlement reads every {@link SHOP_SETTLE_FAST_MS} for this long after
+ * creation, then every {@link SHOP_SETTLE_SLOW_MS}.
+ */
 export const SHOP_FAST_SETTLE_MS = 15 * 60_000;
+/** Settlement read interval during the first {@link SHOP_FAST_SETTLE_MS} (also the first read after creation). */
+export const SHOP_SETTLE_FAST_MS = 5_000;
+/** Settlement read interval after the first {@link SHOP_FAST_SETTLE_MS}. */
+export const SHOP_SETTLE_SLOW_MS = 30_000;
 /** First order-status read after an order was found. */
 export const SHOP_FIRST_STATUS_MS = 10_000;
 /** One history read per payment at most this often (also the first read after a detail). */
@@ -1239,6 +1240,11 @@ class HashHeldError extends Error {
   }
 }
 
+/** Input of the creation procedure: a pending charge or an amount the payer entered. */
+type ShopCreationInput =
+  | { kind: 'charge'; account: Account; username: string; charge: PosCharge; amountSats: number }
+  | { kind: 'payer'; account: Account; username: string; amountSats: number };
+
 /**
  * Shop payment service: one instance per process, created at boot when the
  * LNURL server resolves. Holds the per-account creation locks, the two
@@ -1249,6 +1255,8 @@ export class ShopPayments {
   readonly #newId: () => string;
   readonly #sleep: (ms: number) => Promise<void>;
   readonly #locks = new Map<string, Promise<unknown>>();
+  /** Start of the creation procedure that holds an account's lock, by account id. */
+  readonly #creationStartedAt = new Map<string, number>();
   readonly #noPairUntil = new Map<string, number>();
   readonly #apiCreations = new IpRateLimiter(SHOP_API_CREATIONS_PER_MINUTE);
   readonly #accountCreations = new IpRateLimiter(SHOP_ACCOUNT_CREATIONS_PER_MINUTE);
@@ -1615,132 +1623,137 @@ export class ShopPayments {
    * @param input - Charge or payer creation.
    * @returns The outcome.
    */
-  #create(
-    input:
-      | {
-          kind: 'charge';
-          account: Account;
-          username: string;
-          charge: PosCharge;
-          amountSats: number;
-        }
-      | { kind: 'payer'; account: Account; username: string; amountSats: number },
-  ): Promise<ShopCreation> {
+  #create(input: ShopCreationInput): Promise<ShopCreation> {
     const { account } = input;
     return this.#withLock(account.id, async () => {
       const startMs = this.#deps.now();
-      // Step 2: re-check under the lock.
-      const recheck = await this.#deps.store.transaction(async (tx) => {
-        const open = await tx.openPayment(account.id);
-        if (open !== null && open.windowEndsAt.getTime() <= startMs) {
-          await endPayment(tx, open, 'window', startMs);
-        }
-        if (input.kind === 'charge') {
-          const existing = await tx.paymentForCharge(input.charge.id);
-          if (existing !== null) {
-            return { kind: 'payment', payment: existing } as const;
-          }
-          const charge = await tx.lockCharge(input.charge.id);
-          if (
-            charge === null ||
-            charge.status !== 'pending' ||
-            charge.expiresAt.getTime() <= startMs
-          ) {
-            return { kind: 'skipped' } as const;
-          }
-          return null;
-        }
-        const pending = await tx.pendingCharge(account.id, startMs);
-        return pending === null ? null : ({ kind: 'pending_charge' } as const);
-      });
-      if (recheck !== null) {
-        return recheck;
+      this.#creationStartedAt.set(account.id, startMs);
+      try {
+        return await this.#createLocked(input, startMs);
+      } finally {
+        this.#creationStartedAt.delete(account.id);
       }
-      if (!this.offersStablecoins(input.username)) {
-        return { kind: 'unavailable' };
-      }
-      const waitUntil = this.#noPairUntil.get(account.id);
-      if (waitUntil !== undefined && startMs < waitUntil) {
-        return { kind: 'unavailable' };
-      }
-      // Order 7: api-wide counter first, then the account counter.
-      if (
-        !this.#apiCreations.allow('api', startMs) ||
-        !this.#accountCreations.allow(account.id, startMs)
-      ) {
-        return { kind: 'unavailable' };
-      }
-      const config = this.#deps.config;
-      /* v8 ignore next 3 -- offersStablecoins checked the config */
-      if (config === null) {
-        return { kind: 'unavailable' };
-      }
-      // Step 3: route list.
-      const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS);
-      if (routes === null) {
-        // No stablecoin until a route-list fetch succeeds; the next creation fetches again.
-        return { kind: 'unavailable' };
-      }
-      const pairs = candidatePairs(routes, config.evmRpc);
-      if (pairs.length === 0) {
-        this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
-        return { kind: 'unavailable' };
-      }
-      // Step 4: mint.
-      const paymentId = this.#newId();
-      const minted = await this.#mint(account, input.amountSats);
-      if (minted === null) {
-        return { kind: 'mint_failed' };
-      }
-      const held = await this.#deps.store.transaction((tx) =>
-        tx.paymentForHash(minted.paymentHash),
-      );
-      if (held !== null) {
-        logEvent('shop.alert.duplicate_invoice', { paymentId: held.id });
-        return { kind: 'mint_failed' };
-      }
-      let recordedByUs = false;
-      if (input.kind === 'charge') {
-        const recorded = await this.#deps.store.transaction(async (tx) => {
-          if (
-            await tx.recordChargeInvoice(input.charge.id, minted.paymentHash, minted.requestedAtMs)
-          ) {
-            return 'recorded' as const;
-          }
-          const owner = await tx.chargeIdForInvoice(minted.paymentHash);
-          if (owner === null) {
-            return 'gone' as const;
-          }
-          return owner === input.charge.id ? ('own' as const) : ('other' as const);
-        });
-        if (recorded === 'other') {
-          logEvent('shop.alert.duplicate_invoice', { accountId: account.id });
-          return { kind: 'mint_failed' };
-        }
-        if (recorded === 'gone') {
-          return { kind: 'skipped' };
-        }
-        recordedByUs = recorded === 'recorded';
-      }
-      // Steps 5 and 6: quotes and offer checks.
-      const offers = await this.#requestOffers(
-        pairs,
-        {
-          paymentId,
-          amountSats: input.amountSats,
-          bolt11: minted.bolt11,
-          bolt11ExpiresAtMs: minted.expiresAtMs,
-        },
-        this.#deps.now() + SHOP_QUOTES_TIMEOUT_MS,
-      );
-      // Step 7: no committed pair.
-      if (offers.length === 0) {
-        this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
-        return { kind: 'unavailable' };
-      }
-      // Step 8: insert under the account row lock.
-      return this.#insertPayment(input, paymentId, minted, offers, recordedByUs);
     });
+  }
+
+  /**
+   * Steps 2 to 8 of the creation procedure, under the account's creation lock.
+   *
+   * @param input - Charge or payer creation.
+   * @param startMs - When the procedure took the lock; its budgets count from here.
+   * @returns The outcome.
+   */
+  async #createLocked(input: ShopCreationInput, startMs: number): Promise<ShopCreation> {
+    const { account } = input;
+    // Step 2: re-check under the lock.
+    const recheck = await this.#deps.store.transaction(async (tx) => {
+      const open = await tx.openPayment(account.id);
+      if (open !== null && open.windowEndsAt.getTime() <= startMs) {
+        await endPayment(tx, open, 'window', startMs);
+      }
+      if (input.kind === 'charge') {
+        const existing = await tx.paymentForCharge(input.charge.id);
+        if (existing !== null) {
+          return { kind: 'payment', payment: existing } as const;
+        }
+        const charge = await tx.lockCharge(input.charge.id);
+        if (
+          charge === null ||
+          charge.status !== 'pending' ||
+          charge.expiresAt.getTime() <= startMs
+        ) {
+          return { kind: 'skipped' } as const;
+        }
+        return null;
+      }
+      const pending = await tx.pendingCharge(account.id, startMs);
+      return pending === null ? null : ({ kind: 'pending_charge' } as const);
+    });
+    if (recheck !== null) {
+      return recheck;
+    }
+    if (!this.offersStablecoins(input.username)) {
+      return { kind: 'unavailable' };
+    }
+    const waitUntil = this.#noPairUntil.get(account.id);
+    if (waitUntil !== undefined && startMs < waitUntil) {
+      return { kind: 'unavailable' };
+    }
+    // Order 7: api-wide counter first, then the account counter.
+    if (
+      !this.#apiCreations.allow('api', startMs) ||
+      !this.#accountCreations.allow(account.id, startMs)
+    ) {
+      return { kind: 'unavailable' };
+    }
+    const config = this.#deps.config;
+    /* v8 ignore next 3 -- offersStablecoins checked the config */
+    if (config === null) {
+      return { kind: 'unavailable' };
+    }
+    // Step 3: route list.
+    const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS);
+    if (routes === null) {
+      // No stablecoin until a route-list fetch succeeds; the next creation fetches again.
+      return { kind: 'unavailable' };
+    }
+    const pairs = candidatePairs(routes, config.evmRpc);
+    if (pairs.length === 0) {
+      this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+      return { kind: 'unavailable' };
+    }
+    // Step 4: mint.
+    const paymentId = this.#newId();
+    const minted = await this.#mint(account, input.amountSats);
+    if (minted === null) {
+      return { kind: 'mint_failed' };
+    }
+    const held = await this.#deps.store.transaction((tx) => tx.paymentForHash(minted.paymentHash));
+    if (held !== null) {
+      logEvent('shop.alert.duplicate_invoice', { paymentId: held.id });
+      return { kind: 'mint_failed' };
+    }
+    let recordedByUs = false;
+    if (input.kind === 'charge') {
+      const recorded = await this.#deps.store.transaction(async (tx) => {
+        if (
+          await tx.recordChargeInvoice(input.charge.id, minted.paymentHash, minted.requestedAtMs)
+        ) {
+          return 'recorded' as const;
+        }
+        const owner = await tx.chargeIdForInvoice(minted.paymentHash);
+        if (owner === null) {
+          return 'gone' as const;
+        }
+        return owner === input.charge.id ? ('own' as const) : ('other' as const);
+      });
+      if (recorded === 'other') {
+        logEvent('shop.alert.duplicate_invoice', { accountId: account.id });
+        return { kind: 'mint_failed' };
+      }
+      if (recorded === 'gone') {
+        return { kind: 'skipped' };
+      }
+      recordedByUs = recorded === 'recorded';
+    }
+    // Steps 5 and 6: quotes and offer checks.
+    const offers = await this.#requestOffers(
+      pairs,
+      {
+        paymentId,
+        amountSats: input.amountSats,
+        bolt11: minted.bolt11,
+        bolt11ExpiresAtMs: minted.expiresAtMs,
+      },
+      this.#deps.now() + SHOP_QUOTES_TIMEOUT_MS,
+    );
+    // Step 7: no committed pair.
+    if (offers.length === 0) {
+      this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
+      return { kind: 'unavailable' };
+    }
+    // Step 8: insert under the account row lock.
+    return this.#insertPayment(input, paymentId, minted, offers, recordedByUs);
   }
 
   /**
@@ -1809,15 +1822,7 @@ export class ShopPayments {
    * @returns The outcome.
    */
   async #insertPayment(
-    input:
-      | {
-          kind: 'charge';
-          account: Account;
-          username: string;
-          charge: PosCharge;
-          amountSats: number;
-        }
-      | { kind: 'payer'; account: Account; username: string; amountSats: number },
+    input: ShopCreationInput,
     paymentId: string,
     minted: { bolt11: string; paymentHash: string; expiresAtMs: number },
     offers: readonly ShopOffer[],
@@ -1850,15 +1855,7 @@ export class ShopPayments {
    *   transaction rolls back every write it made.
    */
   async #insertPaymentTx(
-    input:
-      | {
-          kind: 'charge';
-          account: Account;
-          username: string;
-          charge: PosCharge;
-          amountSats: number;
-        }
-      | { kind: 'payer'; account: Account; username: string; amountSats: number },
+    input: ShopCreationInput,
     paymentId: string,
     minted: { bolt11: string; paymentHash: string; expiresAtMs: number },
     offers: readonly ShopOffer[],
@@ -1892,7 +1889,7 @@ export class ShopPayments {
         endReason: null,
         windowEndsAt,
         replacements: 0,
-        nextSettleAt: new Date(nowMs + 5_000),
+        nextSettleAt: new Date(nowMs + SHOP_SETTLE_FAST_MS),
         nextHistoryAt: null,
         historyOffset: 0,
         createdAt: new Date(nowMs),
@@ -1987,10 +1984,6 @@ export class ShopPayments {
    * @param username - Its username.
    * @param metadata - Metadata of today's pay request.
    * @param query - `timeout`, `method`, `asset`, and repeated keys.
-   * @param requestStartMs - When the request reached the route (default
-   *   now). The creation wait lasts at most {@link SHOP_CREATION_BUDGET_MS};
-   *   without `timeout` (a plain LNURL wallet) it also ends
-   *   {@link SHOP_PAY_LINK_ANSWER_MS} after this.
    * @returns Today's request (with an optional pin) or a full response.
    */
   async payLink(
@@ -1998,7 +1991,6 @@ export class ShopPayments {
     username: string,
     metadata: string,
     query: ShopPayLinkQuery,
-    requestStartMs: number = this.#deps.now(),
   ): Promise<ShopPayLinkAnswer> {
     const startMs = this.#deps.now();
     const name = shopName(account, username);
@@ -2025,21 +2017,17 @@ export class ShopPayments {
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
+      // Joining a procedure that already runs ends the wait when that
+      // procedure's 8 s budget is used up, not 8 s after the join.
+      const budgetEndMs =
+        (this.#creationStartedAt.get(account.id) ?? this.#deps.now()) + SHOP_CREATION_BUDGET_MS;
       const creation = this.createForCharge(account, username, state.charge).catch(() => null);
-      // A request without `timeout` comes from a plain LNURL wallet (10 s);
-      // one with `timeout` comes from an OpenCryptoPay wallet (20 s).
-      const waitMs =
-        query.timeout === null
-          ? Math.min(
-              SHOP_CREATION_BUDGET_MS,
-              requestStartMs + SHOP_PAY_LINK_ANSWER_MS - this.#deps.now(),
-            )
-          : SHOP_CREATION_BUDGET_MS;
+      const waitMs = budgetEndMs - this.#deps.now();
       if (waitMs > 0) {
         await Promise.race([creation, this.#sleep(waitMs).then(() => null)]);
       }
       // Whatever the outcome (a payment, a charge cancelled, expired, or
-      // paid meanwhile, or the wait used up), answer from the state now.
+      // paid meanwhile, or the 8 s budget), answer from the state now.
       state = await this.#linkState(account.id, this.#deps.now());
     }
     if (state.kind === 'open') {
@@ -2535,7 +2523,10 @@ export class ShopPayments {
         await closePayment(tx, payment, nowMs);
         return;
       }
-      const cadence = nowMs - payment.createdAt.getTime() < SHOP_FAST_SETTLE_MS ? 5_000 : 30_000;
+      const cadence =
+        nowMs - payment.createdAt.getTime() < SHOP_FAST_SETTLE_MS
+          ? SHOP_SETTLE_FAST_MS
+          : SHOP_SETTLE_SLOW_MS;
       const next = nowMs >= finalAtMs ? nowMs + cadence : Math.min(nowMs + cadence, finalAtMs);
       await tx.updatePayment(payment.id, {}, { nextSettleAt: new Date(next) });
     });

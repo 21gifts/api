@@ -28,8 +28,9 @@ import {
   PlainJsonNumber,
   SHOP_ASSETS,
   SHOP_METHODS,
-  SHOP_PAY_LINK_ANSWER_MS,
   SHOP_LNURL_HEADERS,
+  SHOP_SETTLE_FAST_MS,
+  SHOP_SETTLE_SLOW_MS,
   ShopPayments,
   btcAmount,
   candidatePairs,
@@ -2710,43 +2711,6 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(sleepCalls).toEqual([8_000]);
   });
 
-  it('ends the creation wait 9.5 s after the request start, and waits not at all once that passed', async () => {
-    const late = await setup();
-    await late.pos.create(chargeRow());
-    late.orchestra.routesImpl = () => new Promise(() => undefined);
-    sleepImpl = (ms) => (ms === 6_500 ? Promise.resolve() : defaultSleep(ms));
-    expect(
-      await late.svc.payLink(
-        late.account,
-        USER,
-        METADATA,
-        NO_QUERY,
-        clock - SHOP_PAY_LINK_ANSWER_MS + 6_500,
-      ),
-    ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-    expect(sleepCalls).toEqual([6_500]);
-
-    sleepCalls = [];
-    const over = await setup();
-    const charge = chargeRow();
-    await over.pos.create(charge);
-    expect(
-      await over.svc.payLink(
-        over.account,
-        USER,
-        METADATA,
-        NO_QUERY,
-        clock - SHOP_PAY_LINK_ANSWER_MS,
-      ),
-    ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
-    expect(sleepCalls).toEqual([]);
-    // The creation still runs on in the background.
-    await vi.waitFor(async () => {
-      expect(await over.store.transaction((tx) => tx.paymentForCharge(charge.id))).not.toBeNull();
-    });
-    expect(SHOP_PAY_LINK_ANSWER_MS).toBe(9_500);
-  });
-
   it('answers today’s pinned request when the creation offers nothing, throws, or outlasts the 8 s budget', async () => {
     const h = await setup();
     await h.pos.create(chargeRow());
@@ -2772,6 +2736,36 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
+  });
+
+  it('joining a running creation waits only until that procedure’s 8 s budget is used up, with or without timeout', async () => {
+    for (const timeout of [null, '5']) {
+      sleepCalls = [];
+      clock = T0;
+      const h = await setup();
+      const charge = chargeRow();
+      await h.pos.create(charge);
+      h.orchestra.routesImpl = () => new Promise(() => undefined);
+      h.svc.startForCharge(h.account, charge);
+      await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+      clock = T0 + 5_000;
+      sleepImpl = (ms) => (ms === 3_000 ? Promise.resolve() : defaultSleep(ms));
+      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      expect(sleepCalls).toEqual([3_000]);
+
+      // Once that budget is used up, the request answers without a wait.
+      sleepCalls = [];
+      clock = T0 + 8_000;
+      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+        kind: 'today',
+        pinSats: CHARGE_SATS,
+      });
+      expect(sleepCalls).toEqual([]);
+      sleepImpl = defaultSleep;
+    }
   });
 
   it('keeps the pin for a waiting charge: no payment (excluded username) or an ended one; no pin for accepted or paid', async () => {
@@ -3919,6 +3913,8 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     expect((await readPayment(h, payment.id)).nextSettleAt?.getTime()).toBe(T0 + 1_620_000);
     await h.svc.applySettlement(payment.id, null, T0 + 1_000);
     expect((await readPayment(h, payment.id)).nextSettleAt?.getTime()).toBe(T0 + 6_000);
+    expect(SHOP_SETTLE_FAST_MS).toBe(5_000);
+    expect(SHOP_SETTLE_SLOW_MS).toBe(30_000);
   });
 
   it('a failed final read is retried at the same cadence and does not close', async () => {
