@@ -12087,6 +12087,36 @@ describe('shop OCP place hook', () => {
     });
   });
 
+  it('sends nothing when a place write reloads a pin cleared concurrently', async () => {
+    const { mapPush, calls } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 1 ? before : { ...before, place: null };
+      },
+      setPlace: async () => true,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(await staffStore('Ada'), store, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/place',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ place: PIN }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(0);
+  });
+
   it('deletes the map pin when a text write reloads an incomplete concurrent place', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const messages = new InMemoryMessageStore();
