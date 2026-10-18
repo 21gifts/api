@@ -86,8 +86,6 @@ export function txHash(byte: string): string {
 
 /** The shop account handed to the route. */
 export const ACCOUNT = { id: ACCOUNT_ID } as Account;
-/** Another account. */
-export const OTHER_ACCOUNT = { id: OTHER_ACCOUNT_ID } as Account;
 
 /** One fake JSON-RPC answer. */
 export type RpcAnswer = { result: unknown } | { error: string } | 'transport';
@@ -103,6 +101,8 @@ export interface Harness {
   rpc: Record<string, RpcHandler>;
   rpcCalls: { method: string; params: unknown[] }[];
   verify: Map<string, 'settled' | 'open' | 'failed'>;
+  /** LUD-21 `/verify` reads: total, and the most running at the same time. */
+  verifyReads: { calls: number; running: number; maxRunning: number };
   orchestra: { submit: Mock; history: Mock; status: Mock };
 }
 
@@ -126,12 +126,21 @@ export function harness(options: { config?: boolean; orchestra?: boolean } = {})
     eth_getTransactionByHash: () => ({ result: null }),
   };
   const verify = new Map<string, 'settled' | 'open' | 'failed'>();
+  const verifyReads = { calls: 0, running: 0, maxRunning: 0 };
   const fetchImpl = async (
     input: string | URL | Request,
     init?: RequestInit,
   ): Promise<Response> => {
     const url = String(input);
     if (url.startsWith(`${LNURL_SERVER.baseUrl}/verify/`)) {
+      verifyReads.calls += 1;
+      verifyReads.running += 1;
+      verifyReads.maxRunning = Math.max(verifyReads.maxRunning, verifyReads.running);
+      // Let every read the duty started in parallel begin before this one ends.
+      for (let i = 0; i < 20; i += 1) {
+        await Promise.resolve();
+      }
+      verifyReads.running -= 1;
       const outcome = verify.get(url.slice(`${LNURL_SERVER.baseUrl}/verify/`.length)) ?? 'open';
       return outcome === 'failed'
         ? new Response('no', { status: 500 })
@@ -180,7 +189,7 @@ export function harness(options: { config?: boolean; orchestra?: boolean } = {})
     now: () => clock.now,
     newId: () => uid((next += 1)),
   });
-  return { shop, store, clock, rpc, rpcCalls, verify, orchestra };
+  return { shop, store, clock, rpc, rpcCalls, verify, verifyReads, orchestra };
 }
 
 /**

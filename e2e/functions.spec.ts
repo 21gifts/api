@@ -3977,9 +3977,15 @@ async function retryRouteOff(request: APIRequestContext): Promise<void> {
   expect(await res.text()).toBe('404 Not Found');
 }
 
-async function repaymentNeedsSession(request: APIRequestContext): Promise<void> {
-  const res = await request.post('/messages/00000000-0000-4000-8000-000000000000/repayment');
-  expect(res.status()).toBe(401);
+/** A loan is a post, and posting is 409 without a verified wallet (default boot). */
+async function loanPostNeedsWallet(request: APIRequestContext): Promise<void> {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', { headers: auth, data: { text: 'loan' } });
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
 }
 
 async function noDatabase(request: APIRequestContext): Promise<void> {
@@ -4166,10 +4172,12 @@ test('Function: shopError — GET /lnurlp/cb/:username is 404 when the LNURL ser
   await callbackRouteOff(request);
 });
 
-test('Function: shopErrorBody — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+test('Function: shopErrorBody — GET /.well-known/lnurlp/:username for an unknown username is the full 404 body', async ({
   request,
 }) => {
-  await callbackRouteOff(request);
+  const res = await request.get('/.well-known/lnurlp/e2e-unknown-shop');
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual(UNKNOWN_PAY_LINK);
 });
 
 test('Function: shopJson — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
@@ -4376,16 +4384,16 @@ test('Function: retryStuckProof — POST /debug/shop-proofs/:id/retry is 404 whe
   await retryRouteOff(request);
 });
 
-test('Function: bolt11ExpiresAtMs — POST /messages/:id/repayment without bearer is 401', async ({
+test('Function: bolt11ExpiresAtMs — a loan post is 409 without a verified wallet', async ({
   request,
 }) => {
-  await repaymentNeedsSession(request);
+  await loanPostNeedsWallet(request);
 });
 
-test('Function: invoiceStillOpen — POST /messages/:id/repayment without bearer is 401', async ({
+test('Function: invoiceStillOpen — a loan post is 409 without a verified wallet', async ({
   request,
 }) => {
-  await repaymentNeedsSession(request);
+  await loanPostNeedsWallet(request);
 });
 
 test('Function: PostgresShopPaymentStore — default boot has no DATABASE_URL', async ({

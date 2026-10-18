@@ -22,6 +22,7 @@ import {
   callLnurlServer,
   type LnurlServerResult,
 } from '@/lib/lnurl-server';
+import { WAIT_SATS_TIMEOUT_MS } from '@/lib/message';
 import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { readClientRequestMeta } from '@/lib/request-meta';
@@ -30,7 +31,6 @@ import { handleShopProof } from '@/lib/shop-proof';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername } from '@/lib/username';
 import { normalizeUuid } from '@/lib/uuid';
-import { WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
 
 /** Collaborators for the forwarded LNURL routes. */
 export interface LnurlServerRouteDeps {

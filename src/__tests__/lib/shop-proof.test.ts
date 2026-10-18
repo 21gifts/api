@@ -3,6 +3,7 @@ import { decodeSignedEvmTransaction } from '@/lib/evm-transfer';
 import { shopMethodByName } from '@/lib/shop-payment';
 import {
   SHOP_PROOF_BUDGET_MS,
+  SHOP_RPC_TIMEOUT_MS,
   applyProofOrder,
   followProofOrder,
   handleShopProof,
@@ -30,7 +31,6 @@ import {
   OFFER_OTHER,
   OFFER_USDC,
   OFFER_USDT,
-  OTHER_ACCOUNT,
   OTHER_LOG,
   OTHER_QUOTE_ID,
   PAYMENT_ID,
@@ -70,6 +70,13 @@ beforeEach(() => {
 
 afterEach(() => {
   vi.restoreAllMocks();
+});
+
+describe('constants', () => {
+  it('gives a proof request 18 s and each of its RPC calls 3 s', () => {
+    expect(SHOP_PROOF_BUDGET_MS).toBe(18_000);
+    expect(SHOP_RPC_TIMEOUT_MS).toBe(3_000);
+  });
 });
 
 function events(): string[] {
@@ -1648,6 +1655,64 @@ describe('readProofReceipt', () => {
     const stale = proofRow({ logIndex: null });
     expect(await readProofReceipt(h.shop, stale, POLYGON_RPC, 1_000)).toBe('filled');
   });
+
+  it('takes a transfer log no other row of the offer and transaction holds, so two orders keep two rows', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4f1), txHash: H1, logIndex: 3 }),
+      proofRow({
+        id: uid(0x4f2),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        createdAt: new Date(T0 + 5),
+      }),
+    );
+    // Log 3 (held) and log 5 both pay the deposit address; log 7 matches amountIn but is
+    // listed after a free log with another value, so the amount match still wins.
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [
+      usdtLog(),
+      usdtLog(1n, 5),
+      usdtLog(BigInt(AMOUNT_IN), 7),
+    ]);
+    expect(
+      await readProofReceipt(h.shop, (await getProof(h, uid(0x4f2)))!, POLYGON_RPC, 1_000),
+    ).toBe('filled');
+    expect((await proofsOf(h)).map((row) => [row.id, row.logIndex, row.transferAmount])).toEqual([
+      [uid(0x4f1), 3, AMOUNT_IN],
+      [uid(0x4f2), 7, AMOUNT_IN],
+    ]);
+  });
+
+  it('takes the first free log when none matches amountIn', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4f3), txHash: H1, logIndex: 3 }),
+      proofRow({
+        id: uid(0x4f4),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        createdAt: new Date(T0 + 5),
+      }),
+    );
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [
+      usdtLog(),
+      usdtLog(2n, 5),
+      usdtLog(1n, 6),
+    ]);
+    await readProofReceipt(h.shop, (await getProof(h, uid(0x4f4)))!, POLYGON_RPC, 1_000);
+    expect((await proofsOf(h)).map((row) => [row.id, row.logIndex, row.transferAmount])).toEqual([
+      [uid(0x4f3), 3, AMOUNT_IN],
+      [uid(0x4f4), 5, '2'],
+    ]);
+  });
 });
 
 describe('verifyTxProof and verifyHexProof', () => {
@@ -1736,7 +1801,5 @@ describe('logging', () => {
     expect(text).not.toContain(POLYGON_RPC);
     expect(text).not.toContain('lnbc');
     expect(text).not.toContain(uid(0x1002));
-    expect(OTHER_ACCOUNT.id).not.toBe(ACCOUNT.id);
-    expect(DEPOSIT_USDT).not.toBe(DEPOSIT_USDC);
   });
 });

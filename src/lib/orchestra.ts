@@ -1,3 +1,4 @@
+import { IP_RATE_WINDOW_MS } from '@/lib/ip-rate-limit';
 import { logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 
@@ -130,10 +131,10 @@ export interface OrchestraClientDeps {
   sleep?: (ms: number) => Promise<void>;
 }
 
-/** Page size of a history read. */
-const HISTORY_PAGE_SIZE = 200;
-/** Length of a budget window. */
-const WINDOW_MS = 60_000;
+/** Page size (raw entries) of a history read. */
+export const ORCHESTRA_HISTORY_PAGE_SIZE = 200;
+/** Length of a budget window: {@link IP_RATE_WINDOW_MS}, as for the IP rate limiters. */
+const WINDOW_MS = IP_RATE_WINDOW_MS;
 
 type Endpoint = 'routes' | 'quote' | 'submit' | 'history' | 'status';
 type Group = 'routes' | 'quote' | 'submit' | 'read';
@@ -579,7 +580,7 @@ export class OrchestraClient {
     }
     const query = new URLSearchParams({
       address: bolt11,
-      limit: String(HISTORY_PAGE_SIZE),
+      limit: String(ORCHESTRA_HISTORY_PAGE_SIZE),
       offset: String(offset),
     });
     const sent = await this.send(
@@ -608,7 +609,7 @@ export class OrchestraClient {
         orders.push(order);
       }
     }
-    return { ok: true, orders, full: raw.length >= HISTORY_PAGE_SIZE };
+    return { ok: true, orders, full: raw.length >= ORCHESTRA_HISTORY_PAGE_SIZE };
   }
 
   /**

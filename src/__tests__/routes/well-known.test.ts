@@ -431,6 +431,7 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
   async function mountShop(
     shopPayments: ShopPayments,
     posStore = new InMemoryPosStore(),
+    now: () => number = () => NOW,
   ): Promise<Hono> {
     const auth = new InMemoryAuthStore();
     await seedVerifiedWallet(auth);
@@ -440,7 +441,7 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
         auth,
         fetchImpl: async () => new Response(JSON.stringify(walletPayDoc()), { status: 200 }),
         posStore,
-        now: () => NOW,
+        now,
         lnurlServer: LNURL_CONFIG,
         shopPayments,
       }),
@@ -471,7 +472,20 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
       'ada',
       walletPayDoc()['metadata'],
       query,
+      NOW,
     );
+  });
+
+  it('passes the time the request reached the route, read before the LNURL server call', async () => {
+    const { shop, payLink } = stubShop({ kind: 'today', pinSats: null });
+    let clock = NOW;
+    const app = await mountShop(shop, new InMemoryPosStore(), () => {
+      clock += 1_000;
+      return clock;
+    });
+    await app.request('/.well-known/lnurlp/ada');
+    expect(payLink.mock.calls[0]?.[4]).toBe(NOW + 1_000);
+    expect(clock).toBeGreaterThan(NOW + 1_000);
   });
 
   it("pins today's request to the service's sats", async () => {

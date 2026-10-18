@@ -21,6 +21,7 @@ import {
   harness,
   insertProofs,
   loggedEvents,
+  paymentRow,
   proofRow,
   proofsOf,
   receiptJson,
@@ -147,6 +148,33 @@ describe('duty 2: settlement', () => {
       (line) => line['event'] === 'shop.alert.accepted_long',
     );
     expect(alerts).toEqual([expect.objectContaining({ paymentId: PAYMENT_ID })]);
+  });
+});
+
+describe('duty 2: settlement limit', () => {
+  it('reads at most 8 payments per tick, all 8 in parallel, and leaves the rest for the next tick', async () => {
+    const h = harness();
+    await seed(h, { status: 'ended', endReason: 'window', endedAt: new Date(T0 - 1) });
+    await h.store.transaction(async (tx) => {
+      for (let i = 0; i < 9; i += 1) {
+        await tx.insertPayment(
+          paymentRow({
+            id: uid(0x600 + i),
+            paymentHash: (i + 0x10).toString(16).repeat(32),
+            bolt11: `lnbc21u1extra${i}`,
+            status: 'ended',
+            endReason: 'window',
+            endedAt: new Date(T0 - 1),
+            nextSettleAt: new Date(T0),
+            createdAt: new Date(T0 + i),
+          }),
+        );
+      }
+    });
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.verifyReads).toEqual({ calls: 8, running: 0, maxRunning: 8 });
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.verifyReads.calls).toBe(9);
   });
 });
 
@@ -429,6 +457,9 @@ describe('duty 4: lookups', () => {
       tries: 3,
       nextTryAt: new Date(T0 + 120_000),
     });
+    // Two rows of two calls used the tick's 4 calls; the third waits for the next tick.
+    expect(await lookupDone(h, txHash('a3'))).toMatchObject({ tries: 0, doneAt: null });
+    await runShopPaymentTick(h.shop, 2);
     expect((await lookupDone(h, txHash('a3')))?.doneAt?.getTime()).toBe(T0);
     expect(await proofsOf(h)).toEqual([]);
   });
@@ -460,8 +491,86 @@ describe('duty 4: lookups', () => {
   });
 });
 
+describe('duty 4: lookup call budget', () => {
+  const rows = (): ShopProofLookup[] =>
+    [1, 2, 3, 4, 5].map((i) =>
+      lookupRow({ id: uid(0x510 + i), hash: txHash(`c${i}`), nextTryAt: new Date(T0 - 10 + i) }),
+    );
+
+  it('takes rows while 2 calls are left: two rows of two calls each', async () => {
+    const h = harness();
+    await seed(h);
+    await insertLookups(h, ...rows());
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls.map((call) => call.method)).toEqual([
+      'eth_getTransactionReceipt',
+      'eth_getUserOperationReceipt',
+      'eth_getTransactionReceipt',
+      'eth_getUserOperationReceipt',
+    ]);
+    expect((await lookup(h, uid(0x513)))?.tries).toBe(0);
+  });
+
+  it('stops with one call left: three rows of one call each', async () => {
+    const h = harness();
+    await seed(h);
+    await insertLookups(h, ...rows());
+    h.rpc['eth_getTransactionReceipt'] = () => 'transport';
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls).toHaveLength(3);
+    expect((await lookup(h, uid(0x513)))?.tries).toBe(1);
+    expect((await lookup(h, uid(0x514)))?.tries).toBe(0);
+  });
+});
+
 describe('duty 5: receipts', () => {
   const due = { nextReceiptAt: new Date(T0) };
+
+  it('reads at most 4 detected proofs per tick, one call each', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      ...[1, 2, 3, 4, 5].map((i) =>
+        proofRow({
+          ...due,
+          id: uid(0x410 + i),
+          txHash: txHash(`d${i}`),
+          source: 'detected',
+          logIndex: null,
+          transferAmount: null,
+          createdAt: new Date(T0 + i),
+        }),
+      ),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls).toHaveLength(4);
+    const next = await Promise.all(
+      [1, 2, 3, 4, 5].map(async (i) =>
+        (await getProof(h, uid(0x410 + i)))?.nextReceiptAt?.getTime(),
+      ),
+    );
+    expect(next.filter((at) => at === T0 + 120_000)).toHaveLength(4);
+    expect(next.filter((at) => at === T0)).toHaveLength(1);
+  });
+
+  it('takes a sent hex proof only while 3 calls are left', async () => {
+    const h = harness();
+    await seed(h);
+    const sent = { ...due, source: 'hex' as const, logIndex: null, sentAt: new Date(T0 - 60_000) };
+    await insertProofs(
+      h,
+      proofRow({ ...sent, rawHex: 'ab' }),
+      proofRow({ ...sent, id: uid(0x402), txHash: H2, rawHex: 'cd', createdAt: new Date(T0 + 1) }),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    // Receipt read and resend of the first row; 2 calls left are fewer than 3.
+    expect(h.rpcCalls.map((call) => call.method)).toEqual([
+      'eth_getTransactionReceipt',
+      'eth_sendRawTransaction',
+    ]);
+    expect((await getProof(h, uid(0x402)))?.nextReceiptAt?.getTime()).toBe(T0);
+  });
 
   it('fills a detected proof, stops after 24 h or once filled, and postpones without an endpoint', async () => {
     const h = harness();
@@ -567,7 +676,14 @@ describe('duty 5: receipts', () => {
     h.rpc['eth_getTransactionByHash'] = (params) => ({
       result: params[0] === txHash('a4') ? { hash: params[0] } : null,
     });
-    await runShopPaymentTick(h.shop, 2);
+    // A sent row may take 3 calls, so each tick takes one row within its 4 calls.
+    const perTick: number[] = [];
+    for (let tick = 0; tick < 4; tick += 1) {
+      const before = h.rpcCalls.length;
+      await runShopPaymentTick(h.shop, 2);
+      perTick.push(h.rpcCalls.length - before);
+    }
+    expect([...perTick].sort()).toEqual([2, 2, 2, 3]);
     expect(await getProof(h, uid(0x401))).toMatchObject({
       result: null,
       nextReceiptAt: new Date(T0 + 120_000),

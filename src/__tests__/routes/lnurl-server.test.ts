@@ -10,7 +10,7 @@ import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { shopError, shopErrorBody, waitBody, type ShopPayments } from '@/lib/shop-payment';
 import * as shopProof from '@/lib/shop-proof';
 import { lnurlServerRoutes } from '@/routes/lnurl-server';
-import { WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
+import { WAIT_SATS_TIMEOUT_MS } from '@/lib/message';
 import {
   PAYMENT_ID,
   QUOTE_ID,

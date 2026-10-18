@@ -19,7 +19,8 @@ import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { FetchFn } from '@/lib/lnurlp';
-import { logEvent, type LogFields } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
+import { WAIT_SATS_POLL_MS } from '@/lib/message';
 import type { OrchestraClient, OrchestraQuote, OrchestraRouteAsset } from '@/lib/orchestra';
 import { ORCHESTRA_FINAL_STATUSES, ORCHESTRA_PROGRESSING_STATUSES } from '@/lib/orchestra';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
@@ -38,7 +39,6 @@ import type {
   ShopTx,
 } from '@/lib/shop-payment-store';
 import { normalizeUuid } from '@/lib/uuid';
-import { WAIT_SATS_POLL_MS } from '@/routes/messages';
 
 // ─── Lifetimes ────────────────────────────────────────────────────────────
 
@@ -71,6 +71,12 @@ export const SHOP_REPLACEMENT_BUDGET_MS = 4_000;
 export const SHOP_NO_PAIR_WAIT_MS = 60_000;
 /** Largest honoured `timeout` on the pay link, in seconds. */
 export const SHOP_MAX_TIMEOUT_SECONDS = 10;
+/**
+ * The creation wait of a pay-link request without `timeout` ends this long
+ * after the request started, so the answer stays below the 10 s a plain
+ * LNURL wallet waits.
+ */
+export const SHOP_PAY_LINK_ANSWER_MS = 9_500;
 /** Pay-link requests that may wait at the same time in one process. */
 export const SHOP_MAX_WAITING_REQUESTS = 50;
 /** Creations one account may start per minute. */
@@ -81,6 +87,10 @@ export const SHOP_API_CREATIONS_PER_MINUTE = 60;
 export const SHOP_SPOT_MAX_AGE_MS = 10 * 60_000;
 /** Settlement reads every 5 s for this long after creation, then every 30 s. */
 export const SHOP_FAST_SETTLE_MS = 15 * 60_000;
+/** First order-status read after an order was found. */
+export const SHOP_FIRST_STATUS_MS = 10_000;
+/** One history read per payment at most this often (also the first read after a detail). */
+export const SHOP_HISTORY_INTERVAL_MS = 10_000;
 
 // ─── Method table ─────────────────────────────────────────────────────────
 
@@ -1036,7 +1046,7 @@ export async function recordProofOrder(
   };
   if (proof.providerOrder === null) {
     patch.orderFoundAt = new Date(nowMs);
-    patch.nextStatusAt = new Date(nowMs + 10_000);
+    patch.nextStatusAt = new Date(nowMs + SHOP_FIRST_STATUS_MS);
   }
   if (ORCHESTRA_FINAL_STATUSES.has(order.status)) {
     patch.nextStatusAt = null;
@@ -1564,7 +1574,7 @@ export class ShopPayments {
       return;
     }
     void this.createForCharge(account, username, charge).catch((error: unknown) => {
-      logEvent('shop.creation.failed', { accountId: account.id, error: String(error) });
+      logEvent('shop.creation.failed', { accountId: account.id, ...errorLogFields(error) });
     });
   }
 
@@ -1977,6 +1987,10 @@ export class ShopPayments {
    * @param username - Its username.
    * @param metadata - Metadata of today's pay request.
    * @param query - `timeout`, `method`, `asset`, and repeated keys.
+   * @param requestStartMs - When the request reached the route (default
+   *   now). The creation wait lasts at most {@link SHOP_CREATION_BUDGET_MS};
+   *   without `timeout` (a plain LNURL wallet) it also ends
+   *   {@link SHOP_PAY_LINK_ANSWER_MS} after this.
    * @returns Today's request (with an optional pin) or a full response.
    */
   async payLink(
@@ -1984,6 +1998,7 @@ export class ShopPayments {
     username: string,
     metadata: string,
     query: ShopPayLinkQuery,
+    requestStartMs: number = this.#deps.now(),
   ): Promise<ShopPayLinkAnswer> {
     const startMs = this.#deps.now();
     const name = shopName(account, username);
@@ -2010,12 +2025,21 @@ export class ShopPayments {
       }
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
-      await Promise.race([
-        this.createForCharge(account, username, state.charge).catch(() => null),
-        this.#sleep(SHOP_CREATION_BUDGET_MS).then(() => null),
-      ]);
+      const creation = this.createForCharge(account, username, state.charge).catch(() => null);
+      // A request without `timeout` comes from a plain LNURL wallet (10 s);
+      // one with `timeout` comes from an OpenCryptoPay wallet (20 s).
+      const waitMs =
+        query.timeout === null
+          ? Math.min(
+              SHOP_CREATION_BUDGET_MS,
+              requestStartMs + SHOP_PAY_LINK_ANSWER_MS - this.#deps.now(),
+            )
+          : SHOP_CREATION_BUDGET_MS;
+      if (waitMs > 0) {
+        await Promise.race([creation, this.#sleep(waitMs).then(() => null)]);
+      }
       // Whatever the outcome (a payment, a charge cancelled, expired, or
-      // paid meanwhile, or the 8 s budget), answer from the state now.
+      // paid meanwhile, or the wait used up), answer from the state now.
       state = await this.#linkState(account.id, this.#deps.now());
     }
     if (state.kind === 'open') {
@@ -2313,7 +2337,11 @@ export class ShopPayments {
       if (await tx.markDetailIssued(offer.id, nowMs)) {
         const payment = await tx.getPayment(open.id);
         if (payment !== null && payment.nextHistoryAt === null) {
-          await tx.updatePayment(payment.id, {}, { nextHistoryAt: new Date(nowMs + 10_000) });
+          await tx.updatePayment(
+            payment.id,
+            {},
+            { nextHistoryAt: new Date(nowMs + SHOP_HISTORY_INTERVAL_MS) },
+          );
         }
       }
     });

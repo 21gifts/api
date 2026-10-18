@@ -16,7 +16,7 @@
 
 import { Hono } from 'hono';
 import { z } from 'zod';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
@@ -58,6 +58,7 @@ const STABLECOIN_UNAVAILABLE = {
 type PayLookup =
   | {
       ok: true;
+      account: Account;
       username: string;
       name: string;
       address: string;
@@ -132,6 +133,7 @@ async function lookupPayAccount(
     if (pending === null) {
       return {
         ok: true,
+        account,
         username,
         name,
         address,
@@ -145,6 +147,7 @@ async function lookupPayAccount(
     }
     return {
       ok: true,
+      account,
       username,
       name,
       address,
@@ -416,12 +419,7 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       if (!shop.offersStablecoins(lookup.username)) {
         return c.json(STABLECOIN_UNAVAILABLE, 503);
       }
-      const account = await deps.auth.getAccountByUsername(lookup.username);
-      /* v8 ignore next 3 -- lookupPayAccount just read this account */
-      if (account === undefined) {
-        return c.json({ error: 'Not found' }, 404);
-      }
-      const created = await shop.createForPayer(account, lookup.username, parsed.amountSats);
+      const created = await shop.createForPayer(lookup.account, lookup.username, parsed.amountSats);
       switch (created.kind) {
         case 'payment':
           return c.json(

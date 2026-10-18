@@ -8,10 +8,17 @@
  */
 
 import { evmGetTransactionByHash } from '@/lib/evm-rpc';
+import type { FetchFn } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
-import { ORCHESTRA_FINAL_STATUSES, type OrchestraOrder } from '@/lib/orchestra';
+import {
+  ORCHESTRA_FINAL_STATUSES,
+  ORCHESTRA_HISTORY_PAGE_SIZE,
+  type OrchestraOrder,
+} from '@/lib/orchestra';
 import { verifyLightningPayment } from '@/lib/pos-paid-worker';
 import {
+  SHOP_FIRST_STATUS_MS,
+  SHOP_HISTORY_INTERVAL_MS,
   SHOP_ORDER_WATCH_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
   lockAccountOf,
@@ -28,7 +35,6 @@ import type {
   ShopTx,
 } from '@/lib/shop-payment-store';
 import {
-  SHOP_FIRST_STATUS_MS,
   SHOP_HEX_UNKNOWN_MS,
   applyProofOrder,
   followProofOrder,
@@ -40,28 +46,27 @@ import {
   submitProofAttempt,
   verifyTxProof,
 } from '@/lib/shop-proof';
+import { SPARK_WORKER_INTERVAL_MS } from '@/lib/spark-worker';
 
-/** Tick period of the watcher. */
-export const SHOP_WORKER_INTERVAL_MS = 2_000;
+/** Tick period of the watcher: the Spark invoice worker's {@link SPARK_WORKER_INTERVAL_MS}. */
+export const SHOP_WORKER_INTERVAL_MS = SPARK_WORKER_INTERVAL_MS;
 /** Timeout of every external call of a duty. */
 export const SHOP_WORKER_CALL_TIMEOUT_MS = 5_000;
 
 /** Settlement reads per tick, in parallel. */
 const SETTLE_PER_TICK = 8;
-/** Lookup rows per tick. */
-const LOOKUPS_PER_TICK = 4;
-/** Receipt rows per tick. */
-const RECEIPTS_PER_TICK = 4;
+/** External RPC calls of the lookups duty per tick. */
+const LOOKUP_CALLS_PER_TICK = 4;
+/** Most RPC calls one lookup row makes: the transaction receipt, then the user-operation receipt. */
+const LOOKUP_ROW_CALLS = 2;
+/** External RPC calls of the receipts duty per tick. */
+const RECEIPT_CALLS_PER_TICK = 4;
 /** Submits per tick. */
 const SUBMITS_PER_TICK = 1;
 /** Rows the stuck duty marks per tick (no external call). */
 const STUCK_PER_TICK = 100;
 /** Status rows one even tick may look at to find the one row that needs a read. */
 const STATUS_ROWS_PER_TICK = 10;
-/** Raw entries of one history page. */
-const HISTORY_PAGE_SIZE = 200;
-/** One history read per payment at most this often. */
-const HISTORY_INTERVAL_MS = 10_000;
 /** A lookup row is read for this long, then expires. */
 const LOOKUP_LIFETIME_MS = 60 * 60_000;
 /** Delays after the first and second lookup (reads at 10 s, 30 s, 60 s), then every 2 min. */
@@ -81,6 +86,32 @@ const ACCEPTED_LONG_MS = 60 * 60_000;
 
 /** Payments already reported as `accepted` for long, per service (once per process). */
 const acceptedLongSeen = new WeakMap<ShopPayments, Set<string>>();
+
+/** External calls a duty may still make this tick, and the fetch that counts them. */
+interface CallBudget {
+  /** Calls left; every call through `fetchImpl` takes one. */
+  left: number;
+  /** The service's fetch, counting each call against `left`. */
+  fetchImpl: FetchFn;
+}
+
+/**
+ * A per-tick call budget of one duty.
+ *
+ * @param shop - Service (its fetch).
+ * @param calls - Calls the duty may make this tick.
+ * @returns The budget.
+ */
+function callBudget(shop: ShopPayments, calls: number): CallBudget {
+  const budget: CallBudget = {
+    left: calls,
+    fetchImpl: (input, init) => {
+      budget.left -= 1;
+      return shop.deps.fetchImpl(input, init);
+    },
+  };
+  return budget;
+}
 
 /**
  * Lock the account of a payment (`lockAccountOf`, which follows an account
@@ -315,13 +346,15 @@ async function readOrders(shop: ShopPayments, nowMs: number): Promise<void> {
   const full = page.ok && page.full;
   const patch: ShopPaymentPatch = {
     historyOffset: full
-      ? payment.historyOffset + HISTORY_PAGE_SIZE
+      ? payment.historyOffset + ORCHESTRA_HISTORY_PAGE_SIZE
       : page.ok
         ? 0
         : payment.historyOffset,
     // Only a successful short page ends the watch: a failed read changes nothing.
     nextHistoryAt:
-      page.ok && !full && watchEndMs <= afterMs ? null : new Date(afterMs + HISTORY_INTERVAL_MS),
+      page.ok && !full && watchEndMs <= afterMs
+        ? null
+        : new Date(afterMs + SHOP_HISTORY_INTERVAL_MS),
   };
   await underPaymentLock(shop, payment.id, async (tx) => {
     await tx.updatePayment(payment.id, {}, patch);
@@ -346,8 +379,14 @@ function nextLookupAt(tries: number, nowMs: number): Date {
  * @param shop - Service.
  * @param row - Lookup row.
  * @param nowMs - Clock.
+ * @param fetchImpl - Fetch that counts the duty's calls.
  */
-async function lookUp(shop: ShopPayments, row: ShopProofLookup, nowMs: number): Promise<void> {
+async function lookUp(
+  shop: ShopPayments,
+  row: ShopProofLookup,
+  nowMs: number,
+  fetchImpl: FetchFn,
+): Promise<void> {
   const context = await shopProofContext(shop, row.quoteId);
   const done = (): Promise<unknown> =>
     shop.store.transaction((tx) => tx.updateLookup(row.id, { doneAt: new Date(shop.deps.now()) }));
@@ -381,6 +420,7 @@ async function lookUp(shop: ShopPayments, row: ShopProofLookup, nowMs: number): 
     hash: row.hash,
     deadlineMs: Number.POSITIVE_INFINITY,
     callLimitMs: SHOP_WORKER_CALL_TIMEOUT_MS,
+    fetchImpl,
   });
   if (verified.kind === 'not_found') {
     await shop.store.transaction((tx) =>
@@ -407,15 +447,21 @@ async function lookUp(shop: ShopPayments, row: ShopProofLookup, nowMs: number): 
 }
 
 /**
- * Duty 4: lookup rows that are not done, up to 4 per tick.
+ * Duty 4: lookup rows that are not done, within 4 RPC calls per tick. A row
+ * is taken only while the calls left cover its most calls, so the duty
+ * never passes its budget; the rest waits for the next tick.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
  */
 async function lookups(shop: ShopPayments, nowMs: number): Promise<void> {
-  const rows = await shop.store.transaction((tx) => tx.dueLookups(nowMs, LOOKUPS_PER_TICK));
+  const budget = callBudget(shop, LOOKUP_CALLS_PER_TICK);
+  const rows = await shop.store.transaction((tx) => tx.dueLookups(nowMs, LOOKUP_CALLS_PER_TICK));
   for (const row of rows) {
-    await lookUp(shop, row, nowMs);
+    if (budget.left < LOOKUP_ROW_CALLS) {
+      return;
+    }
+    await lookUp(shop, row, nowMs, budget.fetchImpl);
   }
 }
 
@@ -428,8 +474,14 @@ async function lookups(shop: ShopPayments, nowMs: number): Promise<void> {
  * @param shop - Service.
  * @param proof - Proof with a due `next_receipt_at`.
  * @param nowMs - Clock.
+ * @param fetchImpl - Fetch that counts the duty's calls.
  */
-async function readReceipt(shop: ShopPayments, proof: ShopProof, nowMs: number): Promise<void> {
+async function readReceipt(
+  shop: ShopPayments,
+  proof: ShopProof,
+  nowMs: number,
+  fetchImpl: FetchFn,
+): Promise<void> {
   const later: ShopProofPatch = { nextReceiptAt: new Date(nowMs + SLOW_READ_MS) };
   const url = shop.deps.config?.evmRpc.get(proof.chainId);
   if (nowMs - proof.createdAt.getTime() >= SHOP_UNRESOLVED_LIMIT_MS || proof.logIndex !== null) {
@@ -441,13 +493,13 @@ async function readReceipt(shop: ShopPayments, proof: ShopProof, nowMs: number):
     return;
   }
   if (proof.source === 'hex' && proof.sentAt === null) {
-    const outcome = await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS);
+    const outcome = await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl);
     if (outcome !== 'sent') {
       await patchProof(shop, proof, outcome === 'retry' ? later : { nextReceiptAt: null });
     }
     return;
   }
-  const outcome = await readProofReceipt(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS);
+  const outcome = await readProofReceipt(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl);
   if (outcome !== 'pending' && outcome !== 'error') {
     await patchProof(shop, proof, { nextReceiptAt: null });
     return;
@@ -456,7 +508,7 @@ async function readReceipt(shop: ShopPayments, proof: ShopProof, nowMs: number):
     if (nowMs - proof.sentAt.getTime() >= SHOP_HEX_UNKNOWN_MS) {
       const known = await evmGetTransactionByHash(
         url,
-        shop.deps.fetchImpl,
+        fetchImpl,
         proof.txHash,
         SHOP_WORKER_CALL_TIMEOUT_MS,
       );
@@ -465,7 +517,9 @@ async function readReceipt(shop: ShopPayments, proof: ShopProof, nowMs: number):
         await patchProof(shop, proof, { nextReceiptAt: null });
         return;
       }
-    } else if ((await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS)) === 'rejected') {
+    } else if (
+      (await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl)) === 'rejected'
+    ) {
       await patchProof(shop, proof, { nextReceiptAt: null });
       return;
     }
@@ -474,18 +528,39 @@ async function readReceipt(shop: ShopPayments, proof: ShopProof, nowMs: number):
 }
 
 /**
+ * Most RPC calls one receipt row makes: a `detected` proof only reads its
+ * receipt; a `hex` proof never sent makes a send and its hash check; a sent
+ * one reads its receipt, then resends with a hash check or checks the hash.
+ *
+ * @param proof - Receipt row.
+ * @returns The calls to keep free before the row is taken.
+ */
+function receiptRowCalls(proof: ShopProof): number {
+  if (proof.source !== 'hex') {
+    return 1;
+  }
+  return proof.sentAt === null ? 2 : 3;
+}
+
+/**
  * Duty 5: `hex` proofs not yet mined or sent and `detected` proofs without a
- * log index, up to 4 per tick.
+ * log index, within 4 RPC calls per tick. A row is taken only while the
+ * calls left cover its most calls, so the duty never passes its budget; the
+ * rest waits for the next tick.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
  */
 async function receipts(shop: ShopPayments, nowMs: number): Promise<void> {
+  const budget = callBudget(shop, RECEIPT_CALLS_PER_TICK);
   const rows = await shop.store.transaction((tx) =>
-    tx.dueProofs('receipt', nowMs, RECEIPTS_PER_TICK),
+    tx.dueProofs('receipt', nowMs, RECEIPT_CALLS_PER_TICK),
   );
   for (const row of rows) {
-    await readReceipt(shop, row, nowMs);
+    if (budget.left < receiptRowCalls(row)) {
+      return;
+    }
+    await readReceipt(shop, row, nowMs, budget.fetchImpl);
   }
 }
 

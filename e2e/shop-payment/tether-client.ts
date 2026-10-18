@@ -1,10 +1,9 @@
 /**
  * TypeScript port of the OpenCryptoPay client of Tether Wallet for Android
  * 1.11.0 (build 134), as `docs/shop-stablecoin-payment.md` section
- * "Tether Wallet 1.11.0" states it. Line references point into the
- * decompiled Hermes modules of that build (`ocp-api-module.js`,
- * `ocp-route-module.js`, `ocp-pending-proof-module.js`, `ocp-prove.js`,
- * `eip681-module.js`).
+ * "Tether Wallet 1.11.0" states it. References in parentheses name the
+ * paragraph of that section a behaviour comes from (Scan, Pay request,
+ * Rails, Detail, Send, Proof, Settlement, Results).
  *
  * The port talks HTTP through {@link WalletHttp} and pays through
  * {@link WalletBundler}; the e2e fixtures back both with Playwright's request
@@ -14,21 +13,21 @@
 
 import { bech32 } from '@scure/base';
 
-/** `OPEN_CRYPTO_PAY_STANDARD` (ocp-api-module.js:1437). */
+/** `OPEN_CRYPTO_PAY_STANDARD` (Pay request). */
 export const OPEN_CRYPTO_PAY_STANDARD = 'OpenCryptoPay';
 
-/** Pay-request GET and detail GET timeout: the axios instance's 20 s (ocp-api-module.js:1333). */
+/** Pay-request GET and detail GET timeout: 20 s (Pay request). */
 export const PAY_REQUEST_TIMEOUT_MS = 20_000;
-/** Plain LNURL path timeout. */
+/** Plain LNURL path timeout (Pay request). */
 export const LNURL_TIMEOUT_MS = 10_000;
-/** Pauses before attempts 2 and 3 of a proof (ocp-pending-proof-module.js:1613). */
+/** Pauses before attempts 2 and 3 of a proof (Proof). */
 export const PROOF_RETRY_PAUSES_MS: readonly number[] = [1_000, 3_000];
-/** Settlement poll interval (ocp-pending-proof-module.js:1565-1567). */
+/** Settlement poll interval (Settlement). */
 export const SETTLEMENT_POLL_MS = 3_000;
-/** Settlement poll total wait (ocp-pending-proof-module.js:1565-1567). */
+/** Settlement poll total wait (Settlement). */
 export const SETTLEMENT_WAIT_MS = 30_000;
 
-/** One rail of `OPEN_CRYPTO_PAY_RAILS` (tether-methods.md, D:1561889-1561949). */
+/** One rail of `OPEN_CRYPTO_PAY_RAILS` (Rails). */
 export interface Rail {
   id: string;
   method: string;
@@ -100,7 +99,7 @@ export const OPEN_CRYPTO_PAY_RAILS: readonly Rail[] = [
   },
 ];
 
-/** `EVM_CHAIN_TO_NETWORK` (tether-methods.md, D:911454-911463). */
+/** `EVM_CHAIN_TO_NETWORK` (Rails, Detail: the rail's chain). */
 export const EVM_CHAIN_TO_NETWORK: Readonly<Record<number, string>> = {
   1: 'ethereum',
   137: 'polygon',
@@ -134,6 +133,8 @@ export interface WalletBundler {
   /**
    * Send one ERC-20 transfer as a user operation and wait for inclusion.
    *
+   * @param input - Chain id, token contract, recipient (the deposit address),
+   *   and amount in token units.
    * @returns The user-operation hash and the receipt the bundler returned.
    */
   transfer(input: {
@@ -225,7 +226,7 @@ export function encodeLnurl(url: string): string {
 }
 
 /**
- * `withQuery` (ocp-api-module.js:69-140): `key=encodeURIComponent(value)`
+ * `withQuery` (Detail): `key=encodeURIComponent(value)`
  * joined by `&`, appended with `&` when the URL already has a `?`, else `?`.
  *
  * @param url - Base URL.
@@ -240,7 +241,7 @@ export function withQuery(url: string, params: Readonly<Record<string, string>>)
 }
 
 /**
- * `isOpenCryptoPayPayment` (ocp-api-module.js:143-180).
+ * `isOpenCryptoPayPayment` (Scan).
  *
  * @param body - Parsed response body.
  * @returns `true` when `standard` is `OpenCryptoPay` or `possibleStandards` contains it.
@@ -291,7 +292,7 @@ function readPayment(body: Record<string, unknown>): OcpPayment {
  * GET the pay link (no query on the first fetch), 20 s. 2xx with an
  * OpenCryptoPay body is a payment, another 2xx the plain LNURL path; 404
  * with an OpenCryptoPay body means nothing is pending, any other 404 an
- * invalid link ('payment: link not found', fn-getOCPPayment.txt:62-64);
+ * invalid link ('payment: link not found', Pay request);
  * every other status throws.
  *
  * @param http - Wallet HTTP port.
@@ -321,7 +322,7 @@ export async function getOpenCryptoPayPayment(
 // Rails.
 
 /**
- * `acceptsRail` (ocp-route-module.js:47-107): exact method, `available`, asset by name.
+ * `acceptsRail` (Rails): exact method, `available`, asset by name.
  *
  * @param entry - One `transferAmounts` entry.
  * @param rail - Rail of the wallet's list.
@@ -336,7 +337,7 @@ export function acceptsRail(entry: unknown, rail: Rail): boolean {
 }
 
 /**
- * `payableOptions` (ocp-options-module.js:97-121): supported, not experimental, not withheld.
+ * `payableOptions` (Rails): supported, not experimental, not withheld.
  *
  * @param rail - Rail of the wallet's list.
  * @returns `true` when the wallet offers the rail.
@@ -348,12 +349,12 @@ export function isPayable(rail: Rail): boolean {
 /** One rail the wallet can offer for a payment, with the advertised amount. */
 export interface RailOption {
   rail: Rail;
-  /** `assets[].amount` of the matching entry (`advertisedAmount`, ocp-route-module.js:109). */
+  /** `assets[].amount` of the matching entry (`advertisedAmount`, Rails). */
   amount: string;
 }
 
 /**
- * `listOpenCryptoPayOptions` (ocp-route-module.js:748).
+ * `listOpenCryptoPayOptions` (Rails).
  *
  * @param payment - The pay request.
  * @returns The payable rails the pay request offers, with their amounts.
@@ -381,7 +382,7 @@ export function listOpenCryptoPayOptions(payment: OcpPayment): RailOption[] {
 // ---------------------------------------------------------------------------
 // Detail.
 
-/** A complete EIP-681 ERC-20 transfer (`parseEip681`, eip681-module.js:209-452). */
+/** A complete EIP-681 ERC-20 transfer (`parseEip681`, Detail). */
 export interface Eip681Transfer {
   tokenAddress: string;
   chainId: number;
@@ -427,7 +428,7 @@ export function parseEip681(uri: string): Eip681Transfer | null {
 }
 
 /**
- * `parseTransferUri` (ocp-route-module.js:385-536): the URI must be a
+ * `parseTransferUri` (Detail): the URI must be a
  * complete EIP-681 transfer, its chain id must map to the rail's network
  * ('provider uri names a different chain than the rail'), and its token
  * must be the wallet's own contract for that network ('… different token
@@ -462,7 +463,7 @@ export function parseTransferUri(
 }
 
 /**
- * `earliestExpiry` (ocp-route-module.js:317-383): the earliest parseable ISO, unparseable ones skipped.
+ * `earliestExpiry` (Detail): the earliest parseable ISO, unparseable ones skipped.
  *
  * @param values - ISO timestamps, `null`, or `undefined`.
  * @returns The earliest parseable timestamp, or `null` when none parses.
@@ -494,7 +495,7 @@ function parseHttpUrl(value: string): URL | null {
 }
 
 /**
- * `resolveSubmitUrl` (ocp-route-module.js:192-315). The first `http(s)` URL
+ * `resolveSubmitUrl` (Proof). The first `http(s)` URL
  * in `hint` (`/https?:\/\/[^\s"'<>]+/`), trailing `[.,;:!?)\]}]+` cut off,
  * is the proof URL when its path has a segment `tx` and its host equals the
  * callback's. Otherwise the callback with every path segment `cb` replaced
@@ -526,7 +527,7 @@ export function resolveSubmitUrl(hint: string | null, callback: string | null): 
   return rewritten.href;
 }
 
-/** The proof the wallet keeps after a detail (ocp-route-module.js ~1180-1185). */
+/** The proof the wallet keeps after a detail (Detail, Proof). */
 export interface PendingProof {
   submitUrl: string;
   /** The pay-link URL the wallet first fetched. */
@@ -552,8 +553,7 @@ export type RailResult =
   | { kind: 'error'; error: 'RAIL_UNAVAILABLE' | 'QUOTE_EXPIRED'; detail: string };
 
 /**
- * Detail request (`getOpenCryptoPayTransaction`, ocp-api-module.js:684-945,
- * called from ocp-route-module.js:1529): `callback` + `?`/`&` + `quote`,
+ * Detail request (`getOpenCryptoPayTransaction`, Detail): `callback` + `?`/`&` + `quote`,
  * `method`, `asset`. HTTP 400 is `RAIL_UNAVAILABLE`, 404 `QUOTE_EXPIRED`,
  * any other error throws. Lightning reads `pr`; a `tx` rail reads `uri`,
  * `hint`, and `expiryDate`.
@@ -669,14 +669,14 @@ export function proofHash(result: {
 // ---------------------------------------------------------------------------
 // Proof.
 
-/** Outcome of one proof submit (`submitOpenCryptoPayTransaction`, ocp-api-module.js:946-1200). */
+/** Outcome of one proof submit (`submitOpenCryptoPayTransaction`, Proof). */
 export type SubmitResult =
   | { kind: 'accepted'; status: number; txId: string }
   | { kind: 'rejected'; status: number; message: string };
 
 /**
  * One submit: GET `submitUrl` with `quote`, `method`, `asset`, `tx`
- * (ocp-api-module.js:1194). HTTP 5xx or no answer throws ('submit: no
+ * (Proof). HTTP 5xx or no answer throws ('submit: no
  * answer, retrying'); any status below 500 is final. Success is a 2xx with
  * a non-empty string `txId` ('submit: accepted without a txId' otherwise).
  *
@@ -726,7 +726,7 @@ export interface AttemptLog {
 }
 
 /**
- * `submitWithRetries` (ocp-pending-proof-module.js:627-868): up to 3
+ * `submitWithRetries` (Proof): up to 3
  * attempts, pauses 1 s and 3 s, retrying only a thrown submit.
  *
  * @param http - Wallet HTTP port.
@@ -766,7 +766,7 @@ export async function submitWithRetries(
 }
 
 /**
- * `waitForSettlement` (ocp-pending-proof-module.js:246-626): poll the URL
+ * `waitForSettlement` (Settlement): poll the URL
  * first fetched with `timeout=0`, every 3 s for 30 s. Settled on a 404 with
  * an OpenCryptoPay body ('the register cleared its pending sale') or an
  * answer naming a different `quote.payment` ('the register has moved on to
@@ -855,6 +855,13 @@ export interface PayOptions {
 
 /** The port of the wallet's OpenCryptoPay flow. */
 export class TetherWallet {
+  /**
+   * @param http - The wallet's HTTP (GET with a timeout).
+   * @param bundler - The bundler the ERC-4337 account pays through.
+   * @param clock - Sleep and clock (default real time).
+   * @param balances - USDT balance in units per network; the wallet asks for
+   *   a detail only when it covers the amount.
+   */
   constructor(
     private readonly http: WalletHttp,
     private readonly bundler: WalletBundler,
@@ -867,7 +874,14 @@ export class TetherWallet {
     },
   ) {}
 
-  /** Scan a QR text and fetch the pay request. */
+  /**
+   * Scan a QR text and fetch the pay request (Scan, Pay request).
+   *
+   * @param text - QR text or link.
+   * @returns The OpenCryptoPay URL and the pay-request result, or both
+   *   `null` when the text is not an OpenCryptoPay link.
+   * @throws Error when the pay-request GET has no answer or an unexpected status.
+   */
   async scan(
     text: string,
   ): Promise<{ url: string; result: PayRequestResult } | { url: null; result: null }> {
@@ -881,6 +895,13 @@ export class TetherWallet {
   /**
    * Scan, pick `railId`, fetch the detail, pay, prove, and wait for
    * settlement, ending on the screen the wallet would show.
+   *
+   * @param sticker - QR text of the sticker.
+   * @param options - Rail, hooks before the detail and the send, and an
+   *   optional amount override.
+   * @returns Everything the run saw, with the screen it ends on.
+   * @throws Error for an unknown rail, a pay request or detail without an
+   *   answer or with an unexpected status, or a failed bundler transfer.
    */
   async pay(sticker: string, options: PayOptions): Promise<WalletRun> {
     const run: WalletRun = { outcome: 'INVALID_LINK', attempts: [], polls: [] };
@@ -986,6 +1007,11 @@ export class TetherWallet {
    * Plain LNURL path (10 s): pay `amountSats` through the LUD-06 callback.
    * A fixed request (`minSendable === maxSendable`) takes its own amount;
    * an amount outside the bounds is `LNURL_AMOUNT_RANGE`.
+   *
+   * @param body - The plain LNURL pay request.
+   * @param amountSats - Amount the payer enters, or `null` for none.
+   * @returns The invoice and its millisats, or `LNURL_AMOUNT_RANGE`.
+   * @throws Error when the callback has no answer, is not HTTP 200, or has no `pr`.
    */
   async payPlainLnurl(
     body: Record<string, unknown>,

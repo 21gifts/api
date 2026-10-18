@@ -103,6 +103,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
       }
     })
     .get('/lnurlp/:username', async (c) => {
+      const requestStartMs = now();
       const username = normalizeUsername(c.req.param('username'));
       if (username === null) {
         return c.json(shopErrorBody(404, 'Not found'), 404, LNURLP_HEADERS);
@@ -147,14 +148,20 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           logEvent('lnurlp.resolved', { username });
           const shop = deps.shopPayments;
           if (shop !== undefined) {
-            const answer = await shop.payLink(account, username, String(doc['metadata']), {
-              timeout: c.req.query('timeout') ?? null,
-              method: c.req.query('method') ?? null,
-              asset: c.req.query('asset') ?? null,
-              repeated: ['quote', 'method', 'asset'].some(
-                (key) => (c.req.queries(key) ?? []).length > 1,
-              ),
-            });
+            const answer = await shop.payLink(
+              account,
+              username,
+              String(doc['metadata']),
+              {
+                timeout: c.req.query('timeout') ?? null,
+                method: c.req.query('method') ?? null,
+                asset: c.req.query('asset') ?? null,
+                repeated: ['quote', 'method', 'asset'].some(
+                  (key) => (c.req.queries(key) ?? []).length > 1,
+                ),
+              },
+              requestStartMs,
+            );
             if (answer.kind === 'response') {
               return answer.response;
             }

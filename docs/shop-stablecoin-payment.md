@@ -1119,7 +1119,7 @@ the request has no `since` query. With `?since=<paymentStatus>`, the
 last `paymentStatus` the page saw, it waits while the stored
 `paymentStatus` still equals that value, as `GET /messages/:id?sinceSats=`
 waits while the sats have not passed the client's value: up to `WAIT_SATS_TIMEOUT_MS` (25 s) and checking every
-`WAIT_SATS_POLL_MS` (250 ms), both in `src/routes/messages.ts`. Then it
+`WAIT_SATS_POLL_MS` (250 ms), both in `src/lib/message.ts`. Then it
 answers with the state on hand.
 
 | `paymentStatus`              | `status` (DFX `PaymentLinkPaymentStatus`)                                                      |

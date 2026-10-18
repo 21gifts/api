@@ -28,6 +28,7 @@ import {
   PlainJsonNumber,
   SHOP_ASSETS,
   SHOP_METHODS,
+  SHOP_PAY_LINK_ANSWER_MS,
   SHOP_LNURL_HEADERS,
   ShopPayments,
   btcAmount,
@@ -2709,6 +2710,43 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(sleepCalls).toEqual([8_000]);
   });
 
+  it('ends the creation wait 9.5 s after the request start, and waits not at all once that passed', async () => {
+    const late = await setup();
+    await late.pos.create(chargeRow());
+    late.orchestra.routesImpl = () => new Promise(() => undefined);
+    sleepImpl = (ms) => (ms === 6_500 ? Promise.resolve() : defaultSleep(ms));
+    expect(
+      await late.svc.payLink(
+        late.account,
+        USER,
+        METADATA,
+        NO_QUERY,
+        clock - SHOP_PAY_LINK_ANSWER_MS + 6_500,
+      ),
+    ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls).toEqual([6_500]);
+
+    sleepCalls = [];
+    const over = await setup();
+    const charge = chargeRow();
+    await over.pos.create(charge);
+    expect(
+      await over.svc.payLink(
+        over.account,
+        USER,
+        METADATA,
+        NO_QUERY,
+        clock - SHOP_PAY_LINK_ANSWER_MS,
+      ),
+    ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls).toEqual([]);
+    // The creation still runs on in the background.
+    await vi.waitFor(async () => {
+      expect(await over.store.transaction((tx) => tx.paymentForCharge(charge.id))).not.toBeNull();
+    });
+    expect(SHOP_PAY_LINK_ANSWER_MS).toBe(9_500);
+  });
+
   it('answers today’s pinned request when the creation offers nothing, throws, or outlasts the 8 s budget', async () => {
     const h = await setup();
     await h.pos.create(chargeRow());
@@ -3603,7 +3641,7 @@ describe('till hooks (By a till charge, Till)', () => {
     await h.svc.createCharge(h.account, chargeRow());
     await vi.waitFor(() => {
       expect(eventsNamed('shop.creation.failed')).toEqual([
-        { event: 'shop.creation.failed', fields: { accountId: ACCOUNT_ID, error: 'Error: boom' } },
+        { event: 'shop.creation.failed', fields: { accountId: ACCOUNT_ID, name: 'Error' } },
       ]);
     });
   });

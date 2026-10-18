@@ -28,10 +28,13 @@ import {
   type DecodedEvmTransaction,
   type Erc20TransferLog,
 } from '@/lib/evm-transfer';
+import { IpRateLimiter } from '@/lib/ip-rate-limit';
+import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent, type LogFields } from '@/lib/log';
 import { ORCHESTRA_FINAL_STATUSES, type OrchestraSubmitCaller } from '@/lib/orchestra';
 import { normalizeHex32 } from '@/lib/proof';
 import {
+  SHOP_FIRST_STATUS_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
   evaluateProof,
   lockAccountOf,
@@ -72,8 +75,6 @@ export const SHOP_FIRST_LOOKUP_MS = 10_000;
 export const SHOP_FIRST_SUBMIT_MS = 10_000;
 /** First watcher receipt read or resend of a proof without a log index. */
 export const SHOP_FIRST_RECEIPT_MS = 30_000;
-/** First order-status read after an order was found. */
-export const SHOP_FIRST_STATUS_MS = 10_000;
 /** A `hex` transaction still unknown this long after its first send is refused. */
 export const SHOP_HEX_UNKNOWN_MS = 10 * 60_000;
 /** Fewest hexadecimal characters of a `hex` proof (after an optional `0x`). */
@@ -185,8 +186,8 @@ export interface ShopSubmitAttempt {
   sent: boolean;
 }
 
-/** Proof submits that repeats triggered, per service and proof (epoch ms). */
-const repeatSubmits = new WeakMap<ShopPayments, Map<string, number[]>>();
+/** Repeat-submit limiter per service, keyed by proof id. */
+const repeatSubmits = new WeakMap<ShopPayments, IpRateLimiter>();
 
 /**
  * Log one proof event with its ids (never a key, URL, raw hex, or BOLT11).
@@ -322,14 +323,23 @@ function offersFor(
 }
 
 /**
- * The transfer log of an offer in a receipt: the first log whose value equals
- * `amountIn`, else the first log to the offer's deposit address.
+ * The transfer log of an offer in a receipt. Logs whose index another row of
+ * the same offer and transaction already holds are skipped, so a second
+ * order paid by the same transaction keeps its own row; among the free logs
+ * the first whose value equals `amountIn` wins, else the first one. Only
+ * when no free log remains is a held log returned (same preference), and
+ * filling it in merges the two rows of one deposit.
  *
  * @param logs - Receipt logs.
  * @param offer - The offer.
+ * @param held - Log indexes other rows of this offer and transaction hold.
  * @returns The decoded transfer, or `undefined`.
  */
-function offerTransfer(logs: readonly EvmLog[], offer: ShopOffer): Erc20TransferLog | undefined {
+function offerTransfer(
+  logs: readonly EvmLog[],
+  offer: ShopOffer,
+  held: ReadonlySet<number>,
+): Erc20TransferLog | undefined {
   const transfers = logs
     .map(decodeTransferLog)
     .filter(
@@ -339,7 +349,9 @@ function offerTransfer(logs: readonly EvmLog[], offer: ShopOffer): Erc20Transfer
         transfer.to === offer.depositAddress,
     );
   const amount = BigInt(offer.amountIn);
-  return transfers.find((transfer) => transfer.value === amount) ?? transfers[0];
+  const free = transfers.filter((transfer) => !held.has(transfer.logIndex));
+  const pool = free.length > 0 ? free : transfers;
+  return pool.find((transfer) => transfer.value === amount) ?? pool[0];
 }
 
 /**
@@ -351,7 +363,9 @@ function offerTransfer(logs: readonly EvmLog[], offer: ShopOffer): Erc20Transfer
  * counts as not found.
  *
  * @param shop - Service (fetch, clock).
- * @param input - Quote offers, method, asset, endpoint, hash, deadline, and call limit.
+ * @param input - Quote offers, method, asset, endpoint, hash, deadline, call
+ *   limit, and an optional `fetchImpl` for the RPC calls (default the
+ *   service's; the watcher passes one that counts its calls).
  * @returns `found` with the candidate log, or why the hash proves nothing yet.
  */
 export async function verifyTxProof(
@@ -364,9 +378,10 @@ export async function verifyTxProof(
     hash: string;
     deadlineMs: number;
     callLimitMs: number;
+    fetchImpl?: FetchFn;
   },
 ): Promise<ShopTxVerification> {
-  const { fetchImpl } = shop.deps;
+  const fetchImpl = input.fetchImpl ?? shop.deps.fetchImpl;
   const receipt = await evmGetTransactionReceipt(
     input.url,
     fetchImpl,
@@ -1028,6 +1043,8 @@ export function refuseHexProof(shop: ShopPayments, proofId: string): Promise<Sho
  * @param proof - Stored `hex` proof.
  * @param url - RPC endpoint of its chain.
  * @param timeoutMs - Timeout of each call.
+ * @param fetchImpl - Fetch of the RPC calls (default the service's; the
+ *   watcher passes one that counts its calls).
  * @returns `sent`, `rejected`, or `retry`.
  */
 export async function sendHexProof(
@@ -1035,12 +1052,12 @@ export async function sendHexProof(
   proof: ShopProof,
   url: string,
   timeoutMs: number,
+  fetchImpl: FetchFn = shop.deps.fetchImpl,
 ): Promise<ShopHexSendOutcome> {
   /* v8 ignore next 3 -- every hex row stores its raw transaction */
   if (proof.rawHex === null) {
     return 'retry';
   }
-  const { fetchImpl } = shop.deps;
   const sent = await evmSendRawTransaction(url, fetchImpl, proof.rawHex, timeoutMs);
   let outcome: ShopHexSendOutcome = 'retry';
   if (sent.ok) {
@@ -1083,7 +1100,8 @@ export async function sendHexProof(
 
 /**
  * Read the receipt of a proof without a log index and fill in its log index
- * and value. A failed `hex` transaction is refused; a `detected` (or `hex`)
+ * and value, taking a transfer log no other row of the same offer and
+ * transaction holds while one remains (else the rows merge). A failed `hex` transaction is refused; a `detected` (or `hex`)
  * proof whose successful receipt has no transfer log to its offer, or whose
  * transaction failed, stays held, stops being read, and logs
  * `shop.alert.detected_mismatch`.
@@ -1092,6 +1110,8 @@ export async function sendHexProof(
  * @param proof - Stored proof without a log index.
  * @param url - RPC endpoint of its chain.
  * @param timeoutMs - Timeout of the call.
+ * @param fetchImpl - Fetch of the RPC call (default the service's; the
+ *   watcher passes one that counts its calls).
  * @returns `filled`, `pending` (no receipt yet), `failed`, `mismatch`, or
  *   `error` (the call failed).
  */
@@ -1100,8 +1120,9 @@ export async function readProofReceipt(
   proof: ShopProof,
   url: string,
   timeoutMs: number,
+  fetchImpl: FetchFn = shop.deps.fetchImpl,
 ): Promise<ShopReceiptOutcome> {
-  const receipt = await evmGetTransactionReceipt(url, shop.deps.fetchImpl, proof.txHash, timeoutMs);
+  const receipt = await evmGetTransactionReceipt(url, fetchImpl, proof.txHash, timeoutMs);
   if (!receipt.ok) {
     return 'error';
   }
@@ -1129,7 +1150,13 @@ export async function readProofReceipt(
     if (current.logIndex !== null) {
       return 'filled';
     }
-    const transfer = offerTransfer(logs, offer);
+    const held = new Set<number>();
+    for (const row of await tx.findProofs({ chainId: current.chainId, txHash: current.txHash })) {
+      if (row.id !== current.id && row.offerId === current.offerId && row.logIndex !== null) {
+        held.add(row.logIndex);
+      }
+    }
+    const transfer = offerTransfer(logs, offer, held);
     if (transfer === undefined) {
       await tx.updateProof(current.id, {}, { nextReceiptAt: null });
       proofLog('shop.alert.detected_mismatch', current, { source: current.source });
@@ -1301,26 +1328,12 @@ async function findRepeat(
  * @returns `true` when allowed.
  */
 function allowRepeatSubmit(shop: ShopPayments, proofId: string): boolean {
-  const nowMs = shop.deps.now();
-  let byProof = repeatSubmits.get(shop);
-  if (byProof === undefined) {
-    byProof = new Map();
-    repeatSubmits.set(shop, byProof);
+  let limiter = repeatSubmits.get(shop);
+  if (limiter === undefined) {
+    limiter = new IpRateLimiter(SHOP_REPEAT_SUBMITS_PER_MINUTE);
+    repeatSubmits.set(shop, limiter);
   }
-  for (const [id, times] of byProof) {
-    const kept = times.filter((at) => at > nowMs - 60_000);
-    if (kept.length === 0) {
-      byProof.delete(id);
-    } else {
-      byProof.set(id, kept);
-    }
-  }
-  const times = byProof.get(proofId) ?? [];
-  if (times.length >= SHOP_REPEAT_SUBMITS_PER_MINUTE) {
-    return false;
-  }
-  byProof.set(proofId, [...times, nowMs]);
-  return true;
+  return limiter.allow(proofId, shop.deps.now());
 }
 
 /**

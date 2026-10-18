@@ -30,6 +30,12 @@ export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 /** Cap for `listLatest` / GET `/messages` (top-level notes only). Default and max `listFeed` page size. */
 export const MESSAGE_LIST_LIMIT = 200;
 
+/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
+export const WAIT_SATS_TIMEOUT_MS = 25_000;
+
+/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
+export const WAIT_SATS_POLL_MS = 250;
+
 /** Server-side forum feed filter for GET `/messages`. */
 export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'popular';
 
