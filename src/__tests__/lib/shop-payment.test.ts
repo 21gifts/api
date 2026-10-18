@@ -3403,6 +3403,53 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await readPayment(h, payment.id)).replacements).toBe(1);
   });
 
+  it('a replacement whose quotes end at the deadline after the fetch committed the Lightning-only fallback inserts nothing', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [first] = await quotesOf(h, payment.id);
+    // The replacement's Orchestra calls hang until the deadline.
+    let release: () => void = () => undefined;
+    const quotesEnd = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    h.orchestra.onQuote = () => quotesEnd;
+    // The fetch's 4 s wait ends once the replacement asks for quotes; the
+    // quote read at the start has expired by then.
+    sleepImpl = async (ms) => {
+      if (ms !== 4_000) {
+        return defaultSleep(ms);
+      }
+      await vi.waitFor(() => expect(h.orchestra.quoteCalls.length).toBeGreaterThan(12));
+      clock = T0 + 90_000;
+    };
+    clock = T0 + 86_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    sleepImpl = defaultSleep;
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect(read?.quote.expiresAt).toEqual(payment.windowEndsAt);
+    const fallback = read!.quote;
+    // The replacement's quotes end at its deadline and it takes the account row lock.
+    let locked = false;
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      const [accountId] = args as unknown as [string];
+      locked = true;
+      return tx.lockAccount(accountId);
+    };
+    h.orchestra.onQuote = null;
+    release();
+    await vi.waitFor(() => expect(locked).toBe(true));
+    // Transactions run in call order: this one starts after the replacement's.
+    await h.store.transaction(async () => undefined);
+    delete h.store.hooks.lockAccount;
+    expect((await quotesOf(h, payment.id)).map((quote) => quote.id)).toEqual([
+      first!.id,
+      fallback.id,
+    ]);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+    const again = await h.svc.currentQuote(h.account, USER, payment);
+    expect(again?.quote.id).toBe(fallback.id);
+  });
+
   it('a replacement whose window shrank below 45 s meanwhile inserts nothing', async () => {
     const h = await setup();
     const payment = await payerPayment(h);

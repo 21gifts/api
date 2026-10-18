@@ -2290,8 +2290,10 @@ export class ShopPayments {
   /**
    * Replace the current quote under the creation lock: route list, quotes,
    * and offer checks for the same sats and BOLT11 within 4 s, then one
-   * transaction that increments `replacements` conditionally and inserts the
-   * quote (Lightning-only when no offer passes).
+   * transaction that, under the account lock and only while the quote read
+   * at the start is still the payment's newest, increments `replacements`
+   * conditionally and inserts the quote (Lightning-only when no offer
+   * passes); otherwise it inserts nothing and answers the current quote.
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
@@ -2334,15 +2336,23 @@ export class ShopPayments {
       return this.#deps.store.transaction(async (tx) => {
         const nowMs = this.#deps.now();
         await tx.lockAccount(account.id);
-        const counted = await tx.updatePayment(
-          paymentId,
-          {
-            statuses: ['open'],
-            replacements: read.payment.replacements,
-            windowEndsAfter: new Date(nowMs + SHOP_REPLACE_BEFORE_MS - 1),
-          },
-          { replacements: read.payment.replacements + 1 },
-        );
+        // A quote inserted since the read (a fetch's Lightning-only fallback,
+        // or another container's replacement) is the current one: it is
+        // answered as it stands and never replaced here.
+        const quotes = await tx.quotesOf(paymentId);
+        const newest = quotes[quotes.length - 1];
+        const counted =
+          newest !== undefined && newest.id === read.quote.id
+            ? await tx.updatePayment(
+                paymentId,
+                {
+                  statuses: ['open'],
+                  replacements: read.payment.replacements,
+                  windowEndsAfter: new Date(nowMs + SHOP_REPLACE_BEFORE_MS - 1),
+                },
+                { replacements: read.payment.replacements + 1 },
+              )
+            : null;
         if (counted === null) {
           const payment = await tx.getPayment(paymentId);
           if (
@@ -2352,13 +2362,11 @@ export class ShopPayments {
           ) {
             return null;
           }
-          const quotes = await tx.quotesOf(paymentId);
-          const quote = quotes[quotes.length - 1];
           /* v8 ignore next 3 -- every payment has its first quote */
-          if (quote === undefined) {
+          if (newest === undefined) {
             return null;
           }
-          return { payment, quote };
+          return { payment, quote: newest };
         }
         const quote = await this.#insertQuote(tx, counted, offers, nowMs);
         return { payment: counted, quote };

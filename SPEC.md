@@ -483,7 +483,11 @@ its expiry, at least 45 s remain before `window_ends_at`, the payment has
 had fewer than 4 replacements, and stablecoin rows are on for the
 username. The replacement runs under the account's creation lock, within
 4 s: route list, Orchestra quotes, and offer checks for the same sats and
-the same BOLT11. It then increments `shop_payment.replacements` with one
+the same BOLT11. Under the account row lock it then reads the payment's
+newest quote: when that is no longer the quote the replacement started
+from (a fetch's Lightning-only row, or another container's replacement,
+came first), it inserts nothing and answers with that newest quote.
+Otherwise it increments `shop_payment.replacements` with one
 conditional update (`status` `open`, `replacements` unchanged, at least
 45 s left in the window) and inserts the new quote only when that update
 changed the row; otherwise it answers with the quote that is current then.
