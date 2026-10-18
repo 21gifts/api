@@ -82,8 +82,8 @@ it. What 21.gifts does with such a refund is outside this document.
 5. The wallet pays and sends a proof: the transaction hash (`tx`) or the
    signed raw transaction (`hex`).
 6. The api checks the transfer on chain and submits it to Orchestra
-   after its receipt succeeded; a `hex` transaction the api validates
-   and sends first.
+   after its receipt succeeded; the api first validates and sends a `hex`
+   transaction.
    An Orchestra order for that transfer is **accepted**. The wallet is
    told the payment succeeded, and the sticker is free again. The api
    also finds orders that Orchestra created without a proof.
@@ -678,8 +678,10 @@ One procedure creates a shop payment, for a charge or for a payer:
 The procedure stays within 8 s: 1 s for the route list, 4 s for the
 mint, and 3 s for the quotes. Waits on the creation lock and on the
 locks of step 8 come on top, so step 8 also checks, after it holds its
-locks, that its request arrived less than 16 s ago; otherwise it writes
-nothing and answers order 9. No creation therefore inserts a payment
+locks, that its request arrived, as the api received it, less than 16 s ago,
+and for a payer request that the client has not disconnected (the
+request's abort signal is not set); otherwise it writes nothing and
+answers order 9. No creation therefore inserts a payment
 more than 16 s after its request arrived. Every external call runs outside the
 database transaction. A losing caller's BOLT11 stays recorded against the
 charge and can still pay the charge. Its Orchestra quotes are never shown
@@ -708,8 +710,17 @@ same charge or the same shop payment is handled as steps 4 and 8 state.
 Step 8 takes its locks in this order: the hash claim, the account row,
 then the `pos_charge` row; `recordInvoice` takes only the hash claim
 before its insert, so two writers of one hash meet at the claim and
-never wait for a lock the other took first. One settlement can therefore
-never confirm a charge and another payment.
+never wait for a lock the other took first. When `recordInvoice` returns
+`false` because another charge or a shop payment holds the hash, neither invoice route hands
+out that BOLT11, and both log `shop.alert.duplicate_invoice`: the
+invoice route `POST /pay/:username/invoice` answers as for a failed
+mint, **502** `{ "error": "Lightning Address could not be resolved" }`,
+and the invoice forward `GET /lnurlp/:username/invoice` answers as when
+its upstream fails, **503**
+`{ "error": "Lightning address service is unavailable" }`
+(`src/routes/lnurl-server.ts`). One
+settlement can therefore never confirm a charge and another payment, and
+no payer gets another payment's invoice.
 
 ## Quotes
 
@@ -981,8 +992,10 @@ duty, and the order duty.
    transaction and offer. Otherwise insert the
    `shop_proof` row with `give_up_at` 24 h ahead. A lost insert (`23505`)
    re-reads the winning row and answers from it.
-2. Submit it to Orchestra ([Calls](#calls)). When the request's budget is
-   used up before the submit, the watcher submits it.
+2. Submit it to Orchestra ([Calls](#calls)) once it has a log index. A
+   `hex` proof without a receipt yet is submitted by the submits duty
+   after the receipts duty fills its log index. When the request's budget
+   is used up before the submit, the watcher submits it.
 3. When the submit returns an `orderId` that another row already holds,
    the two rows are one deposit. When that row belongs to the same offer,
    the rows are merged as in step 4. When it belongs to another offer,
@@ -1003,7 +1016,7 @@ duty, and the order duty.
 A row without a log index gets it from the repeat path or from the
 receipts duty of the [Watcher](#watcher).
 
-Every verified proof is submitted, including when the payment is
+Every verified proof is submitted once it has a log index, including when the payment is
 `ended`, `paid`, or already `accepted`, and after its quote expired.
 Orchestra holds the coin, and the submit lets it fill or refund the
 deposit when its own detection missed it.
@@ -1673,7 +1686,9 @@ The implementing change adds:
 - `resolveShopPaymentConfig`, and the four variables in CONTRIBUTING's
   environment table and in its `webServer.env` pin list;
 - the [Payment hash claim](#payment-hash-claim) in `recordInvoice`, as an
-  explicit transaction, and in step 8 of the creation procedure;
+  explicit transaction, and in step 8 of the creation procedure, and the
+  failed-mint answer of the invoice route and the invoice forward when
+  `recordInvoice` returns `false` for a hash another payment holds;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
   result, and the delete of a deleted charge's `pos_charge_invoice`
   rows;

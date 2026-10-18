@@ -375,8 +375,8 @@ The shop QR stays the OpenCryptoPay link. A customer who pays USDT or USDC
 through that same QR pays Orchestra, which pays one BOLT11 for the shop's
 sats, minted by the mint `POST /pay/:username/invoice` already uses. A
 till charge or an amount the payer enters opens one shop payment. It pins
-the pay link for at most five minutes and never blocks the till. The api checks each transfer on chain before it hands it to Orchestra (by its successful receipt; a `hex` transaction the api validates and
-sends first), and the
+the pay link for at most five minutes and never blocks the till. The api checks each transfer on chain before it hands it to Orchestra (by its successful receipt; the api first validates and sends a `hex`
+transaction), and the
 paid watcher records the payment paid when that BOLT11 settles. The shop
 does not hold USDT or USDC, and this payment does not deliver to a stored
 Spark address. The 12 words stay on the phone. This payment does not read
