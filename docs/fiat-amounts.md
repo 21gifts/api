@@ -24,8 +24,7 @@ Later reads return those frozen strings. They do not recompute them.
 
 A missing frozen string stays missing. It is JSON `null`. It is not filled from
 the current spot, and it is not filled later from a daily close, a migration,
-or another row. The amount stays without that currency until the frozen string
-exists.
+or another row. The amount remains without that currency.
 
 ## What may use the rate of now
 
