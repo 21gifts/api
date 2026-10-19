@@ -842,7 +842,7 @@ describe('buildAccountActivity', () => {
         cumulativeUsd: '0.06',
       });
       const author = await activity({
-        acc: account({ id: 'author', lightningAddress: 'bob@walletofsatoshi.com' }),
+        acc: account({ id: 'author', username: 'bob' }),
         messages,
         rates,
       });
@@ -1105,7 +1105,7 @@ describe('buildAccountActivity', () => {
         cumulativePhp: '-3.00',
       });
       const author = await activity({
-        acc: account({ id: 'author', lightningAddress: 'bob@walletofsatoshi.com' }),
+        acc: account({ id: 'author', username: 'bob' }),
         messages,
         rates,
         fiatRates,
