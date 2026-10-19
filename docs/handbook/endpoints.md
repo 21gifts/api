@@ -1185,7 +1185,6 @@
 - **Used by:** App daily payout roster recipient delete.
 - **Auth:** `Authorization: Bearer` session. Initiator or founder only.
 
-
 ## Endpoint: POST /funding/daily-roster/moderators
 
 - **Purpose:** Bearer session, initiator or founder only, moderator is 403. Public body `{ accountId, amountUsd }`. `accountId` must match `MESSAGE_ID_RE`, otherwise the same 400 `Invalid person or amount` is returned. The route loads the account. Unknown account is 400 `Unknown person`. No receiving address (no verified wallet) is 400 `Person has no Lightning address`. A store failure on that load is 502 `Daily roster is unavailable`. The receiving address and the amount are written to the API roster store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }], moderatorPaymentsEnabled, moderators: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. Moderator rows stay out of `recipients`. Local bad body is 400 `Invalid person or amount`, not `Invalid address or amount`.
