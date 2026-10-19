@@ -60,7 +60,7 @@ api/
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── trust-chain.ts    # session GET /trust-chain (founder seeds; ?around=<id> one hop)
 │   │   ├── trust.ts          # GET /trust/proposals; POST /trust/verify, propose-moderator, confirm-moderator, reject-moderator, appoint-moderator
-│   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject; GET /funding/daily-roster; POST /funding/daily-roster/comment, /payments, /recipients, /recipients/update, /recipients/delete; GET/POST /funding/daily-roster/document; POST /funding/daily-roster/worker/comment, /payments, /recipients, /recipients/update, /recipients/delete, /moderators, /moderators/update, /moderators/delete, /moderators/payments
+│   │   ├── funding.ts        # POST /funding/apply; GET /funding/applications; GET /funding/applications/:accountId; POST /funding/trial, admit, reject; GET /funding/daily-roster; POST /funding/daily-roster/comment, /payments, /recipients, /recipients/update, /recipients/delete, /moderators, /moderators/update, /moderators/delete, /moderators/payments; GET/POST /funding/daily-roster/document; POST /funding/daily-roster/worker/comment, /payments, /recipients, /recipients/update, /recipients/delete, /moderators, /moderators/update, /moderators/delete, /moderators/payments
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── wallet-report.ts  # POST /me/wallet/report (Bearer; balance snapshot + payments with server-side category)
 │   │   ├── member-events.ts  # POST /me/events (Bearer; allow-listed first-party interaction log)
