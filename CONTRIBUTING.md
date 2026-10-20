@@ -179,6 +179,7 @@ api/
 │   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
+│   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
 │   │   ├── credit-repayment.ts # Repayment schedule, cent amounts, and the public ledger rows
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book
@@ -267,6 +268,7 @@ api/
 │       │   ├── debug-catalog.test.ts
 │       │   ├── boot-stores.test.ts
 │       │   ├── money.test.ts
+│       │   ├── decimal.test.ts
 │       │   ├── credit-repayment.test.ts
 │       │   ├── btc-usd-candles.test.ts
 │       │   ├── btc-usd-store.test.ts
@@ -577,7 +579,7 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`,
 `lnurlServerRoutes`, `accountByReceivingAddress`, and `duplicateInvoiceLogFields` (an invoice route with a pending charge), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
 `parseMultipartCoord`, `loadLatestGoalRateDay`,
-`bindGoalRateDay`, `canonicalGoalAmount`, `fiatToSats`, and `satsToFiatAmount`, which
+`bindGoalRateDay`, `canonicalGoalAmount`, `canonicalDecimal`, `fiatToSats`, and `satsToFiatAmount`, which
 run only when a member may post; posting needs a verified wallet, which only the LNURL
 server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (their
 tests assert 409 `missing: ['lightning-address']`);
@@ -626,7 +628,9 @@ and `BTC_FIAT_SPOT_URL` to a refused local port (`http://127.0.0.1:9/`),
 so those outcomes do not depend on the host environment.
 A second Playwright project, `shop-payment` (`e2e/shop-payment/`), has its own
 `webServer` that boots the api with stand-ins for Orchestra, one EVM RPC endpoint
-per Tether Wallet rail, and the LNURL server, plus a verified-wallet fixture. Its
+per Tether Wallet rail, and the LNURL server, plus a verified-wallet fixture; it
+points `BTC_FIAT_SPOT_URL` at the stand-ins' `GET /__spot` (100 000 USD per BTC,
+the price of their quotes), because without a fresh spot no stablecoin is offered. Its
 driver is a TypeScript port of the Tether Wallet 1.11.0 client behaviour in
 [`docs/shop-stablecoin-payment.md`](docs/shop-stablecoin-payment.md) (Tests). The
 default project keeps the pins above, so its outcomes do not change.

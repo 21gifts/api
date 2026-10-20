@@ -10,6 +10,11 @@ export const ORCHESTRA_SUBMITS_PER_MINUTE = 30;
 export const ORCHESTRA_PROOF_SUBMITS_PER_MINUTE = 20;
 /** Quote calls per sliding minute. */
 export const ORCHESTRA_QUOTES_PER_MINUTE = 240;
+/**
+ * Route-list fetches per sliding minute in one container, so two containers
+ * stay below Orchestra's 60 per address for routes and limits.
+ */
+export const ORCHESTRA_ROUTES_PER_MINUTE = 25;
 
 /** Orchestra order statuses that end an order. */
 export const ORCHESTRA_FINAL_STATUSES: ReadonlySet<string> = new Set([
@@ -312,8 +317,9 @@ function pauseUntil(headers: Headers, now: number): number | null {
  * `Content-Type: application/json` and `X-Idempotency-Key`. Each endpoint
  * group has an in-process budget over a sliding 60 s window: quotes
  * {@link ORCHESTRA_QUOTES_PER_MINUTE}, submits
- * {@link ORCHESTRA_SUBMITS_PER_MINUTE}, and status plus history together
- * {@link ORCHESTRA_STATUS_READS_PER_MINUTE}; routes have none. Every attempt
+ * {@link ORCHESTRA_SUBMITS_PER_MINUTE}, status plus history together
+ * {@link ORCHESTRA_STATUS_READS_PER_MINUTE}, and route-list fetches
+ * {@link ORCHESTRA_ROUTES_PER_MINUTE}. Every attempt
  * sent counts, retries included. A call its budget refuses is not sent and
  * logs `shop.orchestra.budget_exhausted`. An HTTP 429 pauses only the
  * endpoint that answered it, even where endpoints share a budget, until
@@ -671,12 +677,14 @@ export class OrchestraClient {
       return 'paused';
     }
     const window = this.window(group, now);
-    let allowed = true;
+    let allowed: boolean;
     if (group === 'quote') {
       allowed = window.length < ORCHESTRA_QUOTES_PER_MINUTE;
     } else if (group === 'read') {
       allowed = window.length < ORCHESTRA_STATUS_READS_PER_MINUTE;
-    } else if (group === 'submit') {
+    } else if (group === 'routes') {
+      allowed = window.length < ORCHESTRA_ROUTES_PER_MINUTE;
+    } else {
       const proof = window.filter((attempt) => attempt.proof).length;
       // A repeat leaves one proof slot and one overall slot for a first submit.
       const reserve = caller === 'proof-repeat' ? 1 : 0;

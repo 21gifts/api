@@ -7,6 +7,7 @@ import type { MapFetch } from '@/lib/ocp-place';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
 import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { posRoutes } from '@/routes/pos';
 import { createApp } from '@/server';
@@ -790,6 +791,7 @@ describe('POS with shop payments', () => {
       lnurlServer: LNURL_SERVER,
       config: null,
       orchestra: null,
+      fxSpot: new InMemoryFxSpotStore(),
       fetchImpl: lnurlFetch(),
       now,
     });

@@ -9,6 +9,7 @@ import {
 } from '@/lib/pos-paid-worker';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import * as shopWorker from '@/lib/shop-payment-worker';
 import type { AuthStore } from '@/lib/auth/store';
@@ -423,6 +424,7 @@ describe('runPosPaidTick with the shop payment service', () => {
       lnurlServer: LNURL,
       config: null,
       orchestra: null,
+      fxSpot: new InMemoryFxSpotStore(),
       fetchImpl: net.fetchImpl,
       now: () => NOW,
     });

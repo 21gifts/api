@@ -14,7 +14,8 @@
  *   `eth_sendRawTransaction`;
  * - the LNURL server on {@link LNURL_PORT}: `/.well-known/lnurlp/<name>`,
  *   `/lnurlp/<name>/invoice`, `/verify/<hash>`, `/lnurlpay/<pubkey>`;
- * - the control endpoint on {@link CONTROL_PORT}.
+ * - the control endpoint on {@link CONTROL_PORT}, which also serves the
+ *   spot price at `/__spot` (the api's `BTC_FIAT_SPOT_URL`);
  *
  * Every request the api makes is checked against the contract; a deviation
  * is recorded and served at `GET /__control/violations`.
@@ -117,8 +118,18 @@ const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a
 const ENTRY_POINT = '0x0000000071727de22e5e9d8baf0edac6f37da032';
 const USER_OPERATION_EVENT = '0x49628fd1471006c1482da88028e9ce4dbb080b815c9b0344d39e5a8e6ec1419f';
 const GAS_PRICE = '0x3b9aca00';
-/** USD per BTC of the stand-in's price: 1 sat is 0.001 USD, i.e. 1000 units of a 6-decimals coin. */
+/**
+ * The stand-in's price: 1 sat is 0.001 USD, i.e. 1000 units of a 6-decimals
+ * coin, which is {@link SPOT_USD_PER_BTC}. The quote's `amountIn` (base ×
+ * 1.005 + 1 unit) stays within the api's 5 % price check at that spot.
+ */
 const UNITS_PER_SAT_6 = 1000n;
+/**
+ * USD per BTC that `GET /__spot` serves as the api's `BTC_FIAT_SPOT_URL`
+ * (Coinbase body), matching {@link UNITS_PER_SAT_6}; without a spot the api
+ * offers no stablecoin.
+ */
+const SPOT_USD_PER_BTC = '100000';
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const FINAL = new Set(['completed', 'refunded', 'failed', 'fallback_delivered', 'expired']);
 
@@ -1026,6 +1037,9 @@ async function control(req: Request): Promise<Response> {
   const parts = url.pathname.split('/').filter((part) => part !== '');
   if (url.pathname === '/__health') {
     return json({ ok: true });
+  }
+  if (url.pathname === '/__spot' && req.method === 'GET') {
+    return json({ data: { currency: 'BTC', rates: { USD: SPOT_USD_PER_BTC } } });
   }
   if (parts[0] !== '__control') {
     return json({ error: 'Not found' }, 404);

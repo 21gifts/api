@@ -131,6 +131,9 @@ const shopServers = [
         ),
       ),
       SHOP_REFUND_ADDRESS: REFUND_ADDRESS,
+      // The stand-ins' spot price (100 000 USD per BTC, the price of their
+      // quotes): without a fresh spot the api offers no stablecoin.
+      BTC_FIAT_SPOT_URL: `${CONTROL_URL}/__spot`,
       // Test-only: the stand-ins serve TLS with a certificate made at start.
       NODE_TLS_REJECT_UNAUTHORIZED: '0',
       DEBUG_TOKEN,

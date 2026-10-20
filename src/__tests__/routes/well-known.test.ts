@@ -15,6 +15,7 @@ import {
   type ShopPayLinkAnswer,
   type ShopPayLinkQuery,
 } from '@/lib/shop-payment';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { wellKnownRoutes } from '@/routes/well-known';
 
@@ -544,6 +545,7 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
         lnurlServer: LNURL_CONFIG,
         config: null,
         orchestra: null,
+        fxSpot: new InMemoryFxSpotStore(),
         fetchImpl: async () => new Response('unexpected', { status: 500 }),
         now: () => NOW,
       });

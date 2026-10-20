@@ -3,6 +3,7 @@ import type { Hex } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { ERC20_TRANSFER_TOPIC, erc20TransferData } from '@/lib/evm-transfer';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import type { OrchestraClient } from '@/lib/orchestra';
 import { InMemoryPosStore } from '@/lib/pos-store';
 import { ShopPayments } from '@/lib/shop-payment';
@@ -187,6 +188,7 @@ export function harness(options: { config?: boolean; orchestra?: boolean } = {})
             refundAddress: `0x${'99'.repeat(20)}`,
           },
     orchestra: options.orchestra === false ? null : (orchestra as unknown as OrchestraClient),
+    fxSpot: new InMemoryFxSpotStore(),
     fetchImpl,
     now: () => clock.now,
     newId: () => uid((next += 1)),

@@ -370,7 +370,7 @@ describe('mergeAccounts', () => {
     expect(queries.findIndex((query) => query.text.includes('count(*)'))).toBeGreaterThan(check);
   });
 
-  it('refuses while the merged account has a pending charge and the survivor an open shop payment', async () => {
+  it('refuses while the merged account has an unexpired pending charge and the survivor an open shop payment but no unexpired pending charge', async () => {
     const { db, queries } = fakeDatabase({ openBesideCharge: [{ id: 'sp-into-open' }] });
     await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
       ok: false,
@@ -380,12 +380,30 @@ describe('mergeAccounts', () => {
     expect(check?.params).toEqual([FROM, INTO]);
     const flat = (check?.text ?? '').replace(/\s+/g, ' ').trim();
     expect(flat).toBe(
-      "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) LIMIT 1",
+      "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) AND NOT EXISTS ( SELECT 1 FROM pos_charge AS s WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now() ) LIMIT 1",
     );
     // Checked under both account locks, after the merged account's own check, before any write.
     expect(queries[0]?.text).toContain('FROM account');
     expect(queries.filter((query) => query.text.includes('FROM shop_payment'))).toHaveLength(2);
     expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
+  });
+
+  it('goes on when the check finds no refusal (the survivor has its own pending charge): the merged account’s charge is deleted', async () => {
+    const { db, queries } = fakeDatabase({ pendingCharges: [{ id: 'c-from-1' }] });
+    const result = await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+    expect(result.ok).toBe(true);
+    const check = queries.findIndex((query) => query.text.includes("p.status = 'open'"));
+    const lock = queries.findIndex(
+      (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+    );
+    expect(check).toBeGreaterThanOrEqual(0);
+    expect(lock).toBeGreaterThan(check);
+    expect(queries[lock + 2]).toEqual({
+      text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
+      params: ['{"c-from-1"}'],
+    });
+    // The survivor's shop payments are not written.
+    expect(queries.some((query) => /UPDATE shop_payment/.test(query.text))).toBe(false);
   });
 
   it('locks the deleted pending charge, then deletes its invoice rows and the charge by those ids', async () => {

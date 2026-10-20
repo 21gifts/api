@@ -5,6 +5,7 @@ import {
   ORCHESTRA_PROGRESSING_STATUSES,
   ORCHESTRA_PROOF_SUBMITS_PER_MINUTE,
   ORCHESTRA_QUOTES_PER_MINUTE,
+  ORCHESTRA_ROUTES_PER_MINUTE,
   ORCHESTRA_STATUS_READS_PER_MINUTE,
   ORCHESTRA_SUBMITS_PER_MINUTE,
   OrchestraClient,
@@ -122,7 +123,8 @@ describe('constants', () => {
       ORCHESTRA_SUBMITS_PER_MINUTE,
       ORCHESTRA_PROOF_SUBMITS_PER_MINUTE,
       ORCHESTRA_QUOTES_PER_MINUTE,
-    ]).toEqual([50, 30, 20, 240]);
+      ORCHESTRA_ROUTES_PER_MINUTE,
+    ]).toEqual([50, 30, 20, 240, 25]);
   });
 });
 
@@ -258,6 +260,50 @@ describe('OrchestraClient.routes', () => {
     expect(await client.routes(5000)).toEqual({ ok: true, assets: [], validForMs: 0 });
     expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ endpoint: 'routes' }]);
     expect(eventsNamed('shop.orchestra.error')).toEqual([{ endpoint: 'routes', status: 429 }]);
+  });
+});
+
+describe('OrchestraClient.routes budget', () => {
+  it('sends 25 route-list fetches per sliding minute; the 26th is not sent and logs budget_exhausted', async () => {
+    const { client, calls, clock } = harness([], () => json({ assets: [], validForMs: 0 }));
+    for (let i = 0; i < ORCHESTRA_ROUTES_PER_MINUTE; i += 1) {
+      expect((await client.routes(5000)).ok).toBe(true);
+    }
+    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(calls).toHaveLength(25);
+    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([{ endpoint: 'routes' }]);
+    // The window slides: the first fetch leaves it 60 s after it was sent.
+    clock.t += 59_999;
+    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(calls).toHaveLength(25);
+    clock.t += 1;
+    expect((await client.routes(5000)).ok).toBe(true);
+    expect(calls).toHaveLength(26);
+  });
+
+  it('counts failed fetches, and the routes budget leaves the quote budget alone', async () => {
+    const { client, calls } = harness([], () => err(500, 'internal'));
+    for (let i = 0; i < ORCHESTRA_ROUTES_PER_MINUTE; i += 1) {
+      expect(await client.routes(5000)).toEqual({ ok: false });
+    }
+    expect(calls).toHaveLength(25);
+    await client.routes(5000);
+    expect(calls).toHaveLength(25);
+    expect(client.quoteBudgetLeft()).toBe(ORCHESTRA_QUOTES_PER_MINUTE);
+  });
+
+  it('a 429 on routes pauses only routes', async () => {
+    const { client, calls, clock } = harness(
+      [() => err(429, 'rate_limited', { 'Retry-After': '10' })],
+      () => json(QUOTE_BODY),
+    );
+    expect(await client.routes(5000)).toEqual({ ok: false });
+    clock.t += 1_000;
+    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(calls).toHaveLength(1);
+    expect((await client.quote(REQUEST, 'k-after-429', clock.t + 5000)).ok).toBe(true);
+    expect(calls).toHaveLength(2);
+    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([]);
   });
 });
 

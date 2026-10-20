@@ -3390,4 +3390,105 @@ describe('mergeAccounts and the shop payment rows', () => {
       await closeIfPossible(sql);
     }
   });
+
+  test('the merge goes on when the survivor has its own unexpired pending charge: the merged charge is deleted, the survivor’s open payment stays', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const intoCharge = pendingCharge(into, now);
+      await pos.create(intoCharge);
+      // The survivor's charge has its own open shop payment.
+      const open = {
+        id: crypto.randomUUID(),
+        accountId: into,
+        amountSats: 21,
+        posChargeId: intoCharge.id,
+        bolt11: 'lnbc21',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'open' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: null,
+        paidAt: null,
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(open))).toBe(true);
+      expect((await mergeAccounts(mergeDb, { from, into, verify: 'into' })).ok).toBe(true);
+      expect(await pos.findChargeForPayment({ chargeId: fromCharge.id })).toBeUndefined();
+      expect((await pos.findChargeForPayment({ chargeId: intoCharge.id }))?.status).toBe('pending');
+      expect(await shop.transaction((tx) => tx.getPayment(open.id))).toMatchObject({
+        status: 'open',
+        posChargeId: intoCharge.id,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the merge refuses when the survivor’s only pending charge has expired', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const intoCharge = pendingCharge(into, now);
+      await pos.create(intoCharge);
+      await client.execute(`UPDATE pos_charge SET expires_at = $2 WHERE id = $1`, [
+        intoCharge.id,
+        new Date(now - 1).toISOString(),
+      ]);
+      const open = {
+        id: crypto.randomUUID(),
+        accountId: into,
+        amountSats: 2100,
+        posChargeId: null,
+        bolt11: 'lnbc2100',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'open' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: null,
+        paidAt: null,
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(open))).toBe(true);
+      expect(await mergeAccounts(mergeDb, { from, into, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'shop_payment_open',
+      });
+      expect((await pos.findChargeForPayment({ chargeId: fromCharge.id }))?.accountId).toBe(from);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
 });

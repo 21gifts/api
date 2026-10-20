@@ -13,6 +13,7 @@
 import type { AuthStore, Account } from '@/lib/auth/store';
 import { bolt11ExpiresAtMs, decodeBolt11 } from '@/lib/bolt11';
 import type { LnurlServerConfig, ShopPaymentConfig } from '@/lib/config';
+import { canonicalDecimal } from '@/lib/decimal';
 import { erc20TransferData, parseErc20TransferData, recommendedMinFee } from '@/lib/evm-transfer';
 import { evmGasPrice } from '@/lib/evm-rpc';
 import type { FxSpotStore } from '@/lib/fx-spot-store';
@@ -21,6 +22,7 @@ import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { FetchFn } from '@/lib/lnurlp';
 import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import { WAIT_SATS_POLL_MS } from '@/lib/message';
+import { parseUsdPerBtc, satsToBtcString } from '@/lib/money';
 import type { OrchestraClient, OrchestraQuote, OrchestraRouteAsset } from '@/lib/orchestra';
 import { ORCHESTRA_FINAL_STATUSES, ORCHESTRA_PROGRESSING_STATUSES } from '@/lib/orchestra';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
@@ -73,6 +75,13 @@ export const SHOP_CREATION_INSERT_LIMIT_MS = 16_000;
 /** Whole creation procedure. */
 export const SHOP_CREATION_BUDGET_MS =
   SHOP_ROUTES_TIMEOUT_MS + SHOP_MINT_TIMEOUT_MS + SHOP_QUOTES_TIMEOUT_MS;
+/**
+ * A pay-link fetch for a pending charge without a shop payment waits for the
+ * creation at most until this long after the fetch arrived, lock waits
+ * included. As long as {@link SHOP_CREATION_BUDGET_MS} and separate from it:
+ * the budget limits the procedure's calls, this limits the fetch.
+ */
+export const SHOP_PAY_LINK_CREATION_WAIT_MS = 8_000;
 /**
  * Whole replacement (route list, quotes, and its transaction), and the
  * longest a fetch waits for one.
@@ -283,8 +292,9 @@ export function candidatePairs(
 // ─── Amounts and bodies ───────────────────────────────────────────────────
 
 /**
- * Decimal string of `units / 10^decimals`, built from integers: no
- * exponent, no trailing zero after the point, no point for a whole number.
+ * Decimal string of `units / 10^decimals`, built from integers and put
+ * through the canonical form of {@link canonicalDecimal}: no exponent, no
+ * trailing zero after the point, no point for a whole number.
  *
  * @param units - Non-negative integer amount in base units.
  * @param decimals - Decimal places of the unit.
@@ -292,19 +302,23 @@ export function candidatePairs(
  */
 export function decimalAmount(units: bigint, decimals: number): string {
   const scale = 10n ** BigInt(decimals);
-  const whole = units / scale;
-  const fraction = (units % scale).toString().padStart(decimals, '0').replace(/0+$/, '');
-  return fraction === '' ? whole.toString() : `${whole.toString()}.${fraction}`;
+  const whole = (units / scale).toString();
+  const fixed =
+    decimals === 0 ? whole : `${whole}.${(units % scale).toString().padStart(decimals, '0')}`;
+  return canonicalDecimal(fixed, decimals)!;
 }
 
 /**
- * Bitcoin amount of a sat count (`sats / 100000000`) as a plain decimal string.
+ * Bitcoin amount of a sat count (`sats / SATS_PER_BTC`) as a plain decimal
+ * string: {@link satsToBtcString}, which always writes eight decimals, put
+ * through the canonical form of {@link canonicalDecimal}.
  *
  * @param sats - Whole sats.
  * @returns For example `0.00001`.
+ * @throws If `sats` is not a non-negative integer.
  */
 export function btcAmount(sats: number): string {
-  return decimalAmount(BigInt(sats), 8);
+  return canonicalDecimal(satsToBtcString(sats), 8)!;
 }
 
 /** Marker for a JSON number that {@link shopJson} writes in plain notation. */
@@ -629,7 +643,11 @@ export interface OfferCheckInput {
   bolt11ExpiresAtMs: number;
   /** Deposit addresses already used in this batch. */
   batchDeposits: ReadonlySet<string>;
-  /** USD per BTC from a spot quote younger than ten minutes, or `null`. */
+  /**
+   * USD per BTC from the stored spot quote when its `asOf` is younger than
+   * ten minutes, or `null`; `null` fails the `price` check, because an offer
+   * whose price cannot be checked could overcharge the payer.
+   */
   usdPerBtc: string | null;
   /** Clock (epoch ms). */
   nowMs: number;
@@ -640,13 +658,17 @@ const POSITIVE_INTEGER = /^[1-9][0-9]*$/;
 
 /**
  * Whether `amountIn` in USD is at most 5 % above the sats' value at
- * `usdPerBtc` (stablecoins count one unit as one dollar).
+ * `usdPerBtc` (stablecoins count one unit as one dollar). The rate is
+ * parsed with {@link parseUsdPerBtc} (USD per BTC times 10^8), and the
+ * check runs in BigInt with no rounding:
+ * `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`.
  *
  * @param amountIn - Base units.
  * @param decimals - Token decimals.
  * @param sats - Payment sats.
  * @param usdPerBtc - Decimal string.
- * @returns `true` when within the bound.
+ * @returns `true` when within the bound; `false` for a rate
+ *   `parseUsdPerBtc` refuses.
  */
 function withinPriceBound(
   amountIn: bigint,
@@ -654,14 +676,13 @@ function withinPriceBound(
   sats: number,
   usdPerBtc: string,
 ): boolean {
-  const point = usdPerBtc.indexOf('.');
-  const fraction = point === -1 ? '' : usdPerBtc.slice(point + 1);
-  const rate = BigInt(point === -1 ? usdPerBtc : `${usdPerBtc.slice(0, point)}${fraction}`);
-  const rateScale = 10n ** BigInt(fraction.length);
-  // amountIn / 10^d <= 1.05 * sats / 1e8 * rate / rateScale
-  const left = amountIn * 100_000_000n * 100n * rateScale;
-  const right = 105n * BigInt(sats) * rate * 10n ** BigInt(decimals);
-  return left <= right;
+  let rate: bigint;
+  try {
+    rate = parseUsdPerBtc(usdPerBtc);
+  } catch {
+    return false;
+  }
+  return amountIn * 10n ** 16n * 100n <= BigInt(sats) * rate * 10n ** BigInt(decimals) * 105n;
 }
 
 /**
@@ -721,7 +742,7 @@ export function checkOffer(input: OfferCheckInput): OfferCheck | null {
     return 'bolt11_margin';
   }
   if (
-    input.usdPerBtc !== null &&
+    input.usdPerBtc === null ||
     !withinPriceBound(amountIn, pair.method.decimals, input.amountSats, input.usdPerBtc)
   ) {
     return 'price';
@@ -1154,8 +1175,11 @@ export interface ShopPaymentsDeps {
   config: ShopPaymentConfig | null;
   /** Orchestra client, or `null` when `config` is `null`. */
   orchestra: OrchestraClient | null;
-  /** Spot quotes for the price check; omitted → no price check. */
-  fxSpot?: FxSpotStore;
+  /**
+   * Spot quotes for the price check; without a USD rate younger than ten
+   * minutes no stablecoin pair is offered.
+   */
+  fxSpot: FxSpotStore;
   /** Fetch for the LNURL server and the EVM RPC endpoints. */
   fetchImpl: FetchFn;
   /** Clock in epoch milliseconds. */
@@ -1308,15 +1332,6 @@ function duplicateInvoiceFields(
   };
 }
 
-/**
- * The in-flight creation procedure of one pending charge: its outcome, and
- * when it took the account's creation lock (`null` while it is still queued).
- */
-interface ShopChargeCreation {
-  readonly promise: Promise<ShopCreation>;
-  startMs: number | null;
-}
-
 /** An open payment with its newest quote. */
 interface ShopCurrentQuote {
   readonly payment: ShopPayment;
@@ -1348,7 +1363,7 @@ export class ShopPayments {
    * joins it instead of queueing another run, the way `translate-note.ts`
    * keeps its in-flight work.
    */
-  readonly #chargeCreations = new Map<string, ShopChargeCreation>();
+  readonly #chargeCreations = new Map<string, Promise<ShopCreation>>();
   /**
    * The in-flight quote replacement of each payment, by payment id, from the
    * moment it is queued until it ends. A second fetch joins it.
@@ -1445,7 +1460,9 @@ export class ShopPayments {
   }
 
   /**
-   * The route list, reused for its `validForMs`; fetched with a 1 s timeout.
+   * The route list, fetched with a 1 s timeout and reused only until its
+   * `validForMs` has passed since the request started. A failed fetch, or
+   * one the route-list budget refuses, offers no stablecoin.
    *
    * @param deadlineMs - Absolute deadline for the fetch.
    * @returns Route assets, or `null` when the fetch failed.
@@ -1469,7 +1486,7 @@ export class ShopPayments {
       this.#routes = null;
       return null;
     }
-    this.#routes = { assets: result.assets, untilMs: this.#deps.now() + result.validForMs };
+    this.#routes = { assets: result.assets, untilMs: nowMs + result.validForMs };
     return result.assets;
   }
 
@@ -1477,6 +1494,9 @@ export class ShopPayments {
    * Request one Orchestra quote per candidate pair (and the gas price of each
    * chain) in parallel until `deadlineMs`, and keep the quotes that pass the
    * offer checks. Pairs beyond the quote budget are skipped in request order.
+   * Without a stored USD spot younger than ten minutes it sends no call and
+   * logs `shop.offer.rejected` with `check` `price` per pair, because no
+   * pair could pass the price check.
    *
    * @param pairs - Candidate pairs in request order.
    * @param target - Payment id, sats, BOLT11, and its expiry.
@@ -1495,6 +1515,18 @@ export class ShopPayments {
     }
     const allowed = pairs.slice(0, Math.max(0, orchestra.quoteBudgetLeft()));
     if (allowed.length === 0) {
+      return [];
+    }
+    const spot = await this.#spot();
+    if (spot === null) {
+      for (const pair of allowed) {
+        logEvent('shop.offer.rejected', {
+          paymentId: target.paymentId,
+          method: pair.method.method,
+          asset: pair.asset,
+          check: 'price',
+        });
+      }
       return [];
     }
     const chainIds = [...new Set(allowed.map((pair) => pair.method.chainId))];
@@ -1531,7 +1563,6 @@ export class ShopPayments {
         return { pair, result, idempotencyKey };
       }),
     );
-    const spot = await this.#usdPerBtc();
     const offers: ShopOffer[] = [];
     const batchDeposits = new Set<string>();
     for (const { pair, result, idempotencyKey } of quotes) {
@@ -1545,7 +1576,7 @@ export class ShopPayments {
         amountSats: target.amountSats,
         bolt11ExpiresAtMs: target.bolt11ExpiresAtMs,
         batchDeposits,
-        usdPerBtc: spot,
+        usdPerBtc: nowMs - spot.asOfMs < SHOP_SPOT_MAX_AGE_MS ? spot.usd : null,
         nowMs,
       });
       const fields = { paymentId: target.paymentId, method: pair.method.method, asset: pair.asset };
@@ -1587,15 +1618,13 @@ export class ShopPayments {
   }
 
   /**
-   * USD per BTC from the stored spot quote when it is younger than ten
+   * The stored spot quote's USD rate when its `asOf` is younger than ten
    * minutes; never waits for a fetch.
    *
-   * @returns The decimal string, or `null`.
+   * @returns The decimal rate and its `asOf` in epoch ms, or `null` when the
+   *   store has no quote, no USD rate, a stale or unreadable `asOf`, or fails.
    */
-  async #usdPerBtc(): Promise<string | null> {
-    if (this.#deps.fxSpot === undefined) {
-      return null;
-    }
+  async #spot(): Promise<{ usd: string; asOfMs: number } | null> {
     try {
       const spot = await this.#deps.fxSpot.latest();
       const usd = spot?.rates.USD;
@@ -1604,7 +1633,7 @@ export class ShopPayments {
       }
       const asOfMs = Date.parse(spot.asOf);
       return Number.isFinite(asOfMs) && this.#deps.now() - asOfMs < SHOP_SPOT_MAX_AGE_MS
-        ? usd
+        ? { usd, asOfMs }
         : null;
     } catch {
       return null;
@@ -1704,7 +1733,7 @@ export class ShopPayments {
     charge: PosCharge,
     requestArrivedMs: number,
   ): Promise<ShopCreation> {
-    return this.#chargeCreation(account, username, charge, requestArrivedMs).promise;
+    return this.#chargeCreation(account, username, charge, requestArrivedMs);
   }
 
   /**
@@ -1716,38 +1745,30 @@ export class ShopPayments {
    * @param charge - The pending charge.
    * @param requestArrivedMs - Arrival of this caller's request; used only
    *   when this call queues the run.
-   * @returns The in-flight creation.
+   * @returns The in-flight creation's outcome.
    */
   #chargeCreation(
     account: Account,
     username: string,
     charge: PosCharge,
     requestArrivedMs: number,
-  ): ShopChargeCreation {
+  ): Promise<ShopCreation> {
     const running = this.#chargeCreations.get(charge.id);
     if (running !== undefined) {
       return running;
     }
-    const entry: ShopChargeCreation = {
-      startMs: null,
-      promise: this.#create(
-        {
-          kind: 'charge',
-          account,
-          username,
-          charge,
-          amountSats: charge.amountSats,
-          requestArrivedMs,
-        },
-        (startMs) => {
-          entry.startMs = startMs;
-        },
-      ).finally(() => {
-        this.#chargeCreations.delete(charge.id);
-      }),
-    };
-    this.#chargeCreations.set(charge.id, entry);
-    return entry;
+    const promise = this.#create({
+      kind: 'charge',
+      account,
+      username,
+      charge,
+      amountSats: charge.amountSats,
+      requestArrivedMs,
+    }).finally(() => {
+      this.#chargeCreations.delete(charge.id);
+    });
+    this.#chargeCreations.set(charge.id, promise);
+    return promise;
   }
 
   /**
@@ -1785,16 +1806,12 @@ export class ShopPayments {
    * starts when it takes the lock.
    *
    * @param input - Charge or payer creation.
-   * @param onStart - Called with the clock when this run takes the lock,
-   *   before its re-read (a joining pay link counts its wait from here).
    * @returns The outcome.
    */
-  #create(input: ShopCreationInput, onStart?: (startMs: number) => void): Promise<ShopCreation> {
-    return this.#withLock(input.account.id, async () => {
-      const startMs = this.#deps.now();
-      onStart?.(startMs);
-      return this.#createLocked(input, startMs);
-    });
+  #create(input: ShopCreationInput): Promise<ShopCreation> {
+    return this.#withLock(input.account.id, async () =>
+      this.#createLocked(input, this.#deps.now()),
+    );
   }
 
   /**
@@ -2197,8 +2214,10 @@ export class ShopPayments {
    * @param username - Its username.
    * @param metadata - Metadata of today's pay request.
    * @param query - `timeout`, `method`, `asset`, and repeated keys.
-   * @param arrivedMs - When the api received the pay-link fetch; a charge
-   *   creation this fetch starts counts step 8's 16 s limit from here.
+   * @param arrivedMs - When the api received the pay-link fetch; the wait for
+   *   a charge's creation ends {@link SHOP_PAY_LINK_CREATION_WAIT_MS} after it,
+   *   and a charge creation this fetch starts counts step 8's 16 s limit
+   *   from here.
    * @returns Today's request (with an optional pin) or a full response.
    */
   async payLink(
@@ -2234,22 +2253,23 @@ export class ShopPayments {
     }
     if (state.kind === 'charge' && state.payment === null && this.offersStablecoins(username)) {
       // The request starts or joins the charge's in-flight creation and
-      // waits until it ends, at most until the earlier of 8 s after this
-      // request reached this step and 8 s after that procedure took the
-      // account's lock. A procedure still queued (behind a payer creation,
-      // another charge's creation, a quote replacement, or a stalled holder)
-      // takes the lock at or after this request's arrival, so its budget
-      // never ends earlier: only a running one shortens the wait. A creation
-      // that outlasts the wait goes on in the background.
-      const arrivalMs = this.#deps.now();
-      const creation = this.#chargeCreation(account, username, state.charge, arrivedMs);
-      const waitMs = (creation.startMs ?? arrivalMs) + SHOP_CREATION_BUDGET_MS - arrivalMs;
+      // waits until it ends, at most until 8 s after the fetch arrived,
+      // whatever the creation is still waiting for, lock waits included. A
+      // creation that outlasts the wait goes on in the background, and a
+      // throw is answered from the state like any other outcome.
+      const creation = this.#chargeCreation(account, username, state.charge, arrivedMs).catch(
+        () => null,
+      );
+      const waitMs = arrivedMs + SHOP_PAY_LINK_CREATION_WAIT_MS - this.#deps.now();
       if (waitMs > 0) {
-        await Promise.race([creation.promise.catch(() => null), this.#sleep(waitMs)]);
+        await Promise.race([creation, this.#sleep(waitMs)]);
+        // Whatever the outcome (a payment, a charge cancelled, expired, or
+        // paid meanwhile, or the end of the wait), answer from the state now.
+        state = await this.#linkState(account.id, this.#deps.now());
       }
-      // Whatever the outcome (a payment, a charge cancelled, expired, or
-      // paid meanwhile, or the end of the wait), answer from the state now.
-      state = await this.#linkState(account.id, this.#deps.now());
+      // A request that reaches this point 8 s or more after it arrived (a
+      // `timeout` wait) started or joined the creation but does not wait for
+      // it: it answers today's pinned request from the charge it found.
     }
     if (state.kind === 'open') {
       return this.#openAmountAnswer(account, username, name, metadata, state.payment, query);

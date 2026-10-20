@@ -30,6 +30,7 @@ import {
   SHOP_METHODS,
   SHOP_LNURL_HEADERS,
   SHOP_CREATION_INSERT_LIMIT_MS,
+  SHOP_PAY_LINK_CREATION_WAIT_MS,
   SHOP_REPLACEMENT_BUDGET_MS,
   SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
   SHOP_SETTLE_FAST_INTERVAL_MS,
@@ -64,6 +65,7 @@ import {
   transferAmountsFor,
   waitBody,
   type OfferCheckInput,
+  type ShopPair,
   type ShopPayLinkAnswer,
   type ShopPayLinkQuery,
 } from '@/lib/shop-payment';
@@ -77,6 +79,8 @@ const ACCOUNT_ID = '00000000-0000-4000-8000-0000000000a1';
 const USER = 'shop';
 const SATS = 1234;
 const CHARGE_SATS = 2100;
+/** USD per BTC of the default spot store; the fake Orchestra prices 1 sat at 0.001 USD. */
+const SPOT_USD = '100000';
 const METADATA = '[["text/plain","shop"]]';
 const REFUND = '0x00000000000000000000000000000000000000ff';
 const RPC = (chainId: number): string => `https://rpc.test/${chainId}`;
@@ -377,6 +381,17 @@ async function addAccount(
   };
 }
 
+/**
+ * A spot store whose USD rate is always 1 s old: 100 000 USD per BTC, the
+ * price of the fake Orchestra (1 sat = 0.001 USD), so every fake quote
+ * passes the price check.
+ */
+function freshSpot(now: () => number, usd = SPOT_USD): FxSpotStore {
+  return {
+    latest: async () => ({ asOf: new Date(now() - 1_000).toISOString(), rates: { USD: usd } }),
+  } as unknown as FxSpotStore;
+}
+
 async function setup(
   options: {
     config?: 'off';
@@ -399,6 +414,7 @@ async function setup(
     evmRpc: new Map(SHOP_METHODS.map((method) => [method.chainId, RPC(method.chainId)])),
     refundAddress: REFUND,
   };
+  const now = options.now ?? (() => clock);
   const svc = new ShopPayments({
     store,
     posStore: pos,
@@ -406,9 +422,9 @@ async function setup(
     lnurlServer: LNURL_SERVER,
     config: options.config === 'off' ? null : config,
     orchestra: options.orchestra === 'off' ? null : (orchestra as unknown as OrchestraClient),
-    ...(options.fxSpot === undefined ? {} : { fxSpot: options.fxSpot }),
+    fxSpot: options.fxSpot ?? freshSpot(now),
     fetchImpl: fakeFetch(net),
-    now: options.now ?? (() => clock),
+    now,
     ...(options.sleep === 'default'
       ? {}
       : {
@@ -714,8 +730,15 @@ describe('amounts, pay request, and error bodies (Open amount, Error bodies)', (
     expect(decimalAmount(12_000_000n, 6)).toBe('12');
     expect(decimalAmount(0n, 6)).toBe('0');
     expect(decimalAmount(1_234_000_000_000_000_000n, 18)).toBe('1.234');
+    expect(decimalAmount(12n, 0)).toBe('12');
+    expect(decimalAmount(0n, 0)).toBe('0');
+    expect(decimalAmount(1n, 18)).toBe('0.000000000000000001');
     expect(btcAmount(1)).toBe('0.00000001');
+    expect(btcAmount(0)).toBe('0');
+    expect(btcAmount(2100)).toBe('0.000021');
     expect(btcAmount(100_000_000)).toBe('1');
+    expect(btcAmount(2_100_000_000_000_000)).toBe('21000000');
+    expect(() => btcAmount(1.5)).toThrow('sats must be a non-negative integer');
   });
 
   it('writes requestedAmount as a JSON number in plain notation, never 1e-8', () => {
@@ -944,7 +967,7 @@ describe('offer checks (Offer checks)', () => {
       amountSats: 1234,
       bolt11ExpiresAtMs: T0 + 3_600_000,
       batchDeposits: new Set(),
-      usdPerBtc: null,
+      usdPerBtc: '100000',
       nowMs: T0,
       ...rest,
     };
@@ -1066,6 +1089,50 @@ describe('offer checks (Offer checks)', () => {
     expect(checkOffer(input({}, { usdPerBtc: '95238.1' }))).toBeNull();
     expect(checkOffer(input({}, { usdPerBtc: '95238' }))).toBe('price');
     expect(checkOffer(input({}, { usdPerBtc: '100000' }))).toBeNull();
+  });
+
+  it('fails the price check without a fresh rate or with a rate parseUsdPerBtc refuses', () => {
+    expect(checkOffer(input({}, { usdPerBtc: null }))).toBe('price');
+    for (const usdPerBtc of ['', 'abc', '1e5', '-100000', '100,000']) {
+      expect(checkOffer(input({}, { usdPerBtc }))).toBe('price');
+    }
+  });
+
+  it('passes amountIn exactly at the 5 % bound and fails one unit above, for 6 and 18 decimals', () => {
+    const bsc = shopPairOrder().find(
+      (pair) => pair.method.method === 'BinanceSmartChain' && pair.asset === 'USDT',
+    )!;
+    // amountIn × 10^16 × 100 <= sats × rate × 10^decimals × 105, rate = 100000 × 10^8.
+    const cases: [ShopPair, bigint][] = [
+      [polygonUsdt, 1_295_700n],
+      [bsc, 1_295_700_000_000_000_000n],
+    ];
+    for (const [pair, bound] of cases) {
+      for (const [amountIn, expected] of [
+        [bound, null],
+        [bound + 1n, 'price'],
+      ] as const) {
+        const quote = {
+          amountIn: amountIn.toString(),
+          requiredAmountIn: null,
+          maxAcceptedAmountIn: null,
+          transaction: {
+            chainId: pair.method.chainId,
+            to: pair.method.contracts[pair.asset],
+            data: erc20TransferData(deposit, amountIn),
+            value: '0',
+          },
+        };
+        expect(checkOffer(input(quote, { pair, usdPerBtc: '100000' }))).toBe(expected);
+      }
+    }
+  });
+
+  it('parses a rate with more than eight decimals through parseUsdPerBtc (half-up at the ninth)', () => {
+    // The bound needs rate × 10^8 >= 9523809523809.52…: the ninth decimal 5 rounds
+    // 95238.095238095 up to 9523809523810 (passes), 4 keeps 9523809523809 (fails).
+    expect(checkOffer(input({}, { usdPerBtc: '95238.095238095' }))).toBeNull();
+    expect(checkOffer(input({}, { usdPerBtc: '95238.095238094' }))).toBe('price');
   });
 });
 
@@ -2065,6 +2132,23 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(h.orchestra.routesCalls).toHaveLength(3);
   });
 
+  it('step 3: the route list is reused only until validForMs has passed since its request started', async () => {
+    const h = await setup();
+    // The fetch takes 900 ms; validForMs counts from its start, not its answer.
+    h.orchestra.routesImpl = async () => {
+      clock += 900;
+      return { ok: true, assets: defaultRoutes(), validForMs: 60_000 };
+    };
+    await payerPayment(h);
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    clock = T0 + 59_999;
+    await payerPayment(h);
+    expect(h.orchestra.routesCalls).toHaveLength(1);
+    clock = T0 + 60_000;
+    await payerPayment(h);
+    expect(h.orchestra.routesCalls).toHaveLength(2);
+  });
+
   it('step 3: no candidate pair offers nothing, and the account’s next creation waits 60 s', async () => {
     const h = await setup();
     h.orchestra.routesResult = { ok: true, assets: [], validForMs: 0 };
@@ -2487,7 +2571,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(await h.store.transaction((tx) => tx.offersOf(quote!.id))).toHaveLength(11);
   });
 
-  it('step 6 / price check: a fresh spot rejects an offer more than 5 % above the sats value; stale or missing spots are ignored', async () => {
+  it('step 6 / price check: a fresh spot rejects an offer more than 5 % above the sats value', async () => {
     const fx = new InMemoryFxSpotStore({
       asOf: new Date(T0 - 60_000).toISOString(),
       source: 'test',
@@ -2497,32 +2581,39 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
       kind: 'unavailable',
     });
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
     const rejected = eventsNamed('shop.offer.rejected');
-    expect(rejected.length).toBeGreaterThan(0);
+    expect(rejected).toHaveLength(12);
     expect(rejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
 
     // The last millisecond of the fresh window still applies the spot.
-    const edge = await setup({
-      fxSpot: {
-        latest: async () => ({
-          asOf: new Date(T0 - 599_999).toISOString(),
-          rates: { USD: '95238' },
-        }),
-      } as unknown as FxSpotStore,
-    });
+    const edge = await setup({ fxSpot: freshSpot(() => T0 + 1_000 - 599_999, '95238') });
     const before = eventsNamed('shop.offer.rejected').length;
     expect(await edge.svc.createForPayer(edge.account, USER, SATS, clock)).toEqual({
       kind: 'unavailable',
     });
+    expect(edge.orchestra.quoteCalls).toHaveLength(12);
     const edgeRejected = eventsNamed('shop.offer.rejected').slice(before);
-    expect(edgeRejected.length).toBeGreaterThan(0);
+    expect(edgeRejected).toHaveLength(12);
     expect(edgeRejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
 
-    const cases: (FxSpotStore | null)[] = [
+    // Exactly within the bound at a spot 599 999 ms old: offered.
+    const fresh = await setup({ fxSpot: freshSpot(() => T0 + 1_000 - 599_999, '95238.1') });
+    expect((await fresh.svc.createForPayer(fresh.account, USER, SATS, clock)).kind).toBe('payment');
+  });
+
+  it('step 5 / price check: without a stored USD spot younger than 10 min no Orchestra call is sent and no pair is offered', async () => {
+    const cases: FxSpotStore[] = [
+      // Exactly 10 minutes old.
       {
-        latest: async () => ({ asOf: new Date(T0 - 600_000).toISOString(), rates: { USD: '1' } }),
+        latest: async () => ({
+          asOf: new Date(T0 - 600_000).toISOString(),
+          rates: { USD: '100000' },
+        }),
       } as unknown as FxSpotStore,
-      { latest: async () => ({ asOf: 'later', rates: { USD: '1' } }) } as unknown as FxSpotStore,
+      {
+        latest: async () => ({ asOf: 'later', rates: { USD: '100000' } }),
+      } as unknown as FxSpotStore,
       {
         latest: async () => ({ asOf: new Date(T0).toISOString(), rates: {} }),
       } as unknown as FxSpotStore,
@@ -2532,19 +2623,63 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
           throw new Error('db');
         },
       } as unknown as FxSpotStore,
-      {
-        latest: async () => ({
-          asOf: new Date(T0 - 599_999).toISOString(),
-          rates: { USD: '95238.1' },
-        }),
-      } as unknown as FxSpotStore,
+      new InMemoryFxSpotStore(),
     ];
     for (const fxSpot of cases) {
-      const other = await setup({ fxSpot: fxSpot! });
-      expect((await other.svc.createForPayer(other.account, USER, SATS, clock)).kind).toBe(
-        'payment',
+      events = [];
+      const h = await setup({ fxSpot });
+      h.orchestra.budget = 3;
+      expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+        kind: 'unavailable',
+      });
+      expect(h.orchestra.quoteCalls).toHaveLength(0);
+      expect(h.net.rpcCalls).toHaveLength(0);
+      // One rejection per pair the quote budget allows, in request order.
+      expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toEqual(
+        shopPairOrder()
+          .slice(0, 3)
+          .map((pair) => ({
+            paymentId: expect.any(String),
+            method: pair.method.method,
+            asset: pair.asset,
+            check: 'price',
+          })),
       );
+      // Step 7: nothing written; the payer gets order 9.
+      expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
     }
+  });
+
+  it('step 6 / price check: a spot that turns 10 min old while the quotes run offers nothing', async () => {
+    const h = await setup({ fxSpot: freshSpot(() => T0 - 599_000 + 1_000) });
+    h.orchestra.onQuote = async () => {
+      clock = T0 + 1_000;
+    };
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(h.orchestra.quoteCalls).toHaveLength(12);
+    const rejected = eventsNamed('shop.offer.rejected');
+    expect(rejected).toHaveLength(12);
+    expect(rejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
+  });
+
+  it('price check: with a stale spot the pay link of a charge answers today’s pinned request', async () => {
+    const stale = {
+      latest: async () => ({
+        asOf: new Date(T0 - 600_000).toISOString(),
+        rates: { USD: '100000' },
+      }),
+    } as unknown as FxSpotStore;
+    const h = await setup({ fxSpot: stale });
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
   });
 
   it('step 7: no kept quote writes nothing; the next creation of the account waits 60 s', async () => {
@@ -3113,7 +3248,8 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     });
   });
 
-  it('joining a running creation waits only until that procedure’s 8 s budget is used up, with or without timeout', async () => {
+  it('joining a running creation waits until 8 s after the fetch arrived, whatever that procedure’s budget, with or without timeout', async () => {
+    expect(SHOP_PAY_LINK_CREATION_WAIT_MS).toBe(8_000);
     for (const timeout of [null, '5']) {
       sleepCalls = [];
       clock = T0;
@@ -3124,27 +3260,105 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       h.svc.startForCharge(h.account, charge, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       clock = T0 + 5_000;
-      sleepImpl = (ms) => (ms === 3_000 ? Promise.resolve() : defaultSleep(ms));
+      sleepImpl = (ms) => (ms === 8_000 || ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
+      // Arrived now: the full 8 s, although the joined run started 5 s ago.
       expect(
         await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({
-        kind: 'today',
-        pinSats: CHARGE_SATS,
-      });
-      expect(sleepCalls).toEqual([3_000]);
+      ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      // Arrived 1 s after the run started (4 s spent resolving the wallet): 4 s left.
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, T0 + 1_000),
+      ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      expect(sleepCalls).toEqual([8_000, 4_000]);
 
-      // Once that budget is used up, the request answers without a wait.
+      // A fetch that reaches this point 8 s or more after it arrived does not wait.
       sleepCalls = [];
-      clock = T0 + 8_000;
-      expect(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
-      ).toEqual({
-        kind: 'today',
-        pinSats: CHARGE_SATS,
-      });
+      for (const arrivedMs of [T0 - 3_000, T0 - 3_001]) {
+        expect(
+          await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, arrivedMs),
+        ).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+      }
       expect(sleepCalls).toEqual([]);
+      expect(h.orchestra.routesCalls).toHaveLength(1);
       sleepImpl = defaultSleep;
     }
+  });
+
+  it('a wallet resolve of 3 s and a creation of 6 s: answers today’s pinned request 8 s after the arrival, and the payment exists afterwards', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    let releaseRoutes = (_result: OrchestraRoutesResult): void => undefined;
+    h.orchestra.routesImpl = () =>
+      new Promise((resolve) => {
+        releaseRoutes = resolve;
+      });
+    let endWait = (): void => undefined;
+    sleepImpl = (ms) =>
+      ms === 5_000
+        ? new Promise<void>((resolve) => {
+            endWait = resolve;
+          })
+        : defaultSleep(ms);
+    clock = T0 + 3_000;
+    const answer = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0);
+    await vi.waitFor(() => expect(sleepCalls).toEqual([5_000]));
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+    clock = T0 + 8_000;
+    endWait();
+    expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    // The creation goes on in the background and ends at 9 s.
+    clock = T0 + 9_000;
+    releaseRoutes({ ok: true, assets: defaultRoutes(), validForMs: 60_000 });
+    await vi.waitFor(async () =>
+      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).not.toBeNull(),
+    );
+  });
+
+  it('a creation that ends 7 s after the arrival answers the open amount', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.routesImpl = async () => {
+      clock = T0 + 7_000;
+      return { ok: true, assets: defaultRoutes(), validForMs: 60_000 };
+    };
+    clock = T0 + 3_000;
+    const { status, json } = await bodyOf(
+      await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0),
+    );
+    expect(status).toBe(200);
+    expect(json['minSendable']).toBe(CHARGE_SATS * 1000);
+    expect(sleepCalls).toEqual([5_000]);
+  });
+
+  it('a creation queued 7 s behind a held lock still answers at most 8 s after the arrival', async () => {
+    const h = await setup();
+    const release = heldRoutes(h);
+    const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
+    await h.pos.create(chargeRow());
+    // Arrived at T0 + 1 s, reaches the creation at T0 + 3 s (wallet resolve).
+    clock = T0 + 3_000;
+    let endWait = (): void => undefined;
+    sleepImpl = (ms) =>
+      ms === 6_000
+        ? new Promise<void>((resolve) => {
+            endWait = resolve;
+          })
+        : defaultSleep(ms);
+    const answer = h.svc.payLink(h.account, USER, METADATA, NO_QUERY, T0 + 1_000);
+    await vi.waitFor(() => expect(sleepCalls).toEqual([6_000]));
+    // The lock is held until T0 + 8 s (7 s after the arrival); the run then
+    // takes it, and its route list does not answer before the wait ends.
+    clock = T0 + 8_000;
+    release({ ok: false });
+    expect(await payer).toEqual({ kind: 'unavailable' });
+    await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
+    clock = T0 + 9_000;
+    endWait();
+    expect(await answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls).toEqual([6_000]);
   });
 
   /**
@@ -3313,7 +3527,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     }
   });
 
-  it('an earlier creation for the same charge that ended before its budget gives the next run its own 8 s, with or without timeout', async () => {
+  it('an earlier creation for the same charge that ended gives the next fetch its own 8 s, with or without timeout', async () => {
     for (const timeout of [null, '5']) {
       sleepCalls = [];
       clock = T0;
@@ -3624,24 +3838,32 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(answer.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
   });
 
-  it('timeout: a charge found late in the wait still gets the full 8 s creation wait', async () => {
+  it('timeout: a charge found 8.5 s after the arrival starts the creation without waiting and answers today’s pinned request', async () => {
     const h = await setup();
+    const charge = chargeRow();
     sleepImpl = async (ms) => {
       if (ms !== 250) {
         return new Promise(() => undefined);
       }
       clock += ms;
-      // 9.5 s into a 10 s wait the till opens a charge.
-      if (sleepCalls.length === 38) {
-        await h.pos.create(chargeRow());
+      // 8.5 s into a 10 s wait the till opens a charge.
+      if (sleepCalls.length === 34) {
+        await h.pos.create(charge);
       }
     };
-    const answer = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
+    const answer = await h.svc.payLink(
+      h.account,
+      USER,
+      METADATA,
+      { ...NO_QUERY, timeout: '10' },
+      clock,
     );
-    expect(answer.status).toBe(200);
-    expect(answer.json['minSendable']).toBe(CHARGE_SATS * 1000);
-    expect(sleepCalls.filter((ms) => ms !== 250)).toEqual([8_000]);
+    expect(answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
+    expect(sleepCalls.filter((ms) => ms !== 250)).toEqual([]);
+    // The creation it started goes on in the background.
+    await vi.waitFor(async () =>
+      expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).not.toBeNull(),
+    );
   });
 });
 

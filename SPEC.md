@@ -475,11 +475,15 @@ application/json`, CORS `*`, methods `GET, OPTIONS`, and
 A `transferAmounts` entry is
 `{ "method", "minFee", "assets": [{ "asset", "amount" }], "available": true }`.
 Lightning has `minFee` 0 and one asset `BTC` whose `amount` is the sats
-divided by 100000000. A stablecoin method has `minFee` in wei as a JSON
+divided by `SATS_PER_BTC` (`satsToBtcString`, put through the canonical
+form). A stablecoin method has `minFee` in wei as a JSON
 number and one asset per offer, whose `amount` is the offer's `amountIn`
 divided by 10 to the power of its decimals. Every `amount` string has no
 exponent, no trailing zero after the point, and no point for a whole
-number (`0.00001`, `1.5`, `12`). Timestamps are `toISOString` output.
+number (`0.00001`, `1.5`, `12`): the canonical decimal form of
+`canonicalDecimal` (`src/lib/decimal.ts`), which `canonicalGoalAmount`
+uses with eight decimals and the stablecoin amounts with 6 or 18.
+Timestamps are `toISOString` output.
 
 A fetch returns the current quote unchanged unless it is replaced. A quote
 is replaced when it has a stablecoin entry, less than 45 s remain before
@@ -518,26 +522,27 @@ the 404 for no pending payment).
 
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on
-for the username, and waits for it, at most 8 s, with or without
-`timeout`. A charge has at most one creation in
-flight, from the moment it is queued until it ends: requests for the same
-charge (and the creation `POST /pos` starts) share it instead of queueing
-another run. The wait ends at the earlier of 8 s after the request reached
-this step and 8 s after the procedure it joins took the creation lock. A
-procedure still queued behind another procedure of the account (a payer
-creation, another charge's creation, a quote replacement, or a holder that
-does not finish) takes the lock at or after the request's arrival, so the
-wait then ends 8 s after the arrival at the latest; joining a procedure
-that already runs waits only for the rest of its budget, and not at all
-once it is used up. A creation that outlasts the wait goes on in the
-background. A creation that ends earlier (it re-reads and stops at once
-because the charge already has a payment or is no longer pending, or it
-fails) ends the wait right away, and the next request starts a new one.
-Whatever the outcome (a payment, a skipped or failed creation, a charge
-cancelled, paid, or expired meanwhile, or the 8 s used up), the api then
-reads the account's state again and answers from it: the open-amount pay
-request when the payment is open by then, today's pinned pay request while
-the charge is still waiting, and otherwise today's unpinned one.
+for the username, and waits for it at most until 8 s after the fetch
+arrived (`SHOP_PAY_LINK_CREATION_WAIT_MS`, as long as the procedure's 8 s
+budget and separate from it), with or without `timeout`, whatever the
+creation is still waiting for, lock waits and the wallet's own pay request
+included. The arrival is taken as the route's first statement. A charge
+has at most one creation in flight, from the moment it is queued until it
+ends: requests for the same charge (and the creation `POST /pos` starts)
+share it instead of queueing another run, and a joining request's wait
+still ends 8 s after its own arrival. A creation that outlasts the wait
+goes on in the background. A creation that ends earlier (it re-reads and
+stops at once because the charge already has a payment or is no longer
+pending, or it fails) ends the wait right away, and the next request starts
+a new one. Whatever the outcome (a payment, a skipped or failed creation, a
+charge cancelled, paid, or expired meanwhile, or the wait used up), the api
+then reads the account's state again and answers from it: the open-amount
+pay request when the payment is open by then, today's pinned pay request
+while the charge is still waiting, and otherwise today's unpinned one. A
+request with `timeout` that reaches this point only 8 s or more after it
+arrived (after its `timeout` wait) still starts or joins the creation, but
+does not wait for it and answers today's pinned pay request; the creation
+goes on in the background.
 
 **`timeout`.** When the query has `timeout` (any value, also empty), the
 value is a whole number of seconds: only digits count, values above 10
@@ -756,8 +761,9 @@ USDT and USDC at the contracts and decimals of the contract's method
 table. Pairs are requested in this order: USDT on `Ethereum`,
 `Arbitrum`, and `Polygon`, then the remaining pairs in table order, USDT
 before USDC. A pair is a candidate only when Orchestra's route list
-(`GET /v2/orchestration/routes`, 1 s timeout, reused for its
-`validForMs`) names it with `exactOutTo` admitting `lightning:BTC`, its
+(`GET /v2/orchestration/routes`, 1 s timeout, reused only until its
+`validForMs` has passed since the request started; at most 25 fetches per
+minute per process, `ORCHESTRA_ROUTES_PER_MINUTE`) names it with `exactOutTo` admitting `lightning:BTC`, its
 contract and decimals equal the table (otherwise `shop.route.mismatch`),
 and `SHOP_EVM_RPC` has an endpoint for the chain. Request matching of
 method and asset ignores case; responses write the table names.
@@ -776,8 +782,8 @@ waits for the first:
    (60 creations per minute) and then the account counter (10 per minute)
    allow it. The counters are per process.
 3. Read the route list and select the candidate pairs. A failed route-list
-   fetch → stop (no stablecoin until a fetch succeeds; the next creation
-   fetches again). No candidate pair → stop and start the account's 60 s
+   fetch, or one the route-list budget refuses → stop (no stablecoin until
+   a fetch succeeds; the next creation fetches again). No candidate pair → stop and start the account's 60 s
    no-pair wait.
 4. Mint one BOLT11 for the sats with one 4 s deadline for both LNURL calls.
    A failed mint or a BOLT11 of another amount stops the procedure as a
@@ -799,16 +805,24 @@ waits for the first:
 5. Within 3 s, read `eth_gasPrice` per chain and request one Orchestra
    exact-out quote per candidate pair in parallel, for as many pairs as the
    quote budget (240 per minute) allows. Each quote pays the BOLT11, is
-   tagged with the payment id, and sends `SHOP_REFUND_ADDRESS`.
+   tagged with the payment id, and sends `SHOP_REFUND_ADDRESS`. Without a
+   stored spot quote whose USD rate has an `asOf` younger than 10 minutes
+   (the creation never waits for a spot fetch), no gas price or quote is
+   requested and each of those pairs logs `shop.offer.rejected` with
+   `check` `price`.
 6. Keep each quote that passes the offer checks: `targetAmountOut` equals
    the sats; `amountIn` is a positive integer within `requiredAmountIn` and
    `maxAcceptedAmountIn` when present; the transaction's chain id and token
    contract equal the table; its value is zero; its data is exactly the
    ERC-20 `transfer(depositAddress, amountIn)`; the deposit address is not
    used by another offer of the batch; `expiresAt` minus 30 s is at least
-   45 s ahead; the BOLT11 expires at least 600 s after `expiresAt`; and,
-   when the stored BTC spot quote is younger than 10 minutes, `amountIn` in
-   USD is at most 5 % above the sats' value. A quote whose chain's gas price
+   45 s ahead; the BOLT11 expires at least 600 s after `expiresAt`; and
+   the stored BTC spot quote has a USD rate with an `asOf` younger than 10
+   minutes, and `amountIn` in USD is at most 5 % above the sats' value at
+   it: the rate is parsed with `parseUsdPerBtc` (USD per BTC times 10^8),
+   and the check runs in BigInt with no rounding,
+   `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`. Without a
+   fresh rate the check fails. A quote whose chain's gas price
    could not be read is not kept either. A failed check logs
    `shop.offer.rejected` with the check name.
 7. None kept → stop and start the 60 s no-pair wait.
@@ -1200,7 +1214,7 @@ A rejecting tick logs `shop.worker.tick.failed`.
 
 Orchestra calls also count against the in-process budgets per minute:
 quotes 240, submits 30 (proof requests at most 20), status and history
-reads 50 together. An HTTP 429 pauses only the endpoint that answered it,
+reads 50 together, route-list fetches 25. An HTTP 429 pauses only the endpoint that answered it,
 until its `Retry-After` (seconds) or else its `X-RateLimit-Reset` (epoch
 ms): status and history pause separately although they share one budget.
 A quote that got the 429 sends its one retry once that pause ends, when it
@@ -3614,8 +3628,10 @@ that payment's BOLT11 still pays the source account's wallet, which the
 merge does not carry over; the merge can be repeated after the final
 settlement read, 10 minutes after the BOLT11 expired. A source with an
 unexpired pending till charge while the survivor has an `open` shop
-payment is the same **409** and nothing changes, so a till charge never
-lands next to another payment's open amount. The source's paid
+payment and no unexpired pending till charge of its own is the same
+**409** and nothing changes, so a till charge never lands next to another
+payment's open amount. When the survivor has its own unexpired pending
+till charge, the source's charge is deleted (below) and the merge goes on. The source's paid
 and closed shop payments move like every other row. When the source's
 pending till charge is deleted because the survivor has one, its row is
 locked first (`SELECT … FOR UPDATE`), then its `pos_charge_invoice` rows

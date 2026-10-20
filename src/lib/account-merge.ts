@@ -61,9 +61,10 @@ function quoteIdentifier(identifier: string): string {
  * Under both account row locks it refuses with `shop_payment_open`, before
  * any write, while the merged account has a shop payment that is neither
  * paid nor closed, or has an unexpired pending charge while the surviving
- * account has an `open` shop payment. When both accounts have a pending
- * charge, it locks the merged account's charge row (`SELECT … FOR UPDATE`)
- * and then deletes that charge's `pos_charge_invoice` rows and the charge.
+ * account has no unexpired pending charge and has an `open` shop payment.
+ * When both accounts have a pending charge, it locks the merged account's
+ * charge row (`SELECT … FOR UPDATE`) and then deletes that charge's
+ * `pos_charge_invoice` rows and the charge.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -118,13 +119,19 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
     }
     // A pending charge of the merged account would land next to the survivor's
     // open shop payment (a stranger's amount on the sticker), which `POST /pos`
-    // never allows: refuse the same way and change nothing.
+    // never allows: refuse the same way and change nothing. When the survivor
+    // has its own unexpired pending charge, the merged account's charge is
+    // deleted below instead, and the merge goes on.
     const openBesideCharge = await tx.query<{ id: string }>(
       `SELECT p.id FROM shop_payment AS p
        WHERE p.account_id = $2 AND p.status = 'open'
          AND EXISTS (
            SELECT 1 FROM pos_charge AS c
            WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now()
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM pos_charge AS s
+           WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now()
          )
        LIMIT 1`,
       accountParams,

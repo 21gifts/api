@@ -7,6 +7,7 @@ import { payRoutes } from '@/routes/pay';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
 import { ShopPayments, type ShopCreation } from '@/lib/shop-payment';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore, type ShopPayment } from '@/lib/shop-payment-store';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
 import {
@@ -1285,6 +1286,7 @@ describe('POST /pay/:username/payment', () => {
       lnurlServer: LNURL_SERVER,
       config: null,
       orchestra: null,
+      fxSpot: new InMemoryFxSpotStore(),
       fetchImpl: async () => new Response('unexpected', { status: 500 }),
       now: () => NOW_MS,
     });
