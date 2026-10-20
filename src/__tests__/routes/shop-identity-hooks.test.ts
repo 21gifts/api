@@ -209,7 +209,7 @@ describe('shop key after a staff restore', () => {
         store: messages,
         debugToken: 'dbg',
         shopIdentities: identities(messages),
-        ...(kek === undefined ? {} : { nostrKek: kek }),
+        ...(kek === undefined ? {} : { shopKek: kek }),
       }),
     );
     const res = await app.request(`/debug/messages/${SHOP_ID}/restore`, {

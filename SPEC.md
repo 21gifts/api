@@ -1479,8 +1479,8 @@ pin, a till account (`shop_account_id`) and a complete pin and description
 note a listed shop for the first time (`POST /messages`,
 `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
 `PATCH /messages/:id/shop-account`, `PUT /me/about`,
-`POST /debug/messages/:id/restore`) creates its key after the commit when
-`NOSTR_NSEC_KEK` is set; a failure logs `shop.nostr_key.failed` and never
+`POST /debug/messages/:id/restore`) creates its key after the commit with the
+shop KEK (`NOSTR_NSEC_KEK`; a memory boot uses a random process-ephemeral key); a failure logs `shop.nostr_key.failed` and never
 fails the request. The worker backfills keys that are missing. The key
 belongs to the note forever. Every store write that changes the text, pin,
 till account, hide state or photos of a note with a key queues the

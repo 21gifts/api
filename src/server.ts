@@ -605,7 +605,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       store: messageStore,
       debugToken,
       shopIdentities: shopIdentityStore,
-      ...(shopKek === undefined ? {} : { nostrKek: shopKek }),
+      ...(shopKek === undefined ? {} : { shopKek }),
     }),
   );
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));

@@ -34,13 +34,13 @@ export interface DebugMessagesRouteDeps {
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
   /**
-   * Shop identities. With `nostrKek`, a restore that makes the note a
+   * Shop identities. With `shopKek`, a restore that makes the note a
    * listed shop creates its key. The restore write queues the
    * OpenCryptoPay outbox itself. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;
   /** Key-encryption key for new shop keys. */
-  nostrKek?: Uint8Array;
+  shopKek?: Uint8Array;
 }
 
 /** Shared 503/401 gate matching other `/debug/*` routes. */
@@ -266,9 +266,9 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         }
         await deps.store.unblockPubkeyByMessage(id);
         logEvent('debug.messages.restored', { messageId: id });
-        if (deps.shopIdentities !== undefined && deps.nostrKek !== undefined) {
+        if (deps.shopIdentities !== undefined && deps.shopKek !== undefined) {
           try {
-            await deps.shopIdentities.ensureListed(id, deps.nostrKek);
+            await deps.shopIdentities.ensureListed(id, deps.shopKek);
           } catch {
             logEvent('shop.nostr_key.failed', { messageId: id });
           }
