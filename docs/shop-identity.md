@@ -188,7 +188,13 @@ The worker publishes a profile for **every** `shop_identity` row, listed or
 not, in the same loop and with the same rules as account profiles
 (`publishProfiles` in `src/lib/nostr/worker.ts`):
 
-- same interval and batch size, same `NOSTR_PUBLISH` and
+- same interval and batch size (`WORKER_BATCH` attempts per tick, failures
+  included), but as a round robin: each kind keeps an in-process cursor
+  (by `nostr_key_created_at`, then `message_id`, the `listAll()` order)
+  that moves to every shop it attempts; the next tick starts after it and
+  wraps at the end, so up to 20 shops that keep failing cannot hold back the
+  shops behind them;
+- same `NOSTR_PUBLISH` and
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
   `wss://purplepag.es`;
 - published only when the content differs from the in-memory cache;
@@ -351,7 +357,9 @@ decode up to ten photos. It is new code next to `imageDisplaySize`
 (`src/lib/nostr/image.ts`), which decodes PNGs fully and stays as it is. Both
 values are `null` when the header cannot be read. For a JPEG whose EXIF
 orientation is 5 to 8 the two are swapped, the same displayed size
-OpenCryptoPay reports.
+OpenCryptoPay reports. The orientation is read only from a valid TIFF
+header (`II` or `MM` with the magic 42 in that byte order) and an entry of
+type `SHORT` with count 1; anything else counts as orientation 1.
 
 ### Existing responses
 
@@ -508,6 +516,9 @@ Rules for every claim:
     before sending.
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker only releases the claim.
+  - 409 whose body is empty or cannot be read: no verdict. Log
+    `ocp.place.failed` with the message id and status, and release the
+    claim, so the place is sent again.
   - 400 `Place field is not allowed: nostrPubkey` or
     `Place field is not allowed: revision`: OpenCryptoPay does not run
     openCryptoPay/api#26 yet. Log `ocp.place.deferred` with the message id
@@ -515,9 +526,9 @@ Rules for every claim:
     is sent again when the lease (`WORKER_LEASE_MS`, 60 s) ends, about once
     a minute. Its `DELETE` ignores unknown fields, so a `DELETE` succeeds
     there; should it answer the same 400, it is deferred the same way.
-  - Any other 400, or any other 409: log `ocp.place.rejected` with the
-    message id and clear the flag. It is sent again only after the next
-    change.
+  - Any other 400, or any other 409 with a readable body: log
+    `ocp.place.rejected` with the message id and clear the flag. It is sent
+    again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
     log `ocp.place.failed` and keep the flag; the next attempt
     follows when the lease ends.
@@ -591,8 +602,9 @@ Rules for every claim:
     photos again.
   - Any other 404: an OpenCryptoPay API without openCryptoPay/api#26 has no
     photo route and answers the framework's plain `404 Not Found`. Log
-    `ocp.photos.deferred` with the message id, the status and the first 200
-    characters of the body, keep the flag and do not release the claim, so
+    `ocp.photos.deferred` with the message id, the status, the fixed
+    reason `route_missing` and the body length (never the body itself, which
+    is upstream text), keep the flag and do not release the claim, so
     the photos are tried again when the lease (60 s) ends. If the shop is
     still listed, also queue the place and set its lease to the end of the
     photo lease, without raising `ocp_place_claim`: such an API accepted the

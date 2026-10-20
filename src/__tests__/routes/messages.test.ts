@@ -3,7 +3,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import {
@@ -22,6 +22,7 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryShopIdentityStore, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import type { MapFetch, MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
@@ -13023,5 +13024,225 @@ describe('GET /messages/hidden and GET /messages/:id/edits with an operator toke
       const basis = await app.request(path, { headers: AUTH });
       expect(basis.status).toBe(403);
     }
+  });
+});
+
+describe('shop identity hooks', () => {
+  const now = (): number => 1_700_000_000_000;
+
+  const AUTH = { authorization: 'Bearer tok', 'content-type': 'application/json' };
+
+  const KEK = new Uint8Array(32).fill(7);
+
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+
+  const TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+
+  const ADDRESS = {
+    street: 'Bahnhofstrasse',
+    houseNumber: '1',
+    postalCode: '8001',
+    city: 'Zürich',
+    country: 'CH',
+  };
+
+  const PIN = { lat: 47.3, lng: 8.5, label: 'Cafe', address: ADDRESS };
+
+  function account(overrides: Partial<Account>): Account {
+    return {
+      id: 'mod',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mo',
+      username: 'mo',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      ...overrides,
+    } as Account;
+  }
+
+  async function authStore(): Promise<InMemoryAuthStore> {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({}));
+    await auth.createAccount(
+      account({
+        id: 'till',
+        role: 'basis',
+        name: 'Coffee',
+        username: 'coffee',
+        viewKey: 'b'.repeat(64),
+      }),
+    );
+    await auth.createSession({ token: 'tok', accountId: 'mod', createdAt: now() });
+    return auth;
+  }
+
+  function shopNote(overrides: Partial<MessageRow>): MessageRow {
+    return {
+      id: SHOP_ID,
+      accountId: 'mod',
+      name: 'Mo',
+      text: TEXT,
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: PIN,
+      shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    };
+  }
+
+  async function mount(
+    row: MessageRow,
+    identities?: ShopIdentityStore,
+    kek: Uint8Array | null = KEK,
+  ): Promise<{ app: Hono; messages: InMemoryMessageStore; shops: InMemoryShopIdentityStore }> {
+    const messages = new InMemoryMessageStore();
+    await messages.create(row);
+    const shops = new InMemoryShopIdentityStore(messages);
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: await authStore(),
+        now,
+        shopIdentities: identities ?? shops,
+        ...(kek === null ? {} : { nostrKek: kek }),
+      }),
+    );
+    return { app, messages, shops };
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function logged(event: string): Array<Record<string, unknown>> {
+    return warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line['event'] === event);
+  }
+
+  const failing = {
+    ensureListed: () => Promise.reject(new Error('db down')),
+  } as unknown as ShopIdentityStore;
+
+  describe('shop key after a write that lists a shop', () => {
+    const cases: Array<{
+      name: string;
+      row: Partial<MessageRow>;
+      path: string;
+      body: unknown;
+    }> = [
+      {
+        name: 'PATCH /messages/:id/place',
+        row: { place: null },
+        path: `/messages/${SHOP_ID}/place`,
+        body: { place: PIN },
+      },
+      {
+        name: 'PATCH /messages/:id/shop-account',
+        row: { shopAccount: null },
+        path: `/messages/${SHOP_ID}/shop-account`,
+        body: { username: 'coffee' },
+      },
+      {
+        name: 'PATCH /messages/:id/text',
+        row: { text: 'Tiny.\n\n#21GiftsShop' },
+        path: `/messages/${SHOP_ID}/text`,
+        body: { text: TEXT },
+      },
+    ];
+
+    for (const testCase of cases) {
+      it(`${testCase.name} creates the key and answers its npub`, async () => {
+        const { app, shops } = await mount(shopNote(testCase.row));
+        const res = await app.request(testCase.path, {
+          method: 'PATCH',
+          headers: AUTH,
+          body: JSON.stringify(testCase.body),
+        });
+        expect(res.status).toBe(200);
+        const body = (await res.json()) as { shopNpub: string | null };
+        const identity = await shops.getByMessageId(SHOP_ID);
+        expect(body.shopNpub).toBe(shopNpub(identity!));
+      });
+
+      it(`${testCase.name} logs shop.nostr_key.failed and still answers 200`, async () => {
+        const { app } = await mount(shopNote(testCase.row), failing);
+        const res = await app.request(testCase.path, {
+          method: 'PATCH',
+          headers: AUTH,
+          body: JSON.stringify(testCase.body),
+        });
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as { shopNpub: unknown }).shopNpub).toBeNull();
+        expect(logged('shop.nostr_key.failed')).toEqual([
+          expect.objectContaining({ messageId: SHOP_ID }),
+        ]);
+      });
+    }
+
+    it('answers shopNpub null when the write leaves the note unlisted', async () => {
+      const { app, shops } = await mount(shopNote({ place: null, shopAccount: null }));
+      const res = await app.request(`/messages/${SHOP_ID}/place`, {
+        method: 'PATCH',
+        headers: AUTH,
+        body: JSON.stringify({ place: PIN }),
+      });
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { shopNpub: unknown }).shopNpub).toBeNull();
+      expect(await shops.listAll()).toEqual([]);
+    });
+
+    it('creates no key without a KEK', async () => {
+      const { app, shops } = await mount(shopNote({ place: null }), undefined, null);
+      const res = await app.request(`/messages/${SHOP_ID}/place`, {
+        method: 'PATCH',
+        headers: AUTH,
+        body: JSON.stringify({ place: PIN }),
+      });
+      expect(res.status).toBe(200);
+      expect(await shops.listAll()).toEqual([]);
+    });
+  });
+
+  describe('shopKek without nostrKek (memory boot)', () => {
+    const SHOP_KEK = new Uint8Array(32).fill(9);
+
+    it('messagesRoutes create the key with shopKek', async () => {
+      const messages = new InMemoryMessageStore();
+      await messages.create(shopNote({ place: null }));
+      const shops = new InMemoryShopIdentityStore(messages);
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messages,
+          authStore: await authStore(),
+          now,
+          shopIdentities: shops,
+          shopKek: SHOP_KEK,
+        }),
+      );
+      const res = await app.request(`/messages/${SHOP_ID}/place`, {
+        method: 'PATCH',
+        headers: AUTH,
+        body: JSON.stringify({ place: PIN }),
+      });
+      expect(res.status).toBe(200);
+      const identity = await shops.getByMessageId(SHOP_ID);
+      expect(((await res.json()) as { shopNpub: string }).shopNpub).toBe(shopNpub(identity!));
+    });
   });
 });

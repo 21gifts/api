@@ -51,8 +51,12 @@ async function bodyText(response: Response): Promise<string> {
   }
 }
 
+function isStaleRevisionText(text: string): boolean {
+  return text.includes('Stale revision');
+}
+
 async function isStaleRevision(response: Response): Promise<boolean> {
-  return response.status === 409 && (await bodyText(response)).includes('Stale revision');
+  return response.status === 409 && isStaleRevisionText(await bodyText(response));
 }
 
 /**
@@ -66,9 +70,6 @@ const OCP_OLD_API_ERRORS: ReadonlySet<string> = new Set([
 
 /** Error of the JSON 404 that openCryptoPay/api#26 answers for a place it does not know by key. */
 const OCP_PLACE_NOT_FOUND = 'Place not found';
-
-/** Characters of an unexpected answer body kept in `ocp.photos.deferred`. */
-const OCP_BODY_EXCERPT = 200;
 
 /**
  * The `error` string of a JSON answer body.
@@ -163,8 +164,20 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
       );
       return;
     }
-    if (await isStaleRevision(response)) {
-      await identities.release('place', claim);
+    if (response.status === 409) {
+      const text = await bodyText(response);
+      if (isStaleRevisionText(text)) {
+        await identities.release('place', claim);
+        return;
+      }
+      if (text === '') {
+        // An unreadable answer is not a verdict: release and send again.
+        logEvent('ocp.place.failed', { messageId, status: 409 });
+        await identities.release('place', claim);
+        return;
+      }
+      logEvent('ocp.place.rejected', { messageId, status: 409 });
+      await identities.finishPlace(claim, 'reject');
       return;
     }
     if (response.status === 400) {
@@ -174,8 +187,8 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
         return;
       }
     }
-    if (response.status === 400 || response.status === 409) {
-      logEvent('ocp.place.rejected', { messageId, status: response.status });
+    if (response.status === 400) {
+      logEvent('ocp.place.rejected', { messageId, status: 400 });
       await identities.finishPlace(claim, 'reject');
       return;
     }
@@ -190,7 +203,8 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  *
  * Results: `PUT` 2xx clears the place flag (generation-checked) and queues
  * the photos; 201 also nulls the photo hash; `DELETE` 2xx clears the flag;
- * 409 `Stale revision` only releases; a 400 whose error says the field
+ * 409 `Stale revision` only releases; a 409 whose body is empty or cannot be
+ * read logs `ocp.place.failed` and releases, so the place is sent again; a 400 whose error says the field
  * `nostrPubkey` or `revision` is not allowed (an OpenCryptoPay API without
  * openCryptoPay/api#26) logs `ocp.place.deferred` and keeps the flag and the
  * claim, so the place is sent again when the lease ends; any other 400 or
@@ -328,10 +342,12 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
         await identities.missingPhotoPlace(claim, listed);
         return;
       }
+      // The body is upstream text: log only its length, never its content.
       logEvent('ocp.photos.deferred', {
         messageId,
         status: 404,
-        body: text.slice(0, OCP_BODY_EXCERPT),
+        reason: 'route_missing',
+        bodyLength: text.length,
       });
       await identities.deferPhotos(claim, listed);
       return;

@@ -1361,6 +1361,58 @@ const shopProfileWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>
 const shopRelayCaches = new WeakMap<ShopIdentityStore, Map<string, Kind0Reservation>>();
 const shopRelayWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>>();
 
+/** Last shop a shop publisher attempted: `nostr_key_created_at` (ms), then `message_id`. */
+interface ShopRoundCursor {
+  createdAt: number;
+  messageId: string;
+}
+
+const shopProfileCursors = new WeakMap<ShopIdentityStore, ShopRoundCursor>();
+const shopRelayCursors = new WeakMap<ShopIdentityStore, ShopRoundCursor>();
+
+/**
+ * One lap over `listAll()` rows, starting after the last attempted shop.
+ * The cursor is a keyset in the `listAll()` order, so a shop deleted since
+ * the last tick does not reset the lap; past the last row it wraps around.
+ * With `WORKER_BATCH` attempts per tick, failing shops at the front never
+ * hold the slot of a shop behind them.
+ *
+ * @param rows - Identities in `listAll()` order.
+ * @param cursor - Last attempted shop, or `undefined`.
+ * @returns The same rows, rotated to start after the cursor.
+ */
+function shopRound(
+  rows: ShopIdentityRow[],
+  cursor: ShopRoundCursor | undefined,
+): ShopIdentityRow[] {
+  if (cursor === undefined) return rows;
+  const start = rows.findIndex((row) => {
+    const time = row.nostrKeyCreatedAt.getTime();
+    return (
+      time > cursor.createdAt || (time === cursor.createdAt && row.messageId > cursor.messageId)
+    );
+  });
+  return start <= 0 ? rows : [...rows.slice(start), ...rows.slice(0, start)];
+}
+
+/**
+ * Move a shop publisher's cursor to the shop it just attempted.
+ *
+ * @param cursors - Cursors of one kind.
+ * @param store - Shop identity store.
+ * @param identity - Attempted shop.
+ */
+function advanceShopRound(
+  cursors: WeakMap<ShopIdentityStore, ShopRoundCursor>,
+  store: ShopIdentityStore,
+  identity: ShopIdentityRow,
+): void {
+  cursors.set(store, {
+    createdAt: identity.nostrKeyCreatedAt.getTime(),
+    messageId: identity.messageId,
+  });
+}
+
 function shopCache<T>(
   caches: WeakMap<ShopIdentityStore, Map<string, T>>,
   store: ShopIdentityStore,
@@ -1472,6 +1524,7 @@ async function shopKind0Args(
 /**
  * Publish kind 0 for every shop identity, listed or not, with the same
  * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
+ * The `WORKER_BATCH` attempts per tick go round robin ({@link shopRound}).
  *
  * @param deps - Worker deps.
  * @param writeSet - Resolved write relays.
@@ -1494,7 +1547,7 @@ async function publishShopProfiles(
         ),
   );
   let attempted = 0;
-  for (const identity of await shops.listAll()) {
+  for (const identity of shopRound(await shops.listAll(), shopProfileCursors.get(shops))) {
     if (attempted >= WORKER_BATCH) break;
     const id = identity.messageId;
     let reservation: Kind0Reservation | undefined;
@@ -1517,6 +1570,7 @@ async function publishShopProfiles(
       };
       cache.set(id, reservation);
       attempted += 1;
+      advanceShopRound(shopProfileCursors, shops, identity);
       reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
       watermarks.set(id, reservation.createdAt);
       const unsigned = buildKind0Event(
@@ -1564,7 +1618,7 @@ async function publishShopProfiles(
 /**
  * Publish kind 10002 (the same write relays as an account's) for every
  * shop identity, with the same cache and ack rules as
- * {@link publishRelayLists}.
+ * {@link publishRelayLists}, round robin like {@link publishShopProfiles}.
  *
  * @param deps - Worker deps.
  * @param writeSet - Resolved write relays.
@@ -1580,7 +1634,7 @@ async function publishShopRelayLists(
   const urls = writeRelayUrls(writeSet);
   const content = urls.join('\n');
   let attempted = 0;
-  for (const identity of await shops.listAll()) {
+  for (const identity of shopRound(await shops.listAll(), shopRelayCursors.get(shops))) {
     if (attempted >= WORKER_BATCH) break;
     const id = identity.messageId;
     if (reservedContent(cache, id) === content) continue;
@@ -1591,6 +1645,7 @@ async function publishShopRelayLists(
     };
     cache.set(id, reservation);
     attempted += 1;
+    advanceShopRound(shopRelayCursors, shops, identity);
     try {
       reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
       watermarks.set(id, reservation.createdAt);

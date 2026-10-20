@@ -233,7 +233,7 @@ api/
 │       │   ├── translation-store.test.ts
 │       │   ├── translate-deepl.test.ts
 │       │   ├── cloudflare-purge.test.ts
-│       │   ├── nostr/            # kek, keys, publish, worker, worker-shop, dm, relays, zap, event, image, retract, sign, rate-limit
+│       │   ├── nostr/            # kek, keys, publish, worker, dm, relays, zap, event, image, retract, sign, rate-limit
 │       │   ├── contact.test.ts
 │       │   ├── contact-store.test.ts
 │       │   ├── pos-charge.test.ts
@@ -294,7 +294,6 @@ api/
 │           ├── invoices.test.ts
 │           ├── messages.test.ts
 │           ├── shops.test.ts
-│           ├── shop-identity-hooks.test.ts
 │           ├── repayment.test.ts
 │           ├── public-active.test.ts
 │           ├── translate.test.ts

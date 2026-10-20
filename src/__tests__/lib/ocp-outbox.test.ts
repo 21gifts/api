@@ -317,17 +317,25 @@ describe('runOcpPlaceOutboxPass', () => {
     expect(logged('ocp.place.deferred')).toEqual([]);
   });
 
-  it('treats an unreadable 409 body as another 409', async () => {
-    const messages = await messagesWith(shopNote());
+  it('releases the claim for a retry when a 409 body is empty or cannot be read', async () => {
     const broken = {
       ok: false,
       status: 409,
       text: () => Promise.reject(new Error('stream')),
     } as unknown as Response;
-    const { push } = mapPush(() => broken);
-    const ids = stubIdentities();
-    await runOcpPlaceOutboxPass(deps(ids, messages, push));
-    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+    for (const answer of [() => broken, () => new Response('', { status: 409 })]) {
+      const messages = await messagesWith(shopNote());
+      const { push } = mapPush(answer);
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      expect(ids.release).toHaveBeenCalledWith('place', CLAIM);
+      expect(ids.finishPlace).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.place.failed')).toEqual([
+      expect.objectContaining({ messageId: ID, status: 409 }),
+      expect.objectContaining({ messageId: ID, status: 409 }),
+    ]);
+    expect(logged('ocp.place.rejected')).toEqual([]);
   });
 
   it('keeps the flag and logs ocp.place.failed on any other answer or error', async () => {
@@ -522,8 +530,9 @@ describe('runOcpPhotoOutboxPass', () => {
 
   it('defers the photos on any other 404 and keeps the claim', async () => {
     const messages = await messagesWith(shopNote(), [PNG]);
-    const long = 'x'.repeat(300);
-    for (const body of ['404 Not Found', '{"error":"Not found"}', 'null', long]) {
+    const secret = `SECRET-SENTINEL-${'x'.repeat(300)}`;
+    const bodies = ['404 Not Found', '{"error":"Not found"}', 'null', secret];
+    for (const body of bodies) {
       const ids = stubIdentities();
       const { push, sent } = mapPush(() => new Response(body, { status: 404 }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
@@ -534,10 +543,17 @@ describe('runOcpPhotoOutboxPass', () => {
       expect(ids.release).not.toHaveBeenCalled();
     }
     expect(logged('ocp.photos.deferred')).toEqual(
-      ['404 Not Found', '{"error":"Not found"}', 'null', 'x'.repeat(200)].map((body) =>
-        expect.objectContaining({ messageId: ID, status: 404, body }),
-      ),
+      bodies.map((body) => ({
+        ts: expect.any(String),
+        event: 'ocp.photos.deferred',
+        messageId: ID,
+        status: 404,
+        reason: 'route_missing',
+        bodyLength: body.length,
+      })),
     );
+    const lines = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    expect(lines).not.toContain('SECRET-SENTINEL');
     expect(logged('ocp.photos.rejected')).toEqual([]);
   });
 

@@ -11,8 +11,10 @@ import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { bearerToken, meRoutes } from '@/routes/me';
+import { createApp } from '@/server';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -2738,5 +2740,110 @@ describe('bearerToken', () => {
 
   it('extracts a present token', async () => {
     expect(bearerToken('Bearer abc123')).toBe('abc123');
+  });
+});
+
+describe('shop identity hooks', () => {
+  const now = (): number => 1_700_000_000_000;
+
+  const AUTH = { authorization: 'Bearer tok', 'content-type': 'application/json' };
+
+  const KEK = new Uint8Array(32).fill(7);
+
+  function account(overrides: Partial<Account>): Account {
+    return {
+      id: 'mod',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mo',
+      username: 'mo',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      ...overrides,
+    } as Account;
+  }
+
+  async function authStore(): Promise<InMemoryAuthStore> {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({}));
+    await auth.createAccount(
+      account({
+        id: 'till',
+        role: 'basis',
+        name: 'Coffee',
+        username: 'coffee',
+        viewKey: 'b'.repeat(64),
+      }),
+    );
+    await auth.createSession({ token: 'tok', accountId: 'mod', createdAt: now() });
+    return auth;
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function logged(event: string): Array<Record<string, unknown>> {
+    return warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line['event'] === event);
+  }
+
+  describe('shop key after PUT /me/about', () => {
+    it('asks for the key of the profile note and logs a failure without failing', async () => {
+      const auth = await authStore();
+      const calls: string[] = [];
+      const spy = {
+        ensureListed: (id: string) => {
+          calls.push(id);
+          return calls.length === 1 ? Promise.resolve(undefined) : Promise.reject(new Error('db'));
+        },
+      } as unknown as ShopIdentityStore;
+      const app = createApp({ authStore: auth, now, nostrKek: KEK, shopIdentityStore: spy });
+      const put = (text: string): Promise<Response> =>
+        Promise.resolve(
+          app.request('/me/about', {
+            method: 'PUT',
+            headers: AUTH,
+            body: JSON.stringify({ text }),
+          }),
+        );
+      expect((await put('About the coffee shop')).status).toBe(200);
+      expect((await put('About the coffee shop again')).status).toBe(200);
+      const profileId = (await auth.getAccount('mod'))?.profileMessageId;
+      expect(calls).toEqual([profileId, profileId]);
+      expect(logged('shop.nostr_key.failed')).toEqual([
+        expect.objectContaining({ messageId: profileId }),
+      ]);
+    });
+
+    it('skips the key without a KEK', async () => {
+      const calls: string[] = [];
+      const spy = {
+        ensureListed: (id: string) => {
+          calls.push(id);
+          return Promise.resolve(undefined);
+        },
+      } as unknown as ShopIdentityStore;
+      const app = createApp({ authStore: await authStore(), now, shopIdentityStore: spy });
+      const res = await app.request('/me/about', {
+        method: 'PUT',
+        headers: AUTH,
+        body: JSON.stringify({ text: 'About' }),
+      });
+      expect(res.status).toBe(200);
+      expect(calls).toEqual([]);
+    });
   });
 });

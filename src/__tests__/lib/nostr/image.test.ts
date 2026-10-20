@@ -309,6 +309,35 @@ describe('imageHeaderSize', () => {
     }
   });
 
+  it('keeps the axes without TIFF magic 42 in the byte order or for a non-SHORT entry', () => {
+    const patched = (
+      order: 'II' | 'MM',
+      patch: (view: DataView, little: boolean) => void,
+    ): Uint8Array => {
+      const tiff = tiffBlock(order, [[0x0112, 6]]);
+      patch(new DataView(tiff.buffer), order === 'II');
+      return segment(0xe1, exifPayload(tiff));
+    };
+    const cases: Uint8Array[] = [];
+    for (const order of ['II', 'MM'] as const) {
+      // 42 written in the other byte order, and another magic.
+      cases.push(patched(order, (view, little) => view.setUint16(2, 42, !little)));
+      cases.push(patched(order, (view, little) => view.setUint16(2, 43, little)));
+      // Type LONG (4) and type 0 instead of SHORT (3).
+      cases.push(patched(order, (view, little) => view.setUint16(10 + 2, 4, little)));
+      cases.push(patched(order, (view, little) => view.setUint16(10 + 2, 0, little)));
+      // Count 2 and count 0 instead of 1.
+      cases.push(patched(order, (view, little) => view.setUint32(10 + 4, 2, little)));
+      cases.push(patched(order, (view, little) => view.setUint32(10 + 4, 0, little)));
+    }
+    for (const extra of cases) {
+      expect(imageHeaderSize(withSegments(jpeg(4, 3), extra), 'image/jpeg')).toEqual({
+        width: 4,
+        height: 3,
+      });
+    }
+  });
+
   it('stops looking for EXIF at the scan or a broken segment', () => {
     const plain = jpeg(4, 3);
     const app0 = segment(0xe0, new Uint8Array([1, 2, 3]));

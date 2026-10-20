@@ -306,7 +306,12 @@ function jpegExifOrientation(bytes: Uint8Array): number {
   );
 }
 
-/** Orientation tag `0x0112` of IFD0 in a TIFF block `[tiff, end)`, or `1`. */
+/**
+ * Orientation tag `0x0112` of IFD0 in a TIFF block `[tiff, end)`, or `1`.
+ * The header must be `II` or `MM` followed by the magic 42 in that byte
+ * order, and the entry must be one `SHORT` (type 3, count 1); anything else
+ * is read as orientation 1.
+ */
 function exifOrientation(bytes: Uint8Array, tiff: number, end: number): number {
   const order = String.fromCharCode(bytes[tiff] ?? 0, bytes[tiff + 1] ?? 0);
   if ((order !== 'II' && order !== 'MM') || tiff + 8 > end) {
@@ -314,6 +319,9 @@ function exifOrientation(bytes: Uint8Array, tiff: number, end: number): number {
   }
   const little = order === 'II';
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint16(tiff + 2, little) !== 42) {
+    return 1;
+  }
   const ifd = tiff + view.getUint32(tiff + 4, little);
   const count = ifd + 2 <= end ? view.getUint16(ifd, little) : 0;
   for (let index = 0; index < count; index += 1) {
@@ -322,6 +330,9 @@ function exifOrientation(bytes: Uint8Array, tiff: number, end: number): number {
       return 1;
     }
     if (view.getUint16(entry, little) === 0x0112) {
+      if (view.getUint16(entry + 2, little) !== 3 || view.getUint32(entry + 4, little) !== 1) {
+        return 1;
+      }
       const value = view.getUint16(entry + 8, little);
       return value >= 1 && value <= 8 ? value : 1;
     }
