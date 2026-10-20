@@ -672,7 +672,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * the stored column is true (omitted when null; never false); optional
  * `goalTermDays` when the stored column is not null (omitted when null);
  * optional currency-ask keys when `goalCurrency` is stored; optional `place` when stored;
- * optional `shopAccount` when stored (also when `includeAccountId` is false);
+ * optional `shopAccount` when stored and the till account has a username (also when
+ * `includeAccountId` is false);
  * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
@@ -682,7 +683,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
- * Omits `shopAccount` when unset or null.
+ * Omits `shopAccount` when unset or null, or when the till account has no username.
  * Omits `staffTag` when the argument is not exactly `software_developer`.
  * On a reply, always includes `receivedSats` (`row.receivedSats ?? 0`) and
  * the four `receivedAmount*` keys (stored string or null). Omits those five
