@@ -1277,6 +1277,8 @@ Store throw or missing BTC-USD day (a donation day or a loan movement day) → *
 
 `donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
+`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; loan days are priced from the outstanding balance at that UTC day's BTC-USD rate; missing BTC-USD is 503; missing CHF/EUR/PHP is JSON null; loans stay out of `donatedSats` and `receivedSats`.
+
 ### `GET /me/loans`
 
 Bearer required. The member's own loans in one call: their live repayable asks (top-level notes with `goalRepayable` true and a term, not hidden) that are still collecting or not fully repaid, newest first. A funded loan whose every share is paid is left out. Read-only; a local Sunday does not refuse it.
@@ -1336,8 +1338,6 @@ Success → **Response** `200`:
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
 A loan whose debt cannot be computed → **503** `{ "error": "Ask amount is unavailable" }`.
 Store failure → **503** `{ "error": "Messages are unavailable" }` (logs `me.loans.failed`).
-
-`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; loan days are priced from the outstanding balance at that UTC day's BTC-USD rate; missing BTC-USD is 503; missing CHF/EUR/PHP is JSON null; loans stay out of `donatedSats` and `receivedSats`.
 
 ### `POST /me/wallet-backup-seen`
 
