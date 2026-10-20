@@ -488,6 +488,51 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPhotosClaimedUntil: null,
     });
   });
+
+  it('defers photos: keeps the photo state and holds the queued place until the photo lease ends', async () => {
+    const { store, clock, claim } = await claimed();
+    await store.finishPlace(claim, 'put');
+    const photo = (await store.claimPhoto(60_000))!;
+    const photoUntil = new Date(clock.now + 60_000);
+    await store.deferPhotos({ ...photo, claim: 9 }, true);
+    await store.deferPhotos(photo, false);
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      ocpPlacePending: false,
+      ocpPlaceClaimedUntil: null,
+    });
+
+    await store.deferPhotos(photo, true);
+    const held = await store.getByMessageId(ID_A);
+    expect(held).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosClaimedUntil: photoUntil,
+      ocpPhotosClaim: photo.claim,
+      ocpPlacePending: true,
+      ocpPlaceGeneration: claim.generation + 1,
+      ocpPlaceClaimedUntil: photoUntil,
+      ocpPlaceClaim: claim.claim,
+    });
+    expect(await store.claimPlaces(20, 60_000)).toEqual([]);
+    expect(await store.claimPhoto(60_000)).toBeUndefined();
+
+    clock.now += 30_000;
+    const later = await store.claimPlaces(1, 60_000);
+    expect(later).toEqual([]);
+    clock.now += 30_000;
+    const place = (await store.claimPlaces(20, 60_000)).find((item) => item.messageId === ID_A)!;
+    const placeUntil = new Date(clock.now + 60_000);
+    await store.deferPhotos(photo, true);
+    expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(placeUntil);
+
+    await store.release('photos', photo);
+    await store.release('place', place);
+    await store.deferPhotos(photo, true);
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceClaimedUntil: null,
+      ocpPhotosClaimedUntil: null,
+    });
+  });
 });
 
 type Call = { text: string; params: readonly unknown[] };
@@ -709,6 +754,8 @@ describe('PostgresShopIdentityStore', () => {
     await store.finishPhotos(claim, 'hash');
     await store.missingPhotoPlace(claim, true);
     await store.setProfileName(ID_A, 'Name');
+    await store.deferPhotos(claim, false);
+    await store.deferPhotos(claim, true);
     expect(calls[0]?.text).toContain('ocp_place_claimed_until = NULL');
     expect(calls[1]?.text).toContain('ocp_photos_claimed_until = NULL');
     expect(calls[2]?.text).toContain('ocp_place_claim = $2');
@@ -719,6 +766,12 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[7]?.params).toEqual([ID_A, 6]);
     expect(calls[8]?.params).toEqual([ID_A, 6, 4, 'hash']);
     expect(calls[9]?.params).toEqual([ID_A, 6, 4, true]);
+    expect(calls).toHaveLength(12);
+    expect(calls[11]?.text).toContain(
+      'GREATEST(ocp_place_claimed_until, ocp_photos_claimed_until)',
+    );
+    expect(calls[11]?.text).toContain('ocp_photos_claim = $2');
+    expect(calls[11]?.params).toEqual([ID_A, 6]);
     for (const call of calls.slice(0, 10)) {
       expect(call.text).toMatch(/ocp_(place|photos)_claim = \$2/);
     }

@@ -64,6 +64,27 @@ const OCP_OLD_API_ERRORS: ReadonlySet<string> = new Set([
   'Place field is not allowed: revision',
 ]);
 
+/** Error of the JSON 404 that openCryptoPay/api#26 answers for a place it does not know by key. */
+const OCP_PLACE_NOT_FOUND = 'Place not found';
+
+/** Characters of an unexpected answer body kept in `ocp.photos.deferred`. */
+const OCP_BODY_EXCERPT = 200;
+
+/**
+ * The `error` string of a JSON answer body.
+ *
+ * @param text - Answer body.
+ * @returns The `error` field when the body is a JSON object with a string `error`, otherwise null.
+ */
+function jsonError(text: string): string | null {
+  try {
+    const payload = JSON.parse(text) as { error?: unknown } | null;
+    return typeof payload?.error === 'string' ? payload.error : null;
+  } catch {
+    return null;
+  }
+}
+
 /**
  * Whether a 400 is the answer of an OpenCryptoPay API that does not run
  * openCryptoPay/api#26 yet (`nostrPubkey` or `revision` not allowed).
@@ -72,14 +93,8 @@ const OCP_OLD_API_ERRORS: ReadonlySet<string> = new Set([
  * @returns The fixed error text when it is such an answer, otherwise null.
  */
 async function oldApiError(response: Response): Promise<string | null> {
-  try {
-    const payload = JSON.parse(await bodyText(response)) as { error?: unknown };
-    return typeof payload.error === 'string' && OCP_OLD_API_ERRORS.has(payload.error)
-      ? payload.error
-      : null;
-  } catch {
-    return null;
-  }
+  const error = jsonError(await bodyText(response));
+  return error !== null && OCP_OLD_API_ERRORS.has(error) ? error : null;
 }
 
 function send(
@@ -232,9 +247,16 @@ async function skippedCount(response: Response): Promise<number> {
  * 10 photos are sent in note order as base64. Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
- * hash and log `ocp.photos.rejected`; 404 clears the flag and queues the
- * place when still listed; anything else logs `ocp.photos.failed` and keeps
- * the flag until the lease ends.
+ * hash and log `ocp.photos.rejected`; 404 `{"error":"Place not found"}`
+ * (openCryptoPay/api#26 does not know the place by key) clears the flag and
+ * queues the place when still listed; any other 404 (an OpenCryptoPay API
+ * without the photo route, i.e. without openCryptoPay/api#26) logs
+ * `ocp.photos.deferred`, keeps the flag and the claim, so the photos are
+ * tried again when the lease ends, and when still listed queues the place
+ * with its lease held until then (`deferPhotos`), so the place request that
+ * carries the key is repeated once per lease and stores it once #26 is live;
+ * anything else logs `ocp.photos.failed` and keeps the flag until the lease
+ * ends.
  *
  * @param deps - Identities, messages and the map target.
  * @returns Resolves when the claimed row (if any) was handled.
@@ -300,8 +322,18 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
       return;
     }
     if (response.status === 404) {
+      const text = await bodyText(response);
       const listed = isListedShop(await deps.messages.getById(messageId));
-      await identities.missingPhotoPlace(claim, listed);
+      if (jsonError(text) === OCP_PLACE_NOT_FOUND) {
+        await identities.missingPhotoPlace(claim, listed);
+        return;
+      }
+      logEvent('ocp.photos.deferred', {
+        messageId,
+        status: 404,
+        body: text.slice(0, OCP_BODY_EXCERPT),
+      });
+      await identities.deferPhotos(claim, listed);
       return;
     }
     logEvent('ocp.photos.failed', { messageId, status: response.status });

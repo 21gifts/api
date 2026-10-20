@@ -239,6 +239,18 @@ export interface ShopIdentityStore {
    * @returns Resolves when written.
    */
   missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void>;
+  /**
+   * Photo route missing (OpenCryptoPay without openCryptoPay/api#26): keep the
+   * photo flag, hash and lease; when still listed, queue the place and hold
+   * its lease until the photo lease ends (claim-checked, the place claim token
+   * is left alone). A shop then costs at most one place and one photo request
+   * per lease until the photo route answers.
+   *
+   * @param claim - Photo claim.
+   * @param listed - Whether the note is still a listed shop.
+   * @returns Resolves when written.
+   */
+  deferPhotos(claim: ShopOcpClaim, listed: boolean): Promise<void>;
 }
 
 /**
@@ -734,6 +746,19 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     row.ocpPhotosClaimedUntil = null;
   }
 
+  async deferPhotos(claim: ShopOcpClaim, listed: boolean): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('photos', claim);
+    if (row === undefined || !listed) return;
+    row.ocpPlacePending = true;
+    row.ocpPlaceGeneration += 1;
+    const photoUntil = row.ocpPhotosClaimedUntil;
+    const placeUntil = row.ocpPlaceClaimedUntil;
+    if (photoUntil !== null && (placeUntil === null || placeUntil < photoUntil)) {
+      row.ocpPlaceClaimedUntil = new Date(photoUntil);
+    }
+  }
+
   #byMessageId(): ShopIdentityRow[] {
     return [...this.#rows.values()].sort((a, b) => a.messageId.localeCompare(b.messageId));
   }
@@ -1126,6 +1151,18 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          ocp_place_generation = ocp_place_generation + CASE WHEN $4::boolean THEN 1 ELSE 0 END
        WHERE message_id = $1 AND ocp_photos_claim = $2`,
       [claim.messageId, claim.claim, claim.generation, listed],
+    );
+  }
+
+  async deferPhotos(claim: ShopOcpClaim, listed: boolean): Promise<void> {
+    if (!listed) return;
+    await this.#sql.execute(
+      `UPDATE shop_identity SET
+         ocp_place_pending = true,
+         ocp_place_generation = ocp_place_generation + 1,
+         ocp_place_claimed_until = GREATEST(ocp_place_claimed_until, ocp_photos_claimed_until)
+       WHERE message_id = $1 AND ocp_photos_claim = $2`,
+      [claim.messageId, claim.claim],
     );
   }
 }

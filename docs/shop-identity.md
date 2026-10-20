@@ -563,16 +563,23 @@ Rules for every claim:
   - 400 or 413: store the sent hash, clear the flag (both only while `g`
     still matches) and log `ocp.photos.rejected`. The same set is not sent
     again.
-  - 404 (OpenCryptoPay does not know the place): set the hash to null, clear
-    the flag, and, if the shop is still listed, queue the place (set
-    `ocp_place_pending`, raise `ocp_place_generation`). The confirmed place
-    `PUT` then queues the photos again.
-    An OpenCryptoPay API without openCryptoPay/api#26 has no photo route
-    and answers the plain `404 Not Found`; it is handled the same way. The
-    queued place is then deferred (above) until that API is live, and the
-    photo row is not claimed while its place is pending, so the photo lane
-    neither loops nor loses the set: the first confirmed place `PUT` queues
-    it again.
+  - 404 `{"error":"Place not found"}` (openCryptoPay/api#26 does not know a
+    place with this key): set the hash to null, clear the flag, and, if the
+    shop is still listed, queue the place (set `ocp_place_pending`, raise
+    `ocp_place_generation`). The confirmed place `PUT` then queues the
+    photos again.
+  - Any other 404: an OpenCryptoPay API without openCryptoPay/api#26 has no
+    photo route and answers the framework's plain `404 Not Found`. Log
+    `ocp.photos.deferred` with the message id, the status and the first 200
+    characters of the body, keep the flag and do not release the claim, so
+    the photos are tried again when the lease (60 s) ends. If the shop is
+    still listed, also queue the place and set its lease to the end of the
+    photo lease, without raising `ocp_place_claim`: such an API accepted the
+    place but dropped `nostrPubkey`, so the place must be sent again once
+    openCryptoPay/api#26 is live. The place is claimed when that lease ends,
+    and the photo row is not claimed while its place is pending, so a shop
+    costs at most one place `PUT` and one photo request per minute; neither
+    lane loops, and the set is never dropped.
   - Any other answer, a network error or a timeout: log `ocp.photos.failed`
     and keep the flag; the next attempt follows when the lease ends.
 
@@ -590,10 +597,19 @@ this API.
   yet.
 
 Should this API boot before openCryptoPay/api#26 is live, the push is only
-delayed, not dropped: the old API answers each place `PUT` with
-`Place field is not allowed: nostrPubkey`, the place sender defers it
-(`ocp.place.deferred`) and retries it about once a minute, and the photos
-follow the first confirmed place.
+delayed, not dropped. Both OpenCryptoPay versions without #26 are handled:
+
+- The `develop` branch checks the allowed place fields and answers each
+  place `PUT` with `Place field is not allowed: nostrPubkey`. The place
+  sender defers it (`ocp.place.deferred`) and retries it about once a
+  minute; the photos follow the first confirmed place.
+- `main`, which production runs, has no such check: it stores the place
+  with 200 or 201 and drops `nostrPubkey` and `revision`. It has no
+  `PUT /map/places/photos` either and answers the photo request with a plain
+  `404 Not Found`. The photo sender defers the set (`ocp.photos.deferred`)
+  and queues the place again behind the photo lease, so each shop gets one
+  place `PUT` and one photo request about once a minute. Once #26 is live,
+  the next place `PUT` stores the key and the photos follow it.
 
 The `shop_identity` outbox columns, all queueing writes, both senders and the
 paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpPlace` and

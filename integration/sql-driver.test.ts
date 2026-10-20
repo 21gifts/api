@@ -793,6 +793,26 @@ describe('shop identity on Postgres', () => {
       expect((await state()).ocpPhotosPending).toBe(false);
 
       await ctx.messages.replacePhotos(row.id, [PNG, PNG, PNG]);
+      answers.push({ status: 404, body: '404 Not Found' });
+      await runOcpPhotoOutboxPass(deps);
+      const deferred = await state();
+      expect(deferred).toMatchObject({
+        ocpPhotosHash: null,
+        ocpPhotosPending: true,
+        ocpPlacePending: true,
+      });
+      expect(deferred.ocpPhotosClaimedUntil).not.toBeNull();
+      expect(deferred.ocpPlaceClaimedUntil).toEqual(deferred.ocpPhotosClaimedUntil);
+      const beforeLease = sent.length;
+      await runOcpPlaceOutboxPass(deps);
+      await runOcpPhotoOutboxPass(deps);
+      expect(sent).toHaveLength(beforeLease);
+      await releasePlace();
+      answers.push({ status: 200, body: '{}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect(await state()).toMatchObject({ ocpPlacePending: false, ocpPhotosPending: true });
+      await releasePhotos();
+
       answers.push({ status: 404, body: '{"error":"Place not found"}' });
       await runOcpPhotoOutboxPass(deps);
       expect(await state()).toMatchObject({

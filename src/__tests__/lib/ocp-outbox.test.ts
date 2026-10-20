@@ -99,6 +99,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     clearPhotoHash: vi.fn(() => Promise.resolve()),
     finishPhotos: vi.fn(() => Promise.resolve()),
     missingPhotoPlace: vi.fn(() => Promise.resolve()),
+    deferPhotos: vi.fn(() => Promise.resolve()),
   };
 }
 
@@ -519,14 +520,24 @@ describe('runOcpPhotoOutboxPass', () => {
     }
   });
 
-  it('treats the plain 404 of an OpenCryptoPay API without the photo route as an unknown place', async () => {
+  it('defers the photos on any other 404 and keeps the claim', async () => {
     const messages = await messagesWith(shopNote(), [PNG]);
-    const ids = stubIdentities();
-    const { push, sent } = mapPush(() => new Response('404 Not Found', { status: 404 }));
-    await runOcpPhotoOutboxPass(deps(ids, messages, push));
-    expect(sent.map((request) => request.url)).toEqual(['https://map.test/map/places/photos']);
-    expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, true);
-    expect(ids.finishPhotos).not.toHaveBeenCalled();
+    const long = 'x'.repeat(300);
+    for (const body of ['404 Not Found', '{"error":"Not found"}', 'null', long]) {
+      const ids = stubIdentities();
+      const { push, sent } = mapPush(() => new Response(body, { status: 404 }));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(sent.map((request) => request.url)).toEqual(['https://map.test/map/places/photos']);
+      expect(ids.deferPhotos).toHaveBeenCalledWith(CLAIM, true);
+      expect(ids.missingPhotoPlace).not.toHaveBeenCalled();
+      expect(ids.finishPhotos).not.toHaveBeenCalled();
+      expect(ids.release).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.photos.deferred')).toEqual(
+      ['404 Not Found', '{"error":"Not found"}', 'null', 'x'.repeat(200)].map((body) =>
+        expect.objectContaining({ messageId: ID, status: 404, body }),
+      ),
+    );
     expect(logged('ocp.photos.rejected')).toEqual([]);
   });
 
@@ -586,32 +597,93 @@ describe('OpenCryptoPay without openCryptoPay/api#26', () => {
     });
     expect(logged('ocp.place.deferred')).toHaveLength(1);
   });
+});
 
-  it('keeps the photo state when the old API answers the photo route with 404', async () => {
+describe('OpenCryptoPay main without the photo route', () => {
+  const PLACE = 'https://map.test/map/places';
+  const PHOTOS = 'https://map.test/map/places/photos';
+
+  async function mainApi(): Promise<{
+    store: InMemoryShopIdentityStore;
+    clock: { now: number };
+    sent: Sent[];
+    api: { upgraded: boolean; placeNotFound: boolean };
+    tick: () => Promise<void>;
+  }> {
     const messages = await messagesWith(shopNote(), [PNG]);
     const clock = { now: 1_000_000 };
     const store = new InMemoryShopIdentityStore(messages, () => clock.now);
     await store.ensureListed(ID, new Uint8Array(32).fill(7));
-    await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'put');
-    const { push, sent } = mapPush((url) =>
-      url.endsWith('/photos')
-        ? new Response('404 Not Found', { status: 404 })
-        : new Response('{"error":"Place field is not allowed: nostrPubkey"}', { status: 400 }),
-    );
+    const api = { upgraded: false, placeNotFound: false };
+    const { push, sent } = mapPush((url) => {
+      if (url === PLACE) return new Response('{"created":false}', { status: 200 });
+      if (!api.upgraded) return new Response('404 Not Found', { status: 404 });
+      if (api.placeNotFound) {
+        return new Response('{"error":"Place not found"}', { status: 404 });
+      }
+      return new Response('{"photos":[],"skipped":[]}', { status: 200 });
+    });
     const outbox = deps(store, messages, push);
+    const tick = async (): Promise<void> => {
+      await runOcpPlaceOutboxPass(outbox);
+      await runOcpPhotoOutboxPass(outbox);
+      clock.now += 2_000;
+    };
+    return { store, clock, sent, api, tick };
+  }
 
-    await runOcpPhotoOutboxPass(outbox);
-    await runOcpPhotoOutboxPass(outbox);
-    await runOcpPlaceOutboxPass(outbox);
-    expect(sent.map((request) => request.url)).toEqual([
-      'https://map.test/map/places/photos',
-      'https://map.test/map/places',
-    ]);
+  it('sends one place and one photo request per lease while the photo route is missing', async () => {
+    const { store, sent, tick } = await mainApi();
+    for (let pass = 0; pass < 30; pass += 1) await tick();
+    expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS]);
+    expect(sent[0]?.body).toMatchObject({ nostrPubkey: expect.any(String), revision: 1 });
+    expect(sent[1]?.body).toMatchObject({ revision: 2 });
+    const held = await store.getByMessageId(ID);
+    expect(held).toMatchObject({ ocpPlacePending: true, ocpPhotosPending: true });
+    expect(held?.ocpPlaceClaimedUntil).toEqual(held?.ocpPhotosClaimedUntil);
+
+    await tick();
+    expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS, PLACE, PHOTOS]);
+    for (let pass = 0; pass < 29; pass += 1) await tick();
+    expect(sent).toHaveLength(4);
+    expect(logged('ocp.photos.deferred')).toHaveLength(2);
+    expect(logged('ocp.photos.failed')).toEqual([]);
+  });
+
+  it('stores the key and the photos once the API runs openCryptoPay/api#26', async () => {
+    const { store, sent, api, tick } = await mainApi();
+    await tick();
+    api.upgraded = true;
+    for (let pass = 0; pass < 30; pass += 1) await tick();
+    expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS, PLACE, PHOTOS]);
+    expect(sent[2]?.body).toMatchObject({ nostrPubkey: sent[0]?.body['nostrPubkey'] });
+    expect(await store.getByMessageId(ID)).toMatchObject({
+      ocpPlacePending: false,
+      ocpPhotosPending: false,
+      ocpPhotosHash: ocpPhotoSetHash([PNG]),
+      ocpPhotosClaimedUntil: null,
+    });
+    for (let pass = 0; pass < 40; pass += 1) await tick();
+    expect(sent).toHaveLength(4);
+  });
+
+  it('queues the place at once when openCryptoPay/api#26 does not know it', async () => {
+    const { store, sent, api, tick } = await mainApi();
+    api.upgraded = true;
+    api.placeNotFound = true;
+    await tick();
+    expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS]);
     expect(await store.getByMessageId(ID)).toMatchObject({
       ocpPlacePending: true,
+      ocpPlaceClaimedUntil: null,
       ocpPhotosPending: false,
       ocpPhotosHash: null,
     });
+    api.placeNotFound = false;
+    await tick();
+    expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS, PLACE, PHOTOS]);
+    expect((await store.getByMessageId(ID))?.ocpPhotosHash).toBe(ocpPhotoSetHash([PNG]));
+    expect(logged('ocp.photos.deferred')).toEqual([]);
   });
 });
 
