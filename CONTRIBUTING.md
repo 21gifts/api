@@ -382,6 +382,7 @@ api/
 │   ├── README.md
 │   ├── functions.md
 │   └── endpoints.md
+├── docs/database/            # Generated: one page per Postgres table (`bun run db:docs`)
 ├── docs/schema/
 │   ├── gift.sql              # gift table used by GET /gifts and GET /gifts/stats
 │   ├── btc_usd_daily.sql     # UTC daily BTC-USD closes for historical USD stats
@@ -408,9 +409,13 @@ api/
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1
 │   ├── check-e2e.mjs         # CI gate: missing endpoint request or Function: title → exit 1
+│   ├── db-change-notice.mjs  # Database change notice: does a PR need the visible marker line
+│   ├── db-change-notice.test.mjs
 │   ├── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log, logins, logins-open, logins-close, logins-allow, logins-disallow, end-sessions, funding-goal, payout-days, applications, daily-roster, trust-proposals, member-activity, hidden, edits (DEBUG_TOKEN)
 │   └── loan-e2e/             # Live loan cycle on Spark mainnet (manual; see its README)
 ├── integration/
+│   ├── db-schema-reference.ts       # Generates docs/database/ from a scratch boot schema
+│   ├── db-schema-reference.test.ts  # Bun test:postgres; fails when docs/database/ drifts
 │   └── sql-driver.test.ts  # Bun test:postgres; needs DATABASE_URL; text[] binding against Postgres
 ├── e2e/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
@@ -624,6 +629,42 @@ Weakening attach, logging from app code instead of triggers, omitting
 landing a durable write without a `db_change` row in the **same PR** is an
 undeclared deviation and is rejected.
 
+### Database schema reference (hard requirement)
+
+`docs/database/` is generated from the schema `openBootStores` creates at boot
+(every column, kind, Postgres type, nullable, default, foreign key, index; no
+prose, no enum values). Every change to a schema (`*_SCHEMA_SQL`,
+`migrate*Schema`, repairs) **must** regenerate it in the same PR with
+`DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run db:docs`
+(needs a Postgres 16 where the user may create databases; the generator uses a
+scratch database). `bun run test:postgres` (CI step "Postgres driver") fails
+when the committed pages differ; `bun run db:docs:check` prints the differing
+paths. `docs/schema/*.sql` stay the DDL reference per store; they are not
+replaced. Tables created outside this service (today `gift`) are built from
+their `docs/schema/*.sql` file when the pages are generated, so changing such a
+file also requires `bun run db:docs`. Do not hand-edit `docs/database/`.
+
+### Database change notice (hard requirement)
+
+A PR into `develop` or `staging` that changes the database or database access **must**
+contain the exact line `⚠️ 🗄️ Attention: database change` in the visible part
+of the PR description (not inside `<details>`, an HTML comment or a code
+fence). The CI job "Database change notice" fails otherwise. It triggers on
+changes under `docs/schema/`, `docs/database/`, `integration/`,
+`src/lib/boot-stores.ts`, and on non-test `src/**/*.ts` diffs that add or
+remove SQL or database calls (`*_SCHEMA_SQL`, `migrate*Schema`, `.query(`,
+`.execute(`, `.unsafe(`, `.begin(`, `SELECT … FROM`, `INSERT INTO`,
+`UPDATE … SET`, `DELETE FROM`, `CREATE/ALTER/DROP`, `ON CONFLICT`, triggers).
+It also triggers when the changed source file imports the SQL client from
+`@/lib/auth/sql`, `./sql`, or a relative `auth/sql` path, imports `SQL` from
+`bun`, or contains `_SCHEMA_SQL` or a `migrate*Schema` helper, regardless of
+which line changed. Removed files are inspected from the base revision. The
+check re-runs when the PR text is edited. The release pull request `staging` →
+`develop` that `auto-release-pr.yaml` opens passes without the marker, because
+every pull request it bundles already passed the check on `staging`. This check is a safety net; it does
+not replace the author's own judgement about whether a change affects the
+database.
+
 ### Tests
 
 - One `*.test.ts` per source file, under `src/__tests__/` mirroring the source tree
@@ -641,11 +682,13 @@ undeclared deviation and is rejected.
 ```bash
 bun run typecheck
 bun run lint
+node --test scripts/db-change-notice.test.mjs
 bun run handbook:check
 bun run e2e:check
 bun run test:coverage
 # Postgres driver (Bun test, not Vitest); fails if DATABASE_URL is missing
 DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run test:postgres
+DATABASE_URL=postgres://gifts:gifts@127.0.0.1:5432/gifts bun run db:docs:check
 bun run build
 bun run e2e
 ```
@@ -666,7 +709,7 @@ This is a **public** repository. GitHub-hosted runners execute the heavy suite
 gate, the Postgres driver test, the production build, and the end-to-end HTTP
 tests). A38 does not replace those GitHub checks. The author report only
 covers the light local job in `.github/a38.json` (`bun install --frozen-lockfile`,
-then `bun run lint`, with `CI=true`). Do not run Vitest, the Postgres driver
+then `bun run lint` and `node --test scripts/db-change-notice.test.mjs`, with `CI=true`). Do not run Vitest, the Postgres driver
 test, the production build, or Playwright locally for A38.
 
 Draft pull requests run the GitHub CI jobs. GitHub holds fork runs from
@@ -742,15 +785,16 @@ More will be added as concrete subsystems that need runtime configuration
 
 ## CI / CD
 
-| Workflow               | Trigger                                                           | Action                                                                                                                                                                         |
-| ---------------------- | ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `ci.yaml`              | PR (including drafts); not `ready_for_review`                     | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
-| `loan-e2e.yml`         | `workflow_dispatch` only                                          | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
-| `deploy-dev.yaml`      | push to `develop`                                                 | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
-| `deploy-staging.yaml`  | push to `staging`                                                 | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
-| `deploy-prd.yaml`      | push to `main`                                                    | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
-| `auto-release-pr.yaml` | push to `develop` or `staging`                                    | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
-| `a38-guard.yml`        | `pull_request_target`; PR comments; schedule; `workflow_dispatch` | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml`, and sets ready; never checks out the PR code                                                     |
+| Workflow                | Trigger                                                                | Action                                                                                                                                                                         |
+| ----------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ci.yaml`               | PR (including drafts); not `ready_for_review`                          | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
+| `db-change-notice.yaml` | PR into `develop` or `staging` (opened, edited, synchronize, reopened) | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code                                 |
+| `loan-e2e.yml`          | `workflow_dispatch` only                                               | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
+| `deploy-dev.yaml`       | push to `develop`                                                      | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
+| `deploy-staging.yaml`   | push to `staging`                                                      | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
+| `deploy-prd.yaml`       | push to `main`                                                         | Docker build → push `21gifts/api:latest` and `21gifts/api:latest-<sha>` → notify → wait for deploy                                                                             |
+| `auto-release-pr.yaml`  | push to `develop` or `staging`                                         | Open a missing release only (`staging → develop`, and `develop → main`). Leave an open release unchanged. Skip `staging → develop` when that diff has no file changes.         |
+| `a38-guard.yml`         | `pull_request_target`; PR comments; schedule; `workflow_dispatch`      | `dfx pr guard` verifies the A38 report, releases held fork runs of `ci.yaml` and `db-change-notice.yaml`, and sets ready; never checks out the PR code                         |
 
 Images target `linux/arm64`. Every deploy also pushes the image as
 `21gifts/api:<tag>-<sha>`, where `<tag>` is that workflow's moving tag (`beta`,
