@@ -665,7 +665,10 @@ It is not the contract.
 
 ### `POST /pos`
 
-Bearer session. Body `{ "amountSats" }` integer ≥ 1. Requires a username
+Bearer session. Body `{ "amountSats" }` integer ≥ 1. A create body that
+carries only `amountSats` is existing code that breaks
+[docs/fiat-amounts.md](docs/fiat-amounts.md). It is not the contract.
+Requires a username
 and a receiving address (see [Receiving address](#receiving-address); the
 error for none is `Set up your wallet first`). Resolves
 that address and rejects
