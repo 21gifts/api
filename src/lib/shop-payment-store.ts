@@ -1907,12 +1907,23 @@ RETURNING ${PAYMENT_COLUMNS}`,
     return row === undefined ? null : mapPayment(row);
   }
 
-  /** End lapsed `open` payments in one `UPDATE … RETURNING`. */
+  /**
+   * End lapsed `open` payments in one `UPDATE … RETURNING` whose rows are
+   * first locked in the order of their ids
+   * (`SELECT … ORDER BY id FOR UPDATE`), the order `lockPaymentsForProofs`
+   * takes them in.
+   */
   async endLapsedWindows(nowMs: number): Promise<ShopPayment[]> {
     const rows = await this.#tx.query<PaymentSqlRow>(
-      `UPDATE shop_payment
+      `WITH due AS MATERIALIZED (
+  SELECT id FROM shop_payment
+  WHERE status = 'open' AND window_ends_at <= $1
+  ORDER BY id
+  FOR UPDATE
+)
+UPDATE shop_payment
 SET status = 'ended', end_reason = 'window', ended_at = $1
-WHERE status = 'open' AND window_ends_at <= $1
+WHERE id IN (SELECT id FROM due) AND status = 'open' AND window_ends_at <= $1
 RETURNING ${PAYMENT_COLUMNS}`,
       [new Date(nowMs).toISOString()],
     );

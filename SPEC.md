@@ -1106,8 +1106,14 @@ locks both `shop_payment` rows in the order of their ids, then the proof
 rows of both payments with one `SELECT … FOR UPDATE` ordered by id
 (`lockPaymentsForProofs`), and reads the holder again under the locks; a
 holder that moved to a payment not locked applies the answer once more in
-a new transaction. Every other transaction locks or writes at most one
-existing `shop_payment` row. The settlement step locks the account,
+a new transaction. The two statements that write several existing
+`shop_payment` rows take them in the order of their ids too: the
+watcher's lapsed-window end (`endLapsedWindows`, `SELECT … ORDER BY id
+FOR UPDATE`, then one `UPDATE` of the locked ids) and
+`POST /debug/accounts/merge`, which locks the merged account's payment
+rows (`SELECT … ORDER BY id FOR UPDATE`) after both account rows and its
+charge row and before it moves them. Every other transaction locks or
+writes at most one existing `shop_payment` row. The settlement step locks the account,
 `pos_charge`, and `shop_payment` rows (a payer's payment only its
 `shop_payment` row) and no proof row, so no two of these wait for each
 other in opposite order. The amount of a `hex` proof is the amount in its

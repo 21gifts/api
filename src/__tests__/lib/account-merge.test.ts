@@ -69,6 +69,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
             return (options.pendingCharges ?? []) as T[];
           }
+          if (text.includes('FROM shop_payment') && text.includes('FOR UPDATE')) {
+            return [];
+          }
           if (text.includes("p.status = 'open'")) {
             return (options.openBesideCharge ?? []) as T[];
           }
@@ -368,6 +371,28 @@ describe('mergeAccounts', () => {
     );
     expect(check).toBeGreaterThan(grants);
     expect(queries.findIndex((query) => query.text.includes('count(*)'))).toBeGreaterThan(check);
+    // The merged account's payment rows are locked in id order after both
+    // account rows and the charge lock, and before the catalog update moves them.
+    const paymentLock = queries.findIndex(
+      (query) => query.text.includes('FROM shop_payment') && query.text.includes('FOR UPDATE'),
+    );
+    expect(queries[paymentLock]?.params).toEqual([FROM]);
+    expect(queries[paymentLock]?.text.replace(/\s+/g, ' ').trim()).toBe(
+      'SELECT id FROM shop_payment WHERE account_id = $1 ORDER BY id FOR UPDATE',
+    );
+    expect(paymentLock).toBeGreaterThan(
+      queries.findIndex(
+        (query) => query.text.includes('FROM account') && query.text.includes('FOR UPDATE'),
+      ),
+    );
+    expect(paymentLock).toBeGreaterThan(
+      queries.findIndex(
+        (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+      ),
+    );
+    expect(paymentLock).toBeLessThan(
+      queries.findIndex((query) => query.text.startsWith('UPDATE "public"."shop_payment"')),
+    );
   });
 
   it('refuses while the merged account has an unexpired pending charge and the survivor an open shop payment but no unexpired pending charge', async () => {
@@ -398,7 +423,7 @@ describe('mergeAccounts', () => {
     );
     expect(check).toBeGreaterThanOrEqual(0);
     expect(lock).toBeGreaterThan(check);
-    expect(queries[lock + 2]).toEqual({
+    expect(queries[lock + 3]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1"}'],
     });
@@ -420,11 +445,20 @@ describe('mergeAccounts', () => {
     expect((queries[lock]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
       "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' ) ORDER BY id FOR UPDATE",
     );
+    // Then the merged account's payment rows in id order, before the delete's
+    // `ON DELETE SET NULL` writes one of them.
     expect(queries[lock + 1]).toEqual({
+      text: `SELECT id FROM shop_payment
+       WHERE account_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      params: [FROM],
+    });
+    expect(queries[lock + 2]).toEqual({
       text: 'DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
     });
-    expect(queries[lock + 2]).toEqual({
+    expect(queries[lock + 3]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
     });

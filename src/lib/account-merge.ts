@@ -64,7 +64,11 @@ function quoteIdentifier(identifier: string): string {
  * account has no unexpired pending charge and has an `open` shop payment.
  * When both accounts have a pending charge, it locks the merged account's
  * charge row (`SELECT … FOR UPDATE`) and then deletes that charge's
- * `pos_charge_invoice` rows and the charge.
+ * `pos_charge_invoice` rows and the charge. Before that delete and the
+ * catalog update that moves the merged account's shop payments, it locks
+ * those payments in the order of their ids
+ * (`SELECT … ORDER BY id FOR UPDATE`), the order `lockPaymentsForProofs`
+ * takes payment rows in.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -428,6 +432,20 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        ORDER BY id
        FOR UPDATE`,
       accountParams,
+    );
+    // The catalog loop below moves the merged account's shop payments in one
+    // unordered `UPDATE`, and a submit answer holds one payment row while it
+    // waits for another (`lockPaymentsForProofs`). Lock them here, after both
+    // account rows and the charge row (the settlement step's order), in the
+    // order of their ids, the order that answer takes them in, so neither
+    // waits for the other in opposite order; the charge delete's
+    // `ON DELETE SET NULL` then writes a payment row already held.
+    await tx.query(
+      `SELECT id FROM shop_payment
+       WHERE account_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      [input.from],
     );
     if (doomed.length > 0) {
       const ids = postgresTextArrayLiteral(doomed.map((row) => row.id));

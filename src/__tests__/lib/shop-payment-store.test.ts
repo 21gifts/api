@@ -1540,8 +1540,8 @@ describe('PostgresShopPaymentStore', () => {
       await t.duePayments('history', T0, 1);
     });
     expect(tx.calls[0]).toMatchObject({ params: [ISO(0)] });
-    expect(tx.calls[0]?.text).toMatch(
-      /SET status = 'ended', end_reason = 'window', ended_at = \$1\nWHERE status = 'open' AND window_ends_at <= \$1/,
+    expect(tx.calls[0]?.text.replace(/\s+/g, ' ')).toMatch(
+      /^WITH due AS MATERIALIZED \( SELECT id FROM shop_payment WHERE status = 'open' AND window_ends_at <= \$1 ORDER BY id FOR UPDATE \) UPDATE shop_payment SET status = 'ended', end_reason = 'window', ended_at = \$1 WHERE id IN \(SELECT id FROM due\) AND status = 'open' AND window_ends_at <= \$1 RETURNING /,
     );
     expect(tx.calls[1]).toMatchObject({ params: [ISO(0), 8] });
     expect(tx.calls[1]?.text).toMatch(

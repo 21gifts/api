@@ -43,7 +43,7 @@ import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
-import { submitProofAttempt } from '@/lib/shop-proof';
+import { submitProofAttempt, type ShopSubmitAttempt } from '@/lib/shop-proof';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -2470,6 +2470,23 @@ describe('PostgresMessageStore deleteById on a credit', () => {
   });
 });
 
+/** Every table `mergeAccounts` names, so the merge runs end to end. */
+async function migrateMergeTables(client: SqlClient): Promise<void> {
+  await migrateAuthSchema(client);
+  await migrateBtcUsdSchema(client);
+  await migrateFiatSchema(client);
+  await migrateMessageSchema(client);
+  await migratePosSchema(client);
+  await migrateShopPaymentSchema(client);
+  await migrateConversationSchema(client);
+  await migratePushSchema(client);
+  await migrateNotificationSchema(client);
+  await migrateTrustSchema(client);
+  await migrateFundingSchema(client);
+  await migrateBannerSchema(client);
+  await migrateWalletSchema(client);
+}
+
 describe('PostgresShopPaymentStore', () => {
   const hex64 = (): string =>
     `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
@@ -2477,6 +2494,7 @@ describe('PostgresShopPaymentStore', () => {
 
   const setup = async (): Promise<{
     client: SqlClient;
+    mergeDb: MergeDb;
     sql: SQL;
     store: PostgresShopPaymentStore;
     pos: PostgresPosStore;
@@ -2508,6 +2526,7 @@ describe('PostgresShopPaymentStore', () => {
     };
     return {
       client,
+      mergeDb,
       sql,
       store: new PostgresShopPaymentStore(client, mergeDb),
       pos: new PostgresPosStore(client, mergeDb),
@@ -3361,6 +3380,225 @@ describe('PostgresShopPaymentStore', () => {
     }
   });
 
+  /**
+   * Wait until `n` backends of this database wait for a lock in a statement
+   * on `shop_payment`.
+   */
+  async function untilShopPaymentLockWaiters(client: SqlClient, n: number): Promise<void> {
+    for (let i = 0; i < 200; i += 1) {
+      const rows = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+         WHERE datname = current_database() AND wait_event_type = 'Lock'
+           AND query LIKE '%shop_payment%'`,
+      );
+      if ((rows[0]?.n ?? 0) >= n) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`fewer than ${n} backends wait on a shop_payment lock`);
+  }
+
+  /**
+   * Two payments with ids in a known order, the higher id inserted first (a
+   * scan of the table meets it first, and an index on `account_id` too: its
+   * account id is the lower one). Each has an older proof being submitted and
+   * a newer row that holds an order; the lower payment's older proof is
+   * answered with the order of the higher payment's newer row, so that answer
+   * locks both payment rows (`lockPaymentsForProofs`).
+   */
+  async function crossedPayments(
+    client: SqlClient,
+    store: PostgresShopPaymentStore,
+    pos: PostgresPosStore,
+    accounts: readonly [string, string],
+    now: number,
+    partial: Partial<ShopPayment>,
+  ) {
+    const [lowId, highId] = [crypto.randomUUID(), crypto.randomUUID()].sort() as [string, string];
+    const [highAccount, lowAccount] = [...accounts].sort() as [string, string];
+    const side = (id: string, accountId: string) => {
+      const payment = shopPayment(accountId, now, { ...partial, id });
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const older = shopProof(offer, payment.id, now - 1_000, {
+        nextSubmitAt: null,
+        lastSubmitAt: null,
+      });
+      const newer = shopProof(offer, payment.id, now, {
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(now),
+        nextSubmitAt: null,
+      });
+      return { payment, quoteId, offer, older, newer };
+    };
+    const high = side(highId, highAccount);
+    const low = side(lowId, lowAccount);
+    for (const row of [high, low]) {
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(row.payment)).toBe(true);
+        await tx.insertQuote({
+          id: row.quoteId,
+          paymentId: row.payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([row.offer]);
+        expect(await tx.insertProof(row.older)).toBe(true);
+        expect(await tx.insertProof(row.newer)).toBe(true);
+      });
+    }
+    const orchestra = {
+      submit: async () => ({
+        kind: 'order' as const,
+        orderId: high.newer.providerOrder as string,
+        status: 'processing',
+      }),
+    } as unknown as OrchestraClient;
+    const shop = new ShopPayments({
+      store,
+      posStore: pos,
+      auth: new PostgresAuthStore(client),
+      lnurlServer: {
+        baseUrl: 'http://lnurl.test',
+        publicBaseUrl: 'https://example.test',
+        host: 'example.test',
+      },
+      config: null,
+      orchestra,
+      fxSpot: new PostgresFxSpotStore(client),
+      fetchImpl: fetch,
+      now: () => Date.now(),
+    });
+    return { low, high, shop };
+  }
+
+  /**
+   * A holder locks the lower payment row; the crossed submit answer queues on
+   * it, then `other` starts and queues behind the answer. Run in the old,
+   * unordered way, `other` holds the higher row by then, and once the holder
+   * lets go the answer waits for it while `other` waits for the lower row: a
+   * deadlock (40P01). Taken in id order, `other` holds no payment row yet.
+   */
+  async function besideCrossedAnswer<T>(
+    client: SqlClient,
+    store: PostgresShopPaymentStore,
+    crossed: Awaited<ReturnType<typeof crossedPayments>>,
+    other: () => Promise<T>,
+  ): Promise<[ShopSubmitAttempt, T]> {
+    let held = (): void => undefined;
+    const lowHeld = new Promise<void>((resolve) => {
+      held = resolve;
+    });
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = store.transaction(async (tx) => {
+      await tx.lockPayment(crossed.low.payment.id);
+      held();
+      await released;
+    });
+    await lowHeld;
+    const answer = submitProofAttempt(
+      crossed.shop,
+      crossed.low.older.id,
+      'watcher',
+      Date.now() + 30_000,
+    );
+    await untilShopPaymentLockWaiters(client, 1);
+    const running = other();
+    await untilShopPaymentLockWaiters(client, 2);
+    release();
+    const [attempt, result] = await Promise.all([answer, running, holder]);
+    return [attempt, result];
+  }
+
+  test('endLapsedWindows beside a crossed submit answer locks the payment rows by id and does not deadlock', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const now = Date.now();
+      const crossed = await crossedPayments(
+        client,
+        store,
+        pos,
+        [await newAccount(), await newAccount()],
+        now,
+        { windowEndsAt: new Date(now - 1_000) },
+      );
+      const ids = [crossed.low.payment.id, crossed.high.payment.id];
+      const [attempt, ended] = await besideCrossedAnswer(client, store, crossed, () =>
+        store.transaction((tx) => tx.endLapsedWindows(Date.now())),
+      );
+      expect(attempt).toMatchObject({ sent: true });
+      // The answer went first: the lower payment is accepted, so only the
+      // higher one is still open and lapsed.
+      expect(ended.filter((row) => ids.includes(row.id))).toEqual([
+        expect.objectContaining({
+          id: crossed.high.payment.id,
+          status: 'ended',
+          endReason: 'window',
+        }),
+      ]);
+      const after = await store.transaction(async (tx) => ({
+        low: await tx.getPayment(crossed.low.payment.id),
+        lowOlder: await tx.getProof(crossed.low.older.id),
+        highNewer: await tx.getProof(crossed.high.newer.id),
+      }));
+      expect(after.low?.status).toBe('accepted');
+      expect(after.lowOlder).toMatchObject({
+        result: 'accepted',
+        providerOrder: crossed.high.newer.providerOrder,
+      });
+      expect(after.highNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a merge moving both payments beside a crossed submit answer locks them by id and does not deadlock', async () => {
+    const { client, mergeDb, sql, store, pos, newAccount } = await setup();
+    try {
+      await migrateMergeTables(client);
+      const from = await newAccount();
+      const into = await newAccount();
+      const now = Date.now();
+      // Paid payments do not stop the merge, and both belong to the merged account.
+      const crossed = await crossedPayments(client, store, pos, [from, from], now, {
+        status: 'paid',
+        acceptedAt: new Date(now),
+        paidAt: new Date(now),
+      });
+      const [attempt, merged] = await besideCrossedAnswer(client, store, crossed, () =>
+        mergeAccounts(mergeDb, { from, into, verify: 'into' }),
+      );
+      expect(attempt).toMatchObject({ sent: true });
+      expect(merged).toEqual({ ok: true, messages: 0 });
+      const after = await store.transaction(async (tx) => ({
+        low: await tx.getPayment(crossed.low.payment.id),
+        high: await tx.getPayment(crossed.high.payment.id),
+        lowOlder: await tx.getProof(crossed.low.older.id),
+        highNewer: await tx.getProof(crossed.high.newer.id),
+      }));
+      expect(after.low?.accountId).toBe(into);
+      expect(after.high?.accountId).toBe(into);
+      expect(after.lowOlder?.providerOrder).toBe(crossed.high.newer.providerOrder);
+      expect(after.highNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
   test('claimPaymentHash serializes writers whose hashes share their first 32 bits only', async () => {
     const { sql, store } = await setup();
     try {
@@ -3476,23 +3714,6 @@ describe('PostgresShopPaymentStore', () => {
 describe('mergeAccounts and the shop payment rows', () => {
   const hex64 = (): string =>
     `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
-
-  /** Every table `mergeAccounts` names, so the merge runs end to end. */
-  async function migrateMergeTables(client: SqlClient): Promise<void> {
-    await migrateAuthSchema(client);
-    await migrateBtcUsdSchema(client);
-    await migrateFiatSchema(client);
-    await migrateMessageSchema(client);
-    await migratePosSchema(client);
-    await migrateShopPaymentSchema(client);
-    await migrateConversationSchema(client);
-    await migratePushSchema(client);
-    await migrateNotificationSchema(client);
-    await migrateTrustSchema(client);
-    await migrateFundingSchema(client);
-    await migrateBannerSchema(client);
-    await migrateWalletSchema(client);
-  }
 
   async function newAccount(auth: PostgresAuthStore): Promise<string> {
     const id = crypto.randomUUID();
