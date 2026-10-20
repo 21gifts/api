@@ -11,7 +11,11 @@ import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
-import { migrateShopIdentitySchema, PostgresShopIdentityStore } from '@/lib/shop-identity';
+import {
+  migrateShopIdentitySchema,
+  PostgresShopIdentityStore,
+  SHOP_IDENTITY_SCHEMA_SQL,
+} from '@/lib/shop-identity';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
 import type { MessageRow } from '@/lib/message';
@@ -599,6 +603,34 @@ describe('shop identity on Postgres', () => {
       expect(
         await ctx.client.query('SELECT 1 FROM message_extra_photo WHERE message_id = $1', [row.id]),
       ).toEqual([]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('concurrent trigger installs all succeed and leave each trigger exactly once', async () => {
+    const ctx = await setup();
+    try {
+      const installs = SHOP_IDENTITY_SCHEMA_SQL.filter((statement) =>
+        statement.startsWith('DO $trigger$'),
+      );
+      expect(installs).toHaveLength(3);
+      await Promise.all(
+        Array.from({ length: 6 }, () => installs).flatMap((batch) =>
+          batch.map((statement) => ctx.client.execute(statement)),
+        ),
+      );
+      const rows = await ctx.client.query<{ tgname: string; n: string }>(
+        `SELECT tgname, count(*)::text AS n FROM pg_trigger
+         WHERE tgname IN ('trg_shop_identity_place', 'trg_shop_identity_cover',
+           'trg_shop_identity_extra_photo')
+         GROUP BY tgname ORDER BY tgname`,
+      );
+      expect(rows).toEqual([
+        { tgname: 'trg_shop_identity_cover', n: '1' },
+        { tgname: 'trg_shop_identity_extra_photo', n: '1' },
+        { tgname: 'trg_shop_identity_place', n: '1' },
+      ]);
     } finally {
       await ctx.cleanup();
     }

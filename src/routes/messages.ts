@@ -270,11 +270,13 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Shop identities. With `nostrKek`, a write that makes a note a listed
-   * shop creates its key after the commit. The OpenCryptoPay outbox is
-   * queued by the store write itself. Omitted → no shop keys.
+   * Shop identities. With `shopKek` (or `nostrKek`), a write that makes a
+   * note a listed shop creates its key after the commit. The OpenCryptoPay
+   * outbox is queued by the store write itself. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -354,9 +356,10 @@ async function ensureShopIdentity(
   deps: MessagesRouteDeps,
   messageId: string,
 ): Promise<string | undefined> {
-  if (deps.shopIdentities === undefined || deps.nostrKek === undefined) return undefined;
+  const kek = deps.shopKek ?? deps.nostrKek;
+  if (deps.shopIdentities === undefined || kek === undefined) return undefined;
   try {
-    const identity = await deps.shopIdentities.ensureListed(messageId, deps.nostrKek);
+    const identity = await deps.shopIdentities.ensureListed(messageId, kek);
     return identity === undefined ? undefined : shopNpub(identity);
   } catch {
     logEvent('shop.nostr_key.failed', { messageId });

@@ -37,6 +37,11 @@ CREATE TABLE IF NOT EXISTS shop_identity (
 -- deleted_at of a note queues its row, in the writing transaction. A key that
 -- a concurrent insert committed is seen because each PL/pgSQL statement takes
 -- a fresh snapshot after the message row is locked.
+-- Each trigger is dropped and recreated inside one DO block (one statement)
+-- that first takes ACCESS EXCLUSIVE on its table, the lock DROP TRIGGER needs:
+-- concurrent boots queue behind each other instead of deadlocking on a lock
+-- upgrade or failing with "already exists", and no writer ever sees the table
+-- without the trigger.
 CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
 BEGIN
   UPDATE shop_identity SET ocp_place_pending = true,
@@ -46,23 +51,28 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_shop_identity_place ON message;
-CREATE TRIGGER trg_shop_identity_place
-AFTER UPDATE OF text, place_lat, place_lng, place_label, place_street, place_house_number,
-  place_postal_code, place_city, place_country, shop_account_id, deleted_at ON message
-FOR EACH ROW WHEN (
-  OLD.text IS DISTINCT FROM NEW.text OR
-  OLD.place_lat IS DISTINCT FROM NEW.place_lat OR OLD.place_lng IS DISTINCT FROM NEW.place_lng OR
-  OLD.place_label IS DISTINCT FROM NEW.place_label OR
-  OLD.place_street IS DISTINCT FROM NEW.place_street OR
-  OLD.place_house_number IS DISTINCT FROM NEW.place_house_number OR
-  OLD.place_postal_code IS DISTINCT FROM NEW.place_postal_code OR
-  OLD.place_city IS DISTINCT FROM NEW.place_city OR
-  OLD.place_country IS DISTINCT FROM NEW.place_country OR
-  OLD.shop_account_id IS DISTINCT FROM NEW.shop_account_id OR
-  OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
-)
-EXECUTE FUNCTION queue_shop_identity_place();
+DO $trigger$
+BEGIN
+  LOCK TABLE message IN ACCESS EXCLUSIVE MODE;
+  DROP TRIGGER IF EXISTS trg_shop_identity_place ON message;
+  CREATE TRIGGER trg_shop_identity_place
+  AFTER UPDATE OF text, place_lat, place_lng, place_label, place_street, place_house_number,
+    place_postal_code, place_city, place_country, shop_account_id, deleted_at ON message
+  FOR EACH ROW WHEN (
+    OLD.text IS DISTINCT FROM NEW.text OR
+    OLD.place_lat IS DISTINCT FROM NEW.place_lat OR OLD.place_lng IS DISTINCT FROM NEW.place_lng OR
+    OLD.place_label IS DISTINCT FROM NEW.place_label OR
+    OLD.place_street IS DISTINCT FROM NEW.place_street OR
+    OLD.place_house_number IS DISTINCT FROM NEW.place_house_number OR
+    OLD.place_postal_code IS DISTINCT FROM NEW.place_postal_code OR
+    OLD.place_city IS DISTINCT FROM NEW.place_city OR
+    OLD.place_country IS DISTINCT FROM NEW.place_country OR
+    OLD.shop_account_id IS DISTINCT FROM NEW.shop_account_id OR
+    OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
+  )
+  EXECUTE FUNCTION queue_shop_identity_place();
+END;
+$trigger$;
 
 -- Photo outbox: a change of photo 1 (message.photo) or of an extra photo
 -- (message_extra_photo) queues the row while the note has the listed shape
@@ -84,14 +94,19 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message;
-CREATE TRIGGER trg_shop_identity_cover
-AFTER UPDATE OF photo, photo_content_type ON message
-FOR EACH ROW WHEN (
-  OLD.photo IS DISTINCT FROM NEW.photo OR
-  OLD.photo_content_type IS DISTINCT FROM NEW.photo_content_type
-)
-EXECUTE FUNCTION queue_shop_identity_cover();
+DO $trigger$
+BEGIN
+  LOCK TABLE message IN ACCESS EXCLUSIVE MODE;
+  DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message;
+  CREATE TRIGGER trg_shop_identity_cover
+  AFTER UPDATE OF photo, photo_content_type ON message
+  FOR EACH ROW WHEN (
+    OLD.photo IS DISTINCT FROM NEW.photo OR
+    OLD.photo_content_type IS DISTINCT FROM NEW.photo_content_type
+  )
+  EXECUTE FUNCTION queue_shop_identity_cover();
+END;
+$trigger$;
 
 CREATE OR REPLACE FUNCTION queue_shop_identity_photo() RETURNS trigger AS $$
 DECLARE target uuid;
@@ -116,7 +131,12 @@ BEGIN
 END
 $$ LANGUAGE plpgsql;
 
-DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo;
-CREATE TRIGGER trg_shop_identity_extra_photo
-AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
-FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo();
+DO $trigger$
+BEGIN
+  LOCK TABLE message_extra_photo IN ACCESS EXCLUSIVE MODE;
+  DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo;
+  CREATE TRIGGER trg_shop_identity_extra_photo
+  AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
+  FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo();
+END;
+$trigger$;

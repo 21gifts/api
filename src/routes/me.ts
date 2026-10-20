@@ -98,10 +98,12 @@ export interface MeRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Shop identities. With `nostrKek`, `PUT /me/about` creates the key when
-   * the profile note becomes a listed shop. Omitted → no shop keys.
+   * Shop identities. With `shopKek` (or `nostrKek`), `PUT /me/about` creates
+   * the key when the profile note becomes a listed shop. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
 }
 
 /**
@@ -734,9 +736,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }
         const liveRow = await deps.messages.getById(noteId);
-        if (deps.shopIdentities !== undefined && deps.nostrKek !== undefined) {
+        const shopKek = deps.shopKek ?? deps.nostrKek;
+        if (deps.shopIdentities !== undefined && shopKek !== undefined) {
           try {
-            await deps.shopIdentities.ensureListed(noteId, deps.nostrKek);
+            await deps.shopIdentities.ensureListed(noteId, shopKek);
           } catch {
             logEvent('shop.nostr_key.failed', { messageId: noteId });
           }

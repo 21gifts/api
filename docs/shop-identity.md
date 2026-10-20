@@ -1,8 +1,9 @@
 # Shop identity
 
-Status: **S1, S2, S3 and S5 implemented**. S4 is implemented in
-`21gifts/app`. The API route and response fields are documented in `SPEC.md`;
-the durable table is documented in `docs/schema/shop_identity.sql`.
+Status: **S1, S2, S3 and S5 implemented** in this repository. S4, the shop
+page, is in 21gifts/app#646 (open, not merged). The API route and response
+fields are documented in `SPEC.md`; the durable table is documented in
+`docs/schema/shop_identity.sql`.
 
 Every shop gets its own NOSTR identity. 21.gifts generates it, holds it and
 publishes its profile, exactly the way it already does for every account. The
@@ -49,7 +50,7 @@ builds on that change.
 - One random key per shop note, from the same `generateSecretKey()` path as
   account keys (`src/lib/nostr/keys.ts`). No master seed, no derivation.
 - The key is created after the commit of any write that makes a note a
-  listed shop for the first time: today `POST /messages`,
+  listed shop for the first time: `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
   `PATCH /messages/:id/shop-account`, `PUT /me/about` (the profile note's
   text) and the staff restore `POST /debug/messages/:id/restore`.
@@ -123,27 +124,24 @@ except `nostr_nsec_ciphertext`; the encrypted secret is never dumped.
 
 `MessageStore.deleteById` can hard-delete a top-level note, for example when
 its video file is missing. It deletes nothing for a note that has a
-`shop_identity` row, the same way it already keeps a credit note with sats,
-and its callers treat that note like any other kept row. `deleteById` is a
-single statement today; the implementing change wraps it in a transaction
-that locks the note, checks for that row in its own statement and then
-deletes, so a key insert that commits while the delete waits is still seen.
-So the reference never dangles and the identity is never deleted.
+`shop_identity` row, the same way it keeps a credit note with sats, and its
+callers treat that note like any other kept row. On Postgres, `deleteById`
+runs in a transaction that locks the note, checks for that row in its own
+statement and then deletes, so a key insert that commits while the delete
+waits is still seen. So the reference never dangles and the identity is
+never deleted.
 
-`PostgresMessageStore.create` writes the note row, its `message_extra_photo`
-rows and the mentions update in separate statements today, and an extra photo
-that fails calls `deleteById` and ignores its result. The backfill could see
-the committed row in between and mint a key, which would keep a half-written
-note. The implementing change therefore writes the row with its mentions,
-and its extra photos, in one statement: a data-modifying CTE, as
-`deleteById` already uses, whose photo rows insert from the note insert's
+`PostgresMessageStore.create` writes the note row with its mentions and its
+`message_extra_photo` rows in one statement: a data-modifying CTE, as
+`deleteById` uses, whose photo rows insert from the note insert's
 `RETURNING`, so a reply whose parent check inserts no row writes no photos
-either. A failure of that statement leaves nothing behind, and the existing
-error path of `create` runs unchanged (the unique-violation lookups and
-`removeForumVideo`); the separate extra-photo loop with its `deleteById`
-goes away. A regression test fails the statement on an extra photo while
-the backfill runs and checks that neither the note nor a `shop_identity`
-row is left.
+either. Separate statements would let the backfill see a committed note
+before a failing extra photo removes it again and mint a key that keeps the
+half-written note. A failure of the statement leaves nothing behind, and the
+error path of `create` (the unique-violation lookups and `removeForumVideo`)
+runs as before; there is no separate extra-photo loop with a `deleteById`.
+A regression test fails the statement on an extra photo while the backfill
+runs and checks that neither the note nor a `shop_identity` row is left.
 
 ### Encryption at rest
 
@@ -158,6 +156,11 @@ row is left.
   decrypts with the shop AAD, signs and zeroes the secret.
 - The `db_change` audit log stores a shop's `nostr_nsec_ciphertext` only as
   a SHA-256 hash, as it does for accounts.
+- A memory boot (blank `DATABASE_URL`) has no `NOSTR_NSEC_KEK`. It passes a
+  random process-ephemeral key as `shopKek` to `createApp`, so listed shops
+  still get a key and `GET /shops/:npub` works (Playwright e2e uses this).
+  Those keys live in `InMemoryShopIdentityStore` and vanish with the process,
+  like every other memory row; no shop kind 0 is published without Postgres.
 
 ### Custody
 
@@ -194,7 +197,7 @@ Kind 0 content of a listed shop:
 | `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none      |
 
 Without a public origin, the shop profile does what an account profile does
-today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
+(`publishProfiles`, `buildKind0Content`): when `nip05Domain`
 (`src/lib/nip05.ts`) gives `null`, `nip05` is left out, and when
 `resolvePublicApiBase` (`src/lib/nostr/relays.ts`) is empty, `picture` and
 `banner` take the fallbacks `KIND0_PICTURE_URL` and `KIND0_BANNER_URL`.
@@ -202,8 +205,9 @@ today (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
 `<site origin>` is `PUBLIC_BASE_URL` without a trailing slash, as
 `notePageUrl` (`src/lib/nostr/event.ts`) builds note links, so a dev or
 staging shop links to its own site; when it is empty, `https://21.gifts`.
-The shop page is delivered by `21gifts/app`, so this release publishes
-`website` as `<site origin>/{npub}`. Accounts keep the fixed
+The shop page is delivered by `21gifts/app` (S4, 21gifts/app#646), so this
+release publishes `website` as `<site origin>/{npub}` and deploys together
+with that page (see Rollout). Accounts keep the fixed
 `https://21.gifts` behavior.
 
 Kind 0 of a shop that is no longer listed:
@@ -223,7 +227,7 @@ out `picture` and `banner` for a shop that is no longer listed.
 `buildKind0Event`, which builds the content again for the event it signs,
 gains the same two arguments and passes them on, so the signed event and the
 cached content match; a test checks the content of a signed shop event.
-Accounts call both without them and keep today's content.
+Accounts call both without them and keep their content.
 
 Kind 10002 lists the same write relays as an account's.
 
@@ -239,7 +243,7 @@ is unchanged, so this spec adds no zap receipts for a shop key.
 - Accounts are allocated first, then shops by `nostr_key_created_at` and
   then `message_id`, so the order is the same on every run. An
   account never loses its local part to a shop.
-- Today `listNip05Entries` (for `nostr.json`) reserves every account with a
+- `listNip05Entries` (for `nostr.json`) reserves every account with a
   username, while `nip05Identifier` in `publishProfiles` only sees accounts
   with a name. Shop local parts come from one allocation that both use: the
   account set and order of `listNip05Entries`, then the listed shops. A test
@@ -278,8 +282,8 @@ The 410 body carries no name, so a hidden note's name is not served.
 Error texts: the 404 reuses `Not found`, as `GET /pay/:username` does. The 503
 gets its own `Shops are unavailable`, following the per-route rule that each
 route names its own resource (`Shop activity is unavailable`,
-`Messages are unavailable`). The 410 text is new because no route answers 410
-today.
+`Messages are unavailable`). The 410 text is new because no other route
+answers 410.
 
 `Shop`:
 
@@ -312,8 +316,8 @@ today.
 because a listed shop is complete under #478. `payUsername` is the till
 account's username when the account has a username and a non-empty linked
 Lightning address is stored; otherwise `null`. Whether that address resolves
-at payment time is not checked here; the pay page reports that as it does
-today.
+at payment time is not checked here; the pay page reports that as it does for
+accounts.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
 its kind 0 leaves the field out. Photo 1 is `/messages/:id/photo.<ext>` and
 photo n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumPhotoUrl`
@@ -384,10 +388,10 @@ requests, for one shop in flight; a place and a photo request can overlap,
 and the revision below orders them.
 Every request carries a `revision` (OpenCryptoPay R8) from one counter per
 shop, so a request that OpenCryptoPay applies late, after the timeout here
-dropped it, is refused there instead of overwriting newer state. The
-fire-and-forget place push of today (`syncShopOcpPlace` and
-`removeShopOcpPlace` over `mapPlacesRequest`, which logs and swallows
-failures) is replaced by it.
+dropped it, is refused there instead of overwriting newer state. The outbox
+replaces the former fire-and-forget place push (`syncShopOcpPlace` and
+`removeShopOcpPlace` over `mapPlacesRequest`, which logged and swallowed
+failures); that path is removed.
 
 ### Claiming
 
@@ -487,12 +491,12 @@ Rules for every claim:
     clear the
     flag. It is sent again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
-    log `ocp.place.failed` as today and keep the flag; the next attempt
+    log `ocp.place.failed` and keep the flag; the next attempt
     follows when the lease ends.
-- **Start-up.** Instead of today's single read of at most
-  `EXISTING_SHOP_PLACE_LIMIT` (1000) pins, `publishExistingShopPlaces` walks
-  every `shop_identity` row with keyset paging (by `message_id`, 200 per
-  page) and queues it. It decides nothing itself; the worker does at send
+- **Start-up.** `queueAllShopPlaces` (`src/lib/ocp-outbox.ts`) walks every
+  `shop_identity` row with keyset paging (by `message_id`, 200 per page,
+  `OCP_STARTUP_PAGE`) and queues it; it replaces the former single read of
+  at most 1000 pins by `publishExistingShopPlaces`. It decides nothing itself; the worker does at send
   time.
 - **Places without a key.** Places the old push sent without a key stay on
   OpenCryptoPay as stored rows, and its step 1a keeps them off the public
@@ -561,11 +565,18 @@ Rules for every claim:
 
 ### Rollout
 
-This ships as one release together with openCryptoPay/api PR #26. That PR
-requires `nostrPubkey` on every place write, accepts the strictly increasing
-`revision`, and provides `PUT /map/places/photos`. The `shop_identity` outbox
-columns, all queueing writes, both senders and the paged start-up pass deploy
-together. The old `syncShopOcpPlace`, `removeShopOcpPlace` and
+This release deploys together with openCryptoPay/api#26 and 21gifts/app#646.
+
+- openCryptoPay/api#26 requires `nostrPubkey` on every place write, accepts
+  the strictly increasing `revision`, and provides `PUT /map/places/photos`.
+- 21gifts/app#646 is S4, the shop page. Every shop kind 0 publishes
+  `website` as `<site origin>/{npub}` (S2), and the staging spec allowed that
+  npub `website` only once the page is live. Deploying the app change in the
+  same release satisfies that: no kind 0 points at a page that does not
+  exist yet.
+
+The `shop_identity` outbox columns, all queueing writes, both senders and the
+paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpPlace` and
 `publishExistingShopPlaces` path is removed. `SHOP_PLACE_PUSH_ENABLED` stays
 `true`; only the durable outbox uses the resolved target.
 
@@ -575,7 +586,7 @@ together. The old `syncShopOcpPlace`, `removeShopOcpPlace` and
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
 3. S5 ships in this same release with both outboxes, both senders and start-up.
-4. S4 lives in `21gifts/app`.
+4. S4 is 21gifts/app#646 (open); it deploys in the same release.
 5. Shop kind 0 uses `<site origin>/{npub}`.
 
 S1, S2, S3 and S5 are one pull request and one release in this repository;

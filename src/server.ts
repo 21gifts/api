@@ -242,6 +242,12 @@ export interface AppDeps {
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
   nostrKek?: Uint8Array;
   /**
+   * AES-256 KEK for new shop keys (`docs/shop-identity.md` S1). Default
+   * `nostrKek`. Memory boots pass a process-ephemeral key so listed shops get
+   * an npub without Postgres; the keys live and die with the in-memory rows.
+   */
+  shopKek?: Uint8Array;
+  /**
    * Optional Nostr EVENT publisher. When set with `nostrKek`, staff hide
    * publishes NIP-09 kind:5. Memory/unit boots may omit.
    */
@@ -361,6 +367,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
  *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
+ *   shopKek (optional; default nostrKek; new shop keys in `/messages`, `/me`,
+ *   and `/debug/messages`),
  *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, daily roster
  *   store (optional; default a fresh {@link InMemoryDailyRosterStore}, shared
  *   by funding routes, `POST /spend/daily-instruction`, and the default
@@ -416,6 +424,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     });
   }
   const nostrKek = deps.nostrKek;
+  const shopKek = deps.shopKek ?? nostrKek;
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const memberHabitStore = deps.memberHabitStore ?? new InMemoryMemberHabitStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
@@ -535,6 +544,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(shopKek === undefined ? {} : { shopKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
   );
@@ -595,7 +605,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       store: messageStore,
       debugToken,
       shopIdentities: shopIdentityStore,
-      ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(shopKek === undefined ? {} : { nostrKek: shopKek }),
     }),
   );
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
@@ -707,6 +717,7 @@ export function createApp(deps: AppDeps = {}): Hono {
         now,
       }),
       ...(nostrKek === undefined ? {} : { nostrKek }),
+      ...(shopKek === undefined ? {} : { shopKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
       ...(deps.nostrQuerier === undefined ? {} : { nostrQuerier: deps.nostrQuerier }),
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),

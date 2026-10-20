@@ -20,7 +20,13 @@ export interface SqlClient {
    * @param params - Bound values, in order.
    */
   execute(text: string, params?: readonly unknown[]): Promise<void>;
-  /** Run all callback statements on one database transaction/connection. */
+  /**
+   * Run all callback statements on one database transaction/connection.
+   * Commits when `run` resolves and rolls back when it rejects.
+   *
+   * @param run - Callback that issues its statements on `tx`.
+   * @returns The value `run` resolved with, after the commit.
+   */
   transaction?<T>(run: (tx: SqlClient) => Promise<T>): Promise<T>;
 }
 

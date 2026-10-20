@@ -126,7 +126,8 @@ export function shopTextProblem(text: string, place: ForumPlace | null): string 
   return null;
 }
 
-const SHOP_HASHTAG_PRESENT = /#21GiftsShop(?![A-Za-z0-9_])/i;
+/** {@link SHOP_HASHTAG_TOKEN} without the global flag, for a stateless `test`. */
+const SHOP_HASHTAG_PRESENT = new RegExp(SHOP_HASHTAG_TOKEN.source, 'i');
 
 /** Note fields that decide whether a forum note is a listed shop. */
 export interface ShopListingFields {

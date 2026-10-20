@@ -147,7 +147,10 @@ if (import.meta.main) {
     ...(boot.conversationTranslationStore === undefined
       ? {}
       : { conversationTranslationStore: boot.conversationTranslationStore }),
-    ...(nostrKek === undefined ? {} : { nostrKek }),
+    // A memory boot has no KEK; its shop keys use a process-ephemeral one and vanish with the rows.
+    ...(nostrKek === undefined
+      ? { shopKek: crypto.getRandomValues(new Uint8Array(32)) }
+      : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     nostrQuerier: querier,
     nostrRelayUrls: resolveZapReadRelays(process.env),

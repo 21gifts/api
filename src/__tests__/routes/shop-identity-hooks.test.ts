@@ -293,3 +293,90 @@ describe('shop key after PUT /me/about', () => {
     expect(calls).toEqual([]);
   });
 });
+
+describe('shopKek without nostrKek (memory boot)', () => {
+  const SHOP_KEK = new Uint8Array(32).fill(9);
+
+  function spy(): { store: ShopIdentityStore; calls: Array<[string, Uint8Array]> } {
+    const calls: Array<[string, Uint8Array]> = [];
+    const store = {
+      ensureListed: (id: string, kek: Uint8Array) => {
+        calls.push([id, kek]);
+        return Promise.resolve(undefined);
+      },
+    } as unknown as ShopIdentityStore;
+    return { store, calls };
+  }
+
+  it('messagesRoutes create the key with shopKek', async () => {
+    const messages = new InMemoryMessageStore();
+    await messages.create(shopNote({ place: null }));
+    const shops = new InMemoryShopIdentityStore(messages);
+    const app = new Hono().route(
+      '/messages',
+      messagesRoutes({
+        store: messages,
+        authStore: await authStore(),
+        now,
+        shopIdentities: shops,
+        shopKek: SHOP_KEK,
+      }),
+    );
+    const res = await app.request(`/messages/${SHOP_ID}/place`, {
+      method: 'PATCH',
+      headers: AUTH,
+      body: JSON.stringify({ place: PIN }),
+    });
+    expect(res.status).toBe(200);
+    const identity = await shops.getByMessageId(SHOP_ID);
+    expect(((await res.json()) as { shopNpub: string }).shopNpub).toBe(shopNpub(identity!));
+  });
+
+  it('createApp hands shopKek to /messages, /me and /debug/messages', async () => {
+    const auth = await authStore();
+    const messages = new InMemoryMessageStore();
+    await messages.create(shopNote({ place: null }));
+    const { store, calls } = spy();
+    const app = createApp({
+      authStore: auth,
+      now,
+      messageStore: messages,
+      shopIdentityStore: store,
+      shopKek: SHOP_KEK,
+      debugToken: 'dbg',
+    });
+    expect(
+      (
+        await app.request(`/messages/${SHOP_ID}/place`, {
+          method: 'PATCH',
+          headers: AUTH,
+          body: JSON.stringify({ place: PIN }),
+        })
+      ).status,
+    ).toBe(200);
+    expect(
+      (
+        await app.request('/me/about', {
+          method: 'PUT',
+          headers: AUTH,
+          body: JSON.stringify({ text: 'About the coffee shop' }),
+        })
+      ).status,
+    ).toBe(200);
+    await messages.markDeleted(SHOP_ID, new Date(now()), 'mod');
+    expect(
+      (
+        await app.request(`/debug/messages/${SHOP_ID}/restore`, {
+          method: 'POST',
+          headers: { authorization: 'Bearer dbg' },
+        })
+      ).status,
+    ).toBe(204);
+    const profileId = (await auth.getAccount('mod'))?.profileMessageId;
+    expect(calls).toEqual([
+      [SHOP_ID, SHOP_KEK],
+      [profileId, SHOP_KEK],
+      [SHOP_ID, SHOP_KEK],
+    ]);
+  });
+});

@@ -98,6 +98,28 @@ describe('migrateShopIdentitySchema', () => {
     expect(run.join('\n')).toContain('trg_shop_identity_place');
     expect(run.join('\n')).toContain('trg_shop_identity_extra_photo');
   });
+
+  it('drops and recreates each trigger inside one DO block', () => {
+    expect(SHOP_IDENTITY_SCHEMA_SQL.some((s) => s.startsWith('DROP TRIGGER'))).toBe(false);
+    expect(SHOP_IDENTITY_SCHEMA_SQL.some((s) => s.startsWith('CREATE TRIGGER'))).toBe(false);
+    const blocks = SHOP_IDENTITY_SCHEMA_SQL.filter((s) => s.startsWith('DO $trigger$'));
+    expect(blocks).toHaveLength(3);
+    for (const [index, [name, table]] of [
+      ['trg_shop_identity_place', 'message'],
+      ['trg_shop_identity_cover', 'message'],
+      ['trg_shop_identity_extra_photo', 'message_extra_photo'],
+    ].entries()) {
+      const block = blocks[index] as string;
+      expect(
+        block.startsWith(
+          `DO $trigger$\nBEGIN\n  LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;\n  DROP TRIGGER IF EXISTS ${name} ON ${table};\n`,
+        ),
+      ).toBe(true);
+      expect(block).toContain(`CREATE TRIGGER ${name}`);
+      expect(block.indexOf('DROP TRIGGER')).toBeLessThan(block.indexOf('CREATE TRIGGER'));
+      expect(block).toMatch(/;\nEND;\n\$trigger\$$/);
+    }
+  });
 });
 
 describe('InMemoryShopIdentityStore key creation', () => {

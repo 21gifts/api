@@ -15,7 +15,7 @@
 import { createHash } from 'node:crypto';
 import { nip19 } from 'nostr-tools';
 import type { SqlClient } from '@/lib/auth/sql';
-import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import { InMemoryMessageStore, textHasHashtagToken, type MessageStore } from '@/lib/message-store';
 import type { MessageRow } from '@/lib/message';
 import {
   NOSTR_KEK_ID_V1,
@@ -92,47 +92,152 @@ export interface ShopIdentityStore {
    * Create the key of a listed shop note once, or return the existing one.
    * A new key queues the place push. An existing key gets its
    * `profile_name` rewritten while the note is listed.
+   *
+   * @param messageId - Shop note id.
+   * @param kek - Key-encryption key for the new secret.
+   * @param keygen - Secret key source (default {@link defaultNostrKeygen}).
+   * @returns The identity, or `undefined` when the note is not listed and has no key.
    */
   ensureListed(
     messageId: string,
     kek: Uint8Array,
     keygen?: NostrKeygen,
   ): Promise<ShopIdentityRow | undefined>;
-  /** Identity of one note, or `undefined`. */
+  /**
+   * Identity of one note.
+   *
+   * @param messageId - Shop note id.
+   * @returns The identity, or `undefined`.
+   */
   getByMessageId(messageId: string): Promise<ShopIdentityRow | undefined>;
-  /** Identity by 64-hex public key, or `undefined`. */
+  /**
+   * Identity by public key.
+   *
+   * @param pubkey - 64 lowercase hex x-only public key.
+   * @returns The identity, or `undefined`.
+   */
   getByPubkey(pubkey: string): Promise<ShopIdentityRow | undefined>;
-  /** Encrypted secret of one shop, or `undefined`. */
+  /**
+   * Encrypted secret of one shop.
+   *
+   * @param messageId - Shop note id.
+   * @returns The AES-256-GCM envelope, or `undefined`.
+   */
   getNostrCiphertext(messageId: string): Promise<Uint8Array | undefined>;
-  /** Every identity, by `nostr_key_created_at` then `message_id`. */
+  /**
+   * Every identity.
+   *
+   * @returns Rows by `nostr_key_created_at`, then `message_id`.
+   */
   listAll(): Promise<ShopIdentityRow[]>;
-  /** Write `profile_name` when it differs. */
+  /**
+   * Write `profile_name` when it differs.
+   *
+   * @param messageId - Shop note id.
+   * @param name - Current shop name.
+   * @returns Resolves when written (a missing row is a no-op).
+   */
   setProfileName(messageId: string, name: string): Promise<void>;
-  /** Live top-level pinned `#21GiftsShop` notes with a till account and no key, after `cursor`. */
+  /**
+   * Live top-level pinned `#21GiftsShop` notes with a till account and no key.
+   *
+   * @param cursor - Last row of the previous page, or `null` for the first page.
+   * @param limit - Page size.
+   * @returns Up to `limit` cursors after `cursor`, by `created_at` then `id`.
+   */
   listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidateCursor[]>;
-  /** Queue the place push of one page of identities after `afterMessageId`; returns the page ids. */
+  /**
+   * Queue the place push of one page of identities.
+   *
+   * @param afterMessageId - Last id of the previous page, or `null`.
+   * @param limit - Page size.
+   * @returns The queued note ids, by `message_id`.
+   */
   queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
-  /** Claim up to `limit` pending places (lease by the database clock). */
+  /**
+   * Claim pending places (lease by the database clock).
+   *
+   * @param limit - Most rows to claim.
+   * @param leaseMs - Lease length.
+   * @returns The claims, possibly empty.
+   */
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
-  /** Claim one pending photo set whose place is not pending. */
+  /**
+   * Claim one pending photo set whose place is not pending.
+   *
+   * @param leaseMs - Lease length.
+   * @returns The claim, or `undefined` when nothing is due.
+   */
   claimPhoto(leaseMs: number): Promise<ShopOcpClaim | undefined>;
-  /** Whether the claim still holds and its lease has at least `minimumMs` left. */
+  /**
+   * Whether the claim still holds and its lease has time left.
+   *
+   * @param lane - Place or photo lane.
+   * @param claim - Claim to check.
+   * @param minimumMs - Lease time the next request needs.
+   * @returns `true` when the claim holds at least `minimumMs` longer.
+   */
   leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean>;
-  /** Raise `ocp_revision` under the claim; `undefined` when the claim was taken over. */
+  /**
+   * Raise `ocp_revision` under the claim.
+   *
+   * @param lane - Place or photo lane.
+   * @param claim - Claim that must still hold.
+   * @returns The new revision, or `undefined` when the claim was taken over.
+   */
   nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined>;
-  /** Release the lease (conditional on the claim token). */
+  /**
+   * Release the lease (conditional on the claim token).
+   *
+   * @param lane - Place or photo lane.
+   * @param claim - Claim to release.
+   * @returns Resolves when released (a lost claim is a no-op).
+   */
   release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void>;
-  /** Before a place `DELETE`: null the hash, clear and raise the photo outbox. */
+  /**
+   * Before a place `DELETE`: null the hash, clear and raise the photo outbox.
+   *
+   * @param claim - Place claim.
+   * @returns Resolves when written.
+   */
   resetPhotosForDelete(claim: ShopOcpClaim): Promise<void>;
-  /** Record a place result and release the lease. */
+  /**
+   * Record a place result and release the lease.
+   *
+   * @param claim - Place claim.
+   * @param result - OpenCryptoPay outcome of the request.
+   * @returns Resolves when written.
+   */
   finishPlace(claim: ShopOcpClaim, result: 'put' | 'created' | 'delete' | 'reject'): Promise<void>;
-  /** Clear the photo flag (generation-checked) without a request and release. */
+  /**
+   * Clear the photo flag (generation-checked) without a request and release.
+   *
+   * @param claim - Photo claim.
+   * @returns Resolves when written.
+   */
   clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void>;
-  /** Null the stored photo hash (claim-checked). */
+  /**
+   * Null the stored photo hash (claim-checked).
+   *
+   * @param claim - Photo claim.
+   * @returns Resolves when written.
+   */
   clearPhotoHash(claim: ShopOcpClaim): Promise<void>;
-  /** Store the sent hash and clear the flag (generation-checked) and release. */
+  /**
+   * Store the sent hash, clear the flag (generation-checked) and release.
+   *
+   * @param claim - Photo claim.
+   * @param hash - `ocpPhotoSetHash` of the sent set.
+   * @returns Resolves when written.
+   */
   finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void>;
-  /** Photo 404: null the hash, clear the flag, queue the place when still listed, release. */
+  /**
+   * Photo 404: null the hash, clear the flag, queue the place when still listed, release.
+   *
+   * @param claim - Photo claim.
+   * @param listed - Whether the note is still a listed shop.
+   * @returns Resolves when written.
+   */
   missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void>;
 }
 
@@ -147,6 +252,28 @@ const LISTED_SHAPE_SQL = (m: string): string =>
    AND ${m}.place_street IS NOT NULL AND ${m}.place_house_number IS NOT NULL
    AND ${m}.place_postal_code IS NOT NULL AND ${m}.place_city IS NOT NULL
    AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
+
+/**
+ * One `DO` block that drops and recreates a trigger in a single statement.
+ * It first takes `ACCESS EXCLUSIVE` on the table, the lock `DROP TRIGGER`
+ * needs, so concurrent boots queue behind each other instead of deadlocking
+ * on a lock upgrade or failing with "already exists", and no writer sees the
+ * table without the trigger.
+ *
+ * @param table - Table the trigger is on.
+ * @param drop - `DROP TRIGGER IF EXISTS …` statement.
+ * @param create - `CREATE TRIGGER …` statement.
+ * @returns The `DO` statement.
+ */
+function replaceTrigger(table: string, drop: string, create: string): string {
+  return `DO $trigger$
+BEGIN
+  LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;
+  ${drop};
+  ${create};
+END;
+$trigger$`;
+}
 
 /** Idempotent SQL for `shop_identity` and its queue triggers (matches `docs/schema/shop_identity.sql`). */
 export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
@@ -178,8 +305,10 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  `DROP TRIGGER IF EXISTS trg_shop_identity_place ON message`,
-  `CREATE TRIGGER trg_shop_identity_place
+  replaceTrigger(
+    'message',
+    `DROP TRIGGER IF EXISTS trg_shop_identity_place ON message`,
+    `CREATE TRIGGER trg_shop_identity_place
    AFTER UPDATE OF text, place_lat, place_lng, place_label, place_street, place_house_number,
      place_postal_code, place_city, place_country, shop_account_id, deleted_at ON message
    FOR EACH ROW WHEN (
@@ -195,6 +324,7 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
    )
    EXECUTE FUNCTION queue_shop_identity_place()`,
+  ),
   `CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
    BEGIN
      IF ${LISTED_SHAPE_SQL('NEW')} THEN
@@ -205,14 +335,17 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  `DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message`,
-  `CREATE TRIGGER trg_shop_identity_cover
+  replaceTrigger(
+    'message',
+    `DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message`,
+    `CREATE TRIGGER trg_shop_identity_cover
    AFTER UPDATE OF photo, photo_content_type ON message
    FOR EACH ROW WHEN (
      OLD.photo IS DISTINCT FROM NEW.photo OR
      OLD.photo_content_type IS DISTINCT FROM NEW.photo_content_type
    )
    EXECUTE FUNCTION queue_shop_identity_cover()`,
+  ),
   `CREATE OR REPLACE FUNCTION queue_shop_identity_photo() RETURNS trigger AS $$
    DECLARE target uuid;
    BEGIN
@@ -230,9 +363,12 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  `DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo`,
-  `CREATE TRIGGER trg_shop_identity_extra_photo AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
+  replaceTrigger(
+    'message_extra_photo',
+    `DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo`,
+    `CREATE TRIGGER trg_shop_identity_extra_photo AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
    FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo()`,
+  ),
 ];
 
 /**
@@ -441,7 +577,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
           !this.#rows.has(row.id) &&
           row.place !== undefined &&
           row.place !== null &&
-          /#21GiftsShop(?![A-Za-z0-9_])/i.test(row.text),
+          textHasHashtagToken(row.text, '21GiftsShop'),
       )
       .filter(
         (row) =>
