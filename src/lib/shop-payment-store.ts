@@ -754,6 +754,28 @@ const PAYMENT_DUTY: Readonly<
   },
 };
 
+/**
+ * Whether the order-status duty follows a proof: it holds an order, its
+ * next status read is set, and it is not refused as `tx_used`. Every stop
+ * of the duty (a final status, the 24 h stop, a replaced order, a `tx_used`
+ * refusal) clears `next_status_at` or the order, so a stopped proof fails
+ * this. The duty selects these proofs once `next_status_at` is due
+ * ({@link PROOF_DUTY_SQL}, the same conditions), and a status read is
+ * applied only while the proof, read again under its locks, still meets it.
+ *
+ * @param proof - Stored proof.
+ * @returns `true` while the duty follows it.
+ */
+export function followsOrderStatus(
+  proof: Pick<ShopProof, 'providerOrder' | 'nextStatusAt' | 'result' | 'refusal'>,
+): boolean {
+  return (
+    proof.nextStatusAt !== null &&
+    proof.providerOrder !== null &&
+    !(proof.result === 'refused' && proof.refusal === 'tx_used')
+  );
+}
+
 /** In-memory selection and order of each proof duty (the SQL of {@link PROOF_DUTY_SQL}). */
 const PROOF_DUTY: Readonly<
   Record<
@@ -775,10 +797,7 @@ const PROOF_DUTY: Readonly<
     at: (row) => ms(row.nextSubmitAt),
   },
   status: {
-    due: (row, nowMs) =>
-      ms(row.nextStatusAt) <= nowMs &&
-      row.providerOrder !== null &&
-      !(row.result === 'refused' && row.refusal === 'tx_used'),
+    due: (row, nowMs) => followsOrderStatus(row) && ms(row.nextStatusAt) <= nowMs,
     at: (row) => ms(row.nextStatusAt),
   },
   stuck: {
@@ -1479,7 +1498,12 @@ ORDER BY (status = 'accepted') DESC, (pos_charge_id IS NOT NULL) DESC, next_sett
 ORDER BY next_history_at, id`,
 };
 
-/** `WHERE` and `ORDER BY` of each proof duty; `$1` is now, `$2` the limit. */
+/**
+ * `WHERE` and `ORDER BY` of each proof duty; `$1` is now, `$2` the limit.
+ * `status` is {@link followsOrderStatus} with a due `next_status_at`
+ * (`next_status_at <= $1` is false for null); a Postgres test pins the two
+ * equal.
+ */
 const PROOF_DUTY_SQL: Readonly<Record<ShopProofDuty, string>> = {
   receipt: `next_receipt_at <= $1
 ORDER BY next_receipt_at, id`,

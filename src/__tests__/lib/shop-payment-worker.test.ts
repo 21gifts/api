@@ -8,13 +8,21 @@ import {
   startShopPaymentWorker,
 } from '@/lib/shop-payment-worker';
 import { proofResponse, retryStuckProof } from '@/lib/shop-proof';
-import type { ShopProofDuty, ShopProofLookup, ShopTx } from '@/lib/shop-payment-store';
+import type {
+  ShopPayment,
+  ShopProof,
+  ShopProofDuty,
+  ShopProofLookup,
+  ShopTx,
+} from '@/lib/shop-payment-store';
 import {
   AMOUNT_IN,
   DEPOSIT_USDT,
   OFFER_ETH,
+  OFFER_OTHER,
   OFFER_USDT,
   OFFER_USDC,
+  OTHER_PAYMENT_ID,
   PAYMENT_HASH,
   PAYMENT_ID,
   POLYGON_USDT,
@@ -1635,6 +1643,130 @@ describe('duty 8: order status', () => {
     });
   });
 
+  describe('a status read in flight while the duty stops following the proof changes nothing', () => {
+    // Each case stops the duty for the proof during the status call, the way
+    // that stop happens in production; the late read then answers `late`.
+    // `swapping` would accept the proof on a progressing order, `completed`
+    // from any open or refused result.
+    const stops: [string, ShopProof[], (h: Harness) => Promise<void>][] = [
+      [
+        'the 24 h stop by another container',
+        [proofRow({ ...ordered, orderFoundAt: new Date(T0 - 86_400_000 + 1) })],
+        async (h) => {
+          h.clock.now = T0 + 1;
+          await runShopPaymentTick(h.shop, 2);
+          expect((await getProof(h, uid(0x401)))?.nextStatusAt).toBeNull();
+        },
+      ],
+      [
+        "another container's read of a final status",
+        [proofRow(ordered)],
+        async (h) => {
+          h.orchestra.status.mockResolvedValueOnce({
+            ok: true,
+            order: { id: 'o1', status: 'refunded', supersededByOperationId: null },
+          });
+          await runShopPaymentTick(h.shop, 2);
+          expect(await getProof(h, uid(0x401))).toMatchObject({
+            result: 'refunded',
+            nextStatusAt: null,
+          });
+        },
+      ],
+      [
+        "another container's read of a replaced order",
+        [proofRow(ordered)],
+        async (h) => {
+          h.orchestra.status.mockResolvedValueOnce({
+            ok: true,
+            order: { id: 'o1', status: 'unfulfilled', supersededByOperationId: 'o9' },
+          });
+          await runShopPaymentTick(h.shop, 2);
+          expect(await getProof(h, uid(0x401))).toMatchObject({
+            supersededByOrder: 'o9',
+            nextStatusAt: null,
+          });
+        },
+      ],
+      [
+        "a tx_used refusal by the receipts duty (the filled log index is another offer's)",
+        [
+          proofRow({
+            id: uid(0x4c1),
+            offerId: OFFER_OTHER,
+            paymentId: OTHER_PAYMENT_ID,
+            txHash: H1,
+            logIndex: 3,
+          }),
+          proofRow({
+            ...ordered,
+            source: 'detected',
+            logIndex: null,
+            transferAmount: null,
+            nextReceiptAt: new Date(T0 + 30_000),
+          }),
+        ],
+        async (h) => {
+          h.rpc['eth_getTransactionReceipt'] = () => ({
+            result: receiptJson(H1, '0x1', [usdtLog()]),
+          });
+          h.clock.now = T0 + 30_000;
+          await runShopPaymentTick(h.shop, 2);
+          expect(await getProof(h, uid(0x401))).toMatchObject({
+            result: 'refused',
+            refusal: 'tx_used',
+            providerOrder: 'o1',
+            orderStatus: 'processing',
+            nextStatusAt: null,
+          });
+        },
+      ],
+      [
+        'a final status stored while next_status_at stayed set',
+        [proofRow(ordered)],
+        async (h) => {
+          await h.store.transaction((tx) =>
+            tx.updateProof(uid(0x401), {}, { orderStatus: 'failed' }),
+          );
+        },
+      ],
+    ];
+
+    it.each(
+      stops.flatMap(([name, rows, stop]) =>
+        ['swapping', 'completed'].map(
+          (late) => [name, late, rows, stop] as [string, string, ShopProof[], typeof stop],
+        ),
+      ),
+    )(
+      '%s, late read %s: proof, payment, and log stay as the stop left them',
+      async (_name, late, rows, stop) => {
+        const h = harness();
+        await seed(h);
+        await insertProofs(h, ...rows);
+        let stopped: {
+          proof: ShopProof | null;
+          payment: ShopPayment | null;
+          events: string[];
+        } | null = null;
+        h.orchestra.status.mockImplementationOnce(async () => {
+          await stop(h);
+          stopped = {
+            proof: await getProof(h, uid(0x401)),
+            payment: await getPayment(h),
+            events: events(),
+          };
+          return { ok: true, order: { id: 'o1', status: late, supersededByOperationId: null } };
+        });
+        await runShopPaymentTick(h.shop, 2);
+        expect(stopped).not.toBeNull();
+        expect(await getProof(h, uid(0x401))).toEqual(stopped!.proof);
+        expect(await getPayment(h)).toEqual(stopped!.payment);
+        expect(events()).toEqual(stopped!.events);
+      },
+    );
+  });
+
   describe('a stop decided on the selection holds only while the proof is unchanged', () => {
     const lapsed = { ...ordered, orderFoundAt: new Date(T0 - 86_400_000) };
 
@@ -1701,7 +1833,8 @@ describe('duty 8: order status', () => {
     });
 
     it.each([
-      ['a status', { id: 'o1', status: 'swapping', supersededByOperationId: null }, 'swapping'],
+      // The status is not applied either: the duty no longer follows the row.
+      ['a status', { id: 'o1', status: 'swapping', supersededByOperationId: null }, 'processing'],
       ['no order', null, 'processing'],
     ])(
       'a row another container stopped at 24 h during the status call (%s) stays stopped',

@@ -1337,11 +1337,18 @@ proof again under its payment row and proof rows and writes only while
 what the duty decided on is unchanged, so both containers that selected
 one row log `shop.alert.order_stuck` once; its fields are read in the
 transaction that stops the row, and it is logged after that commit. A
-status read sets the next read only while `next_status_at` is still the
-one the duty selected, so a row the other container stopped meanwhile
-stays stopped; the status itself is still applied, unless the proof,
-read again under its payment row and proof rows, holds a final status
-of that order by then. A final status is terminal: a status of the
+status read is applied only while the proof, read again under its
+payment row and proof rows, still holds that order and duty 8 still
+follows it (it has an order and a set `next_status_at` and is not
+refused as `tx_used`, as the duty selects): a proof the duty stopped
+during the call (a final status, the 24 h stop, a replaced order, a
+`tx_used` refusal) keeps its result, refusal, status, and schedule, its
+payment does not change, and nothing is logged. A status read sets the
+next read only while `next_status_at` is still the one the duty
+selected, so a row the other container's read rescheduled meanwhile
+keeps that schedule; the status itself is still applied, unless the
+proof holds a final status of that order by then. A final status is
+terminal: a status of the
 same order read before it, in progress or another final one, changes
 nothing, so the proof keeps its result and is not read again.
 `next_history_at` is

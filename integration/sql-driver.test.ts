@@ -28,6 +28,7 @@ import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
 import { evaluateProof, lockPaymentForProofs, ShopPayments } from '@/lib/shop-payment';
 import {
+  followsOrderStatus,
   migrateShopPaymentSchema,
   PostgresShopPaymentStore,
   type ShopOffer,
@@ -3077,6 +3078,74 @@ describe('PostgresShopPaymentStore', () => {
         const status = (await tx.dueProofs('status', now, 100_000)).map((row) => row.id);
         expect(status).toContain(mismatch.id);
         expect(status).not.toContain(used.id);
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the status duty selects exactly the due proofs that followsOrderStatus admits', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const outcomes: Pick<ShopProof, 'result' | 'refusal'>[] = [
+        { result: null, refusal: null },
+        { result: 'refused', refusal: 'tx_used' },
+        { result: 'refused', refusal: 'mismatch' },
+        { result: 'refused', refusal: 'expired_order' },
+        { result: 'stuck', refusal: null },
+        { result: 'late', refusal: null },
+      ];
+      const rows: ShopProof[] = [];
+      for (const ordered of [false, true]) {
+        for (const nextStatusAt of [null, now - 1, now, now + 1]) {
+          for (const outcome of outcomes) {
+            rows.push(
+              shopProof(offer, payment.id, now, {
+                ...outcome,
+                providerOrder: ordered ? `order-${crypto.randomUUID()}` : null,
+                orderStatus: ordered ? 'processing' : null,
+                nextSubmitAt: null,
+                nextStatusAt: nextStatusAt === null ? null : new Date(nextStatusAt),
+              }),
+            );
+          }
+        }
+      }
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        for (const row of rows) {
+          expect(await tx.insertProof(row)).toBe(true);
+        }
+        const ids = new Set(rows.map((row) => row.id));
+        const selected = (await tx.dueProofs('status', now, 100_000))
+          .map((row) => row.id)
+          .filter((id) => ids.has(id))
+          .sort();
+        const admitted = rows
+          .filter(
+            (row) =>
+              followsOrderStatus(row) &&
+              row.nextStatusAt !== null &&
+              row.nextStatusAt.getTime() <= now,
+          )
+          .map((row) => row.id)
+          .sort();
+        // 2 due instants x 5 outcomes other than tx_used, all with an order.
+        expect(admitted).toHaveLength(10);
+        expect(selected).toEqual(admitted);
       });
     } finally {
       await closeIfPossible(sql);

@@ -1156,7 +1156,8 @@ rows (later `created_at`, then the greater id) is, from any result the
 States table allows for `refused`; an `accepted` one included, which lets
 a `superseded` proof take its place or ends the payment with
 `proof_refused`. A proof refused as `tx_used` keeps its order but is no
-longer followed: its submits, receipt reads, and status reads stop. When
+longer followed: its submits, receipt reads, and status reads stop, and a
+status read already in flight when it is refused applies nothing. When
 step 3 refuses the row that held the order (it is the newer one), the
 order moves in the same transaction to the submitted proof, the older row
 that survives: the refused row gives up `provider_order` and
@@ -1377,13 +1378,21 @@ rows by their own next-try column, oldest first:
    under its payment row and proof rows, still holds the order, status,
    and `next_status_at` the duty selected; the alert is logged once, by the
    container whose transaction cleared it, with fields read in that
-   transaction. A status read sets the next read only while
-   `next_status_at` is still the one the duty selected, so a row another
-   container stopped meanwhile stays stopped; the status is still applied,
-   unless the proof holds a final status of that order by then. A final
-   status is terminal: no later write of the same order replaces it (a
-   status in progress or another final one), re-evaluates the proof, or
-   restarts the reads, as the same-offer merge keeps a final status.
+   transaction. A status read is applied only while the proof, read again
+   under its payment row and proof rows, still holds that order and the
+   duty still follows it: it has an order and a set `next_status_at` and
+   is not refused as `tx_used`, the selection's own conditions. A proof
+   the duty stopped during the call (a final status, the 24 h stop, a
+   replaced order, a `tx_used` refusal) keeps its result, refusal,
+   status, and schedule, its payment does not change, and nothing is
+   logged. A status read sets the next read only while `next_status_at`
+   is still the one the duty selected, so a row another container's read
+   rescheduled meanwhile keeps that schedule; the status is still
+   applied, unless the proof holds a final status of that order by then.
+   A final status is terminal: no later write of the same order replaces
+   it (a status in progress or another final one), re-evaluates the
+   proof, or restarts the reads, as the same-offer merge keeps a final
+   status.
 
 A rejecting tick logs `shop.worker.tick.failed`.
 

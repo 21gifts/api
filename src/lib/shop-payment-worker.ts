@@ -24,14 +24,15 @@ import {
   shopMethodByName,
   type ShopPayments,
 } from '@/lib/shop-payment';
-import type {
-  ShopOffer,
-  ShopPayment,
-  ShopPaymentPatch,
-  ShopProof,
-  ShopProofLookup,
-  ShopProofPatch,
-  ShopTx,
+import {
+  followsOrderStatus,
+  type ShopOffer,
+  type ShopPayment,
+  type ShopPaymentPatch,
+  type ShopProof,
+  type ShopProofLookup,
+  type ShopProofPatch,
+  type ShopTx,
 } from '@/lib/shop-payment-store';
 import {
   applyProofOrder,
@@ -806,11 +807,16 @@ async function stopReplacedOrder(
  * ids with its offer's `quoteId` and `providerRef` ({@link proofAlertFields}). An `unfulfilled` status with a
  * `supersededByOperationId` of another order is a replaced order
  * ({@link stopReplacedOrder}); every other status, a superseding id with
- * another status included, is applied as a status. A proof whose order
- * another container gave a final status meanwhile is left as it is: a final
+ * another status included, is applied as a status. The read is applied only
+ * while the proof, read again under the locks, still holds this order and
+ * is still followed by the duty ({@link followsOrderStatus}, the
+ * selection's own conditions): a proof the duty stopped during the call (a
+ * final status, the 24 h stop, a replaced order, or a `tx_used` refusal) is
+ * left as it is, without a reschedule, a payment change, or a log line. A
+ * proof whose order holds a final status is left as it is too: a final
  * status is terminal. The next read is set only while `next_status_at` is
- * still the selection's, so a row another container stopped meanwhile stays
- * stopped.
+ * still the selection's, so a row another container's read rescheduled
+ * keeps that schedule.
  *
  * @param shop - Service.
  * @param proof - Proof with an order that is not final.
@@ -831,18 +837,26 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
     const locked = await lockPaymentForProofs(tx, proof.paymentId);
     const nowMs = shop.deps.now();
     const current = await tx.getProof(proof.id);
-    if (locked === null || current === null || current.providerOrder !== orderId) {
+    // The duty stopped following the proof during the call (a final
+    // status, the 24 h stop, a replaced order, a `tx_used` refusal), or the
+    // proof holds another order: the selection would not pick it now, so
+    // this read, made before, changes nothing.
+    if (
+      locked === null ||
+      current === null ||
+      current.providerOrder !== orderId ||
+      !followsOrderStatus(current)
+    ) {
       return;
     }
-    // Another container stored a final status of this order meanwhile: it is
-    // terminal, so this read, made before it, changes nothing.
+    // A final status of this order is terminal, also on a row whose
+    // `next_status_at` is still set: this read changes nothing.
     if (current.orderStatus !== null && ORCHESTRA_FINAL_STATUSES.has(current.orderStatus)) {
       return;
     }
     // The next read is scheduled only while `next_status_at` is still the
-    // one the selection read: a row another container stopped meanwhile at
-    // 24 h stays stopped, its status is still applied (a final status
-    // returned above).
+    // one the selection read: a row another container's read rescheduled
+    // meanwhile keeps that schedule, and this read's status is still applied.
     const armed = sameInstant(current.nextStatusAt, proof.nextStatusAt);
     const order = read.ok ? read.order : null;
     if (order === null) {

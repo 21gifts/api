@@ -4120,6 +4120,12 @@ test('Function: recordProofOrder — GET /lnurlp/tx/:username is 404 when the LN
   await proofRouteOff(request);
 });
 
+test('Function: followsOrderStatus — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
 test('Function: evaluateProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
   request,
 }) => {
