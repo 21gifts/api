@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 50
-- Columns: 445
-- Foreign keys: 46
+- Tables: 55
+- Columns: 529
+- Foreign keys: 53
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -36,7 +36,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`member_habit_comment`](tables/member_habit_comment.md)                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 8       | 2            |
 | [`member_habit_log`](tables/member_habit_log.md)                                 | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 3       | 1            |
 | [`member_habit_revision`](tables/member_habit_revision.md)                       | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 4       | 1            |
-| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 48      | 3            |
+| [`message`](tables/message.md)                                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 53      | 3            |
 | [`message_edit`](tables/message_edit.md)                                         | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 7       | 1            |
 | [`message_extra_photo`](tables/message_extra_photo.md)                           | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 5       | 1            |
 | [`message_invoice`](tables/message_invoice.md)                                   | [src/lib/message-store.ts](../../src/lib/message-store.ts)             | 24      | 0            |
@@ -55,6 +55,11 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
 | [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 11      | 1            |
 | [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 5       | 1            |
+| [`shop_offer`](tables/shop_offer.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 17      | 1            |
+| [`shop_payment`](tables/shop_payment.md)                                         | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 20      | 2            |
+| [`shop_proof`](tables/shop_proof.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 27      | 2            |
+| [`shop_proof_lookup`](tables/shop_proof_lookup.md)                               | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 10      | 1            |
+| [`shop_quote`](tables/shop_quote.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 5       | 1            |
 | [`spark_invoice`](tables/spark_invoice.md)                                       | [src/lib/spark-invoice-store.ts](../../src/lib/spark-invoice-store.ts) | 10      | 0            |
 | [`trust_edge`](tables/trust_edge.md)                                             | [src/lib/trust-store.ts](../../src/lib/trust-store.ts)                 | 5       | 2            |
 | [`usd_fiat_daily`](tables/usd_fiat_daily.md)                                     | [src/lib/usd-fiat-store.ts](../../src/lib/usd-fiat-store.ts)           | 6       | 0            |

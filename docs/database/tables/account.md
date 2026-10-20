@@ -86,6 +86,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `pos_charge`              | `account_id`              | `id`      |
 | `push_outbox`             | `account_id`              | `id`      |
 | `push_subscription`       | `account_id`              | `id`      |
+| `shop_payment`            | `account_id`              | `id`      |
 | `trust_edge`              | `actor_id`                | `id`      |
 | `trust_edge`              | `subject_id`              | `id`      |
 | `wallet_balance_snapshot` | `account_id`              | `id`      |
@@ -122,6 +123,7 @@ erDiagram
     "pos_charge" }o..|| "account" : "account_id"
     "push_outbox" }o..|| "account" : "account_id"
     "push_subscription" }o..|| "account" : "account_id"
+    "shop_payment" }o..|| "account" : "account_id"
     "trust_edge" }o..|| "account" : "actor_id"
     "trust_edge" }o..|| "account" : "subject_id"
     "wallet_balance_snapshot" }o..|| "account" : "account_id"
