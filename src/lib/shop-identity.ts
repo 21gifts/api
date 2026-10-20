@@ -83,6 +83,18 @@ export interface ShopCandidateCursor {
   id: string;
 }
 
+/**
+ * Keyset cursor of the shop publishers' round robin, in the `listAll()` order:
+ * `nostr_key_created_at`, then `message_id`. It is a key, not a row, so it
+ * still works when no row has it any more.
+ */
+export interface ShopIdentityCursor {
+  /** Key creation time of the last visited shop. */
+  createdAt: Date;
+  /** Note id of the last visited shop. */
+  messageId: string;
+}
+
 /** Outbox lane: the place request or the photo request. */
 export type ShopOcpLane = 'place' | 'photos';
 
@@ -131,6 +143,18 @@ export interface ShopIdentityStore {
    * @returns Rows by `nostr_key_created_at`, then `message_id`.
    */
   listAll(): Promise<ShopIdentityRow[]>;
+  /**
+   * One bounded page of a lap over every identity in the `listAll()` order:
+   * up to `limit` rows after `cursor`, and when fewer than `limit` follow it,
+   * the lap wraps with a second bounded read of the rows at or before
+   * `cursor` from the start, so a call returns at most `limit` rows and,
+   * when there are at most `limit` identities, each of them exactly once.
+   *
+   * @param cursor - Last visited shop, or `null` to start at the first row.
+   * @param limit - Most rows to return.
+   * @returns Rows after the cursor, then the wrapped rows from the start.
+   */
+  listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]>;
   /**
    * Write `profile_name` from a note snapshot, only while that snapshot is
    * listed and the stored note still shows it (the same note lock and
@@ -184,11 +208,17 @@ export interface ShopIdentityStore {
    */
   leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean>;
   /**
-   * Raise `ocp_revision` under the claim.
+   * Raise `ocp_revision` under the claim. For the photo lane, the same
+   * atomic write also requires that the place is not pending and that the
+   * photo generation is still the claim's: a place change (hide, delete,
+   * new pin) or a newer photo change that came in after the claim read the
+   * photos makes it reserve nothing, so stale photos never get a revision
+   * after a newer place request.
    *
    * @param lane - Place or photo lane.
    * @param claim - Claim that must still hold.
-   * @returns The new revision, or `undefined` when the claim was taken over.
+   * @returns The new revision, or `undefined` when the claim was taken over
+   *   (or, for photos, the place is pending or the generation moved on).
    */
   nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined>;
   /**
@@ -314,6 +344,8 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      ocp_revision bigint NOT NULL DEFAULT 0
        CHECK (ocp_revision >= 0 AND ocp_revision <= 9007199254740991)
    )`,
+  `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx
+     ON shop_identity (nostr_key_created_at, message_id)`,
   `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
    BEGIN
      UPDATE shop_identity SET ocp_place_pending = true,
@@ -572,12 +604,20 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
 
   async listAll(): Promise<ShopIdentityRow[]> {
     await this.#sync();
-    return [...this.#rows.values()]
-      .sort((a, b) => {
-        const time = a.nostrKeyCreatedAt.getTime() - b.nostrKeyCreatedAt.getTime();
-        return time !== 0 ? time : a.messageId.localeCompare(b.messageId);
-      })
-      .map(copyIdentity);
+    return this.#byKeyOrder().map(copyIdentity);
+  }
+
+  async listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]> {
+    await this.#sync();
+    const rows = this.#byKeyOrder();
+    const after = rows
+      .filter((row) => cursor === null || keyOrder(row, cursor) > 0)
+      .slice(0, limit);
+    const wrapped =
+      cursor === null || after.length >= limit
+        ? []
+        : rows.filter((row) => keyOrder(row, cursor) <= 0).slice(0, limit - after.length);
+    return [...after, ...wrapped].map(copyIdentity);
   }
 
   async renameIfListed(note: MessageRow): Promise<void> {
@@ -675,13 +715,18 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     return Promise.resolve(until !== null && until.getTime() >= this.#now() + minimumMs);
   }
 
-  nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
+  async nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
+    await this.#sync();
     const row = this.#claimed(lane, claim);
-    if (row === undefined) {
-      return Promise.resolve(undefined);
+    if (row === undefined) return undefined;
+    if (
+      lane === 'photos' &&
+      (row.ocpPlacePending || row.ocpPhotosGeneration !== claim.generation)
+    ) {
+      return undefined;
     }
     row.ocpRevision += 1;
-    return Promise.resolve(row.ocpRevision);
+    return row.ocpRevision;
   }
 
   release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void> {
@@ -773,6 +818,12 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     }
   }
 
+  #byKeyOrder(): ShopIdentityRow[] {
+    return [...this.#rows.values()].sort((a, b) =>
+      keyOrder(a, { createdAt: b.nostrKeyCreatedAt, messageId: b.messageId }),
+    );
+  }
+
   #byMessageId(): ShopIdentityRow[] {
     return [...this.#rows.values()].sort((a, b) => a.messageId.localeCompare(b.messageId));
   }
@@ -784,6 +835,13 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       ? row
       : undefined;
   }
+}
+
+/** Sign of `row` against `cursor` in the `listAll()` order (key time, then message id). */
+function keyOrder(row: ShopIdentityRow, cursor: ShopIdentityCursor): number {
+  const time = row.nostrKeyCreatedAt.getTime() - cursor.createdAt.getTime();
+  if (time !== 0) return time;
+  return row.messageId < cursor.messageId ? -1 : row.messageId > cursor.messageId ? 1 : 0;
 }
 
 function leaseFree(until: Date | null, nowMs: number): boolean {
@@ -1004,6 +1062,29 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     return rows.map(mapIdentity);
   }
 
+  async listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]> {
+    // Both reads walk shop_identity_key_order_idx and stop after `limit`
+    // rows. Keys are written from a JavaScript Date, so millisecond cursors
+    // compare exactly.
+    const after = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
+       WHERE $1::timestamptz IS NULL
+          OR (nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)
+       ORDER BY nostr_key_created_at ASC, message_id ASC
+       LIMIT $3`,
+      [cursor?.createdAt ?? null, cursor?.messageId ?? null, limit],
+    );
+    if (cursor === null || after.length >= limit) return after.map(mapIdentity);
+    const wrapped = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
+       WHERE (nostr_key_created_at, message_id) <= ($1::timestamptz, $2::uuid)
+       ORDER BY nostr_key_created_at ASC, message_id ASC
+       LIMIT $3`,
+      [cursor.createdAt, cursor.messageId, limit - after.length],
+    );
+    return [...after, ...wrapped].map(mapIdentity);
+  }
+
   async renameIfListed(note: MessageRow): Promise<void> {
     const shop = listedSnapshot(note);
     if (shop !== null) await this.#renameLocked(note.id, shop);
@@ -1113,12 +1194,17 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
 
   async nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
     const prefix = lanePrefix(lane);
+    // Photos: the same statement checks that the place is not pending and
+    // the generation is the claim's, so a place write that came in after
+    // the claim read the photos (and every revision it reserves) wins.
+    const photos = lane === 'photos';
+    const photoGuard = photos ? 'AND NOT ocp_place_pending AND ocp_photos_generation = $3' : '';
     const rows = await this.#sql.query<{ ocp_revision: number | string | bigint }>(
       `UPDATE shop_identity SET ocp_revision = ocp_revision + 1
        WHERE message_id = $1 AND ${prefix}_claim = $2
-         AND ocp_revision < 9007199254740991
+         AND ocp_revision < 9007199254740991 ${photoGuard}
        RETURNING ocp_revision`,
-      [claim.messageId, claim.claim],
+      photos ? [claim.messageId, claim.claim, claim.generation] : [claim.messageId, claim.claim],
     );
     return rows[0] === undefined ? undefined : Number(rows[0].ocp_revision);
   }

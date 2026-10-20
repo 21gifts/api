@@ -772,6 +772,14 @@ export interface MessageStore {
   /** One row by id, or `undefined`. */
   getById(id: string): Promise<MessageRow | undefined>;
 
+  /**
+   * The rows of several ids in one read, each as {@link getById} returns it.
+   *
+   * @param ids - Message ids (uuid on Postgres); an empty list reads nothing.
+   * @returns The rows that exist, in no particular order; missing ids are left out.
+   */
+  getByIds(ids: readonly string[]): Promise<MessageRow[]>;
+
   /** One row by Nostr event id, or `undefined`. */
   getByEventId(eventId: string): Promise<MessageRow | undefined>;
 
@@ -3140,6 +3148,13 @@ export class InMemoryMessageStore implements MessageStore {
   getById(id: string): Promise<MessageRow | undefined> {
     const row = this.#rows.find((item) => item.id === id);
     return Promise.resolve(row === undefined ? undefined : this.#withListedMedia(row));
+  }
+
+  getByIds(ids: readonly string[]): Promise<MessageRow[]> {
+    const wanted = new Set(ids);
+    return Promise.resolve(
+      this.#rows.filter((row) => wanted.has(row.id)).map((row) => this.#withListedMedia(row)),
+    );
   }
 
   getByEventId(eventId: string): Promise<MessageRow | undefined> {
@@ -5923,6 +5938,17 @@ export class PostgresMessageStore implements MessageStore {
     );
     const row = rows[0];
     return row === undefined ? undefined : mapMessageRow(row);
+  }
+
+  async getByIds(ids: readonly string[]): Promise<MessageRow[]> {
+    if (ids.length === 0) return [];
+    // One array-literal string: Bun SQL cannot bind a JavaScript array.
+    const rows = await this.#sql.query<MessageSqlRow>(
+      `SELECT ${MESSAGE_SELECT_COLUMNS}
+       FROM message WHERE id = ANY($1::uuid[])`,
+      [postgresTextArrayLiteral(ids)],
+    );
+    return rows.map(mapMessageRow);
   }
 
   async getByEventId(eventId: string): Promise<MessageRow | undefined> {

@@ -189,14 +189,19 @@ not, in the same loop and with the same rules as account profiles
 (`publishProfiles` in `src/lib/nostr/worker.ts`):
 
 - same interval and batch size (`WORKER_BATCH` attempts per tick, failures
-  included), but as a round robin: each kind keeps an in-process cursor
-  (by `nostr_key_created_at`, then `message_id`, the `listAll()` order)
-  that moves to every shop it attempts; the next tick starts after it and
-  wraps at the end, so up to 20 shops that keep failing cannot hold back the
-  shops behind them. Kind 0 counts a shop before it reads the shop's fields,
-  so a shop whose reads throw or whose content is unchanged uses a slot too
-  and a tick reads at most `WORKER_BATCH` shops, also during an outage,
-  plus the NIP-05 allocation: the same listed names as
+  included), but as a round robin with bounded reads: each kind keeps an
+  in-process cursor (by `nostr_key_created_at`, then `message_id`, the
+  `listAll()` order) and reads one page of at most `WORKER_BATCH`
+  identities after it per tick (`ShopIdentityStore.listRound`, a keyset
+  read on the index `shop_identity_key_order_idx`); when fewer rows follow
+  the cursor, the store wraps with a second bounded read from the first
+  row. The worker never reads the whole table for a pass. The cursor moves
+  to every shop of the page before its visit, so up to 20 shops that keep
+  failing cannot hold back the shops behind them. Every row of the page
+  uses a slot, also a shop whose reads throw or whose content is unchanged
+  (for kind 10002 too, so a lap visits every shop within
+  ⌈shops / 20⌉ ticks), and a tick reads at most `WORKER_BATCH` shops per
+  kind, also during an outage, plus the NIP-05 allocation: the same listed names as
   `/.well-known/nostr.json` (every account and every shop note), read only
   once a visited shop is listed and the NIP-05 domain is set, at first once
   per tick. Each later shop reads its note fresh, so when the allocation has
@@ -216,9 +221,11 @@ not, in the same loop and with the same rules as account profiles
 - `created_at` = `max(now, last + 1)`; a failure in the required write set
   clears the cache entry, while the `wss://purplepag.es` copy stays best
   effort, as for accounts;
-- the fast lane can overlap: a tick whose cache entry another tick replaced
-  while it signed does not publish, and a failure clears the cache entry only
-  while it is still that tick's own, as for accounts.
+- the fast lane starts a tick every 2 s without waiting for the previous
+  one; a shop pass of one kind does not start while the previous pass of
+  that kind is still in flight in the process (it is skipped for that tick
+  and reads nothing), so two ticks never work on one shop's cache entry at
+  once, and a failure clears the shop's cache entry.
 
 Kind 0 content of a listed shop:
 
@@ -294,6 +301,14 @@ spec adds no zap receipts for a shop key.
 - The local part follows the current shop name. A rename, or a new account
   that takes the slug, gives the shop a new local part, and its kind 0 is
   published again.
+- Cost: the allocation is computed per request, as `/.well-known/nostr.json`
+  already does for accounts (one read of every account). For shops it adds
+  one read of every `shop_identity` row and one bulk read of their notes
+  (`MessageStore.getByIds`, `id = ANY($1::uuid[])`), not one read per shop.
+  `GET /shops/:npub` runs it once per request while `nip05Domain` is set,
+  `nostr.json` once per request, and the worker at most twice per tick (see
+  S2). There is no cache, so no answer can carry an allocation older than
+  the request.
 
 ## S3 API
 
@@ -361,7 +376,9 @@ Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does for
 accounts.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
-its kind 0 leaves the field out. Photo 1 is `/messages/:id/photo.<ext>` and
+its kind 0 leaves the field out. Otherwise it comes from the allocation of
+`listShopNip05Entries`, computed for this request (see the cost under S2
+NIP-05). Photo 1 is `/messages/:id/photo.<ext>` and
 photo n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumPhotoUrl`
 and `forumExtraPhotoUrl` in `src/lib/nostr/event.ts` use), absolute from
 `resolvePublicApiBase`, or the path alone when that is empty.
@@ -464,6 +481,17 @@ Rules for every claim:
   `c`) and sends the new value as `revision`. Place and photo requests share
   this counter, so OpenCryptoPay accepts them only in the order they were
   sent.
+- The photo sender raises it only while, in the same `UPDATE`, the place is
+  not pending (`NOT ocp_place_pending`) and `ocp_photos_generation` is still
+  its `g`. The photo claim checks that the place is not pending only when
+  it claims; a hide or another place change can come in while the sender
+  reads the photos, and the place sender may already have reserved its
+  revision for the `DELETE`. Without this check the photo request would
+  take the next revision, reach OpenCryptoPay after the `DELETE`, and the
+  `DELETE` would be stale. When the check fails, the photo sender releases
+  its claim and sends nothing; the flag stays (unless the place sender's
+  reset before a `DELETE` cleared it), and the photos follow once the place
+  is confirmed again.
 - Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
   releases the claim and skips the row this tick (for photos, this pass).
@@ -531,10 +559,10 @@ Rules for every claim:
     before sending.
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker only releases the claim.
-  - 400 or 409 whose body is empty or cannot be read: no verdict. Log
-    `ocp.place.failed` with the message id and status, keep the flag and
-    do not release the claim; the next attempt follows when the lease
-    (`WORKER_LEASE_MS`) ends.
+  - 400 or 409 whose body is empty, only whitespace or cannot be read: no
+    verdict. Log `ocp.place.failed` with the message id and status, keep
+    the flag and do not release the claim; the next attempt follows when
+    the lease (`WORKER_LEASE_MS`) ends.
   - 400 `Place field is not allowed: nostrPubkey` or
     `Place field is not allowed: revision`: OpenCryptoPay does not run
     openCryptoPay/api#26 yet. Log `ocp.place.deferred` with the message id

@@ -1,12 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import {
   allocateNip05Local,
   buildNostrJson,
+  listShopNip05Entries,
   nip05Domain,
   nip05Identifier,
   nip05Slug,
 } from '@/lib/nip05';
+import { InMemoryShopIdentityStore } from '@/lib/shop-identity';
 
 function account(partial: Partial<Account> & Pick<Account, 'id' | 'name'>): Account {
   return {
@@ -183,5 +187,63 @@ describe('nip05', () => {
       viewKey: 'dd'.repeat(32),
     });
     expect(nip05Identifier(target, [named, blank, target], '21.gifts')).toBe('ada@21.gifts');
+  });
+
+  it('allocates listed shops after the accounts with one bulk read of their notes', async () => {
+    const shop = (id: string, label: string, overrides: Partial<MessageRow> = {}): MessageRow => ({
+      id,
+      accountId: 'author',
+      name: 'Ada',
+      text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+      createdAt: new Date('2026-10-01T00:00:00Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: {
+        lat: 47.3,
+        lng: 8.5,
+        label,
+        address: {
+          street: 'Main Street',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+      shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    });
+    const ids = [1, 2, 3].map((n) => `0000000${String(n)}-0000-4000-8000-000000000000`);
+    const messages = new InMemoryMessageStore([
+      shop(ids[0]!, 'Ada'),
+      shop(ids[1]!, 'Roastery'),
+      shop(ids[2]!, 'Bakery'),
+    ]);
+    let now = 1_000;
+    const shops = new InMemoryShopIdentityStore(messages, () => now);
+    const kek = new Uint8Array(32).fill(7);
+    for (const id of ids) {
+      now += 1;
+      await shops.ensureListed(id, kek);
+    }
+    await messages.markDeleted(ids[1]!, new Date(), 'staff');
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: '00000000-0000-4000-8000-000000000001', name: 'Ada' }));
+    const reads = { getById: 0, getByIds: 0 };
+    const counted = new Proxy(messages, {
+      get(target, key) {
+        if (key === 'getById' || key === 'getByIds') reads[key] += 1;
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    }) as MessageStore;
+    const entries = await listShopNip05Entries(auth, shops, counted);
+    expect(entries.map((entry) => [entry.messageId, entry.name, entry.local])).toEqual([
+      [ids[0], 'Ada', 'ada-00000001'],
+      [ids[2], 'Bakery', 'bakery'],
+    ]);
+    expect(reads).toEqual({ getById: 0, getByIds: 1 });
   });
 });

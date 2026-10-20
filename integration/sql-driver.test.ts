@@ -932,4 +932,182 @@ describe('shop identity on Postgres', () => {
       await ctx.cleanup();
     }
   });
+
+  /**
+   * A listed shop with a confirmed place and pending photos, and outbox deps
+   * whose `listExtraPhotos` runs `between` once, after the photo pass
+   * claimed the row and read the photos and before it reserves a revision.
+   */
+  async function photoRace(
+    ctx: Awaited<ReturnType<typeof setup>>,
+    between: (deps: Parameters<typeof runOcpPlaceOutboxPass>[0], id: string) => Promise<void>,
+  ): Promise<{
+    id: string;
+    sent: Array<{ url: string; method: string; revision: unknown }>;
+    deps: Parameters<typeof runOcpPlaceOutboxPass>[0];
+  }> {
+    const row = ctx.note({ hasPhoto: true });
+    await ctx.messages.create(row, PNG, undefined, [PNG]);
+    await ctx.shops.ensureListed(row.id, KEK);
+    const sent: Array<{ url: string; method: string; revision: unknown }> = [];
+    let hooked = false;
+    const messages = new Proxy(ctx.messages, {
+      get(target, key) {
+        if (key === 'listExtraPhotos') {
+          return async (id: string) => {
+            const extras = await target.listExtraPhotos(id);
+            if (!hooked) {
+              hooked = true;
+              await between(deps, id);
+            }
+            return extras;
+          };
+        }
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const deps = {
+      identities: ctx.shops,
+      messages,
+      mapPush: {
+        baseUrl: 'https://map.test',
+        token: 't',
+        fetchImpl: async (url: string, init: RequestInit): Promise<Response> => {
+          const body = JSON.parse(String(init.body)) as Record<string, unknown>;
+          sent.push({ url, method: String(init.method), revision: body['revision'] });
+          return new Response('{}', { status: 200 });
+        },
+      },
+    };
+    await runOcpPlaceOutboxPass(deps);
+    expect(await ctx.shops.getByMessageId(row.id)).toMatchObject({
+      ocpPlacePending: false,
+      ocpPhotosPending: true,
+      ocpRevision: 1,
+    });
+    expect(hooked).toBe(false);
+    return { id: row.id, sent, deps };
+  }
+
+  test('a photo pass that read the photos before a hide sends nothing and reserves no revision', async () => {
+    const ctx = await setup();
+    try {
+      const race = await photoRace(ctx, async (_deps, id) => {
+        await ctx.messages.markDeleted(id, new Date(), ctx.accountId);
+      });
+      await runOcpPhotoOutboxPass(race.deps);
+      expect(race.sent).toEqual([
+        { url: 'https://map.test/map/places', method: 'PUT', revision: 1 },
+      ]);
+      expect(await ctx.shops.getByMessageId(race.id)).toMatchObject({
+        ocpRevision: 1,
+        ocpPlacePending: true,
+        ocpPhotosPending: true,
+        ocpPhotosClaimedUntil: null,
+      });
+      await runOcpPlaceOutboxPass(race.deps);
+      await runOcpPhotoOutboxPass(race.deps);
+      expect(race.sent.map((request) => [request.method, request.revision])).toEqual([
+        ['PUT', 1],
+        ['DELETE', 2],
+      ]);
+      expect(await ctx.shops.getByMessageId(race.id)).toMatchObject({
+        ocpRevision: 2,
+        ocpPlacePending: false,
+        ocpPhotosPending: false,
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('a photo pass that read the photos before the place lane deleted the shop sends nothing', async () => {
+    const ctx = await setup();
+    try {
+      const race = await photoRace(ctx, async (deps, id) => {
+        await ctx.messages.markDeleted(id, new Date(), ctx.accountId);
+        await runOcpPlaceOutboxPass(deps);
+      });
+      await runOcpPhotoOutboxPass(race.deps);
+      expect(race.sent.map((request) => [request.method, request.revision])).toEqual([
+        ['PUT', 1],
+        ['DELETE', 2],
+      ]);
+      expect(await ctx.shops.getByMessageId(race.id)).toMatchObject({
+        ocpRevision: 2,
+        ocpPlacePending: false,
+        ocpPhotosPending: false,
+        ocpPhotosClaimedUntil: null,
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('pages the round robin with bounded keyset reads and wraps at the end', async () => {
+    const ctx = await setup();
+    try {
+      const ids: string[] = [];
+      for (let index = 0; index < 5; index += 1) {
+        const row = ctx.note();
+        await ctx.messages.create(row);
+        await ctx.shops.ensureListed(row.id, KEK);
+        ids.push(row.id);
+      }
+      expect(
+        await ctx.client.query<{ n: string }>('SELECT count(*)::text AS n FROM shop_identity'),
+      ).toEqual([{ n: '5' }]);
+      // Rows 0 and 1 share a key time, so the message id orders them.
+      const order = [...ids.slice(0, 2)].sort().concat(ids.slice(2));
+      for (const [index, id] of order.entries()) {
+        await ctx.client.execute(
+          `UPDATE shop_identity SET nostr_key_created_at = $2 WHERE message_id = $1`,
+          [id, new Date(Date.UTC(2026, 9, 1, 0, 0, 0, Math.max(index, 1)))],
+        );
+      }
+      expect((await ctx.shops.listAll()).map((row) => row.messageId)).toEqual(order);
+      const rows = await ctx.shops.listAll();
+      const at = (index: number): { createdAt: Date; messageId: string } => ({
+        createdAt: rows[index]!.nostrKeyCreatedAt,
+        messageId: rows[index]!.messageId,
+      });
+      const round = async (
+        cursor: { createdAt: Date; messageId: string } | null,
+        limit: number,
+      ): Promise<string[]> =>
+        (await ctx.shops.listRound(cursor, limit)).map((row) => row.messageId);
+      expect(await round(null, 2)).toEqual(order.slice(0, 2));
+      expect(await round(at(0), 1)).toEqual([order[1]!]);
+      expect(await round(at(1), 2)).toEqual(order.slice(2, 4));
+      expect(await round(at(3), 3)).toEqual([order[4]!, order[0]!, order[1]!]);
+      expect(await round(at(2), 20)).toEqual([
+        order[3]!,
+        order[4]!,
+        order[0]!,
+        order[1]!,
+        order[2]!,
+      ]);
+      const gone = { createdAt: rows[4]!.nostrKeyCreatedAt, messageId: crypto.randomUUID() };
+      expect((await round(gone, 5)).length).toBe(5);
+      expect(
+        await ctx.client.query<{ indexdef: string }>(
+          `SELECT indexdef FROM pg_indexes WHERE indexname = 'shop_identity_key_order_idx'`,
+        ),
+      ).toEqual([
+        {
+          indexdef:
+            'CREATE INDEX shop_identity_key_order_idx ON public.shop_identity USING btree (nostr_key_created_at, message_id)',
+        },
+      ]);
+      // The NIP-05 allocation reads every shop note with one uuid[] statement.
+      const notes = await ctx.messages.getByIds([...ids, crypto.randomUUID()]);
+      expect(notes.map((note) => note.id).sort()).toEqual([...ids].sort());
+      expect(await ctx.messages.getByIds([])).toEqual([]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
 });

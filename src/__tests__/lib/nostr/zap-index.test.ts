@@ -4860,6 +4860,7 @@ describe('indexOpenZapReceipts', () => {
       listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
         base.listEdits(...args),
       getById: (id: string) => base.getById(id),
+      getByIds: (ids: readonly string[]) => base.getByIds(ids),
       getByEventId: async (id: string) => {
         getByEventIdCalls += 1;
         return base.getByEventId(id);
@@ -5120,6 +5121,7 @@ describe('indexOpenZapReceipts', () => {
         listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
           base.listEdits(...args),
         getById: (id: string) => base.getById(id),
+        getByIds: (ids: readonly string[]) => base.getByIds(ids),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
           base.claimUnsigned(...args),
@@ -5924,6 +5926,7 @@ describe('indexOpenZapReceipts', () => {
         listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
           base.listEdits(...args),
         getById: (id: string) => base.getById(id),
+        getByIds: (ids: readonly string[]) => base.getByIds(ids),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
           base.claimUnsigned(...args),

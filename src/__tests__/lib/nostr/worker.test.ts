@@ -40,6 +40,7 @@ import {
   HOT_ZAP_WINDOW_MS,
   runNostrWorkerTick,
   startNostrWorker,
+  WORKER_BATCH,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
@@ -8545,21 +8546,55 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(shopKind0).toEqual([]);
     });
 
-    it('starts after the removed shop the cursor pointed to', async () => {
-      const { ctx, order } = await listedShops(25);
+    it('reads at most 20 identity rows per pass and kind, never every row', async () => {
+      const { ctx, order } = await listedShops(45);
       ctx.publisher.ok = false;
-      const removed = new Set<string>();
+      const pages: Array<{ cursor: string | null; ids: string[] }> = [];
       const shops = override<ShopIdentityStore>(ctx.shops, {
-        listAll: async () =>
-          (await ctx.shops.listAll()).filter((row) => !removed.has(row.messageId)),
+        listAll: () => Promise.reject(new Error('listAll must not be read')),
+        listRound: async (cursor, limit) => {
+          expect(limit).toBe(WORKER_BATCH);
+          const rows = await ctx.shops.listRound(cursor, limit);
+          pages.push({ cursor: cursor?.messageId ?? null, ids: rows.map((r) => r.messageId) });
+          return rows;
+        },
       });
-      await tick(ctx, ENV, { shopIdentities: shops });
-      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
-      removed.add(uuid(20));
-      await tick(ctx, ENV, { shopIdentities: shops });
-      const next = [...order.slice(20), ...order.slice(0, 15)];
-      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(next);
-      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(next);
+      // Without `PUBLIC_BASE_URL` there is no NIP-05 allocation, which reads
+      // every shop like `/.well-known/nostr.json` does.
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      for (let round = 0; round < 3; round += 1) {
+        await tick(ctx, env, { shopIdentities: shops });
+      }
+      // One page per kind and tick, each at most WORKER_BATCH rows; the third
+      // tick wraps from shop 45 to shop 1 with a second bounded read.
+      expect(pages.map((page) => page.ids.length)).toEqual([20, 20, 20, 20, 20, 20]);
+      const lap = [...order, ...order];
+      for (const [index, page] of pages.entries()) {
+        const start = 20 * Math.floor(index / 2);
+        expect(page.ids).toEqual(lap.slice(start, start + 20));
+        expect(page.cursor).toBe(start === 0 ? null : lap[start - 1]);
+      }
+      // No shop starves: every one of the 45 was visited by both kinds.
+      expect(new Set(attemptsOf('nostr.profile.nack'))).toEqual(new Set(order));
+      expect(new Set(attemptsOf('nostr.relays.nack'))).toEqual(new Set(order));
+    });
+
+    it('visits unchanged kind 10002 shops too, so a changed one is reached within a lap', async () => {
+      const { ctx, order } = await listedShops(45);
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      for (let round = 0; round < 3; round += 1) await tick(ctx, env);
+      const relayLists = (): string[] =>
+        logged('nostr.relays.ok')
+          .map((row) => row['messageId'])
+          .filter((id): id is string => typeof id === 'string');
+      expect(relayLists()).toEqual(order);
+      // Every list is cached now; the next three ticks visit 60 rows and
+      // publish none of them, then a relay change reaches every shop.
+      for (let round = 0; round < 3; round += 1) await tick(ctx, env);
+      expect(relayLists()).toHaveLength(45);
+      for (let round = 0; round < 3; round += 1)
+        await tick(ctx, { ...PUBLIC_ENV, PUBLIC_BASE_URL: '' });
+      expect(new Set(relayLists().slice(45))).toEqual(new Set(order));
     });
 
     it('reaches a newer shop added after the cursor in the same lap', async () => {
@@ -8579,22 +8614,13 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
     it('wraps to the first shop when no row follows the cursor', async () => {
       const { ctx, order } = await listedShops(20);
       ctx.publisher.ok = false;
-      const removed = new Set<string>();
-      const shops = override<ShopIdentityStore>(ctx.shops, {
-        listAll: async () =>
-          (await ctx.shops.listAll()).filter((row) => !removed.has(row.messageId)),
-      });
       // Tick 1 ends on the last row: the cursor is shop 20.
-      await tick(ctx, ENV, { shopIdentities: shops });
+      await tick(ctx);
       expect(attemptsOf('nostr.profile.nack')).toEqual(order);
       // Tick 2 finds no row after the cursor and starts at shop 1.
-      await tick(ctx, ENV, { shopIdentities: shops });
+      await tick(ctx);
       expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(order);
-      // The last row is gone, so the cursor (shop 20) is past every row.
-      removed.add(uuid(20));
-      await tick(ctx, ENV, { shopIdentities: shops });
-      expect(attemptsOf('nostr.profile.nack').slice(40)).toEqual(order.slice(0, 19));
-      expect(attemptsOf('nostr.relays.nack').slice(40)).toEqual(order.slice(0, 19));
+      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(order);
     });
   });
 
@@ -8617,7 +8643,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
   }
 
   describe('overlapping shop ticks', () => {
-    it('drops a kind 0 signed under a reservation another tick replaced', async () => {
+    it('skips the kind 0 pass of a tick while the previous kind 0 pass is in flight', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }]);
       await ctx.shops.ensureListed(uuid(1), KEK);
       const step = gate();
@@ -8631,19 +8657,25 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
         }
         return read(id);
       };
+      const pages = vi.spyOn(ctx.shops, 'listRound');
       const first = tick(ctx);
       await step.entered;
+      expect(pages).toHaveBeenCalledTimes(1);
       await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
       await tick(ctx);
+      // The second tick read only the kind 10002 page and published no kind 0.
+      expect(pages).toHaveBeenCalledTimes(2);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
       step.release();
       await first;
       await tick(ctx);
-      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
-      const events = shopEvents(ctx, identity, 0);
-      expect(events.map((event) => content(event)['name'])).toEqual(['Roastery']);
+      const names = shopEvents(ctx, identity, 0).map((event) => content(event)['name']);
+      expect(names).toEqual(['Coffee Lab', 'Roastery']);
     });
 
-    it('drops a kind 10002 signed under a reservation another tick replaced', async () => {
+    it('skips the kind 10002 pass of a tick while the previous kind 10002 pass is in flight', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }]);
       await ctx.shops.ensureListed(uuid(1), KEK);
       const step = gate();
@@ -8660,12 +8692,13 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       const first = tick(ctx);
       await step.entered;
       await tick(ctx, PUBLIC_ENV);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 10002)).toEqual([]);
       step.release();
       await first;
       await tick(ctx, PUBLIC_ENV);
-      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
-      const events = shopEvents(ctx, identity, 10002);
-      expect(events.map((event) => event.tags)).toEqual([
+      expect(shopEvents(ctx, identity, 10002).map((event) => event.tags)).toEqual([
+        [['r', 'wss://relay.nostr.space']],
         [
           ['r', 'wss://relay.nostr.space'],
           ['r', 'wss://relay.damus.io'],
@@ -8673,69 +8706,23 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       ]);
     });
 
-    for (const [outcome, ending] of [
-      ['nack', 'a nack'],
-      ['error', 'an error'],
-    ] as const) {
-      it(`keeps the newer kind 0 reservation when the older publish ends in ${ending}`, async () => {
-        const ctx = await context([{ row: shopNote(uuid(1)) }]);
-        const identity = await ctx.shops.ensureListed(uuid(1), KEK);
-        const step = gate();
-        const publisher = ctx.publisher;
-        let held = false;
-        publisher.publish = async (event, urls) => {
-          publisher.calls.push({ event, urls: [...urls] });
-          if (!held && event['kind'] === 0 && event['pubkey'] === identity!.nostrPubkey) {
-            held = true;
-            step.enter();
-            await step.held;
-            if (outcome === 'error') throw new Error('relay');
-            return urls.map((url) => ({ url, ok: false }));
-          }
-          return urls.map((url) => ({ url, ok: true }));
-        };
-        const first = tick(ctx);
-        await step.entered;
-        await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
-        await tick(ctx);
-        step.release();
-        await first;
-        await tick(ctx);
-        expect(logged('nostr.profile.nack')).toContainEqual(
-          expect.objectContaining({ messageId: uuid(1) }),
-        );
-        const events = shopEvents(ctx, identity!, 0);
-        expect(events.map((event) => content(event)['name'])).toEqual(['Coffee Lab', 'Roastery']);
-      });
-
-      it(`keeps the newer kind 10002 reservation when the older publish ends in ${ending}`, async () => {
-        const ctx = await context([{ row: shopNote(uuid(1)) }]);
-        const identity = await ctx.shops.ensureListed(uuid(1), KEK);
-        const step = gate();
-        const publisher = ctx.publisher;
-        let held = false;
-        publisher.publish = async (event, urls) => {
-          publisher.calls.push({ event, urls: [...urls] });
-          if (!held && event['kind'] === 10002 && event['pubkey'] === identity!.nostrPubkey) {
-            held = true;
-            step.enter();
-            await step.held;
-            if (outcome === 'error') throw new Error('relay');
-            return urls.map((url) => ({ url, ok: false }));
-          }
-          return urls.map((url) => ({ url, ok: true }));
-        };
-        const first = tick(ctx);
-        await step.entered;
-        await tick(ctx, PUBLIC_ENV);
-        step.release();
-        await first;
-        await tick(ctx, PUBLIC_ENV);
-        expect(logged('nostr.relays.nack')).toContainEqual(
-          expect.objectContaining({ messageId: uuid(1) }),
-        );
-        expect(shopEvents(ctx, identity!, 10002)).toHaveLength(2);
-      });
-    }
+    it('clears the in-flight mark when the page read fails', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const page = ctx.shops.listRound.bind(ctx.shops);
+      let failures = 1;
+      ctx.shops.listRound = (cursor, limit) => {
+        if (failures > 0) {
+          failures -= 1;
+          return Promise.reject(new Error('db down'));
+        }
+        return page(cursor, limit);
+      };
+      await expect(tick(ctx)).rejects.toThrow('db down');
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+    });
   });
 });

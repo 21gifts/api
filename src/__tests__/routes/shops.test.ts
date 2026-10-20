@@ -205,13 +205,12 @@ describe('GET /shops/:npub', () => {
 
   it('answers a null NIP-05 when the shop stops being listed during the request', async () => {
     const { identities, npub, messages, auth } = await setup();
-    let reads = 0;
+    // The route reads the listed note; the NIP-05 allocation's bulk read
+    // after it already sees the note hidden.
     const flaky = {
-      getById: async (id: string) => {
-        reads += 1;
-        const row = await messages.getById(id);
-        return reads === 1 || row === undefined ? row : { ...row, deletedAt: new Date(0) };
-      },
+      getById: (id: string) => messages.getById(id),
+      getByIds: async (ids: readonly string[]) =>
+        (await messages.getByIds(ids)).map((row) => ({ ...row, deletedAt: new Date(0) })),
       getPhoto: (id: string) => messages.getPhoto(id),
       listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
     } as unknown as MessageStore;

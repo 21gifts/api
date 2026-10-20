@@ -97,6 +97,10 @@ describe('migrateShopIdentitySchema', () => {
     expect(run[0]).toContain('CREATE TABLE IF NOT EXISTS shop_identity');
     expect(run.join('\n')).toContain('trg_shop_identity_place');
     expect(run.join('\n')).toContain('trg_shop_identity_extra_photo');
+    expect(run).toContain(
+      `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx
+     ON shop_identity (nostr_key_created_at, message_id)`,
+    );
   });
 
   it('drops and recreates each trigger inside one DO block', () => {
@@ -317,6 +321,69 @@ describe('InMemoryShopIdentityStore reads', () => {
   });
 });
 
+describe('InMemoryShopIdentityStore listRound', () => {
+  const IDS = [1, 2, 3, 4, 5].map((n) => `0000000${String(n)}-0000-4000-8000-000000000000`);
+
+  /** Five keys in `listAll()` order: the first two share a key time. */
+  async function five(): Promise<{ store: InMemoryShopIdentityStore; rows: ShopIdentityRow[] }> {
+    const { store, clock } = setup(IDS.map((id) => shopRow(id)));
+    await store.ensureListed(IDS[1]!, KEK, keygenFrom(11));
+    await store.ensureListed(IDS[0]!, KEK, keygenFrom(10));
+    for (const [index, id] of IDS.slice(2).entries()) {
+      clock.now += 1;
+      await store.ensureListed(id, KEK, keygenFrom(12 + index));
+    }
+    const rows = await store.listAll();
+    expect(rows.map((row) => row.messageId)).toEqual(IDS);
+    return { store, rows };
+  }
+
+  const at = (row: ShopIdentityRow | undefined): { createdAt: Date; messageId: string } => ({
+    createdAt: row!.nostrKeyCreatedAt,
+    messageId: row!.messageId,
+  });
+
+  const round = async (
+    store: InMemoryShopIdentityStore,
+    cursor: { createdAt: Date; messageId: string } | null,
+    limit: number,
+  ): Promise<string[]> => (await store.listRound(cursor, limit)).map((row) => row.messageId);
+
+  it('pages after the cursor and wraps with the rows at or before it', async () => {
+    const { store, rows } = await five();
+    expect(await round(store, null, 2)).toEqual(IDS.slice(0, 2));
+    expect(await round(store, null, 20)).toEqual(IDS);
+    // Same key time: the message id breaks the tie.
+    expect(await round(store, at(rows[0]), 1)).toEqual([IDS[1]]);
+    expect(await round(store, at(rows[1]), 2)).toEqual(IDS.slice(2, 4));
+    expect(await round(store, at(rows[3]), 3)).toEqual([IDS[4], IDS[0], IDS[1]]);
+    expect(await round(store, at(rows[4]), 2)).toEqual(IDS.slice(0, 2));
+    // Fewer shops than the limit: each exactly once, the cursor's shop last.
+    expect(await round(store, at(rows[2]), 20)).toEqual([IDS[3], IDS[4], IDS[0], IDS[1], IDS[2]]);
+  });
+
+  it('uses the cursor as a key, also when no row has it any more', async () => {
+    const { store, rows } = await five();
+    const gone = { createdAt: rows[2]!.nostrKeyCreatedAt, messageId: `${IDS[2]!}x` };
+    expect(await round(store, gone, 2)).toEqual(IDS.slice(3, 5));
+    const past = {
+      createdAt: new Date(rows[4]!.nostrKeyCreatedAt.getTime() + 1),
+      messageId: IDS[0]!,
+    };
+    expect(await round(store, past, 3)).toEqual(IDS.slice(0, 3));
+  });
+
+  it('returns nothing for an empty store and copies its rows', async () => {
+    const { store } = setup();
+    expect(await store.listRound(null, 20)).toEqual([]);
+    expect(await store.listRound({ createdAt: new Date(0), messageId: ID_A }, 20)).toEqual([]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    const [row] = await store.listRound(null, 20);
+    row!.profileName = 'changed';
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Coffee Lab');
+  });
+});
+
 describe('InMemoryShopIdentityStore queueing', () => {
   it('queues a place change of any note with a key and a photo change only while listed', async () => {
     const { messages, store } = setup();
@@ -419,6 +486,23 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await store.nextRevision('place', claim)).toBe(2);
     expect(await store.nextRevision('place', { ...claim, claim: 9 })).toBeUndefined();
     expect(await store.nextRevision('photos', claim)).toBeUndefined();
+  });
+
+  it('reserves a photo revision only while the place is confirmed and the generation holds', async () => {
+    const { messages, store, claim } = await claimed();
+    await store.finishPlace(claim, 'put');
+    const photo = (await store.claimPhoto(60_000))!;
+    expect(
+      await store.nextRevision('photos', { ...photo, generation: photo.generation + 1 }),
+    ).toBeUndefined();
+    expect(await store.nextRevision('photos', photo)).toBe(1);
+    // A hide after the claim queues the place: no further photo revision.
+    await messages.markDeleted(ID_A, new Date(), 'staff');
+    expect(await store.nextRevision('photos', photo)).toBeUndefined();
+    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(1);
+    // The place lane still gets its revision.
+    const [place] = await store.claimPlaces(1, 60_000);
+    expect(await store.nextRevision('place', place!)).toBe(2);
   });
 
   it('releases only with the matching token, for either lane', async () => {
@@ -694,6 +778,39 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[2]?.text).toContain('ORDER BY nostr_key_created_at ASC, message_id ASC');
   });
 
+  it('reads one bounded round page and wraps with a second bounded read', async () => {
+    const { sql, calls } = fakeSql([
+      [sqlIdentity()],
+      [sqlIdentity(), sqlIdentity({ message_id: ID_B })],
+      [sqlIdentity({ message_id: ID_C })],
+      [sqlIdentity()],
+    ]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    const ids = (rows: ShopIdentityRow[]): string[] => rows.map((row) => row.messageId);
+    // No cursor: one read, also when it is short.
+    expect(ids(await store.listRound(null, 20))).toEqual([ID_A]);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.params).toEqual([null, null, 20]);
+    expect(calls[0]?.text).toContain(
+      '(nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)',
+    );
+    expect(calls[0]?.text).toContain('ORDER BY nostr_key_created_at ASC, message_id ASC');
+    expect(calls[0]?.text).toContain('LIMIT $3');
+    const cursor = { createdAt: new Date('2026-10-01T00:00:00Z'), messageId: ID_A };
+    // A full page after the cursor: no second read.
+    expect(ids(await store.listRound(cursor, 2))).toEqual([ID_A, ID_B]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1]?.params).toEqual([cursor.createdAt, ID_A, 2]);
+    // A short page: the second read takes only the rest of the limit.
+    expect(ids(await store.listRound(cursor, 2))).toEqual([ID_C, ID_A]);
+    expect(calls).toHaveLength(4);
+    expect(calls[3]?.text).toContain(
+      '(nostr_key_created_at, message_id) <= ($1::timestamptz, $2::uuid)',
+    );
+    expect(calls[3]?.text).toContain('LIMIT $3');
+    expect(calls[3]?.params).toEqual([cursor.createdAt, ID_A, 1]);
+  });
+
   it('inserts a new key with a locked, unchanged note and queues its place', async () => {
     const { sql, calls } = fakeSql([[], [sqlIdentity()]]);
     const store = new PostgresShopIdentityStore(sql, messages);
@@ -809,8 +926,12 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[1]?.text).toContain('ocp_photos_claim = $2');
     expect(await store.nextRevision('place', claim)).toBe(7);
     expect(calls[2]?.text).toContain('ocp_place_claim = $2');
+    expect(calls[2]?.text).not.toContain('ocp_place_pending');
+    expect(calls[2]?.params).toEqual([ID_A, 2]);
     expect(await store.nextRevision('photos', claim)).toBeUndefined();
     expect(calls[3]?.text).toContain('ocp_photos_claim = $2');
+    expect(calls[3]?.text).toContain('AND NOT ocp_place_pending AND ocp_photos_generation = $3');
+    expect(calls[3]?.params).toEqual([ID_A, 2, 1]);
   });
 
   it('writes every result conditional on the claim token', async () => {

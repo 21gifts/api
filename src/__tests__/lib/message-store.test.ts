@@ -3173,6 +3173,16 @@ describe('InMemoryMessageStore', () => {
     expect((await store.getById('a'))?.photoTakenAts).toEqual([null]);
   });
 
+  it('getByIds reads several rows like getById and leaves out missing ids', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }, LATE]);
+    expect(await store.getByIds([])).toEqual([]);
+    const rows = await store.getByIds(['b', 'missing', 'a']);
+    expect(rows.map((row) => row.id).sort()).toEqual(['a', 'b']);
+    expect(rows.find((row) => row.id === 'a')).toEqual(await store.getById('a'));
+    rows[0]!.text = 'changed';
+    expect((await store.getById(rows[0]!.id))?.text).not.toBe('changed');
+  });
+
   it('getById and claimUnsigned lease a row', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -7259,6 +7269,37 @@ describe('PostgresMessageStore', () => {
         staffAccountIds: new Set(),
       }),
     ).rejects.toThrow('feed boom');
+  });
+
+  it('getByIds reads every id in one statement with a uuid array literal', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.getByIds([])).toEqual([]);
+    expect(sql.queries).toHaveLength(0);
+    sql.nextRows = [
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'hi',
+        created_at: new Date(0),
+        has_photo: false,
+        event_id: null,
+        nostr_publish_state: 'pending',
+        sats: 0,
+      },
+    ];
+    const rows = await store.getByIds([
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    ]);
+    expect(rows.map((row) => row.text)).toEqual(['hi']);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toContain('WHERE id = ANY($1::uuid[])');
+    expect(sql.queries[0]?.text).toMatch(/received_fiat_php::text AS received_fiat_php/);
+    expect(sql.queries[0]?.params).toEqual([
+      '{"aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa","bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb"}',
+    ]);
   });
 
   it('getById maps a row and claim SQL runs', async () => {

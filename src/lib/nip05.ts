@@ -249,6 +249,11 @@ export interface ShopNip05Entry {
  * with the same slug and collision suffix ({@link allocateNip05Local}) from
  * the current shop name. Shops that are not listed get no local.
  *
+ * Cost per call, like the account directory of `/.well-known/nostr.json`
+ * that it extends: one read of every account, one of every shop identity and
+ * one bulk read of their notes ({@link MessageStore.getByIds}), no read per
+ * shop.
+ *
  * @param auth - Auth store.
  * @param shops - Shop identities (ordered by key creation).
  * @param messages - Forum store that decides whether a shop is listed.
@@ -260,9 +265,16 @@ export async function listShopNip05Entries(
   messages: MessageStore,
 ): Promise<ShopNip05Entry[]> {
   const { taken } = allocateAccountLocals(await auth.listAccounts());
+  const identities = await shops.listAll();
+  // One bulk read of every shop note instead of one read per shop.
+  const notes = new Map(
+    (await messages.getByIds(identities.map((identity) => identity.messageId))).map(
+      (note) => [note.id, note] as const,
+    ),
+  );
   const out: ShopNip05Entry[] = [];
-  for (const identity of await shops.listAll()) {
-    const name = listedShopName(await messages.getById(identity.messageId));
+  for (const identity of identities) {
+    const name = listedShopName(notes.get(identity.messageId));
     if (name === null) {
       continue;
     }

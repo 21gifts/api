@@ -43,6 +43,10 @@ export interface OcpOutboxDeps {
   mapPush: MapPush;
 }
 
+/**
+ * Answer body, or `''` when it cannot be read. A body of only whitespace is
+ * no readable answer either, so callers test the trimmed text for a verdict.
+ */
 async function bodyText(response: Response): Promise<string> {
   try {
     return await response.text();
@@ -170,9 +174,10 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
         await identities.release('place', claim);
         return;
       }
-      if (text === '') {
-        // An unreadable answer is not a verdict: keep the flag and the
-        // claim, so the place is sent again when the lease ends.
+      if (text.trim() === '') {
+        // An unreadable (empty or whitespace-only) answer is not a verdict:
+        // keep the flag and the claim, so the place is sent again when the
+        // lease ends.
         logEvent('ocp.place.failed', { messageId, status: 409 });
         return;
       }
@@ -187,7 +192,7 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
         logEvent('ocp.place.deferred', { messageId, status: 400, error });
         return;
       }
-      if (text === '') {
+      if (text.trim() === '') {
         // As for 409: no readable answer is no verdict, retry at lease end.
         logEvent('ocp.place.failed', { messageId, status: 400 });
         return;
@@ -207,14 +212,15 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  *
  * Results: `PUT` 2xx clears the place flag (generation-checked) and queues
  * the photos; 201 also nulls the photo hash; `DELETE` 2xx clears the flag;
- * 409 `Stale revision` only releases; a 409 whose body is empty or cannot be
- * read logs `ocp.place.failed` and keeps the flag and the claim, so the next
- * attempt follows when the lease ends; a 400 whose error says the field
+ * 409 `Stale revision` only releases; a 409 whose body is empty, only
+ * whitespace or cannot be read logs `ocp.place.failed` and keeps the flag and
+ * the claim, so the next attempt follows when the lease ends; a 400 whose
+ * error says the field
  * `nostrPubkey` or `revision` is not allowed (an OpenCryptoPay API without
  * openCryptoPay/api#26) logs `ocp.place.deferred` and keeps the flag and the
  * claim, so the place is sent again when the lease ends; a 400 whose body
- * is empty or cannot be read logs `ocp.place.failed` and keeps the flag and
- * the claim, like the empty 409; any other 400 or another 409 logs
+ * is empty, only whitespace or cannot be read logs `ocp.place.failed` and
+ * keeps the flag and the claim, like the empty 409; any other 400 or another 409 logs
  * `ocp.place.rejected` and clears the flag; anything else logs
  * `ocp.place.failed` and keeps the flag until the lease ends.
  *
@@ -265,7 +271,11 @@ async function skippedCount(response: Response): Promise<number> {
  *
  * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
  * cleared without a request. Otherwise the hash is nulled first, then up to
- * 10 photos are sent in note order as base64. Results: 200 stores the hash
+ * 10 photos are sent in note order as base64. The revision is reserved
+ * only while the place is not pending and the photo generation is still the
+ * claim's (`nextRevision`); otherwise the claim is released without a
+ * request, and the photos are sent after the place lane has settled.
+ * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
  * hash and log `ocp.photos.rejected`; 404 `{"error":"Place not found"}`
@@ -305,7 +315,13 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
   }
   await identities.clearPhotoHash(claim);
   const revision = await identities.nextRevision('photos', claim);
-  if (revision === undefined) return;
+  if (revision === undefined) {
+    // The place is pending, the photo generation moved on, or the claim was
+    // taken over: send nothing and release (a lost claim is a no-op). The
+    // flag stays, so the photos follow once the place lane has settled.
+    await identities.release('photos', claim);
+    return;
+  }
   if (!(await identities.leaseHasTime('photos', claim, minimumMs))) {
     await identities.release('photos', claim);
     return;

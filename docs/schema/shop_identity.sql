@@ -33,6 +33,12 @@ CREATE TABLE IF NOT EXISTS shop_identity (
     CHECK (ocp_revision >= 0 AND ocp_revision <= 9007199254740991)
 );
 
+-- Keyset order of the shop publishers' round robin (ShopIdentityStore.listRound):
+-- each worker pass reads at most WORKER_BATCH rows after a cursor
+-- (nostr_key_created_at, message_id), and wraps with a second bounded read.
+CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx
+  ON shop_identity (nostr_key_created_at, message_id);
+
 -- Place outbox: every write that changes the text, pin, till account or
 -- deleted_at of a note queues its row, in the writing transaction. A key that
 -- a concurrent insert committed is seen because each PL/pgSQL statement takes

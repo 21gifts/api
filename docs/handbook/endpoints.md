@@ -1264,7 +1264,7 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 - **Purpose:** Resolve a shop identity without a session. A listed identity returns its current name, description, complete place, ordered photo URLs with header-only dimensions, till pay username, NIP-05, and creation time. A known lowercase hex pubkey redirects to the canonical npub URL; an unlisted retained identity returns 410 without its former name.
 - **Inputs:** One path segment, validated as a lowercase 64-hex key or canonical lowercase npub.
-- **Returns / side effects:** 200 `{ shop }`, 301 redirect, 404, 410, or 503. Public outcomes cache for 60 seconds; 503 is `no-store` and logs `shops.detail.failed`.
+- **Returns / side effects:** 200 `{ shop }`, 301 redirect, 404, 410, or 503. Public outcomes cache for 60 seconds; 503 is `no-store` and logs `shops.detail.failed`. While `nip05Domain` is set, a 200 computes the NIP-05 allocation for the request like `/.well-known/nostr.json` (`listShopNip05Entries`: every account, every shop identity and one bulk read of their notes).
 - **Auth:** Public; bearer presence or validity does not change the response.
 - **Success:** Returns a currently listed shop, or redirects a known lowercase hex key to its npub URL.
 - **Errors:** Unknown/invalid is 404, a known unlisted identity is 410, and store failure is 503 with no-store caching.

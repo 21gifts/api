@@ -85,6 +85,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     getByPubkey: vi.fn(),
     getNostrCiphertext: vi.fn(),
     listAll: vi.fn(),
+    listRound: vi.fn(),
     renameIfListed: vi.fn(),
     listCandidates: vi.fn(),
     queueAllPlacePage: vi.fn(),
@@ -323,7 +324,12 @@ describe('runOcpPlaceOutboxPass', () => {
       status: 409,
       text: () => Promise.reject(new Error('stream')),
     } as unknown as Response;
-    for (const answer of [() => broken, () => new Response('', { status: 409 })]) {
+    for (const answer of [
+      () => broken,
+      () => new Response('', { status: 409 }),
+      () => new Response('\n', { status: 409 }),
+      () => new Response(' \r\n ', { status: 409 }),
+    ]) {
       const messages = await messagesWith(shopNote());
       const { push } = mapPush(answer);
       const ids = stubIdentities();
@@ -335,10 +341,9 @@ describe('runOcpPlaceOutboxPass', () => {
       expect(ids.finishPlace).not.toHaveBeenCalled();
       expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
     }
-    expect(logged('ocp.place.failed')).toEqual([
-      expect.objectContaining({ messageId: ID, status: 409 }),
-      expect.objectContaining({ messageId: ID, status: 409 }),
-    ]);
+    expect(logged('ocp.place.failed')).toEqual(
+      Array.from({ length: 4 }, () => expect.objectContaining({ messageId: ID, status: 409 })),
+    );
     expect(logged('ocp.place.rejected')).toEqual([]);
   });
 
@@ -348,7 +353,12 @@ describe('runOcpPlaceOutboxPass', () => {
       status: 400,
       text: () => Promise.reject(new Error('stream')),
     } as unknown as Response;
-    for (const answer of [() => broken, () => new Response('', { status: 400 })]) {
+    for (const answer of [
+      () => broken,
+      () => new Response('', { status: 400 }),
+      () => new Response('\n', { status: 400 }),
+      () => new Response(' \r\n ', { status: 400 }),
+    ]) {
       const messages = await messagesWith(shopNote());
       const { push } = mapPush(answer);
       const ids = stubIdentities();
@@ -358,10 +368,9 @@ describe('runOcpPlaceOutboxPass', () => {
       expect(ids.finishPlace).not.toHaveBeenCalled();
       expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
     }
-    expect(logged('ocp.place.failed')).toEqual([
-      expect.objectContaining({ messageId: ID, status: 400 }),
-      expect.objectContaining({ messageId: ID, status: 400 }),
-    ]);
+    expect(logged('ocp.place.failed')).toEqual(
+      Array.from({ length: 4 }, () => expect.objectContaining({ messageId: ID, status: 400 })),
+    );
     expect(logged('ocp.place.rejected')).toEqual([]);
     expect(logged('ocp.place.deferred')).toEqual([]);
   });
@@ -503,13 +512,16 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(sent).toEqual([]);
   });
 
-  it('sends nothing when the claim was taken over before the revision', async () => {
+  it('sends nothing and releases when no revision is reserved', async () => {
     const messages = await messagesWith(shopNote());
     const ids = stubIdentities();
     ids.nextRevision.mockResolvedValueOnce(undefined);
     const { push, sent } = mapPush(() => new Response('{}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+    expect(ids.clearPhotoWithoutSend).not.toHaveBeenCalled();
   });
 
   it('nulls the hash and releases on 409 Stale revision', async () => {
@@ -728,6 +740,115 @@ describe('OpenCryptoPay main without the photo route', () => {
     expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS, PLACE, PHOTOS]);
     expect((await store.getByMessageId(ID))?.ocpPhotosHash).toBe(ocpPhotoSetHash([PNG]));
     expect(logged('ocp.photos.deferred')).toEqual([]);
+  });
+});
+
+describe('a photo pass that read the photos before a place change', () => {
+  /**
+   * A listed shop whose place is confirmed and whose photos are pending, and
+   * outbox deps whose `listExtraPhotos` runs `between` once, right after the
+   * photo pass claimed and read the photos and before it reserves a revision.
+   */
+  async function pendingPhotos(
+    between: (outbox: OcpOutboxDeps, messages: InMemoryMessageStore) => Promise<void>,
+  ): Promise<{
+    messages: InMemoryMessageStore;
+    store: InMemoryShopIdentityStore;
+    sent: Sent[];
+    outbox: OcpOutboxDeps;
+  }> {
+    const messages = await messagesWith(shopNote({ hasPhoto: true }), [PNG, JPEG]);
+    const store = new InMemoryShopIdentityStore(messages, () => 1_000_000);
+    await store.ensureListed(ID, new Uint8Array(32).fill(7));
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    let hooked = false;
+    const hookedMessages = new Proxy(messages, {
+      get(target, key) {
+        if (key === 'listExtraPhotos') {
+          return async (id: string) => {
+            const extras = await target.listExtraPhotos(id);
+            if (!hooked) {
+              hooked = true;
+              await between(outbox, messages);
+            }
+            return extras;
+          };
+        }
+        const value: unknown = Reflect.get(target, key, target);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(target)
+          : value;
+      },
+    });
+    const outbox = deps(store, hookedMessages, push);
+    await runOcpPlaceOutboxPass(outbox);
+    expect(await store.getByMessageId(ID)).toMatchObject({
+      ocpPlacePending: false,
+      ocpPhotosPending: true,
+      ocpRevision: 1,
+    });
+    expect(hooked).toBe(false);
+    return { messages, store, sent, outbox };
+  }
+
+  it('sends nothing and reserves no revision once the hide made the place pending', async () => {
+    const ctx = await pendingPhotos(async (_outbox, messages) => {
+      await messages.markDeleted(ID, new Date(), 'staff');
+    });
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    expect(ctx.sent.map((request) => request.url)).toEqual(['https://map.test/map/places']);
+    expect(await ctx.store.getByMessageId(ID)).toMatchObject({
+      ocpRevision: 1,
+      ocpPlacePending: true,
+      ocpPhotosPending: true,
+      ocpPhotosClaimedUntil: null,
+    });
+    // The place lane deletes with the next revision; the photos are dropped.
+    await runOcpPlaceOutboxPass(ctx.outbox);
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    expect(ctx.sent.map((request) => [request.method, request.body['revision']])).toEqual([
+      ['PUT', 1],
+      ['DELETE', 2],
+    ]);
+    expect(await ctx.store.getByMessageId(ID)).toMatchObject({
+      ocpRevision: 2,
+      ocpPlacePending: false,
+      ocpPhotosPending: false,
+    });
+  });
+
+  it('sends nothing when the place lane already deleted the shop with a newer revision', async () => {
+    const ctx = await pendingPhotos(async (outbox, messages) => {
+      await messages.markDeleted(ID, new Date(), 'staff');
+      await runOcpPlaceOutboxPass(outbox);
+    });
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    // The DELETE (revision 2) is the last request; no photo request follows it.
+    expect(ctx.sent.map((request) => [request.method, request.body['revision']])).toEqual([
+      ['PUT', 1],
+      ['DELETE', 2],
+    ]);
+    expect(await ctx.store.getByMessageId(ID)).toMatchObject({
+      ocpRevision: 2,
+      ocpPlacePending: false,
+      ocpPhotosPending: false,
+      ocpPhotosClaimedUntil: null,
+    });
+  });
+
+  it('retries the photos after a newer photo change instead of sending the old set', async () => {
+    const ctx = await pendingPhotos(async (_outbox, messages) => {
+      await messages.replacePhotos(ID, [JPEG]);
+    });
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    expect(ctx.sent).toHaveLength(1);
+    expect((await ctx.store.getByMessageId(ID))?.ocpRevision).toBe(1);
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    expect(ctx.sent.at(-1)?.body).toMatchObject({
+      revision: 2,
+      photos: [{ contentType: 'image/jpeg', data: Buffer.from(JPEG.bytes).toString('base64') }],
+    });
+    expect((await ctx.store.getByMessageId(ID))?.ocpPhotosPending).toBe(false);
   });
 });
 
