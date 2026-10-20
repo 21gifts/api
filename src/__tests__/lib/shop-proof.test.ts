@@ -1215,7 +1215,7 @@ describe('storeProof', () => {
     expect(again).toEqual({ proof, created: false });
   });
 
-  it('a lookup that fills the log index of an unlogged hex row schedules its submit now', async () => {
+  it('a lookup that fills the log index of an unlogged hex row schedules its submit 10 s after the fill', async () => {
     const h = harness();
     await seed(h);
     await insertProofs(
@@ -1235,7 +1235,7 @@ describe('storeProof', () => {
       id: uid(0x401),
       logIndex: 3,
       nextReceiptAt: null,
-      nextSubmitAt: new Date(T0 + 5_000),
+      nextSubmitAt: new Date(T0 + 15_000),
     });
   });
 
@@ -1843,7 +1843,7 @@ describe('readProofReceipt', () => {
     expect(await proofsOf(h)).toEqual([]);
   });
 
-  it('a filled hex proof gets next_submit_at at the fill; one with a submit scheduled or an order keeps its schedule', async () => {
+  it('a filled hex proof gets next_submit_at 10 s after the fill; one with a submit scheduled or an order keeps its schedule', async () => {
     const h = harness();
     await seed(h);
     await insertProofs(
@@ -1880,7 +1880,7 @@ describe('readProofReceipt', () => {
     expect(await getProof(h, uid(0x401))).toMatchObject({
       logIndex: 3,
       nextReceiptAt: null,
-      nextSubmitAt: new Date(T0 + 40_000),
+      nextSubmitAt: new Date(T0 + 50_000),
     });
     expect((await getProof(h, uid(0x402)))?.nextSubmitAt).toEqual(new Date(T0 + 99_000));
     expect(await getProof(h, uid(0x403))).toMatchObject({ logIndex: 3, nextSubmitAt: null });

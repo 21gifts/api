@@ -501,14 +501,14 @@ async function lookups(shop: ShopPayments, nowMs: number): Promise<void> {
 /**
  * One receipt row: send a `hex` transaction that was never sent, otherwise
  * read the receipt. A receipt fills the log index and value (and a `hex`
- * proof that may be submitted gets `next_submit_at` now) or refuses a failed
- * `hex` transaction. A `hex` transaction without a receipt is sent again and
- * read again after 2 min while it is unresolved, however long the node does
- * not know it, so a transaction mined late is still submitted. Reading stops
- * at `give_up_at` (24 h after the proof was stored, or after an operator
- * retry moved it ahead; the stuck duty then marks an unresolved proof
- * `stuck`), once the log index is filled, and for a `hex` proof once it has a
- * result or an order. A `detected` proof is read for at most 24 h: its
+ * proof that may be submitted gets `next_submit_at` 10 s after the fill) or
+ * refuses a failed `hex` transaction. A `hex` transaction without a receipt
+ * is sent again and read again after 2 min while it is unresolved, however
+ * long the node does not know it, so a transaction mined late is still
+ * submitted. Reading stops at `give_up_at` (24 h after the proof was
+ * stored, or after an operator retry moved it ahead; the stuck duty then
+ * marks an unresolved proof `stuck`), once the log index is filled, and for
+ * a `hex` proof once it has a result or an order. A `detected` proof is read for at most 24 h: its
  * `give_up_at`, which is never moved.
  *
  * @param shop - Service.

@@ -72,7 +72,7 @@ export const SHOP_REPEAT_SUBMITS_PER_MINUTE = 5;
 export const SHOP_MAX_LOOKUPS_PER_QUOTE = 4;
 /** First lookup of a stored lookup row. */
 export const SHOP_FIRST_LOOKUP_MS = 10_000;
-/** First watcher submit of a stored proof. */
+/** First watcher submit of a stored proof, or of one after its log index is filled. */
 export const SHOP_FIRST_SUBMIT_MS = 10_000;
 /** First watcher receipt read or resend of a proof without a log index. */
 export const SHOP_FIRST_RECEIPT_MS = 30_000;
@@ -598,8 +598,9 @@ async function mergeDeposit(
  * Fill values into a stored row and re-evaluate it; a unique conflict on the
  * log index merges the two rows of one deposit. A row that the fill makes
  * submittable (a `hex` proof whose receipt was found) and that has no submit
- * scheduled gets `next_submit_at` now, so the submits duty's 10 s, 30 s,
- * 60 s, then 5 min count from the fill.
+ * scheduled gets `next_submit_at` 10 s after the fill, as a proof stored with
+ * its log index does after its storing, so the watcher submits it 10 s,
+ * 30 s, and 60 s after the fill, then every 5 min.
  *
  * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - Stored row.
@@ -615,7 +616,7 @@ async function fillProof(
 ): Promise<ShopProof> {
   const filled: ShopProofPatch =
     proof.nextSubmitAt === null && submittable({ ...proof, ...patch })
-      ? { ...patch, nextSubmitAt: new Date(nowMs) }
+      ? { ...patch, nextSubmitAt: new Date(nowMs + SHOP_FIRST_SUBMIT_MS) }
       : patch;
   const updated = await tx.updateProof(proof.id, {}, filled);
   if (updated === 'conflict') {
@@ -1068,9 +1069,8 @@ export async function sendHexProof(
  * Read the receipt of a proof without a log index and fill in its log index
  * and value, taking a transfer log no other row of the same offer and
  * transaction holds while one remains (else the rows merge). A filled `hex`
- * proof that may be submitted gets `next_submit_at` now. A failed `hex`
- * transaction is refused; a `detected` (or `hex`)
- * proof whose successful receipt has no transfer log to its offer, or whose
+ * proof that may be submitted gets `next_submit_at` 10 s after the fill. A
+ * failed `hex` transaction is refused; a `detected` (or `hex`) proof whose successful receipt has no transfer log to its offer, or whose
  * transaction failed, stays held, stops being read, and logs
  * `shop.alert.detected_mismatch`.
  *

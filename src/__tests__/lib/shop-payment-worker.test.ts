@@ -803,7 +803,7 @@ describe('duty 5: receipts', () => {
     expect(h.orchestra.submit).not.toHaveBeenCalled();
   });
 
-  it('fills a hex transaction mined 30 min after its first send and the submits duty submits it in the same tick', async () => {
+  it('fills a hex transaction mined 30 min after its first send; the watcher submits it 10 s, 30 s, and 60 s after the fill, then every 5 min', async () => {
     const h = harness();
     await seed(h);
     await insertProofs(
@@ -819,6 +819,20 @@ describe('duty 5: receipts', () => {
     h.rpc['eth_getTransactionReceipt'] = () => ({ result: receiptJson(H1, '0x1', [usdtLog()]) });
     await runShopPaymentTick(h.shop, 2);
     expect(h.rpcCalls.map((call) => call.method)).toEqual(['eth_getTransactionReceipt']);
+    // The fill schedules the first submit 10 s later, as storing a proof
+    // with its log index does; nothing is submitted on the fill's tick.
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      logIndex: 3,
+      nextReceiptAt: null,
+      tries: 0,
+      nextSubmitAt: new Date(T0 + 10_000),
+    });
+    h.clock.now = T0 + 9_999;
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
+    h.clock.now = T0 + 10_000;
+    await runShopPaymentTick(h.shop, 2);
     expect(h.orchestra.submit).toHaveBeenCalledTimes(1);
     expect(h.orchestra.submit.mock.calls[0]?.slice(0, 4)).toEqual([
       'q-usdt-pol',
@@ -826,12 +840,30 @@ describe('duty 5: receipts', () => {
       uid(0x402),
       'watcher',
     ]);
-    // The submits duty's 10 s, 30 s, 60 s count from the fill.
     expect(await getProof(h, uid(0x401))).toMatchObject({
-      logIndex: 3,
-      nextReceiptAt: null,
       tries: 1,
-      nextSubmitAt: new Date(T0 + 20_000),
+      nextSubmitAt: new Date(T0 + 30_000),
+    });
+    h.clock.now = T0 + 30_000;
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.submit).toHaveBeenCalledTimes(2);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      tries: 2,
+      nextSubmitAt: new Date(T0 + 60_000),
+    });
+    h.clock.now = T0 + 60_000;
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.submit).toHaveBeenCalledTimes(3);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      tries: 3,
+      nextSubmitAt: new Date(T0 + 360_000),
+    });
+    h.clock.now = T0 + 360_000;
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.submit).toHaveBeenCalledTimes(4);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      tries: 4,
+      nextSubmitAt: new Date(T0 + 660_000),
     });
   });
 

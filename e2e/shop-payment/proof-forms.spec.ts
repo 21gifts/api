@@ -108,7 +108,7 @@ test('a hex transaction mined after the proof request is not submitted until the
   expect(unmined.submits.filter((entry) => entry.txHash === hash)).toEqual([]);
   expect(unmined.receiptReads[hash]).toBeGreaterThanOrEqual(2);
   // Mined at 20 s; the receipts duty (30 s after the send) fills it, and the
-  // submits duty submits it, so the order pays the BOLT11.
+  // submits duty submits it 10 s after the fill, so the order pays the BOLT11.
   await expect
     .poll(async () => (await paymentStatus(request, opened.payment)).paymentStatus, {
       timeout: 120_000,
