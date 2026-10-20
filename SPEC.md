@@ -4794,7 +4794,9 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
-stored (omitted when unset, even when `accountId` is omitted), and always
+stored (omitted when unset or when that account has no username, even when
+`accountId` is omitted; a note whose till account has no username can still
+be a listed shop), and always
 `shopNpub` (the listed-shop npub or JSON null),
 `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
@@ -5015,7 +5017,7 @@ Staff replacement of the stills on a live top-level shop note. Bearer session re
 
 ### `GET /messages/:id/edits`
 
-Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null (`username` is null when the till account had none). `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 

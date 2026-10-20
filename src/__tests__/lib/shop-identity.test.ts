@@ -165,6 +165,35 @@ describe('InMemoryShopIdentityStore key creation', () => {
     expect(await store.listAll()).toHaveLength(1);
   });
 
+  it('records the note as it is after key generation', async () => {
+    const { messages, store } = setup();
+    const renaming = {
+      generateSecretKey: () => {
+        void messages.setPlace(ID_A, { ...shopRow(ID_A).place!, label: 'Roastery' });
+        return secret(2);
+      },
+    };
+    const created = await store.ensureListed(ID_A, KEK, renaming);
+    expect(created?.profileName).toBe('Roastery');
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      profileName: 'Roastery',
+      ocpPlaceGeneration: 1,
+    });
+  });
+
+  it('creates nothing when the note stops being listed during key generation', async () => {
+    const { messages, store } = setup();
+    const unlisting = {
+      generateSecretKey: () => {
+        void messages.updateText(ID_A, 'Too short #21GiftsShop');
+        return secret(2);
+      },
+    };
+    expect(await store.ensureListed(ID_A, KEK, unlisting)).toBeUndefined();
+    expect(await store.listAll()).toEqual([]);
+    expect((await messages.getById(ID_A))?.shopNpub ?? null).toBeNull();
+  });
+
   it('refuses a public key that another shop already holds', async () => {
     const { store } = setup([shopRow(ID_A), shopRow(ID_B)]);
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
@@ -575,6 +604,8 @@ function sqlIdentity(overrides: Record<string, unknown> = {}): Record<string, un
   };
 }
 
+const SNAPSHOT = ['Coffee Lab', TEXT, 47.3, 8.5, 'Main Street', '1', '8001', 'Zürich', 'CH'];
+
 describe('PostgresShopIdentityStore', () => {
   const messages = new InMemoryMessageStore([
     shopRow(ID_A),
@@ -632,20 +663,12 @@ describe('PostgresShopIdentityStore', () => {
     expect(insert.text).toContain('FOR UPDATE');
     expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
     expect(insert.text).toContain('true, 1 FROM locked');
+    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked');
     expect(insert.params[0]).toBe(ID_A);
-    expect(insert.params[1]).toBe(publicKeyHexFromSecret(secret(2)));
-    expect(insert.params.slice(6)).toEqual([
-      'Coffee Lab',
-      TEXT,
-      47.3,
-      8.5,
-      'Main Street',
-      '1',
-      '8001',
-      'Zürich',
-      'CH',
-    ]);
-    const plain = await decryptNostrSecret(insert.params[2] as Uint8Array, KEK, `shop:${ID_A}`);
+    expect(insert.params.slice(1, 10)).toEqual(SNAPSHOT);
+    expect(insert.params[10]).toBe(publicKeyHexFromSecret(secret(2)));
+    expect(insert.params.slice(12)).toEqual([1, 'custodial', expect.any(Date)]);
+    const plain = await decryptNostrSecret(insert.params[11] as Uint8Array, KEK, `shop:${ID_A}`);
     expect([...plain]).toEqual([...secret(2)]);
   });
 
@@ -662,19 +685,30 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('rewrites profile_name of an existing listed identity', async () => {
+  it('rewrites profile_name of an existing listed identity only under an unchanged note', async () => {
     const { sql, calls } = fakeSql([
       [sqlIdentity({ profile_name: 'Old' })],
+      [sqlIdentity()],
       [sqlIdentity({ message_id: ID_B, profile_name: 'Old' })],
       [sqlIdentity()],
+      [sqlIdentity({ profile_name: 'Old' })],
+      [],
+      [],
     ]);
     const store = new PostgresShopIdentityStore(sql, messages);
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
     expect(calls[1]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
-    expect(calls[1]?.params).toEqual([ID_A, 'Coffee Lab']);
+    expect(calls[1]?.text).toContain('FOR UPDATE');
+    expect(calls[1]?.text).toContain('AND text = $3 AND place_lat = $4');
+    expect(calls[1]?.params).toEqual([ID_A, ...SNAPSHOT]);
     expect((await store.ensureListed(ID_B, KEK))?.profileName).toBe('Old');
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
     expect(calls).toHaveLength(4);
+    // The note changed after the read: the update matches nothing.
+    expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Old');
+    expect(calls).toHaveLength(6);
+    expect(await store.ensureListed(ID_C, KEK)).toBeUndefined();
+    expect(calls).toHaveLength(7);
   });
 
   it('lists candidates with the keyset cursor', async () => {

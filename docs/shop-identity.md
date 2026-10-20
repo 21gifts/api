@@ -25,7 +25,10 @@ A **listed shop** is a top-level forum note (`parent_id` null) that:
 - has the hashtag token `21GiftsShop` in its text, with the same token rule
   as `GET /shops/activity`;
 - has a place pin;
-- has `shop_account_id` set;
+- has `shop_account_id` set. The till account does not need a username: an
+  account without one (for example the survivor of an account merge, which
+  keeps its own username) still lists the shop, and only `payUsername` is
+  `null`;
 - is complete under 21gifts/api#478: `shopPlaceProblem` (label, structured
   address, label without the address) and `shopTextProblem` (description)
   both return `null`. This is the same check `shopOcpPlaceInput` makes before
@@ -66,7 +69,13 @@ builds on that change.
     while every column that check read (text, pin, till account set, live,
     top-level) is unchanged. An edit that committed in between makes the
     insert a no-op; that edit's own write path or the backfill then creates
-    the key from the new state.
+    the key from the new state. The in-memory adapter reads the note again
+    after the key is generated and takes the name and the fingerprints from
+    that read, creating nothing if it is no longer listed.
+  - For an existing key, `ensureListed` rewrites `profile_name` under the
+    same lock and the same unchanged-columns condition (`UPDATE … FROM` the
+    locked note), so a request that read the note before a newer rename
+    committed changes nothing and cannot put the older name back.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
@@ -181,7 +190,10 @@ not, in the same loop and with the same rules as account profiles
 - published only when the content differs from the in-memory cache;
 - `created_at` = `max(now, last + 1)`; a failure in the required write set
   clears the cache entry, while the `wss://purplepag.es` copy stays best
-  effort, as for accounts.
+  effort, as for accounts;
+- the fast lane can overlap: a tick whose cache entry another tick replaced
+  while it signed does not publish, and a failure clears the cache entry only
+  while it is still that tick's own, as for accounts.
 
 Kind 0 content of a listed shop:
 

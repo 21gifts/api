@@ -5731,7 +5731,7 @@ describe('PostgresMessageStore', () => {
     });
   });
 
-  it('maps a shop account only when id and username are non-empty', async () => {
+  it('maps a shop account whenever the id is non-empty, with a null username when it is blank', async () => {
     const sql = new MockSql();
     const hiddenAt = new Date('2026-09-01T00:00:00.000Z');
     const base = {
@@ -5815,8 +5815,8 @@ describe('PostgresMessageStore', () => {
     expect(byId.get('empty-name')).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
     expect(byId.get('null-name')).toEqual({ id: 'shop-acc', username: 'ada', name: '' });
     expect(byId.get('padded-user')).toEqual({ id: 'shop-acc', username: ' ada ', name: 'Ada' });
-    expect(byId.get('blank-user')).toBeNull();
-    expect(byId.get('null-user')).toBeNull();
+    expect(byId.get('blank-user')).toEqual({ id: 'shop-acc', username: null, name: 'Ada' });
+    expect(byId.get('null-user')).toEqual({ id: 'shop-acc', username: null, name: 'Ada' });
     expect(byId.get('empty-id')).toBeNull();
     expect(byId.get('null-id')).toBeNull();
     expect(byId.get('absent')).toBeNull();

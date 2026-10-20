@@ -33,6 +33,7 @@ import {
   type ForumPhoto,
   type ForumPhotoContentType,
   type MessageRow,
+  type MessageShopAccount,
   type NostrPublishState,
 } from '@/lib/message';
 import { placesMatch, type ForumPlace, type ForumPlaceAddress } from '@/lib/place';
@@ -2084,7 +2085,7 @@ function cloneEditValue(value: unknown): unknown {
  * Only the account id counts. A renamed username or display name is not a new assignment.
  */
 function shopSnapshotsMatch(
-  a: { id: string; username: string; name: string } | null | undefined,
+  a: MessageShopAccount | null | undefined,
   b: { id: string; username: string; name: string } | null,
 ): boolean {
   const left = a ?? null;
@@ -4494,20 +4495,24 @@ function safeJson(value: string): unknown {
   }
 }
 
-/** Shop account columns. A blank joined username is no account. `name` may be empty. */
-function shopAccountFromSql(
-  row: MessageSqlRow,
-): { id: string; username: string; name: string } | null {
+/**
+ * Shop account columns. A set `shop_account_id` is the assigned till
+ * account even when the joined username is null or blank (for example the
+ * survivor of an account merge): `username` is then `null`, and only the
+ * pay fields that need a username depend on it. `name` may be empty.
+ */
+function shopAccountFromSql(row: MessageSqlRow): MessageShopAccount | null {
   const id = row.shop_account_id;
-  const username = row.shop_username;
   if (typeof id !== 'string' || id === '') {
     return null;
   }
-  if (typeof username !== 'string' || username.trim() === '') {
-    return null;
-  }
+  const username = row.shop_username;
   const name = row.shop_name;
-  return { id, username, name: typeof name === 'string' ? name : '' };
+  return {
+    id,
+    username: typeof username === 'string' && username.trim() !== '' ? username : null,
+    name: typeof name === 'string' ? name : '',
+  };
 }
 
 /** Map a SQL list row onto {@link MessageRow}. Unexported. */

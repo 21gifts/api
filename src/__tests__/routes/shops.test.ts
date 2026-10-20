@@ -164,6 +164,17 @@ describe('GET /shops/:npub', () => {
     }
   });
 
+  it('serves a shop whose till account has no username, with payUsername null', async () => {
+    const { app, npub } = await setup({
+      till: account({ username: null }),
+      row: { shopAccount: { id: TILL, username: null, name: 'Coffee' } },
+    });
+    const response = await app.request(`/shops/${npub}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { shop: { name: unknown; payUsername: unknown } };
+    expect(body.shop).toMatchObject({ name: 'Coffee Lab', payUsername: null });
+  });
+
   it('redirects the hex key of a known shop to its npub', async () => {
     const { app, npub, hex } = await setup();
     const response = await app.request(`/shops/${hex}`);

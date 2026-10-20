@@ -397,7 +397,7 @@ export interface Kind0ProfileContent {
   name: string;
   /** Same as `name` for Damus/Primal. */
   display_name: string;
-  /** Fixed site URL. */
+  /** Site URL: `https://21.gifts` for accounts, the shop page URL for shops. */
   website: string;
   /** Wide header: the account's own wide image, or the shared 1200×630 image. */
   banner?: string;
@@ -426,6 +426,8 @@ export interface Kind0ProfileContent {
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
+ * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
+ * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
@@ -477,6 +479,8 @@ export interface UnsignedKind0 {
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. The About me photo is neither.
+ * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
+ * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(

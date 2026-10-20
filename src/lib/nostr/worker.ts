@@ -1489,6 +1489,7 @@ async function publishShopProfiles(
   for (const identity of await shops.listAll()) {
     if (attempted >= WORKER_BATCH) break;
     const id = identity.messageId;
+    let reservation: Kind0Reservation | undefined;
     try {
       const args = await shopKind0Args(deps, shops, identity, nip05Locals, domain);
       const content = buildKind0Content(
@@ -1502,7 +1503,7 @@ async function publishShopProfiles(
       );
       if (reservedContent(cache, id) === content) continue;
       const previous = cache.get(id);
-      const reservation: Kind0Reservation = {
+      reservation = {
         content,
         createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
       };
@@ -1521,6 +1522,8 @@ async function publishShopProfiles(
         args.listed,
       );
       const signed = await signEventForShop(shops, id, deps.kek, unsigned);
+      // An overlapping tick replaced the reservation while this one signed.
+      if (cache.get(id) !== reservation) continue;
       const acks = await deps.publisher.publish(
         signed as unknown as Record<string, unknown>,
         urls,
@@ -1530,7 +1533,7 @@ async function publishShopProfiles(
         !spaceAcked(acks, writeSet.spaceUrl) ||
         (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
       ) {
-        cache.delete(id);
+        if (cache.get(id) === reservation) cache.delete(id);
         logEvent('nostr.profile.nack', { messageId: id });
         continue;
       }
@@ -1544,7 +1547,7 @@ async function publishShopProfiles(
         );
       }
     } catch {
-      cache.delete(id);
+      if (cache.get(id) === reservation) cache.delete(id);
       logEvent('nostr.profile.nack', { messageId: id });
     }
   }
@@ -1589,6 +1592,8 @@ async function publishShopRelayLists(
         deps.kek,
         buildKind10002Event(urls, reservation.createdAt),
       );
+      // An overlapping tick replaced the reservation while this one signed.
+      if (cache.get(id) !== reservation) continue;
       const acks = await deps.publisher.publish(
         signed as unknown as Record<string, unknown>,
         urls,
@@ -1598,7 +1603,7 @@ async function publishShopRelayLists(
         !spaceAcked(acks, writeSet.spaceUrl) ||
         (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
       ) {
-        cache.delete(id);
+        if (cache.get(id) === reservation) cache.delete(id);
         logEvent('nostr.relays.nack', { messageId: id });
         continue;
       }
@@ -1612,7 +1617,7 @@ async function publishShopRelayLists(
         );
       }
     } catch {
-      cache.delete(id);
+      if (cache.get(id) === reservation) cache.delete(id);
       logEvent('nostr.relays.nack', { messageId: id });
     }
   }

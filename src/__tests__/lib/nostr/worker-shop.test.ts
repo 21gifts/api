@@ -468,3 +468,144 @@ describe('shop kind 0', () => {
     expect(count(10002)).toBe(21);
   });
 });
+
+/** A promise held until `release`, plus one that settles when it is first awaited. */
+function gate(): {
+  entered: Promise<void>;
+  enter: () => void;
+  held: Promise<void>;
+  release: () => void;
+} {
+  let enter: () => void = () => undefined;
+  let release: () => void = () => undefined;
+  const entered = new Promise<void>((resolve) => {
+    enter = resolve;
+  });
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  return { entered, enter, held, release };
+}
+
+describe('overlapping shop ticks', () => {
+  it('drops a kind 0 signed under a reservation another tick replaced', async () => {
+    const ctx = await context([{ row: shopNote(uuid(1)) }]);
+    await ctx.shops.ensureListed(uuid(1), KEK);
+    const step = gate();
+    const read = ctx.shops.getNostrCiphertext.bind(ctx.shops);
+    let reads = 0;
+    ctx.shops.getNostrCiphertext = async (id) => {
+      reads += 1;
+      if (reads === 1) {
+        step.enter();
+        await step.held;
+      }
+      return read(id);
+    };
+    const first = tick(ctx);
+    await step.entered;
+    await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+    await tick(ctx);
+    step.release();
+    await first;
+    await tick(ctx);
+    const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+    const events = shopEvents(ctx, identity, 0);
+    expect(events.map((event) => content(event)['name'])).toEqual(['Roastery']);
+  });
+
+  it('drops a kind 10002 signed under a reservation another tick replaced', async () => {
+    const ctx = await context([{ row: shopNote(uuid(1)) }]);
+    await ctx.shops.ensureListed(uuid(1), KEK);
+    const step = gate();
+    const read = ctx.shops.getNostrCiphertext.bind(ctx.shops);
+    let reads = 0;
+    ctx.shops.getNostrCiphertext = async (id) => {
+      reads += 1;
+      if (reads === 2) {
+        step.enter();
+        await step.held;
+      }
+      return read(id);
+    };
+    const first = tick(ctx);
+    await step.entered;
+    await tick(ctx, PUBLIC_ENV);
+    step.release();
+    await first;
+    await tick(ctx, PUBLIC_ENV);
+    const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+    const events = shopEvents(ctx, identity, 10002);
+    expect(events.map((event) => event.tags)).toEqual([
+      [
+        ['r', 'wss://relay.nostr.space'],
+        ['r', 'wss://relay.damus.io'],
+      ],
+    ]);
+  });
+
+  for (const [outcome, ending] of [
+    ['nack', 'a nack'],
+    ['error', 'an error'],
+  ] as const) {
+    it(`keeps the newer kind 0 reservation when the older publish ends in ${ending}`, async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const identity = await ctx.shops.ensureListed(uuid(1), KEK);
+      const step = gate();
+      const publisher = ctx.publisher;
+      let held = false;
+      publisher.publish = async (event, urls) => {
+        publisher.calls.push({ event, urls: [...urls] });
+        if (!held && event['kind'] === 0 && event['pubkey'] === identity!.nostrPubkey) {
+          held = true;
+          step.enter();
+          await step.held;
+          if (outcome === 'error') throw new Error('relay');
+          return urls.map((url) => ({ url, ok: false }));
+        }
+        return urls.map((url) => ({ url, ok: true }));
+      };
+      const first = tick(ctx);
+      await step.entered;
+      await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      await tick(ctx);
+      step.release();
+      await first;
+      await tick(ctx);
+      expect(logged('nostr.profile.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      const events = shopEvents(ctx, identity!, 0);
+      expect(events.map((event) => content(event)['name'])).toEqual(['Coffee Lab', 'Roastery']);
+    });
+
+    it(`keeps the newer kind 10002 reservation when the older publish ends in ${ending}`, async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const identity = await ctx.shops.ensureListed(uuid(1), KEK);
+      const step = gate();
+      const publisher = ctx.publisher;
+      let held = false;
+      publisher.publish = async (event, urls) => {
+        publisher.calls.push({ event, urls: [...urls] });
+        if (!held && event['kind'] === 10002 && event['pubkey'] === identity!.nostrPubkey) {
+          held = true;
+          step.enter();
+          await step.held;
+          if (outcome === 'error') throw new Error('relay');
+          return urls.map((url) => ({ url, ok: false }));
+        }
+        return urls.map((url) => ({ url, ok: true }));
+      };
+      const first = tick(ctx);
+      await step.entered;
+      await tick(ctx, PUBLIC_ENV);
+      step.release();
+      await first;
+      await tick(ctx, PUBLIC_ENV);
+      expect(logged('nostr.relays.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      expect(shopEvents(ctx, identity!, 10002)).toHaveLength(2);
+    });
+  }
+});

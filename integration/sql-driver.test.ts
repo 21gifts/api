@@ -9,13 +9,15 @@ import { migrateMemberHabitSchema, PostgresMemberHabitStore } from '@/lib/member
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { serializeMessage, unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
 import {
   migrateShopIdentitySchema,
   PostgresShopIdentityStore,
   SHOP_IDENTITY_SCHEMA_SQL,
+  shopNpub,
 } from '@/lib/shop-identity';
+import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
 import type { MessageRow } from '@/lib/message';
@@ -713,6 +715,60 @@ describe('shop identity on Postgres', () => {
       } as unknown as PostgresMessageStore);
       expect(await stale.ensureListed(moved.id, KEK)).toBeUndefined();
       expect(await ctx.shops.ensureListed(moved.id, KEK)).toBeDefined();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('keeps a shop listed when its till account has no username', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note();
+      await ctx.messages.create(row);
+      // An account merge keeps the survivor's username, which can be empty.
+      await ctx.client.execute('UPDATE account SET username = NULL WHERE id = $1', [ctx.accountId]);
+      const stored = (await ctx.messages.getById(row.id))!;
+      expect(stored.shopAccount).toEqual({ id: ctx.accountId, username: null, name: 'Coffee' });
+      expect(isListedShop(stored)).toBe(true);
+      const identity = (await ctx.shops.ensureListed(row.id, KEK))!;
+      expect(identity.ocpPlacePending).toBe(true);
+      const body = serializeMessage((await ctx.messages.getById(row.id))!, false, 'basis');
+      expect(body.shopNpub).toBe(shopNpub(identity));
+      expect(body).not.toHaveProperty('shopAccount');
+      const sent: string[] = [];
+      await runOcpPlaceOutboxPass({
+        identities: ctx.shops,
+        messages: ctx.messages,
+        mapPush: {
+          baseUrl: 'https://map.test',
+          token: 't',
+          fetchImpl: async (_url: string, init: RequestInit): Promise<Response> => {
+            sent.push(String(init.method));
+            return new Response('{}', { status: 201 });
+          },
+        },
+      });
+      expect(sent).toEqual(['PUT']);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('a rename from an older note snapshot does not overwrite a newer one', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note();
+      await ctx.messages.create(row);
+      await ctx.shops.ensureListed(row.id, KEK);
+      const older = (await ctx.messages.getById(row.id))!;
+      await ctx.messages.setPlace(row.id, { ...PLACE, label: 'Roastery' });
+      expect((await ctx.shops.ensureListed(row.id, KEK))?.profileName).toBe('Roastery');
+      // An overlapping request that read the note before the rename comes last.
+      const stale = new PostgresShopIdentityStore(ctx.client, {
+        getById: async () => older,
+      } as unknown as PostgresMessageStore);
+      expect((await stale.ensureListed(row.id, KEK))?.profileName).toBe('Roastery');
+      expect((await ctx.shops.getByMessageId(row.id))?.profileName).toBe('Roastery');
     } finally {
       await ctx.cleanup();
     }

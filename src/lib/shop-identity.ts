@@ -25,7 +25,7 @@ import {
   zeroizeSecret,
   type NostrKeygen,
 } from '@/lib/nostr/keys';
-import { isListedShop, listedShopName } from '@/lib/shop-place';
+import { isListedShop, listedShop, listedShopName } from '@/lib/shop-place';
 
 /** One persisted shop key and its two OpenCryptoPay outboxes. */
 export interface ShopIdentityRow {
@@ -91,7 +91,8 @@ export interface ShopIdentityStore {
   /**
    * Create the key of a listed shop note once, or return the existing one.
    * A new key queues the place push. An existing key gets its
-   * `profile_name` rewritten while the note is listed.
+   * `profile_name` rewritten while the note is listed and still matches the
+   * snapshot this call read.
    *
    * @param messageId - Shop note id.
    * @param kek - Key-encryption key for the new secret.
@@ -528,16 +529,21 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     }
     if (name === null) return undefined;
     const created = await freshIdentity(messageId, name, kek, keygen, new Date(this.#now()));
+    // The note can change while the key is generated. Take the name and the
+    // fingerprints from a snapshot read after the last await, so the
+    // synchronous insert below matches the note it records.
+    const photos = await photoFingerprint(this.#messages, messageId);
+    const latest = await this.#messages.getById(messageId);
     const won = this.#rows.get(messageId);
     if (won !== undefined) return copyIdentity(won);
+    const latestName = listedShopName(latest);
+    if (latestName === null) return undefined;
     if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
       throw new Error('shop nostr pubkey already exists');
     }
+    created.profileName = latestName;
     this.#rows.set(messageId, created);
-    this.#seen.set(messageId, {
-      place: placeFingerprint(note),
-      photos: await photoFingerprint(this.#messages, messageId),
-    });
+    this.#seen.set(messageId, { place: placeFingerprint(latest), photos });
     if (this.#messages instanceof InMemoryMessageStore) {
       this.#messages.setShopNpub(messageId, shopNpub(created));
     }
@@ -830,6 +836,45 @@ function mapIdentity(row: IdentitySqlRow): ShopIdentityRow {
   };
 }
 
+/**
+ * Locks the note `$1` (`FOR UPDATE`) only while every column the listed
+ * check in code read is unchanged: top-level, live, a till account, the
+ * text `$3` and the complete pin (`$2` is the label, which is the shop
+ * name; `$4`–`$5` are the coordinates and `$6`–`$10` the address). Shared
+ * by the key insert and the rename in `PostgresShopIdentityStore.ensureListed`.
+ */
+const LOCK_LISTED_NOTE_SQL = `SELECT id FROM message
+         WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
+           AND shop_account_id IS NOT NULL
+           AND text = $3 AND place_lat = $4 AND place_lng = $5 AND place_label = $2
+           AND place_street = $6 AND place_house_number = $7 AND place_postal_code = $8
+           AND place_city = $9 AND place_country = $10
+         FOR UPDATE`;
+
+/**
+ * Shop name and the parameters `$2`–`$10` of {@link LOCK_LISTED_NOTE_SQL}
+ * for one note snapshot, or `null` when that snapshot is not listed.
+ */
+function listedSnapshot(note: MessageRow): { name: string; params: unknown[] } | null {
+  const shop = listedShop(note);
+  if (shop === null) return null;
+  const { lat, lng, label, address } = shop.place;
+  return {
+    name: shop.name,
+    params: [
+      label,
+      note.text,
+      lat,
+      lng,
+      address.street,
+      address.houseNumber,
+      address.postalCode,
+      address.city,
+      address.country,
+    ],
+  };
+}
+
 function lanePrefix(lane: ShopOcpLane): 'ocp_place' | 'ocp_photos' {
   return lane === 'place' ? 'ocp_place' : 'ocp_photos';
 }
@@ -858,59 +903,49 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     keygen: NostrKeygen = defaultNostrKeygen,
   ): Promise<ShopIdentityRow | undefined> {
     const note = await this.#messages.getById(messageId);
-    const name = listedShopName(note);
+    const shop = note === undefined ? null : listedSnapshot(note);
     const existing = await this.getByMessageId(messageId);
     if (existing !== undefined) {
-      if (name !== null && name !== existing.profileName) {
-        await this.setProfileName(messageId, name);
-        existing.profileName = name;
-      }
-      return existing;
+      if (shop === null || shop.name === existing.profileName) return existing;
+      // Rename only while the note still shows this snapshot, under the same
+      // note lock as the insert: an older snapshot read before a newer
+      // rename committed matches nothing and cannot overwrite it.
+      const renamed = await this.#sql.query<IdentitySqlRow>(
+        `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
+         UPDATE shop_identity SET profile_name = $2
+         FROM locked
+         WHERE shop_identity.message_id = locked.id
+           AND shop_identity.profile_name IS DISTINCT FROM $2
+         RETURNING ${IDENTITY_COLUMNS}`,
+        [messageId, ...shop.params],
+      );
+      return renamed[0] === undefined ? existing : mapIdentity(renamed[0]);
     }
-    if (name === null || note?.place?.address === null || note?.place?.address === undefined) {
-      return undefined;
-    }
-    const address = note.place.address;
-    const generated = await freshIdentity(messageId, name, kek, keygen, new Date());
+    if (shop === null) return undefined;
+    const generated = await freshIdentity(messageId, shop.name, kek, keygen, new Date());
     // One statement: lock the note (FOR UPDATE) and insert only while every
     // column the listed check read above is unchanged. A concurrent edit
     // either committed before the lock (the values differ, no key; the edit's
     // own write path or the backfill mints it) or waits and then queues
     // itself through the trigger, which sees the committed row.
     const rows = await this.#sql.query<IdentitySqlRow>(
-      `WITH locked AS (
-         SELECT id FROM message
-         WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
-           AND shop_account_id IS NOT NULL
-           AND text = $8 AND place_lat = $9 AND place_lng = $10 AND place_label = $7
-           AND place_street = $11 AND place_house_number = $12 AND place_postal_code = $13
-           AND place_city = $14 AND place_country = $15
-         FOR UPDATE
-       )
+      `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
        INSERT INTO shop_identity (
          message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
          nostr_key_custody, nostr_key_created_at, profile_name,
          ocp_place_pending, ocp_place_generation
        )
-       SELECT $1, $2, $3, $4, $5, $6, $7, true, 1 FROM locked
+       SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
         messageId,
+        ...shop.params,
         generated.nostrPubkey,
         generated.nostrNsecCiphertext,
         generated.nostrKekId,
         generated.nostrKeyCustody,
         generated.nostrKeyCreatedAt,
-        name,
-        note.text,
-        note.place.lat,
-        note.place.lng,
-        address.street,
-        address.houseNumber,
-        address.postalCode,
-        address.city,
-        address.country,
       ],
     );
     const inserted = rows[0];

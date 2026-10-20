@@ -61,6 +61,16 @@ export interface ForumPhoto {
   takenAt?: string | null;
 }
 
+/** Till account of a shop note as stored on the message row. */
+export interface MessageShopAccount {
+  /** Account id (`message.shop_account_id`). */
+  id: string;
+  /** The account's username, or `null` when it has none. */
+  username: string | null;
+  /** Display name; may be empty. */
+  name: string;
+}
+
 /** Persisted forum row (store-internal; includes `accountId`). */
 export interface MessageRow {
   /** Opaque unique message id. */
@@ -168,10 +178,12 @@ export interface MessageRow {
    */
   place?: ForumPlace | null;
   /**
-   * Optional 21.gifts account linked to a shop note. Not the author.
-   * Omit or `null` means none.
+   * Optional 21.gifts account linked to a shop note (the till account). Not
+   * the author. Omit or `null` means none. `username` is `null` when the
+   * account has no username (for example the survivor of an account merge);
+   * the account is still assigned and the note can still be a listed shop.
    */
-  shopAccount?: { id: string; username: string; name: string } | null;
+  shopAccount?: MessageShopAccount | null;
   /**
    * npub of the note's shop identity (`shop_identity`), or `null`/omitted
    * when it has none. Public JSON exposes it only while the note is listed.
@@ -474,14 +486,15 @@ function publicPlace(row: MessageRow): ForumPlace | undefined {
 
 /**
  * Public/hidden JSON `shopAccount` when one is stored. Omitted when unset
- * or null (same omit rule as `place`). Included even when `includeAccountId`
- * is false. `name` may be empty.
+ * or null (same omit rule as `place`), and when the account has no
+ * username. Included even when `includeAccountId` is false. `name` may be
+ * empty.
  */
 function publicShopAccount(
   row: MessageRow,
 ): { id: string; username: string; name: string } | undefined {
   const shop = row.shopAccount;
-  if (shop === undefined || shop === null) {
+  if (shop === undefined || shop === null || shop.username === null) {
     return undefined;
   }
   return { id: shop.id, username: shop.username, name: shop.name };

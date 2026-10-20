@@ -41,6 +41,7 @@ import {
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
+  type MessageShopAccount,
 } from '@/lib/message';
 import {
   textHasHashtagToken,
@@ -463,7 +464,7 @@ function ensureShopNoteTag(text: string): string {
  * Both absent matches. One absent does not. Only the account id counts.
  */
 function shopAccountsMatch(
-  a: { id: string; username: string; name: string } | null | undefined,
+  a: MessageShopAccount | null | undefined,
   b: { id: string; username: string; name: string } | null,
 ): boolean {
   const left = a ?? null;
