@@ -137,28 +137,33 @@ function sameInstant(a: Date | null, b: Date | null): boolean {
  * `shop_payment` row and its proof rows ({@link lockPaymentForProofs}; no
  * account row is locked) the proof is read again and written only while
  * `holds` is true of it, so a proof another writer changed or deleted in
- * between keeps what that writer stored.
+ * between keeps what that writer stored. `written`, when given, runs in the
+ * same transaction after the write (an alert's fields read before the
+ * commit, so a failing read rolls the write back).
  *
  * @param shop - Service.
  * @param snapshot - The proof as the duty read it.
  * @param patch - Columns to write.
  * @param holds - Condition on the proof as read under the locks.
- * @returns `true` when the patch was written.
+ * @param written - Read after the write, with the proof as read under the locks.
+ * @returns What `written` returned (`true` without it) when the patch was
+ *   written, otherwise `null`.
  */
-async function patchProof(
+async function patchProof<T = true>(
   shop: ShopPayments,
   snapshot: ShopProof,
   patch: ShopProofPatch,
   holds: (current: ShopProof) => boolean,
-): Promise<boolean> {
+  written?: (tx: ShopTx, current: ShopProof) => Promise<T>,
+): Promise<T | null> {
   return shop.store.transaction(async (tx) => {
     await lockPaymentForProofs(tx, snapshot.paymentId);
     const current = await tx.getProof(snapshot.id);
     if (current === null || !holds(current)) {
-      return false;
+      return null;
     }
     await tx.updateProof(current.id, {}, patch);
-    return true;
+    return written === undefined ? (true as T) : written(tx, current);
   });
 }
 
@@ -584,7 +589,7 @@ async function readReceipt(
   const later: ShopProofPatch = { nextReceiptAt: new Date(nowMs + SLOW_READ_MS) };
   // Every write is skipped once another writer moved `next_receipt_at` (an
   // operator retry, another container's read, a merge).
-  const schedule = (patch: ShopProofPatch): Promise<boolean> =>
+  const schedule = (patch: ShopProofPatch): Promise<true | null> =>
     patchProof(shop, proof, patch, (current) =>
       sameInstant(current.nextReceiptAt, proof.nextReceiptAt),
     );
@@ -801,7 +806,9 @@ async function stopReplacedOrder(
  * ids with its offer's `quoteId` and `providerRef` ({@link proofAlertFields}). An `unfulfilled` status with a
  * `supersededByOperationId` of another order is a replaced order
  * ({@link stopReplacedOrder}); every other status, a superseding id with
- * another status included, is applied as a status.
+ * another status included, is applied as a status. The next read is set
+ * only while `next_status_at` is still the selection's, so a row another
+ * container stopped meanwhile stays stopped.
  *
  * @param shop - Service.
  * @param proof - Proof with an order that is not final.
@@ -825,9 +832,15 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
     if (locked === null || current === null || current.providerOrder !== orderId) {
       return;
     }
+    // The next read is scheduled only while `next_status_at` is still the
+    // one the selection read: a row another container stopped meanwhile
+    // (24 h or final status) stays stopped, its status is still applied.
+    const armed = sameInstant(current.nextStatusAt, proof.nextStatusAt);
     const order = read.ok ? read.order : null;
     if (order === null) {
-      await tx.updateProof(current.id, {}, { nextStatusAt: nextStatusAt(current, nowMs) });
+      if (armed) {
+        await tx.updateProof(current.id, {}, { nextStatusAt: nextStatusAt(current, nowMs) });
+      }
       return;
     }
     const successor = order.supersededByOperationId;
@@ -842,7 +855,7 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
       nowMs,
       'newer',
     );
-    if (!ORCHESTRA_FINAL_STATUSES.has(order.status)) {
+    if (armed && !ORCHESTRA_FINAL_STATUSES.has(order.status)) {
       await tx.updateProof(after.id, {}, { nextStatusAt: nextStatusAt(after, nowMs) });
     }
   });
@@ -855,8 +868,9 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
  * costs a call. Both stops re-read the proof under the payment row and its
  * proof rows and clear `next_status_at` only while the proof still holds the
  * order, status, and `next_status_at` the selection read (and, for the 24 h
- * stop, its order was still found 24 h ago); the alert is logged after the
- * commit and only by the transaction that cleared it.
+ * stop, its order was still found 24 h ago); the alert's fields are read
+ * in the transaction that cleared it, and the alert is logged after its
+ * commit.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
@@ -887,19 +901,17 @@ async function readStatuses(shop: ShopPayments, nowMs: number): Promise<void> {
       continue;
     }
     if (nowMs - (row.orderFoundAt ?? row.createdAt).getTime() >= SHOP_UNRESOLVED_LIMIT_MS) {
-      const stopped = await patchProof(
+      const alert = await patchProof(
         shop,
         row,
         { nextStatusAt: null },
         (current) =>
           unchanged(current) &&
           nowMs - (current.orderFoundAt ?? current.createdAt).getTime() >= SHOP_UNRESOLVED_LIMIT_MS,
+        proofAlertFields,
       );
-      if (stopped) {
-        logEvent(
-          'shop.alert.order_stuck',
-          await shop.store.transaction((tx) => proofAlertFields(tx, row)),
-        );
+      if (alert !== null) {
+        logEvent('shop.alert.order_stuck', alert);
       }
       continue;
     }

@@ -1077,6 +1077,40 @@ describe('duty 5: receipts', () => {
   });
 });
 
+/**
+ * Wrap every transaction's `tx` so that `onCall` sees each call (method and
+ * arguments) before it runs; `onCall` may throw to fail that call, and the
+ * transaction rolls back. `onCommit` runs after each transaction ends.
+ */
+function watchTransactions(
+  h: Harness,
+  onCall: (method: string | symbol, args: unknown[]) => void,
+  onCommit: () => Promise<void> = async () => undefined,
+): void {
+  const original = h.store.transaction.bind(h.store);
+  const wrapped = async <T>(run: (tx: ShopTx) => Promise<T>): Promise<T> => {
+    const result = await original((tx) =>
+      run(
+        new Proxy(tx, {
+          get: (target, prop) => {
+            const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+            if (typeof value !== 'function') {
+              return value;
+            }
+            return (...args: unknown[]) => {
+              onCall(prop, args);
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+          },
+        }),
+      ),
+    );
+    await onCommit();
+    return result;
+  };
+  vi.spyOn(h.store, 'transaction').mockImplementation(wrapped as never);
+}
+
 describe('duty 6: submits', () => {
   it('submits after 10 s, 30 s, and 60 s, then every 5 min, until resolved', async () => {
     const h = harness();
@@ -1139,6 +1173,38 @@ describe('duty 6: submits', () => {
     await insertProofs(off, proofRow({ nextSubmitAt: new Date(T0) }));
     await runShopPaymentTick(off.shop, 2);
     expect((await getProof(off, uid(0x401)))?.nextSubmitAt?.getTime()).toBe(T0);
+  });
+
+  it('keeps tries and next_submit_at another writer set between the answer and the schedule write', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(h, proofRow({ nextSubmitAt: new Date(T0) }));
+    let answered = false;
+    let ran = false;
+    h.orchestra.submit.mockImplementationOnce(async () => {
+      answered = true;
+      return { kind: 'unresolved', retryable: true };
+    });
+    // Right after the transaction that applies the answer commits: an
+    // operator retry or another container's write.
+    watchTransactions(
+      h,
+      () => undefined,
+      async () => {
+        if (answered && !ran) {
+          ran = true;
+          await h.store.transaction((tx) =>
+            tx.updateProof(uid(0x401), {}, { tries: 7, nextSubmitAt: new Date(T0 + 99_000) }),
+          );
+        }
+      },
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(ran).toBe(true);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      tries: 7,
+      nextSubmitAt: new Date(T0 + 99_000),
+    });
   });
 
   it('skips a proof that disappeared during its submit', async () => {
@@ -1529,6 +1595,63 @@ describe('duty 8: order status', () => {
       await runShopPaymentTick(h.shop, 2);
       expect(writes).toEqual([]);
       expect((await getProof(h, uid(0x401)))?.nextStatusAt?.getTime()).toBe(T0 + 10_000);
+    });
+
+    it.each([
+      ['a status', { id: 'o1', status: 'swapping', supersededByOperationId: null }, 'swapping'],
+      ['no order', null, 'processing'],
+    ])(
+      'a row another container stopped at 24 h during the status call (%s) stays stopped',
+      async (_name, order, status) => {
+        const h = harness();
+        await seed(h);
+        // Selected 1 ms before the 24 h mark; the other container selects
+        // it 1 ms later, after the mark, and stops it.
+        await insertProofs(
+          h,
+          proofRow({ ...ordered, orderFoundAt: new Date(T0 - 86_400_000 + 1) }),
+        );
+        h.orchestra.status.mockImplementationOnce(async () => {
+          h.clock.now = T0 + 1;
+          await runShopPaymentTick(h.shop, 2);
+          return { ok: true, order };
+        });
+        await runShopPaymentTick(h.shop, 2);
+        expect(await getProof(h, uid(0x401))).toMatchObject({
+          orderStatus: status,
+          nextStatusAt: null,
+        });
+        h.clock.now = T0 + 120_000;
+        await runShopPaymentTick(h.shop, 2);
+        expect(stuckAlerts()).toEqual([
+          expect.objectContaining({ proofId: uid(0x401), orderId: 'o1' }),
+        ]);
+        expect(h.orchestra.status).toHaveBeenCalledTimes(1);
+      },
+    );
+
+    it('a failing read of the alert fields rolls the 24 h stop back, so the alert is not lost', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(lapsed));
+      let selected = false;
+      let failed = false;
+      watchTransactions(h, (method, args) => {
+        if (method === 'dueProofs' && args[0] === 'status') {
+          selected = true;
+        } else if (method === 'getOffer' && selected && !failed) {
+          failed = true;
+          throw new Error('offer read failed');
+        }
+      });
+      await expect(runShopPaymentTick(h.shop, 2)).rejects.toThrow('offer read failed');
+      expect(stuckAlerts()).toEqual([]);
+      expect((await getProof(h, uid(0x401)))?.nextStatusAt?.getTime()).toBe(T0);
+      await runShopPaymentTick(h.shop, 2);
+      expect(stuckAlerts()).toEqual([
+        expect.objectContaining({ proofId: uid(0x401), orderId: 'o1', quoteId: QUOTE_ID }),
+      ]);
+      expect((await getProof(h, uid(0x401)))?.nextStatusAt).toBeNull();
     });
 
     it('two containers that selected the same lapsed row log one alert', async () => {

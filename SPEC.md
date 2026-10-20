@@ -1376,7 +1376,10 @@ rows by their own next-try column, oldest first:
    the 24 h stop clear `next_status_at` only while the proof, read again
    under its payment row and proof rows, still holds the order, status,
    and `next_status_at` the duty selected; the alert is logged once, by the
-   container whose transaction cleared it.
+   container whose transaction cleared it, with fields read in that
+   transaction. A status read sets the next read only while
+   `next_status_at` is still the one the duty selected, so a row another
+   container stopped meanwhile stays stopped; the status is still applied.
 
 A rejecting tick logs `shop.worker.tick.failed`.
 
