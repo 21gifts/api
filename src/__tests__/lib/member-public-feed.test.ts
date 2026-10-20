@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
-import { unsignedNostrDefaults } from '@/lib/message';
-import { InMemoryMessageStore, type MessageRow } from '@/lib/message-store';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
+import { InMemoryMessageStore } from '@/lib/message-store';
 import { loadMemberProfileNote, memberPublicMessages } from '@/lib/member-public-feed';
 
 const createdAt = new Date(1_000_000);
