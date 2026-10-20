@@ -100,10 +100,9 @@ export function posRoutes(deps: PosRouteDeps): Hono {
           ? null
           : {
               ...serializePosCharge(charge),
-              shopPayment:
-                deps.shopPayments === undefined
-                  ? null
-                  : await deps.shopPayments.shopPaymentOfCharge(charge.id),
+              ...(deps.shopPayments === undefined
+                ? {}
+                : { shopPayment: await deps.shopPayments.shopPaymentOfCharge(charge.id) }),
             };
       return c.json(
         {

@@ -1149,6 +1149,8 @@ describe('duty 8: order status', () => {
       paymentId: PAYMENT_ID,
       proofId: uid(0x401),
       offerId: OFFER_USDT,
+      quoteId: QUOTE_ID,
+      providerRef: 'q-usdt-pol',
       orderId: 'o1',
     });
     expect(await getProof(h, uid(0x401))).toMatchObject({

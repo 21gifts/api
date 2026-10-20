@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import { decodeSignedEvmTransaction } from '@/lib/evm-transfer';
 import { lockPaymentForProofs, shopMethodByName } from '@/lib/shop-payment';
+import { runShopPaymentTick } from '@/lib/shop-payment-worker';
 import {
   SHOP_PROOF_BUDGET_MS,
   SHOP_RPC_TIMEOUT_MS,
@@ -1434,19 +1435,21 @@ describe('merging two rows of one deposit', () => {
     ['a later created_at', T0 + 1_000, uid(0x4e2)],
     ['the same created_at and the greater id', T0, uid(0x4e2)],
   ])(
-    'refuses the holder of another offer on a submit when it is newer (%s), and answers the submitted proof as it stands',
+    'refuses the holder of another offer on a submit when it is newer (%s), and moves the order to the submitted proof',
     async (_name, createdAt, holderId) => {
       const h = harness();
       await seed(h);
       await insertProofs(
         h,
-        proofRow({ id: uid(0x4e1), txHash: H1 }),
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
         proofRow({
           id: holderId,
           offerId: OFFER_USDC,
           txHash: H2,
           providerOrder: 'o1',
           orderStatus: 'processing',
+          orderFoundAt: new Date(T0),
+          nextStatusAt: new Date(T0 + 10_000),
           createdAt: new Date(createdAt),
         }),
       );
@@ -1455,18 +1458,129 @@ describe('merging two rows of one deposit', () => {
         orderId: 'o1',
         status: 'processing',
       });
+      // The survivor holds the order in the same transaction, and its
+      // progressing order within the bounds makes it `accepted`.
       expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
         id: uid(0x4e1),
-        result: null,
-        providerOrder: null,
+        result: 'accepted',
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0),
+        nextStatusAt: new Date(T0 + 10_000),
+        nextSubmitAt: null,
       });
       expect(await getProof(h, holderId)).toMatchObject({
         result: 'refused',
         refusal: 'tx_used',
-        providerOrder: 'o1',
+        providerOrder: null,
+        orderStatus: null,
+        nextStatusAt: null,
       });
+      expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+
+      // The order-status duty now reads the survivor's order.
+      h.clock.now = T0 + 20_000;
+      h.orchestra.status.mockResolvedValueOnce({
+        ok: true,
+        order: { id: 'o1', status: 'completed', supersededByOperationId: null },
+      });
+      await runShopPaymentTick(h.shop, 2);
+      expect(h.orchestra.status).toHaveBeenCalledTimes(1);
+      expect(h.orchestra.status).toHaveBeenCalledWith('o1', 5_000, {
+        paymentId: PAYMENT_ID,
+        proofId: uid(0x4e1),
+        offerId: OFFER_USDT,
+        quoteId: QUOTE_ID,
+        providerRef: 'q-usdt-pol',
+        orderId: 'o1',
+      });
+      expect(await getProof(h, uid(0x4e1))).toMatchObject({
+        result: 'accepted',
+        orderStatus: 'completed',
+        nextStatusAt: null,
+      });
+      expect((await getProof(h, holderId))?.result).toBe('refused');
     },
   );
+
+  it('an accepted newer holder of another offer hands acceptance to the survivor; the payment never ends', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        result: 'accepted',
+        resolvedAt: new Date(T0 + 1_000),
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 + 1_000),
+        nextStatusAt: new Date(T0 + 11_000),
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      result: 'accepted',
+      providerOrder: 'o1',
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+    });
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+    const events = loggedEvents(warn).map((entry) => entry['event']);
+    expect(events).toContain('shop.proof.refused');
+    expect(events).not.toContain('shop.payment.ended');
+  });
+
+  it('an accepted newer holder ends the payment with proof_refused when the survivor cannot take acceptance', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      // Below the offer's requiredAmountIn: held, not accepted.
+      proofRow({
+        id: uid(0x4e1),
+        txHash: H1,
+        transferAmount: '1',
+        nextSubmitAt: new Date(T0 + 5_000),
+      }),
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        result: 'accepted',
+        resolvedAt: new Date(T0 + 1_000),
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 + 1_000),
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      result: null,
+      providerOrder: 'o1',
+      nextSubmitAt: null,
+      nextStatusAt: new Date(T0 + 10_000),
+    });
+    expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+  });
 
   it('refuses the filled row on the storing path even when the holder of another offer is newer', async () => {
     const h = harness();

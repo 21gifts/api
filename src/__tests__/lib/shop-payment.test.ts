@@ -1980,6 +1980,8 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
         paymentId: w.payment.id,
         proofId: p.id,
         offerId: w.offer.id,
+        quoteId: w.offer.quoteId,
+        providerRef: w.offer.providerRef,
         orderId,
         reason: 'unknown_status',
         status: 'mystery',
@@ -3604,6 +3606,39 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     });
   });
 
+  it('keeps today’s request for the usernames invoice, cb, and ending in a dot: no timeout wait, no simplified flow, no 404', async () => {
+    const h = await setup();
+    const queries = [
+      NO_QUERY,
+      { ...NO_QUERY, timeout: '10' },
+      { ...NO_QUERY, timeout: '0' },
+      { ...NO_QUERY, method: 'Polygon', asset: 'USDT' },
+      { ...NO_QUERY, timeout: '5', method: 'Polygon', asset: 'USDT', repeated: true },
+    ];
+    for (const username of ['invoice', 'cb', 'old.']) {
+      for (const query of queries) {
+        expect(await h.svc.payLink(h.account, username, METADATA, query, clock)).toEqual({
+          kind: 'today',
+          pinSats: null,
+        });
+      }
+    }
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    for (const username of ['invoice', 'cb', 'old.']) {
+      for (const query of queries) {
+        expect(await h.svc.payLink(h.account, username, METADATA, query, clock)).toEqual({
+          kind: 'today',
+          pinSats: CHARGE_SATS,
+        });
+      }
+    }
+    // Neither the wait nor a creation ran.
+    expect(sleepCalls).toEqual([]);
+    expect(h.orchestra.routesCalls).toHaveLength(0);
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+  });
+
   it('a pending charge without a payment starts or joins the creation and answers the open amount', async () => {
     const h = await setup();
     const charge = chargeRow();
@@ -3988,11 +4023,11 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     }
   });
 
-  it('keeps the pin for a waiting charge: no payment (excluded username) or an ended one; no pin for accepted or paid', async () => {
-    const h = await setup({ username: 'cb' });
+  it('keeps the pin for a waiting charge: no payment (stablecoins off) or an ended one; no pin for accepted or paid', async () => {
+    const h = await setup({ config: 'off' });
     const charge = chargeRow();
     await h.pos.create(charge);
-    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -4005,7 +4040,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       endedAt: new Date(T0),
     });
     await h.store.transaction((tx) => tx.insertPayment(payment));
-    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -4023,7 +4058,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
           },
         ),
       );
-      expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
+      expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
         kind: 'today',
         pinSats: null,
       });
@@ -4909,13 +4944,14 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
   });
 
   it('answers the 404 without an open amount, also for a waiting charge', async () => {
-    const h = await setup({ username: 'cb' });
+    // Stablecoins off: the waiting charge starts no creation.
+    const h = await setup({ config: 'off' });
     expect(
       (
         await bodyOf(
           await h.svc.payLink(
             h.account,
-            'cb',
+            USER,
             METADATA,
             {
               ...NO_QUERY,
@@ -4931,7 +4967,7 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
     const answer = await bodyOf(
       await h.svc.payLink(
         h.account,
-        'cb',
+        USER,
         METADATA,
         {
           ...NO_QUERY,

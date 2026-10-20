@@ -1140,19 +1140,32 @@ function isUnknownOrderStatus(status: string): boolean {
  * order-status duty for it (`next_status_at` is cleared), because Orchestra
  * counted that deposit on another offer.
  *
+ * With `heir` (step 3: a submit answered with an order this proof holds,
+ * and this proof is the newer row), the order moves to the heir in the same
+ * transaction: the refused proof gives up `provider_order` and
+ * `order_status`, the heir records the order through
+ * {@link recordProofOrder} (its submits stop, and the order-status duty
+ * reads it), and is evaluated. When the refused proof was `accepted`, the
+ * heir takes the place by that evaluation; only when it does not does the
+ * payment lose its accepted proof as without an heir.
+ *
  * @param tx - Transaction.
  * @param proofId - Proof id.
  * @param refusal - Why it was refused: `hex_rejected`, `mismatch`, or
  *   `tx_used`.
  * @param nowMs - Clock.
+ * @param heir - The older row of the same deposit that takes the order
+ *   (`tx_used` only), or `null`.
  * @returns The refused proof, or the unchanged proof when its result does
- *   not allow the move, or `null` when it does not exist.
+ *   not allow the move (the order stays then), or `null` when it does not
+ *   exist.
  */
 export async function refuseProof(
   tx: ShopTx,
   proofId: string,
   refusal: 'mismatch' | 'hex_rejected' | 'tx_used',
   nowMs: number,
+  heir: { proofId: string; order: { orderId: string; status: string } } | null = null,
 ): Promise<ShopProof | null> {
   const proof = await tx.getProof(proofId);
   if (proof === null) {
@@ -1178,10 +1191,27 @@ export async function refuseProof(
     return tx.getProof(proofId);
   }
   shopLog('shop.proof.refused', { ...(await proofEventFields(tx, refused)), refusal });
-  if (proof.result === 'accepted') {
+  if (heir === null) {
+    if (proof.result === 'accepted') {
+      await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
+    }
+    return refused;
+  }
+  const released = await tx.updateProof(
+    proofId,
+    { results: ['refused'] },
+    { providerOrder: null, orderStatus: null },
+  );
+  const taken = await recordProofOrder(tx, heir.proofId, heir.order, nowMs);
+  /* v8 ignore next 3 -- the heir was read by the caller, and the refused row just gave up the order */
+  if (taken === null || taken === 'conflict') {
+    return refused;
+  }
+  if (proof.result === 'accepted' && taken.result !== 'accepted') {
     await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
   }
-  return refused;
+  /* v8 ignore next -- the refused row is locked through its payment */
+  return released === null || released === 'conflict' ? refused : released;
 }
 
 /**
@@ -1224,9 +1254,7 @@ export async function recordProofOrder(
   if (isUnknownOrderStatus(order.status) && !UNKNOWN_STATUS_LOGGED.has(order.orderId)) {
     UNKNOWN_STATUS_LOGGED.add(order.orderId);
     shopLog('shop.orchestra.error', {
-      paymentId: proof.paymentId,
-      proofId,
-      offerId: proof.offerId,
+      ...(await proofEventFields(tx, proof)),
       orderId: order.orderId,
       reason: 'unknown_status',
       status: order.status,
@@ -2390,7 +2418,9 @@ export class ShopPayments {
   /**
    * Answer `GET /.well-known/lnurlp/:username` once today's wallet pay
    * request resolved: the no-open-amount, open-amount, `timeout`, and
-   * simplified-flow rules of the contract.
+   * simplified-flow rules of the contract. An excluded username
+   * ({@link isExcludedShopUsername}) skips them all and gets today's
+   * request, pinned to its pending charge's amount when it has one.
    *
    * @param account - Shop account (verified wallet).
    * @param username - Its username.
@@ -2410,6 +2440,15 @@ export class ShopPayments {
     arrivedMs: number,
   ): Promise<ShopPayLinkAnswer> {
     const startMs = this.#deps.now();
+    if (isExcludedShopUsername(username)) {
+      // Route details: these usernames keep today's Lightning pay request,
+      // with no `timeout` wait and no simplified flow, pinned to a pending
+      // charge's amount as today.
+      const charge = await this.#deps.store.transaction((tx) =>
+        tx.pendingCharge(account.id, startMs),
+      );
+      return { kind: 'today', pinSats: charge?.amountSats ?? null };
+    }
     const name = shopName(account, username);
     let state = await this.#linkState(account.id, startMs);
     if (query.timeout !== null) {

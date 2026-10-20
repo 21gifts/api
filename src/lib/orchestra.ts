@@ -652,7 +652,8 @@ export class OrchestraClient {
    * @param orderId - Orchestra order id.
    * @param timeoutMs - Timeout of the call.
    * @param log - Ids of the proof whose order is read (`paymentId`,
-   *   `proofId`, `offerId`, `orderId`), on every log line.
+   *   `proofId`, `offerId`, its offer's `quoteId` and `providerRef`, and
+   *   `orderId`), on every log line.
    * @returns The order; `order: null` for 404 `not_found` or a `null`
    *   order; `budget` when not sent; `error` for every other failure.
    */

@@ -721,10 +721,10 @@ describe('GET /pos paid confirmation', () => {
       paidAt: new Date(nowMs + 10_000).toISOString(),
     };
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
-    expect(await read(app)).toEqual({
-      charge: { ...paidJson, shopPayment: null },
-      history: [paidJson],
-    });
+    const shown = await read(app);
+    expect(shown).toEqual({ charge: paidJson, history: [paidJson] });
+    // Without the LNURL server (no shop payment service) the key is absent.
+    expect(shown.charge).not.toHaveProperty('shopPayment');
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS;
     expect(await read(app)).toEqual({ charge: null, history: [paidJson] });
   });

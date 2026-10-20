@@ -762,7 +762,8 @@ async function stopReplacedOrder(
 
 /**
  * One status read of a proof's order, applied under the payment row and its
- * proof rows (`lockPaymentForProofs`). An `unfulfilled` status with a
+ * proof rows (`lockPaymentForProofs`). The call's log lines carry the proof's
+ * ids with its offer's `quoteId` and `providerRef` ({@link proofAlertFields}). An `unfulfilled` status with a
  * `supersededByOperationId` of another order is a replaced order
  * ({@link stopReplacedOrder}); every other status, a superseding id with
  * another status included, is applied as a status.
@@ -777,12 +778,8 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
   if (orchestra === null) {
     return;
   }
-  const read = await orchestra.status(orderId, SHOP_WORKER_CALL_TIMEOUT_MS, {
-    paymentId: proof.paymentId,
-    proofId: proof.id,
-    offerId: proof.offerId,
-    orderId,
-  });
+  const fields = await shop.store.transaction((tx) => proofAlertFields(tx, proof));
+  const read = await orchestra.status(orderId, SHOP_WORKER_CALL_TIMEOUT_MS, fields);
   if (!read.ok && read.reason === 'budget') {
     return;
   }

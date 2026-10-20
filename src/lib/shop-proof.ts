@@ -577,13 +577,12 @@ export type ShopOrderCollision = 'filling' | 'newer';
 /**
  * Step 3 and 4 of Storing and submitting: a row being filled in collides
  * with `holder`, which already holds the log index or the order. Another
- * offer's row: the filled row (step 4) or the newer of the two rows (step 3,
- * `collision` `newer`) is `refused` with `tx_used` through
+ * offer's row: the filled row is `refused` with `tx_used` through
  * `refuseProof` (from any result the States table allows, an `accepted` one
  * included, which ends its payment with `proof_refused` unless another proof
  * takes its place); it is no longer submitted or read, its order status
- * included, and nothing is deleted. When the holder is refused, the filled
- * row is answered as it stands. Two rows of the same offer that hold
+ * included, and nothing is deleted (step 3's newer holder is handled by
+ * {@link mergeOrderHolder} before this). Two rows of the same offer that hold
  * different orders are two proofs and are left as they are. The same offer:
  * the kept row takes every value of the other row it lacks, and a final
  * order status of either row for the kept order (a final status is terminal,
@@ -595,7 +594,6 @@ export type ShopOrderCollision = 'filling' | 'newer';
  * @param patch - What was being written onto it.
  * @param holder - The row that holds the value.
  * @param nowMs - Clock.
- * @param collision - Which row another offer's collision refuses.
  * @returns The surviving row after evaluation.
  */
 async function mergeDeposit(
@@ -604,13 +602,8 @@ async function mergeDeposit(
   patch: ShopProofPatch,
   holder: ShopProof,
   nowMs: number,
-  collision: ShopOrderCollision,
 ): Promise<ShopProof> {
   if (holder.offerId !== filling.offerId) {
-    if (collision === 'newer' && newerOf(filling, holder) === holder) {
-      await refuseProof(tx, holder.id, 'tx_used', nowMs);
-      return filling;
-    }
     /* v8 ignore next -- the row being filled in was read in this transaction */
     return (await refuseProof(tx, filling.id, 'tx_used', nowMs)) ?? filling;
   }
@@ -686,7 +679,7 @@ async function fillProof(
     if (holder === undefined) {
       return proof;
     }
-    return mergeDeposit(tx, proof, patch, holder, nowMs, 'filling');
+    return mergeDeposit(tx, proof, patch, holder, nowMs);
   }
   /* v8 ignore next 3 -- the row was read in this transaction */
   if (updated === null) {
@@ -708,7 +701,8 @@ async function fillProof(
  * @param nowMs - Clock.
  * @param collision - Which row another offer's collision refuses: `filling`
  *   (step 4, the storing step) refuses this proof; `newer` (step 3, a
- *   submit or status answer) refuses the newer of the two rows.
+ *   submit or status answer) refuses the newer of the two rows, and when
+ *   that is the holder, this proof takes its order in the same transaction.
  * @returns The proof (or the row it merged into) after evaluation.
  */
 export async function applyProofOrder(
@@ -727,7 +721,11 @@ export async function applyProofOrder(
 }
 
 /**
- * Merge a proof with the row that already holds an order id.
+ * Merge a proof with the row that already holds an order id. With
+ * `collision` `newer`, another offer's holder that is the newer row (later
+ * `created_at`, then greater id) is refused `tx_used` and gives the order to
+ * `proof`, which records it ({@link refuseProof} with an heir); every other
+ * case is {@link mergeDeposit}.
  *
  * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - The proof that was to take the order.
@@ -752,6 +750,23 @@ async function mergeOrderHolder(
   if (holder === undefined) {
     return proof;
   }
+  if (
+    collision === 'newer' &&
+    holder.offerId !== proof.offerId &&
+    newerOf(proof, holder) === holder
+  ) {
+    // Step 3: the holder is the newer row and is refused `tx_used`. The
+    // older row survives and takes the order Orchestra answered for it, in
+    // this transaction: its submits stop, the order-status duty follows it,
+    // and an `accepted` holder hands acceptance to it by its evaluation
+    // (refuseProof's heir).
+    await refuseProof(tx, holder.id, 'tx_used', nowMs, {
+      proofId: proof.id,
+      order: { orderId, status },
+    });
+    /* v8 ignore next -- the surviving row was read in this transaction */
+    return (await tx.getProof(proof.id)) ?? proof;
+  }
   return mergeDeposit(
     tx,
     proof,
@@ -763,7 +778,6 @@ async function mergeOrderHolder(
     },
     holder,
     nowMs,
-    collision,
   );
 }
 
