@@ -1354,6 +1354,15 @@ for the charge's shop payment, or `null` when it has none. The till shows
 `paid`. `history` rows never carry it, and without the LNURL server the key
 is absent.
 
+The currency the operator typed and that exact decimal string are stored on
+the charge at creation. This response returns that string to the shop.
+`GET /pay/:username` returns the same string to the payer. Both show it.
+Typing 12.00 stores 12.00. Both sides show 12.00, never 12.01 or 11.99.
+Paying in bitcoin does not replace it. The payer's own display currency does
+not replace it. A body that carries only `amountSats`, so either side prices
+those sats from a spot or a daily close, is existing code that breaks
+[docs/fiat-amounts.md](docs/fiat-amounts.md). It is not the contract.
+
 **Response** `200`:
 
 ```json
