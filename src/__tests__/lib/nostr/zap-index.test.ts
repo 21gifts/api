@@ -5000,6 +5000,7 @@ describe('indexOpenZapReceipts', () => {
       listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
       sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
       listRepayments: (messageId: string) => base.listRepayments(messageId),
+      listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
       markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
         base.markRepaymentPaid(row),
       claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
@@ -5284,6 +5285,7 @@ describe('indexOpenZapReceipts', () => {
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
+        listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
@@ -6119,6 +6121,7 @@ describe('indexOpenZapReceipts', () => {
         listCreditPayers: (messageId: string) => base.listCreditPayers(messageId),
         sumUnassignedCreditSats: (messageId: string) => base.sumUnassignedCreditSats(messageId),
         listRepayments: (messageId: string) => base.listRepayments(messageId),
+        listLoanLedger: (accountId: string) => base.listLoanLedger(accountId),
         markRepaymentPaid: (row: Parameters<InMemoryMessageStore['markRepaymentPaid']>[0]) =>
           base.markRepaymentPaid(row),
         claimZapPayment: (...args: Parameters<InMemoryMessageStore['claimZapPayment']>) =>
