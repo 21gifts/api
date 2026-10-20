@@ -984,6 +984,57 @@ describe('till payments on POST /pay/:username/invoice', () => {
     expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
   });
 
+  function alertFields(): Record<string, unknown>[] {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>)
+      .filter((entry) => entry['event'] === 'shop.alert.duplicate_invoice');
+  }
+
+  it('answers 502 without the BOLT11 when another payment holds its hash', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.paymentHashClaims.claimShop(PAYMENT_HASH, 'sp-other', null);
+    const issue = vi.spyOn(posStore, 'issueSparkInvoice');
+    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect(alertFields()).toEqual([
+      expect.objectContaining({ chargeId: CHARGE_ID, paymentId: 'sp-other' }),
+    ]);
+    expect(alertFields()[0]).not.toHaveProperty('holderChargeId');
+    expect(issue).not.toHaveBeenCalled();
+    expect(events()).not.toContain('pay.invoice');
+  });
+
+  it("answers 502 when another charge's invoice row holds the hash, naming that charge", async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.paymentHashClaims.claimCharge(PAYMENT_HASH, 'other-charge');
+    const res = await mint(await tillApp({ posStore }));
+    expect(res.status).toBe(502);
+    expect(alertFields()).toEqual([
+      expect.objectContaining({ chargeId: CHARGE_ID, holderChargeId: 'other-charge' }),
+    ]);
+    expect(alertFields()[0]).not.toHaveProperty('paymentId');
+  });
+
+  it('hands the BOLT11 out on this_charge and not_open', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.paymentHashClaims.claimShop(PAYMENT_HASH, 'sp-own', CHARGE_ID);
+    const own = await mint(await tillApp({ posStore }));
+    expect(own.status).toBe(200);
+    expect(((await own.json()) as { pr: string }).pr).toBe(PR);
+    const closed = new InMemoryPosStore();
+    await closed.create(pendingCharge());
+    closed.recordInvoice = async () => ({ outcome: 'not_open' });
+    const late = await mint(await tillApp({ posStore: closed }));
+    expect(late.status).toBe(200);
+    expect(alertFields()).toEqual([]);
+  });
+
   it('still answers with the Spark invoice when recording the BOLT11 fails', async () => {
     const posStore = new InMemoryPosStore();
     await posStore.create(pendingCharge());
@@ -1229,6 +1280,7 @@ describe('POST /pay/:username/payment', () => {
     const posStore = new InMemoryPosStore();
     const shop = new ShopPayments({
       store: new InMemoryShopPaymentStore(posStore),
+      posStore,
       auth,
       lnurlServer: LNURL_SERVER,
       config: null,
@@ -1275,7 +1327,46 @@ describe('POST /pay/:username/payment', () => {
       expect.objectContaining({ id: ADA_ID, username: 'ada' }),
       'ada',
       21,
+      NOW_MS,
+      expect.any(AbortSignal),
     );
+  });
+
+  it("passes the request's arrival, taken first, and its abort signal to the creation", async () => {
+    let clock = NOW_MS;
+    const shop = stubShop();
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl: async () => {
+          clock += 3_000;
+          return metadataResponse(1000, 1_000_000);
+        },
+        posStore: new InMemoryPosStore(),
+        now: () => clock,
+        lnurlServer: LNURL_SERVER,
+        shopPayments: shop as unknown as ShopPayments,
+      }),
+    );
+    const controller = new AbortController();
+    await app.request('/pay/ada/payment', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: 21 }),
+      signal: controller.signal,
+    });
+    const call = shop.createForPayer.mock.calls[0] as unknown[];
+    expect(call[3]).toBe(NOW_MS);
+    expect(clock).toBe(NOW_MS + 3_000);
+    expect(call[4]).toBeInstanceOf(AbortSignal);
+    expect((call[4] as AbortSignal).aborted).toBe(false);
+    controller.abort();
+    expect((call[4] as AbortSignal).aborted).toBe(true);
   });
 
   it('order 4 under the creation lock: 409 payment_open when a charge appeared meanwhile', async () => {

@@ -993,6 +993,34 @@ describe('lnurlServerRoutes', () => {
         expect(await recorded(posStore)).toEqual([]);
       });
 
+      it('answers 503 without the BOLT11 when another payment holds its hash', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        posStore.paymentHashClaims.claimShop(HASH, 'sp-other', 'c9');
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(JSON.parse(text)).toEqual({ error: 'Lightning address service is unavailable' });
+        expect(text).not.toContain(TILL_PR);
+        expect(
+          parsedEvents(warn).filter((event) => event['event'] === 'shop.alert.duplicate_invoice'),
+        ).toEqual([
+          expect.objectContaining({ chargeId: 'c1', holderChargeId: 'c9', paymentId: 'sp-other' }),
+        ]);
+        expect(await recorded(posStore)).toEqual([]);
+      });
+
+      it('forwards the BOLT11 when the hash is already this charge (this_charge)', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        posStore.paymentHashClaims.claimShop(HASH, 'sp-own', 'c1');
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(200);
+        expect(
+          parsedEvents(warn).some((event) => event['event'] === 'shop.alert.duplicate_invoice'),
+        ).toBe(false);
+      });
+
       it('logs when recording the hash fails and still forwards the invoice', async () => {
         const posStore = new InMemoryPosStore();
         await posStore.create(charge(250_000));

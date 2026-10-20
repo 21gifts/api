@@ -114,6 +114,8 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       );
     })
     .post('/', async (c) => {
+      // The request's arrival: the charge's background creation counts its 16 s limit from here.
+      const arrivedMs = deps.now();
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
@@ -165,7 +167,7 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         if (deps.shopPayments === undefined) {
           created = await deps.store.create(row);
         } else {
-          if (!(await deps.shopPayments.createCharge(account, row))) {
+          if (!(await deps.shopPayments.createCharge(account, row, arrivedMs))) {
             return c.json({ error: 'A payment is already open' }, 409);
           }
           created = row;

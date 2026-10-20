@@ -24,6 +24,7 @@ import { WAIT_SATS_POLL_MS } from '@/lib/message';
 import type { OrchestraClient, OrchestraQuote, OrchestraRouteAsset } from '@/lib/orchestra';
 import { ORCHESTRA_FINAL_STATUSES, ORCHESTRA_PROGRESSING_STATUSES } from '@/lib/orchestra';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
+import type { PosStore, RecordInvoiceResult } from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type {
   ShopAsset,
@@ -62,6 +63,13 @@ export const SHOP_ROUTES_TIMEOUT_MS = 1_000;
 export const SHOP_MINT_TIMEOUT_MS = 4_000;
 /** Quote budget inside the creation procedure (gas prices and Orchestra quotes). */
 export const SHOP_QUOTES_TIMEOUT_MS = 3_000;
+/**
+ * Step 8 of the creation procedure writes nothing when, after it holds its
+ * locks, its request arrived this long ago or longer (the 8 s budget plus
+ * lock waits); no creation inserts a payment later than this after its
+ * request arrived.
+ */
+export const SHOP_CREATION_INSERT_LIMIT_MS = 16_000;
 /** Whole creation procedure. */
 export const SHOP_CREATION_BUDGET_MS =
   SHOP_ROUTES_TIMEOUT_MS + SHOP_MINT_TIMEOUT_MS + SHOP_QUOTES_TIMEOUT_MS;
@@ -1132,6 +1140,12 @@ export function waitBody(payment: ShopPayment): {
 export interface ShopPaymentsDeps {
   /** Shop payment rows (and charge rows through the same transaction). */
   store: ShopPaymentStore;
+  /**
+   * The charge store the shop store's charge calls reach: step 4 records a
+   * charge's payment hash with `recordInvoice` in its own claim
+   * transaction, and a payer creation reads `findChargeForPayment`.
+   */
+  posStore: PosStore;
   /** Accounts by username. */
   auth: AuthStore;
   /** LNURL server (the shop routes exist only while it resolves). */
@@ -1252,10 +1266,47 @@ class HashHeldError extends Error {
   }
 }
 
-/** Input of the creation procedure: a pending charge or an amount the payer entered. */
+/**
+ * Input of the creation procedure: a pending charge or an amount the payer
+ * entered, with the arrival of the request that started it (step 8's 16 s
+ * limit) and, for a payer, the request's abort signal.
+ */
 type ShopCreationInput =
-  | { kind: 'charge'; account: Account; username: string; charge: PosCharge; amountSats: number }
-  | { kind: 'payer'; account: Account; username: string; amountSats: number };
+  | {
+      kind: 'charge';
+      account: Account;
+      username: string;
+      charge: PosCharge;
+      amountSats: number;
+      requestArrivedMs: number;
+    }
+  | {
+      kind: 'payer';
+      account: Account;
+      username: string;
+      amountSats: number;
+      requestArrivedMs: number;
+      signal: AbortSignal | null;
+    };
+
+/**
+ * `shop.alert.duplicate_invoice` fields of a creation: its payment id and,
+ * when known, the payment and the charge that hold the hash.
+ *
+ * @param paymentId - This creation's payment id.
+ * @param holder - The holding payment and charge (`null` when not known).
+ * @returns The log fields.
+ */
+function duplicateInvoiceFields(
+  paymentId: string,
+  holder: { paymentId: string | null; chargeId: string | null },
+): LogFields {
+  return {
+    paymentId,
+    ...(holder.paymentId === null ? {} : { holderPaymentId: holder.paymentId }),
+    ...(holder.chargeId === null ? {} : { holderChargeId: holder.chargeId }),
+  };
+}
 
 /**
  * The in-flight creation procedure of one pending charge: its outcome, and
@@ -1621,28 +1672,39 @@ export class ShopPayments {
    *
    * @param account - Shop account.
    * @param charge - The new charge.
+   * @param requestArrivedMs - When the api received the `POST /pos` request.
    */
-  startForCharge(account: Account, charge: PosCharge): void {
+  startForCharge(account: Account, charge: PosCharge, requestArrivedMs: number): void {
     const username = account.username ?? '';
     if (!this.offersStablecoins(username)) {
       return;
     }
-    void this.createForCharge(account, username, charge).catch((error: unknown) => {
-      logEvent('shop.creation.failed', { accountId: account.id, ...errorLogFields(error) });
-    });
+    void this.createForCharge(account, username, charge, requestArrivedMs).catch(
+      (error: unknown) => {
+        logEvent('shop.creation.failed', { accountId: account.id, ...errorLogFields(error) });
+      },
+    );
   }
 
   /**
    * The creation procedure for a pending charge. A creation for the same
-   * charge that is already queued or running is joined, not run again.
+   * charge that is already queued or running is joined, not run again; the
+   * joined run keeps the arrival of the request that started it.
    *
    * @param account - Shop account.
    * @param username - Its username.
    * @param charge - The pending charge.
+   * @param requestArrivedMs - When the api received the request that starts
+   *   the creation (`POST /pos` or the pay-link fetch).
    * @returns The outcome.
    */
-  createForCharge(account: Account, username: string, charge: PosCharge): Promise<ShopCreation> {
-    return this.#chargeCreation(account, username, charge).promise;
+  createForCharge(
+    account: Account,
+    username: string,
+    charge: PosCharge,
+    requestArrivedMs: number,
+  ): Promise<ShopCreation> {
+    return this.#chargeCreation(account, username, charge, requestArrivedMs).promise;
   }
 
   /**
@@ -1652,9 +1714,16 @@ export class ShopPayments {
    * @param account - Shop account.
    * @param username - Its username.
    * @param charge - The pending charge.
+   * @param requestArrivedMs - Arrival of this caller's request; used only
+   *   when this call queues the run.
    * @returns The in-flight creation.
    */
-  #chargeCreation(account: Account, username: string, charge: PosCharge): ShopChargeCreation {
+  #chargeCreation(
+    account: Account,
+    username: string,
+    charge: PosCharge,
+    requestArrivedMs: number,
+  ): ShopChargeCreation {
     const running = this.#chargeCreations.get(charge.id);
     if (running !== undefined) {
       return running;
@@ -1662,7 +1731,14 @@ export class ShopPayments {
     const entry: ShopChargeCreation = {
       startMs: null,
       promise: this.#create(
-        { kind: 'charge', account, username, charge, amountSats: charge.amountSats },
+        {
+          kind: 'charge',
+          account,
+          username,
+          charge,
+          amountSats: charge.amountSats,
+          requestArrivedMs,
+        },
         (startMs) => {
           entry.startMs = startMs;
         },
@@ -1681,10 +1757,26 @@ export class ShopPayments {
    * @param account - Shop account.
    * @param username - Its username.
    * @param amountSats - Accepted sats.
+   * @param requestArrivedMs - When the api received the request.
+   * @param signal - The request's abort signal; step 8 writes nothing once
+   *   it is set (the client disconnected).
    * @returns The outcome.
    */
-  createForPayer(account: Account, username: string, amountSats: number): Promise<ShopCreation> {
-    return this.#create({ kind: 'payer', account, username, amountSats });
+  createForPayer(
+    account: Account,
+    username: string,
+    amountSats: number,
+    requestArrivedMs: number,
+    signal?: AbortSignal,
+  ): Promise<ShopCreation> {
+    return this.#create({
+      kind: 'payer',
+      account,
+      username,
+      amountSats,
+      requestArrivedMs,
+      signal: signal ?? null,
+    });
   }
 
   /**
@@ -1779,31 +1871,59 @@ export class ShopPayments {
     }
     const held = await this.#deps.store.transaction((tx) => tx.paymentForHash(minted.paymentHash));
     if (held !== null) {
-      logEvent('shop.alert.duplicate_invoice', { paymentId: held.id });
+      if (input.kind === 'charge' && held.posChargeId === input.charge.id) {
+        // The charge's own shop payment holds the hash: use it, as step 8 does.
+        return { kind: 'payment', payment: held };
+      }
+      logEvent(
+        'shop.alert.duplicate_invoice',
+        duplicateInvoiceFields(paymentId, { paymentId: held.id, chargeId: held.posChargeId }),
+      );
       return { kind: 'mint_failed' };
     }
     let recordedByUs = false;
     if (input.kind === 'charge') {
-      const recorded = await this.#deps.store.transaction(async (tx) => {
-        if (
-          await tx.recordChargeInvoice(input.charge.id, minted.paymentHash, minted.requestedAtMs)
-        ) {
-          return 'recorded' as const;
-        }
-        const owner = await tx.chargeIdForInvoice(minted.paymentHash);
-        if (owner === null) {
-          return 'gone' as const;
-        }
-        return owner === input.charge.id ? ('own' as const) : ('other' as const);
-      });
-      if (recorded === 'other') {
-        logEvent('shop.alert.duplicate_invoice', { accountId: account.id });
-        return { kind: 'mint_failed' };
-      }
-      if (recorded === 'gone') {
+      let recorded: RecordInvoiceResult;
+      try {
+        // Its own claim transaction, outside any shop transaction.
+        recorded = await this.#deps.posStore.recordInvoice(
+          input.charge.id,
+          minted.paymentHash,
+          minted.requestedAtMs,
+        );
+      } catch {
+        // Nothing is written; a fetch answers today's pinned Lightning request.
+        logEvent('pos.invoice.record_failed', { accountId: account.id, paymentId });
         return { kind: 'skipped' };
       }
-      recordedByUs = recorded === 'recorded';
+      if (recorded.outcome === 'other_payment') {
+        logEvent(
+          'shop.alert.duplicate_invoice',
+          duplicateInvoiceFields(paymentId, {
+            paymentId: recorded.holderPaymentId,
+            chargeId: recorded.holderChargeId,
+          }),
+        );
+        return { kind: 'mint_failed' };
+      }
+      if (recorded.outcome === 'not_open') {
+        return { kind: 'skipped' };
+      }
+      recordedByUs = recorded.outcome === 'recorded';
+    } else {
+      let hit: PosCharge | undefined;
+      try {
+        hit = await this.#deps.posStore.findChargeForPayment({ paymentHash: minted.paymentHash });
+      } catch {
+        return { kind: 'unavailable' };
+      }
+      if (hit !== undefined) {
+        logEvent(
+          'shop.alert.duplicate_invoice',
+          duplicateInvoiceFields(paymentId, { paymentId: null, chargeId: hit.id }),
+        );
+        return { kind: 'mint_failed' };
+      }
     }
     // Steps 5 and 6: quotes and offer checks.
     const offers = await this.#requestOffers(
@@ -1881,7 +2001,8 @@ export class ShopPayments {
 
   /**
    * Step 8: insert the payment, its first quote, and its offers in one
-   * transaction under the account row lock (and the charge row lock).
+   * transaction under the payment hash claim, the account row lock, and the
+   * charge row lock, taken in that order.
    *
    * @param input - Charge or payer creation.
    * @param paymentId - Id chosen before the quotes (their `tag`).
@@ -1913,7 +2034,12 @@ export class ShopPayments {
   }
 
   /**
-   * The transaction of {@link ShopPayments.#insertPayment}.
+   * The transaction of {@link ShopPayments.#insertPayment}: the claim, the
+   * account and charge locks, then nothing is written when the request
+   * arrived {@link SHOP_CREATION_INSERT_LIMIT_MS} or longer ago or the payer
+   * disconnected (`unavailable`, order 9), or when another charge's
+   * `pos_charge_invoice` row holds the hash (`mint_failed`, logs
+   * `shop.alert.duplicate_invoice`).
    *
    * @param input - Charge or payer creation.
    * @param paymentId - Id chosen before the quotes.
@@ -1930,12 +2056,29 @@ export class ShopPayments {
     offers: readonly ShopOffer[],
   ): Promise<ShopCreation> {
     return this.#deps.store.transaction(async (tx): Promise<ShopCreation> => {
-      const nowMs = this.#deps.now();
       const accountId = input.account.id;
+      // Lock order: the payment hash claim, the account row, the charge row.
+      await tx.claimPaymentHash(minted.paymentHash);
       await tx.lockAccount(accountId);
+      const charge = input.kind === 'charge' ? await tx.lockCharge(input.charge.id) : null;
+      const nowMs = this.#deps.now();
+      if (
+        nowMs - input.requestArrivedMs >= SHOP_CREATION_INSERT_LIMIT_MS ||
+        (input.kind === 'payer' && input.signal?.aborted === true)
+      ) {
+        return { kind: 'unavailable' };
+      }
+      // A charge invoice row of another payment stops before anything is ended or inserted.
+      const invoiceCharge = await tx.chargeIdForInvoice(minted.paymentHash);
+      if (invoiceCharge !== null && (input.kind === 'payer' || invoiceCharge !== input.charge.id)) {
+        logEvent(
+          'shop.alert.duplicate_invoice',
+          duplicateInvoiceFields(paymentId, { paymentId: null, chargeId: invoiceCharge }),
+        );
+        return { kind: 'mint_failed' };
+      }
       let windowEndsAt: Date;
       if (input.kind === 'charge') {
-        const charge = await tx.lockCharge(input.charge.id);
         if (charge === null || charge.status !== 'pending' || charge.expiresAt.getTime() <= nowMs) {
           return { kind: 'skipped' };
         }
@@ -1961,6 +2104,7 @@ export class ShopPayments {
         nextSettleAt: new Date(nowMs + SHOP_SETTLE_FAST_INTERVAL_MS),
         nextHistoryAt: null,
         historyOffset: 0,
+        successorWaitUntil: null,
         createdAt: new Date(nowMs),
         acceptedAt: null,
         paidAt: null,
@@ -2053,6 +2197,8 @@ export class ShopPayments {
    * @param username - Its username.
    * @param metadata - Metadata of today's pay request.
    * @param query - `timeout`, `method`, `asset`, and repeated keys.
+   * @param arrivedMs - When the api received the pay-link fetch; a charge
+   *   creation this fetch starts counts step 8's 16 s limit from here.
    * @returns Today's request (with an optional pin) or a full response.
    */
   async payLink(
@@ -2060,6 +2206,7 @@ export class ShopPayments {
     username: string,
     metadata: string,
     query: ShopPayLinkQuery,
+    arrivedMs: number,
   ): Promise<ShopPayLinkAnswer> {
     const startMs = this.#deps.now();
     const name = shopName(account, username);
@@ -2095,7 +2242,7 @@ export class ShopPayments {
       // never ends earlier: only a running one shortens the wait. A creation
       // that outlasts the wait goes on in the background.
       const arrivalMs = this.#deps.now();
-      const creation = this.#chargeCreation(account, username, state.charge);
+      const creation = this.#chargeCreation(account, username, state.charge, arrivedMs);
       const waitMs = (creation.startMs ?? arrivalMs) + SHOP_CREATION_BUDGET_MS - arrivalMs;
       if (waitMs > 0) {
         await Promise.race([creation.promise.catch(() => null), this.#sleep(waitMs)]);
@@ -2519,9 +2666,11 @@ export class ShopPayments {
    *
    * @param account - Shop account.
    * @param row - The new charge.
+   * @param requestArrivedMs - When the api received the `POST /pos` request;
+   *   the background creation counts step 8's 16 s limit from here.
    * @returns `false` when a pending charge already exists (nothing written).
    */
-  async createCharge(account: Account, row: PosCharge): Promise<boolean> {
+  async createCharge(account: Account, row: PosCharge, requestArrivedMs: number): Promise<boolean> {
     const created = await this.#deps.store.transaction(async (tx) => {
       await tx.lockAccount(account.id);
       if (!(await tx.insertCharge(row))) {
@@ -2540,7 +2689,7 @@ export class ShopPayments {
       return true;
     });
     if (created) {
-      this.startForCharge(account, row);
+      this.startForCharge(account, row, requestArrivedMs);
     }
     return created;
   }

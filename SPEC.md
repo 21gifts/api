@@ -80,8 +80,8 @@ Public base URLs used in examples:
 | DEV         | `https://dev-api.21.gifts`     | `https://dev.21.gifts`     |
 | STAGING     | `https://staging-api.21.gifts` | `https://staging.21.gifts` |
 
-| Method | Path                                                 | Auth                                         | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ------ | ---------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Method | Path                                                 | Auth                                         | Purpose                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| ------ | ---------------------------------------------------- | -------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/healthz`                                           | none                                         | Liveness                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/info`                                              | none                                         | Service identity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/.well-known/lnurlp/:username`                      | none                                         | LUD-16 payRequest served from the LNURL server for a verified wallet (needs `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`); anything else is 404; an open till charge pins both sendable bounds; an open shop payment answers the OpenCryptoPay pay request; `timeout` waits up to 10 s, then 404 with the OpenCryptoPay body                                                                                                                                                                                                      |
@@ -165,10 +165,10 @@ Public base URLs used in examples:
 | POST   | `/funding/daily-roster/recipients`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }`. Route loads the account. Unknown account → 400 Unknown person. No receiving address (no verified wallet) → 400 Person has no Lightning address. Store load failure → 502 Daily roster is unavailable. The API store receives `{ address, amountUsd }` with the person's receiving address. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. Local bad body → Invalid person or amount. |
 | POST   | `/funding/daily-roster/recipients/update`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. String address + bad amount → Invalid address or amount; otherwise Unknown address.                                                                                                                                                                                                   |
 | POST   | `/funding/daily-roster/recipients/delete`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then the store. Success 200 is only `{ comment, paymentsEnabled, defaultAmountUsd, recipients: [{ address, amountUsd, accountId, name }] }`. `defaultAmountUsd` is always 1. 502 Daily roster is unavailable. Local bad body → Unknown address.                                                                                                                                                                                                                                                     |
-| POST   | `/funding/daily-roster/moderators`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }`. Route loads the account. Unknown account → 400 Unknown person. No receiving address (no verified wallet) → 400 Person has no Lightning address. Store load failure → 502 Daily roster is unavailable. The API store receives the person's receiving address. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Moderator rows stay out of `recipients`. Local bad body → Invalid person or amount.                                                                                                                                  |
-| POST   | `/funding/daily-roster/moderators/update`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ address, amountUsd }` updates a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. String address + bad amount → Invalid address or amount; otherwise Unknown address.                                                                                                                                                                                                                                                                                                                                                                               |
-| POST   | `/funding/daily-roster/moderators/delete`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ address }` deletes a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Local bad body → Unknown address.                                                                                                                                                                                                                                                                                                                                                                                                                                            |
-| POST   | `/funding/daily-roster/moderators/payments`          | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ enabled: boolean }` sets `moderatorPaymentsEnabled` only. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Non-boolean enabled → Invalid payments switch.                                                                                                                                                                                                                                                                                                                                                                                                   |
+| POST   | `/funding/daily-roster/moderators`                   | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ accountId, amountUsd }`. Route loads the account. Unknown account → 400 Unknown person. No receiving address (no verified wallet) → 400 Person has no Lightning address. Store load failure → 502 Daily roster is unavailable. The API store receives the person's receiving address. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Moderator rows stay out of `recipients`. Local bad body → Invalid person or amount.                                                 |
+| POST   | `/funding/daily-roster/moderators/update`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ address, amountUsd }` updates a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. String address + bad amount → Invalid address or amount; otherwise Unknown address.                                                                                                                                                                                                                                                                                              |
+| POST   | `/funding/daily-roster/moderators/delete`            | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ address }` deletes a stipend. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Local bad body → Unknown address.                                                                                                                                                                                                                                                                                                                                                           |
+| POST   | `/funding/daily-roster/moderators/payments`          | Bearer, initiator or founder (moderator 403) | 401 no session, then 403, then `{ enabled: boolean }` sets `moderatorPaymentsEnabled` only. Success 200 includes `moderatorPaymentsEnabled` and `moderators`. Non-boolean enabled → Invalid payments switch.                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                      | 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is the full document including `moderators` and `moderatorPaymentsEnabled`. `defaultAmountUsd` is always 1.                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/funding/daily-roster/document`                     | Spend Bearer (invoices)                      | Import of the full document. 503 if the token env is unset; 401 wrong/missing Bearer. Writes only while the store is still the empty start document; a saved empty roster is already written; a second import returns 200 with the stored document. `defaultAmountUsd` in the body is ignored.                                                                                                                                                                                                                                |
 | POST   | `/funding/daily-roster/worker/comment`               | Spend Bearer (invoices)                      | Spend Bearer. Body `{ comment: string }`. Newlines become spaces, then trim. Empty after trim is valid. Longer than 500 is 400 Invalid comment and is not cut. Success 200 is the full document. 503 if the token env is unset; 401 wrong/missing Bearer.                                                                                                                                                                                                                                                                     |
@@ -696,8 +696,15 @@ recover. Upstream may return HTTP 200 with
 The account's pending point-of-sale charge is read before the upstream
 call. After an upstream 2xx whose JSON `pr` decodes to exactly
 `amountSats * 1000` of that charge, the payment hash is recorded against that charge for
-[paid detection](#point-of-sale-paid-detection). The response is unchanged;
-a store failure logs `pos.invoice.record_failed`.
+[paid detection](#point-of-sale-paid-detection), under the payment hash
+claim (see Creation). When another charge's invoice row or another shop
+payment already holds that hash (`recordInvoice` returns
+`other_payment`), the BOLT11 is not handed out: the route logs
+`shop.alert.duplicate_invoice` (`chargeId`, `holderChargeId`, and
+`paymentId` only when a shop payment holds it) and answers **503**
+`{ "error": "Lightning address service is unavailable" }`. Otherwise the
+response is unchanged; a store failure logs `pos.invoice.record_failed`
+and the invoice is still handed out.
 
 ### `GET /verify/:paymentHash`
 
@@ -773,13 +780,22 @@ waits for the first:
    fetches again). No candidate pair → stop and start the account's 60 s
    no-pair wait.
 4. Mint one BOLT11 for the sats with one 4 s deadline for both LNURL calls.
-   A failed mint, a BOLT11 of another amount, or a payment hash that a shop
-   payment already holds (`shop.alert.duplicate_invoice`) stops the
-   procedure as a failed mint. Its expiry is the request time plus the
-   `expiry` tag, or plus 3600 s without one (`bolt11ExpiresAtMs`). For a
-   charge, the hash is then recorded against the charge
-   (`recordInvoice`); a hash recorded for another charge stops as a failed
-   mint, and no row because the charge is no longer open stops quietly.
+   A failed mint or a BOLT11 of another amount stops the procedure as a
+   failed mint. A payment hash that another charge's or a payer's shop
+   payment already holds stops it the same way and logs
+   `shop.alert.duplicate_invoice`; when the charge's own shop payment holds
+   it, that payment is used and the procedure ends. Its expiry is the
+   request time plus the `expiry` tag, or plus 3600 s without one
+   (`bolt11ExpiresAtMs`). For a charge, the hash is then recorded against
+   the charge with `recordInvoice`, which runs as its own claim transaction
+   and returns `recorded`, `this_charge`, `other_payment`, or `not_open`:
+   `other_payment` stops as a failed mint with the alert, `not_open` stops
+   quietly, and the other two go on. When `recordInvoice` fails with an
+   error, `pos.invoice.record_failed` is logged and nothing is written, so
+   a fetch answers today's pinned Lightning request. A payer creation never
+   records against a charge; it reads `findChargeForPayment({ paymentHash })`
+   instead: a hit stops as a failed mint with the alert, and an error writes
+   nothing and answers order 9.
 5. Within 3 s, read `eth_gasPrice` per chain and request one Orchestra
    exact-out quote per candidate pair in parallel, for as many pairs as the
    quote budget (240 per minute) allows. Each quote pays the BOLT11, is
@@ -796,8 +812,19 @@ waits for the first:
    could not be read is not kept either. A failed check logs
    `shop.offer.rejected` with the check name.
 7. None kept → stop and start the 60 s no-pair wait.
-8. In one transaction under the account row lock (`SELECT … FOR UPDATE`),
-   and for a charge also the charge row lock: a charge that is no longer
+8. In one transaction that first takes the payment hash claim
+   (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
+   32 bits of the hash as a signed integer; an in-process map shared with
+   the charge store on a memory boot), then the account row lock
+   (`SELECT … FOR UPDATE`), and for a charge then the charge row lock.
+   Holding them, it writes nothing and answers order 9 when its request
+   arrived 16 s ago or longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the
+   arrival of `POST /pay/:username/payment`, of the `POST /pos` that started
+   the charge's creation, or of the pay-link fetch that started it) or,
+   for a payer, when the client disconnected (the request's abort signal is
+   set). A `pos_charge_invoice` row of another charge for the hash stops it
+   before anything is ended or inserted, as a failed mint with
+   `shop.alert.duplicate_invoice`. A charge that is no longer
    pending or has expired gets nothing; a payer with a pending charge gets
    409 `payment_open`. When the account's `open` payment is this charge's
    own payment, it is used and nothing is inserted. Before anything is
@@ -1156,15 +1183,16 @@ rows by their own next-try column, oldest first:
    (24 h after it was stored, or after an operator retry). A
    `hex` transaction without a receipt is sent again, and refused when the
    node still does not know it 10 minutes after its first send.
-6. **Submits:** unresolved proofs after 10 s, 30 s, and 60 s, then every
-   5 min.
+6. **Submits:** unresolved proofs that may still be submitted and have a
+   log index, after 10 s, 30 s, and 60 s, then every 5 min.
 7. **Stuck proofs:** an unresolved proof past its `give_up_at` (24 h after
    it was stored, or after an operator retry) becomes `stuck`
    (`shop.alert.proof_stuck`); `POST /debug/shop-proofs/:id/retry` moves it
    back.
 8. **Order status** (even ticks): Orchestra status by order id every 10 s
    for 10 minutes, then every 60 s, until a final status or 24 h after the
-   order was found (`shop.alert.order_stuck`). An order with
+   order was found (`shop.alert.order_stuck`). A proof refused as
+   `tx_used` is not read. An order with
    `supersededByOperationId` is followed by its successor, whose status the
    next read fetches (see One deposit, two rows).
 
@@ -1357,7 +1385,13 @@ The `pr` is returned only when it decodes to exactly `amountSats * 1000`
 millisatoshis.
 
 While a point-of-sale charge is pending, the payment hash of `pr` is
-recorded against that charge. While that charge is pending,
+recorded against that charge, under the payment hash claim (see
+Creation). When another charge's invoice row or another shop payment
+already holds that hash (`recordInvoice` returns `other_payment`), the
+BOLT11 is not handed out: the route logs `shop.alert.duplicate_invoice`
+(`chargeId`, `holderChargeId`, and `paymentId` only when a shop payment
+holds it) and answers **502**
+`{ "error": "Lightning Address could not be resolved" }`. While that charge is pending,
 `sparkInvoice` is non-null when `amountSats` equals its amount (the till
 pin already enforces that) and free in-app payments are on (the same
 condition that issues Spark invoices for gifts). It is then a `spark1…`
@@ -1365,7 +1399,8 @@ invoice for exactly `amountSats` to the shop's verified wallet key with
 memo `pos:<chargeId>`; one per charge, so a repeat call returns the stored
 string. A 21.gifts in-app wallet pays it without a fee. A store failure
 while recording or issuing is logged (`pos.invoice.record_failed`,
-`pos.spark_invoice.issue_failed`) and does not fail the response. While
+`pos.spark_invoice.issue_failed`) and does not fail the response: the
+invoice is still handed out. While
 a charge is open, `comment` is ignored.
 
 Without a pending charge, `sparkInvoice` is non-null when free in-app
@@ -1397,17 +1432,17 @@ route group is always mounted; it opens a payment only when
 `{ "amountSats": <integer> }` (a `comment` key is accepted and ignored).
 Same account lookup as `GET /pay/:username`. Checks run in this order:
 
-| Order | Condition                                                                                                                                                 | Response                                                                                     |
-| ----- | --------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------- |
-| 1     | Invalid username, unknown account, or no receiving address (no verified wallet, or the LNURL server not configured).                                      | **404** `{ "error": "Not found" }`                                                           |
-| 2     | The wallet's pay request cannot be resolved, the store throws, or its window is empty or not a safe integer.                                              | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 3     | Missing or invalid JSON, or `amountSats` is not an integer of at least 1.                                                                                 | **400** `{ "error": "Enter a whole number of sats" }`                                        |
-| 4     | A till charge is pending.                                                                                                                                 | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
-| 5     | The amount is outside the pay request's sat range or millisatoshi window.                                                                                 | **400** `{ "error": "Enter a whole number of sats" }`                                        |
-| 6     | The username is `invoice`, `cb`, or ends in `.`, or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` does not resolve. | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
-| 7     | The account's 60 s no-pair wait is running, or the api started 60 creations in the last minute, or this account started 10 (per process).                 | **503** `stablecoin_unavailable` as in order 6                                               |
-| 8     | The mint fails, the BOLT11 is for another amount, or its payment hash is already held (logs `pay.invoice_failed`).                                        | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
-| 9     | The route list cannot be read or names no candidate pair, or no Orchestra quote passes the offer checks.                                                  | **503** `stablecoin_unavailable` as in order 6                                               |
+| Order | Condition                                                                                                                                                                                                                            | Response                                                                                     |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 1     | Invalid username, unknown account, or no receiving address (no verified wallet, or the LNURL server not configured).                                                                                                                 | **404** `{ "error": "Not found" }`                                                           |
+| 2     | The wallet's pay request cannot be resolved, the store throws, or its window is empty or not a safe integer.                                                                                                                         | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 3     | Missing or invalid JSON, or `amountSats` is not an integer of at least 1.                                                                                                                                                            | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 4     | A till charge is pending.                                                                                                                                                                                                            | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
+| 5     | The amount is outside the pay request's sat range or millisatoshi window.                                                                                                                                                            | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 6     | The username is `invoice`, `cb`, or ends in `.`, or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` does not resolve.                                                                            | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 7     | The account's 60 s no-pair wait is running, or the api started 60 creations in the last minute, or this account started 10 (per process).                                                                                            | **503** `stablecoin_unavailable` as in order 6                                               |
+| 8     | The mint fails, the BOLT11 is for another amount, or its payment hash is already held by a shop payment or recorded against a charge (logs `pay.invoice_failed`).                                                                    | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 9     | The route list cannot be read or names no candidate pair, no Orchestra quote passes the offer checks, `findChargeForPayment` fails with an error, or the insert step finds the request at least 16 s old or its client disconnected. | **503** `stablecoin_unavailable` as in order 6                                               |
 
 Orders 4 and 6 run again under the account's creation lock (order 4 also
 inside the insert transaction); order 7 runs only there, once per creation.
@@ -3577,10 +3612,16 @@ with a shop payment that is neither `paid` nor closed is **409**
 `{ "error": "A payment is already open" }` and nothing changes, because
 that payment's BOLT11 still pays the source account's wallet, which the
 merge does not carry over; the merge can be repeated after the final
-settlement read, 10 minutes after the BOLT11 expired. The source's paid
+settlement read, 10 minutes after the BOLT11 expired. A source with an
+unexpired pending till charge while the survivor has an `open` shop
+payment is the same **409** and nothing changes, so a till charge never
+lands next to another payment's open amount. The source's paid
 and closed shop payments move like every other row. When the source's
-pending till charge is deleted because the survivor has one, its
-`pos_charge_invoice` rows are deleted first. A database that
+pending till charge is deleted because the survivor has one, its row is
+locked first (`SELECT … FOR UPDATE`), then its `pos_charge_invoice` rows
+and the charge are deleted by the locked ids; a `recordInvoice` for that
+charge waits on the lock and then fails, which the invoice routes log as
+`pos.invoice.record_failed`. A database that
 cannot run the merge, and any thrown write, is **503**
 `{ "error": "Merge is unavailable" }`. The same 503/401 debug-token
 gate as the other debug account routes applies. Success logs

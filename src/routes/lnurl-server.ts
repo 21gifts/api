@@ -24,7 +24,7 @@ import {
 } from '@/lib/lnurl-server';
 import { WAIT_SATS_TIMEOUT_MS } from '@/lib/message';
 import type { PosCharge } from '@/lib/pos-charge';
-import type { PosStore } from '@/lib/pos-store';
+import { duplicateInvoiceLogFields, type PosStore } from '@/lib/pos-store';
 import { readClientRequestMeta } from '@/lib/request-meta';
 import { shopError, shopResponse, type ShopPayments } from '@/lib/shop-payment';
 import { handleShopProof } from '@/lib/shop-proof';
@@ -161,36 +161,45 @@ async function pendingCharge(
  * Record the BOLT11 in a successful upstream invoice body against the charge
  * that was open before the mint, when its amount is the charge amount.
  *
- * Best effort: an unparsable body, a BOLT11 that does not decode, or another
- * amount records nothing; a store failure logs `pos.invoice.record_failed`.
- * Never changes the response.
+ * An unparsable body, a BOLT11 that does not decode, or another amount
+ * records nothing; a store failure logs `pos.invoice.record_failed` and the
+ * invoice is still handed out. When `recordInvoice` returns `other_payment`
+ * (another charge or shop payment holds the payment hash), logs
+ * `shop.alert.duplicate_invoice` and returns `blocked`, so the route does
+ * not hand that BOLT11 out.
  *
  * @param deps - Route collaborators.
  * @param pending - The charge open before the mint.
  * @param issuedAtMs - When that charge was found open (epoch ms).
  * @param body - Upstream response body.
+ * @returns `blocked` on `other_payment`, otherwise `ok`.
  */
 async function recordPosInvoice(
   deps: LnurlServerRouteDeps,
   pending: PosCharge,
   issuedAtMs: number,
   body: string,
-): Promise<void> {
+): Promise<'blocked' | 'ok'> {
   let pr: unknown;
   try {
     pr = (JSON.parse(body) as { pr?: unknown } | null)?.pr;
   } catch {
-    return;
+    return 'ok';
   }
   const decoded = typeof pr === 'string' ? decodeBolt11(pr) : null;
   if (decoded === null || decoded.amountMsat !== pending.amountSats * 1000) {
-    return;
+    return 'ok';
   }
   try {
-    await deps.posStore.recordInvoice(pending.id, decoded.paymentHash, issuedAtMs);
+    const recorded = await deps.posStore.recordInvoice(pending.id, decoded.paymentHash, issuedAtMs);
+    if (recorded.outcome === 'other_payment') {
+      logEvent('shop.alert.duplicate_invoice', duplicateInvoiceLogFields(pending.id, recorded));
+      return 'blocked';
+    }
   } catch {
     logEvent('pos.invoice.record_failed', { accountId: pending.accountId });
   }
+  return 'ok';
 }
 
 /**
@@ -419,8 +428,15 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           headers: c.req.raw.headers,
           timeoutMs: LNURL_SERVER_TIMEOUT_MS,
         });
-        if (pending !== null && result.ok && result.status >= 200 && result.status < 300) {
-          await recordPosInvoice(deps, pending, issuedAtMs, result.body);
+        if (
+          pending !== null &&
+          result.ok &&
+          result.status >= 200 &&
+          result.status < 300 &&
+          (await recordPosInvoice(deps, pending, issuedAtMs, result.body)) === 'blocked'
+        ) {
+          // Another payment holds the hash: answer as when the upstream fails.
+          return c.json(UNAVAILABLE, 503);
         }
         return mapUpstream(result, route);
       } catch {

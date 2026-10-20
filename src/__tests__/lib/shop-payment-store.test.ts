@@ -4,7 +4,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
-import { InMemoryPosStore } from '@/lib/pos-store';
+import {
+  PAYMENT_HASH_CLAIM_SQL,
+  PAYMENT_HASH_LOCK_NAMESPACE,
+  PaymentHashClaims,
+} from '@/lib/payment-hash-claim';
+import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import {
   InMemoryShopPaymentStore,
   migrateShopPaymentSchema,
@@ -46,6 +51,7 @@ function payment(partial: Partial<ShopPayment> = {}): ShopPayment {
     nextSettleAt: new Date(T0 + 5_000),
     nextHistoryAt: null,
     historyOffset: 0,
+    successorWaitUntil: null,
     createdAt: new Date(T0),
     acceptedAt: null,
     paidAt: null,
@@ -111,6 +117,7 @@ function proof(partial: Partial<ShopProof> = {}): ShopProof {
     idempotencyKey: 'pk-1',
     result: null,
     providerOrder: null,
+    supersededByOrder: null,
     orderStatus: null,
     orderFoundAt: null,
     refusal: null,
@@ -273,13 +280,14 @@ describe('InMemoryShopPaymentStore', () => {
 
   it('delegates charge calls to the PosStore', async () => {
     await run(async (tx) => {
+      await tx.claimPaymentHash('h1');
       await tx.lockAccount(ACC);
       expect(await tx.lockCharge(uid(0x501))).toBeNull();
       expect(await tx.insertCharge(charge())).toBe(true);
       expect(await tx.insertCharge(charge({ id: uid(0x502) }))).toBe(false);
       expect((await tx.lockCharge(uid(0x501)))?.id).toBe(uid(0x501));
       expect((await tx.pendingCharge(ACC, T0 + 1))?.id).toBe(uid(0x501));
-      expect(await tx.recordChargeInvoice(uid(0x501), 'h1', T0 + 1)).toBe(true);
+      expect(await pos.recordInvoice(uid(0x501), 'h1', T0 + 1)).toEqual({ outcome: 'recorded' });
       expect(await tx.chargeIdForInvoice('h1')).toBe(uid(0x501));
       expect(await tx.chargeIdForInvoice('h2')).toBeNull();
       await tx.deleteChargeInvoice('h1');
@@ -290,6 +298,121 @@ describe('InMemoryShopPaymentStore', () => {
         true,
       );
       expect((await tx.markChargePaid(uid(0x503), T0 + 5))?.status).toBe('paid');
+    });
+  });
+
+  it('shares the payment hash claim with the InMemoryPosStore', async () => {
+    await pos.create(charge());
+    await pos.create(charge({ id: uid(0x502), accountId: ACC2 }));
+    // A charge's invoice row refuses a payer's payment and another charge's
+    // payment, and admits the payment of its own charge.
+    expect(await pos.recordInvoice(uid(0x501), 'h1', T0)).toEqual({ outcome: 'recorded' });
+    await run(async (tx) => {
+      expect(await tx.insertPayment(payment({ paymentHash: 'h1' }))).toBe(false);
+      expect(
+        await tx.insertPayment(
+          payment({ paymentHash: 'h1', accountId: ACC2, posChargeId: uid(0x502) }),
+        ),
+      ).toBe(false);
+      expect(await tx.insertPayment(payment({ paymentHash: 'h1', posChargeId: uid(0x501) }))).toBe(
+        true,
+      );
+    });
+    expect(pos.paymentHashClaims.holder('h1')).toEqual({
+      chargeId: uid(0x501),
+      paymentId: uid(1),
+      paymentChargeId: uid(0x501),
+    });
+    // A payer's payment holds h2: no charge records it, and no second payment takes it.
+    await run(async (tx) => {
+      expect(
+        await tx.insertPayment(payment({ id: uid(2), accountId: ACC2, paymentHash: 'h2' })),
+      ).toBe(true);
+      expect(
+        await tx.insertPayment(
+          payment({ id: uid(3), accountId: ACC2, paymentHash: 'h2', status: 'ended' }),
+        ),
+      ).toBe(false);
+    });
+    expect(await pos.recordInvoice(uid(0x501), 'h2', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: null,
+      holderPaymentId: uid(2),
+    });
+    // The charge's own shop payment holding the hash is this charge.
+    expect(await pos.recordInvoice(uid(0x501), 'h1', T0)).toEqual({ outcome: 'this_charge' });
+    expect(await pos.recordInvoice(uid(0x502), 'h1', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: uid(0x501),
+      holderPaymentId: uid(1),
+    });
+  });
+
+  it('a rolled-back insert releases the payment hash it claimed', async () => {
+    await pos.create(charge());
+    await expect(
+      run(async (tx) => {
+        expect(await tx.insertPayment(payment({ paymentHash: 'h1' }))).toBe(true);
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(pos.paymentHashClaims.holder('h1')).toBeNull();
+    expect(await pos.recordInvoice(uid(0x501), 'h1', T0)).toEqual({ outcome: 'recorded' });
+    // A rollback releases only the shop side: the charge's row keeps its claim.
+    await expect(
+      run(async (tx) => {
+        expect(
+          await tx.insertPayment(payment({ paymentHash: 'h1', posChargeId: uid(0x501) })),
+        ).toBe(true);
+        throw new Error('boom');
+      }),
+    ).rejects.toThrow('boom');
+    expect(pos.paymentHashClaims.holder('h1')).toEqual({
+      chargeId: uid(0x501),
+      paymentId: null,
+      paymentChargeId: null,
+    });
+  });
+
+  it('takes the claim map from the constructor, else a new one for another PosStore', async () => {
+    const claims = new PaymentHashClaims();
+    claims.claimCharge('h1', uid(0x501));
+    const explicit = new InMemoryShopPaymentStore(pos, claims);
+    expect(
+      await explicit.transaction((tx) => tx.insertPayment(payment({ paymentHash: 'h1' }))),
+    ).toBe(false);
+    expect(pos.paymentHashClaims.holder('h1')).toBeNull();
+    const other = new InMemoryShopPaymentStore({} as PosStore);
+    expect(await other.transaction((tx) => tx.insertPayment(payment({ paymentHash: 'h1' })))).toBe(
+      true,
+    );
+    expect(pos.paymentHashClaims.holder('h1')).toBeNull();
+  });
+
+  it('lockProofs returns copies of the payment proofs ordered by id', async () => {
+    await run(async (tx) => {
+      await tx.insertProof(proof({ id: uid(0x303), createdAt: new Date(T0) }));
+      await tx.insertProof(proof({ id: uid(0x301), logIndex: 1, createdAt: new Date(T0 + 1) }));
+      await tx.insertProof(proof({ id: uid(0x302), logIndex: 2, paymentId: uid(2) }));
+      const locked = await tx.lockProofs(uid(1));
+      expect(locked.map((row) => row.id)).toEqual([uid(0x301), uid(0x303)]);
+      locked[0]!.tries = 9;
+      expect((await tx.getProof(uid(0x301)))?.tries).toBe(0);
+    });
+  });
+
+  it('round-trips successorWaitUntil and supersededByOrder through inserts and patches', async () => {
+    await run(async (tx) => {
+      await tx.insertPayment(payment({ successorWaitUntil: new Date(T0 + 1) }));
+      expect((await tx.getPayment(uid(1)))?.successorWaitUntil).toEqual(new Date(T0 + 1));
+      expect(
+        (await tx.updatePayment(uid(1), {}, { successorWaitUntil: new Date(T0 + 2) }))
+          ?.successorWaitUntil,
+      ).toEqual(new Date(T0 + 2));
+      await tx.insertProof(proof({ supersededByOrder: 'o-b' }));
+      expect((await tx.getProof(uid(0x301)))?.supersededByOrder).toBe('o-b');
+      const patched = await tx.updateProof(uid(0x301), {}, { supersededByOrder: 'o-c' });
+      expect(patched === 'conflict' ? null : patched?.supersededByOrder).toBe('o-c');
     });
   });
 
@@ -803,6 +926,31 @@ describe('InMemoryShopPaymentStore', () => {
           nextReceiptAt: at(50),
         }),
         proof({ id: uid(7), logIndex: 7, providerOrder: 'o7', nextStatusAt: at(3) }),
+        // An unlogged hex proof is never submitted.
+        proof({
+          id: uid(8),
+          source: 'hex',
+          rawHex: 'ab',
+          logIndex: null,
+          nextSubmitAt: at(0),
+        }),
+        // A proof refused as tx_used is no longer followed; another refusal is.
+        proof({
+          id: uid(9),
+          logIndex: 9,
+          providerOrder: 'o9',
+          result: 'refused',
+          refusal: 'tx_used',
+          nextStatusAt: at(0),
+        }),
+        proof({
+          id: uid(10),
+          logIndex: 10,
+          providerOrder: 'o10',
+          result: 'refused',
+          refusal: 'mismatch',
+          nextStatusAt: at(5),
+        }),
       ];
       for (const row of rows) {
         expect(await tx.insertProof(row)).toBe(true);
@@ -813,7 +961,7 @@ describe('InMemoryShopPaymentStore', () => {
       ): Promise<string[]> => (await tx.dueProofs(duty, T0 + 10, limit)).map((row) => row.id);
       expect(await ids('receipt')).toEqual([uid(2), uid(1)]);
       expect(await ids('submit')).toEqual([uid(1), uid(2)]);
-      expect(await ids('status')).toEqual([uid(6), uid(7), uid(5)]);
+      expect(await ids('status')).toEqual([uid(6), uid(7), uid(5), uid(10)]);
       expect(await ids('status', 1)).toEqual([uid(6)]);
       expect(await ids('stuck')).toEqual([uid(2), uid(1)]);
     });
@@ -916,6 +1064,7 @@ function paymentSqlRow(overrides: Record<string, unknown> = {}): Record<string, 
     next_settle_at: ISO(5_000),
     next_history_at: null,
     history_offset: 0,
+    successor_wait_until: null,
     created_at: ISO(0),
     accepted_at: null,
     paid_at: null,
@@ -974,6 +1123,7 @@ function proofSqlRow(overrides: Record<string, unknown> = {}): Record<string, un
     idempotency_key: 'pk-1',
     result: null,
     provider_order: null,
+    superseded_by_order: null,
     order_status: null,
     order_found_at: null,
     refusal: null,
@@ -1051,6 +1201,7 @@ describe('PostgresShopPaymentStore', () => {
       expect(await t.markDetailIssued('nope', T0)).toBe(false);
       expect(await t.getProof('nope')).toBeNull();
       expect(await t.proofsOf('nope')).toEqual([]);
+      expect(await t.lockProofs('nope')).toEqual([]);
       expect(await t.updateProof('nope', {}, { tries: 1 })).toBeNull();
       await t.deleteProof('nope');
       expect(await t.countLookups('nope')).toBe(0);
@@ -1100,6 +1251,29 @@ describe('PostgresShopPaymentStore', () => {
     expect(tx.calls[4]?.text).toMatch(/FROM shop_quote WHERE id = \$1 FOR UPDATE$/);
   });
 
+  it('claimPaymentHash takes the two-key advisory lock of the hash', async () => {
+    const { tx, store } = postgresStore();
+    await store.transaction(async (t) => {
+      await t.claimPaymentHash(`ffffffff${'0'.repeat(56)}`);
+    });
+    expect(tx.calls).toEqual([
+      { text: PAYMENT_HASH_CLAIM_SQL, params: [PAYMENT_HASH_LOCK_NAMESPACE, -1] },
+    ]);
+  });
+
+  it('lockProofs locks the payment proofs in one statement ordered by id', async () => {
+    const { tx, store } = postgresStore();
+    tx.respond = () => [proofSqlRow()];
+    await store.transaction(async (t) => {
+      expect(await t.lockProofs(uid(1))).toEqual([proof()]);
+    });
+    expect(tx.calls).toHaveLength(1);
+    expect(tx.calls[0]?.params).toEqual([uid(1)]);
+    expect(tx.calls[0]?.text).toMatch(
+      /FROM shop_proof WHERE payment_id = \$1 ORDER BY id FOR UPDATE$/,
+    );
+  });
+
   it('lockCharge answers null when the row is missing or vanished', async () => {
     const { tx, store } = postgresStore();
     await store.transaction(async (t) => {
@@ -1132,7 +1306,6 @@ describe('PostgresShopPaymentStore', () => {
       expect(await t.pendingCharge(ACC, T0)).toEqual(charge());
       expect(await t.cancelPendingCharge(ACC, T0)).toEqual(charge());
       expect(await t.markChargePaid(uid(0x501), T0)).toEqual(charge());
-      expect(await t.recordChargeInvoice(uid(0x501), 'h1', T0)).toBe(true);
       expect(await t.chargeIdForInvoice('h1')).toBe(uid(0x501));
       await t.deleteChargeInvoice('h1');
       tx.respond = () => [];
@@ -1183,6 +1356,7 @@ describe('PostgresShopPaymentStore', () => {
       next_settle_at: new Date(T0 + 1),
       next_history_at: ISO(2),
       history_offset: '20',
+      successor_wait_until: ISO(6),
       replacements: '4',
       accepted_at: ISO(3),
       paid_at: null,
@@ -1199,6 +1373,7 @@ describe('PostgresShopPaymentStore', () => {
           nextSettleAt: new Date(T0 + 1),
           nextHistoryAt: new Date(T0 + 2),
           historyOffset: 20,
+          successorWaitUntil: new Date(T0 + 6),
           replacements: 4,
           acceptedAt: new Date(T0 + 3),
           endedAt: new Date(T0 + 4),
@@ -1230,7 +1405,7 @@ describe('PostgresShopPaymentStore', () => {
       expect(await t.insertPayment(payment())).toBe(false);
     });
     expect(tx.calls[0]?.text).toMatch(
-      /INSERT INTO shop_payment \(id, account_id,[\s\S]*VALUES \(\$1, [\s\S]*\$19\)\s+ON CONFLICT DO NOTHING\s+RETURNING id/,
+      /INSERT INTO shop_payment \(id, account_id,[\s\S]*VALUES \(\$1, [\s\S]*\$20\)\s+ON CONFLICT DO NOTHING\s+RETURNING id/,
     );
     expect(tx.calls[0]?.params).toEqual([
       uid(1),
@@ -1247,6 +1422,7 @@ describe('PostgresShopPaymentStore', () => {
       ISO(5_000),
       null,
       0,
+      null,
       ISO(0),
       null,
       null,
@@ -1423,6 +1599,7 @@ describe('PostgresShopPaymentStore', () => {
       transfer_amount: 7n,
       result: 'accepted',
       provider_order: 'o1',
+      superseded_by_order: 'o2',
       order_status: 'completed',
       order_found_at: ISO(1),
       refusal: null,
@@ -1443,6 +1620,7 @@ describe('PostgresShopPaymentStore', () => {
       transferAmount: '7',
       result: 'accepted',
       providerOrder: 'o1',
+      supersededByOrder: 'o2',
       orderStatus: 'completed',
       orderFoundAt: new Date(T0 + 1),
       submitStopped: true,
@@ -1473,9 +1651,9 @@ describe('PostgresShopPaymentStore', () => {
       expect(await t.insertProof(proof())).toBe(false);
       expect(await t.getProof(uid(0x301))).toBeNull();
     });
-    expect(tx.calls[0]?.text).toMatch(/\$26\)\nON CONFLICT DO NOTHING\nRETURNING id/);
-    expect(tx.calls[0]?.params).toHaveLength(26);
-    expect(tx.calls[0]?.params[19]).toBe(ISO(86_400_000));
+    expect(tx.calls[0]?.text).toMatch(/\$27\)\nON CONFLICT DO NOTHING\nRETURNING id/);
+    expect(tx.calls[0]?.params).toHaveLength(27);
+    expect(tx.calls[0]?.params[20]).toBe(ISO(86_400_000));
     expect(tx.calls[3]).toMatchObject({ params: [1, '0xa'] });
     expect(tx.calls[3]?.text).toMatch(
       /WHERE chain_id = \$1 AND tx_hash = \$2 ORDER BY created_at, id$/,
@@ -1554,10 +1732,10 @@ describe('PostgresShopPaymentStore', () => {
       /WHERE next_receipt_at <= \$1\nORDER BY next_receipt_at, id\nLIMIT \$2/,
     );
     expect(tx.calls[1]?.text).toMatch(
-      /WHERE next_submit_at <= \$1 AND result IS NULL AND provider_order IS NULL AND NOT submit_stopped\nORDER BY next_submit_at, id/,
+      /WHERE next_submit_at <= \$1 AND result IS NULL AND provider_order IS NULL AND NOT submit_stopped\n {2}AND log_index IS NOT NULL\nORDER BY next_submit_at, id/,
     );
     expect(tx.calls[2]?.text).toMatch(
-      /WHERE next_status_at <= \$1 AND provider_order IS NOT NULL\nORDER BY next_status_at, id/,
+      /WHERE next_status_at <= \$1 AND provider_order IS NOT NULL\n {2}AND NOT \(result IS NOT DISTINCT FROM 'refused' AND refusal IS NOT DISTINCT FROM 'tx_used'\)\nORDER BY next_status_at, id/,
     );
     expect(tx.calls[3]?.text).toMatch(
       /WHERE result IS NULL AND provider_order IS NULL AND give_up_at <= \$1\nORDER BY give_up_at, id/,

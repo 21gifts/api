@@ -156,6 +156,7 @@ if (import.meta.main) {
             bun === undefined
               ? new InMemoryShopPaymentStore(posStore)
               : new PostgresShopPaymentStore(bun.client, bun.mergeDb),
+          posStore,
           auth: authStore,
           lnurlServer,
           config: shopConfig,

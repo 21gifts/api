@@ -785,6 +785,7 @@ describe('POS with shop payments', () => {
   function realShop(store: InMemoryPosStore, auth: InMemoryAuthStore): ShopPayments {
     return new ShopPayments({
       store: new InMemoryShopPaymentStore(store),
+      posStore: store,
       auth,
       lnurlServer: LNURL_SERVER,
       config: null,
@@ -880,6 +881,7 @@ describe('POS with shop payments', () => {
     expect(createCharge).toHaveBeenCalledWith(
       expect.objectContaining({ id: 'acc' }),
       expect.objectContaining({ accountId: 'acc', amountSats: 21, status: 'pending' }),
+      nowMs,
     );
     expect(await pos.currentPending('acc', nowMs)).toBeNull();
   });

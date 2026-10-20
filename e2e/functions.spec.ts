@@ -1051,6 +1051,23 @@ test('Function: PostgresPosStore — default boot has no DATABASE_URL', async ({
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
+test('Function: PaymentHashClaims — POST /pos without bearer is 401 on the memory boot', async ({
+  request,
+}) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: paymentHashLockKey — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: duplicateInvoiceLogFields — POST /pay/:username/invoice is 404 for an unknown username', async ({
+  request,
+}) => {
+  const res = await request.post('/pay/nobody-e2e-dup/invoice', { data: { amountSats: 21 } });
+  expect(res.status()).toBe(404);
+});
+
 test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
   const res = await request.post('/contact', {
     data: { text: 'hi' },

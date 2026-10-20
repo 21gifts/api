@@ -813,6 +813,7 @@ export function storeProof(
       idempotencyKey: shop.newId(),
       result: null,
       providerOrder: null,
+      supersededByOrder: null,
       orderStatus: null,
       orderFoundAt: null,
       refusal: null,

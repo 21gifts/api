@@ -167,9 +167,11 @@ export function harness(options: { config?: boolean; orchestra?: boolean } = {})
     history: vi.fn(async () => ({ ok: true, orders: [], full: false })),
     status: vi.fn(async () => ({ ok: false, reason: 'error' })),
   };
-  const store = new InMemoryShopPaymentStore(new InMemoryPosStore());
+  const posStore = new InMemoryPosStore();
+  const store = new InMemoryShopPaymentStore(posStore);
   const shop = new ShopPayments({
     store,
+    posStore,
     auth: {} as AuthStore,
     lnurlServer: LNURL_SERVER,
     config:
@@ -214,6 +216,7 @@ export function paymentRow(partial: Partial<ShopPayment> = {}): ShopPayment {
     nextSettleAt: null,
     nextHistoryAt: null,
     historyOffset: 0,
+    successorWaitUntil: null,
     createdAt: new Date(T0),
     acceptedAt: null,
     paidAt: null,
@@ -290,6 +293,7 @@ export function proofRow(partial: Partial<ShopProof> = {}): ShopProof {
     idempotencyKey: uid(0x402),
     result: null,
     providerOrder: null,
+    supersededByOrder: null,
     orderStatus: null,
     orderFoundAt: null,
     refusal: null,

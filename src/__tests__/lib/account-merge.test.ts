@@ -47,6 +47,10 @@ interface FakeDatabaseOptions {
   columns?: readonly FakeCatalogColumn[];
   verifyExists?: readonly { exists: boolean }[];
   messageCount?: readonly { n: number }[];
+  /** Rows of the lock on the merged account's pending charge (deleted when the survivor has one). */
+  pendingCharges?: readonly { id: string }[];
+  /** Rows of the survivor's open shop payment beside the merged account's pending charge. */
+  openBesideCharge?: readonly { id: string }[];
 }
 
 function fakeDatabase(options: FakeDatabaseOptions = {}): {
@@ -62,6 +66,12 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
       return run({
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
           queries.push({ text, params });
+          if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
+            return (options.pendingCharges ?? []) as T[];
+          }
+          if (text.includes("p.status = 'open'")) {
+            return (options.openBesideCharge ?? []) as T[];
+          }
           if (text.includes('FOR UPDATE')) {
             if (options.lock !== undefined) {
               return options.lock as T[];
@@ -158,13 +168,14 @@ describe('mergeAccounts', () => {
     const walletCollision = queries.findIndex((query) =>
       query.text.includes('DELETE FROM wallet_payment AS src'),
     );
-    const posCollision = queries.findIndex((query) =>
-      query.text.includes('DELETE FROM pos_charge'),
+    const posCollision = queries.findIndex(
+      (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
     );
     const catalog = queries.findIndex(
       (query) => query.text.includes('pg_constraint') && query.text.includes('JOIN LATERAL'),
     );
     expect(walletCollision).toBeGreaterThanOrEqual(0);
+    expect(posCollision).toBeGreaterThanOrEqual(0);
     expect(walletCollision).toBeGreaterThan(posCollision);
     expect(walletCollision).toBeLessThan(catalog);
     expect(queries[walletCollision]?.params).toEqual([FROM, INTO]);
@@ -359,26 +370,57 @@ describe('mergeAccounts', () => {
     expect(queries.findIndex((query) => query.text.includes('count(*)'))).toBeGreaterThan(check);
   });
 
-  it('deletes the pos_charge_invoice rows of the deleted pending charge before the charge', async () => {
+  it('refuses while the merged account has a pending charge and the survivor an open shop payment', async () => {
+    const { db, queries } = fakeDatabase({ openBesideCharge: [{ id: 'sp-into-open' }] });
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: false,
+      error: 'shop_payment_open',
+    });
+    const check = queries.at(-1);
+    expect(check?.params).toEqual([FROM, INTO]);
+    const flat = (check?.text ?? '').replace(/\s+/g, ' ').trim();
+    expect(flat).toBe(
+      "SELECT p.id FROM shop_payment AS p WHERE p.account_id = $2 AND p.status = 'open' AND EXISTS ( SELECT 1 FROM pos_charge AS c WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now() ) LIMIT 1",
+    );
+    // Checked under both account locks, after the merged account's own check, before any write.
+    expect(queries[0]?.text).toContain('FROM account');
+    expect(queries.filter((query) => query.text.includes('FROM shop_payment'))).toHaveLength(2);
+    expect(queries.some((query) => /^\s*(UPDATE|DELETE|INSERT)\b/.test(query.text))).toBe(false);
+  });
+
+  it('locks the deleted pending charge, then deletes its invoice rows and the charge by those ids', async () => {
+    const { db, queries } = fakeDatabase({
+      pendingCharges: [{ id: 'c-from-1' }, { id: 'c-from-2' }],
+    });
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+    const lock = queries.findIndex(
+      (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+    );
+    expect(lock).toBeGreaterThanOrEqual(0);
+    expect(queries[lock]?.params).toEqual([FROM, INTO]);
+    // Only the merged account's pending charge, and only while the kept account has one.
+    expect((queries[lock]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' ) ORDER BY id FOR UPDATE",
+    );
+    expect(queries[lock + 1]).toEqual({
+      text: 'DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])',
+      params: ['{"c-from-1","c-from-2"}'],
+    });
+    expect(queries[lock + 2]).toEqual({
+      text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
+      params: ['{"c-from-1","c-from-2"}'],
+    });
+  });
+
+  it('deletes no charge when the lock finds no pending charge to drop', async () => {
     const { db, queries } = fakeDatabase();
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
-    const invoices = queries.findIndex((query) =>
-      query.text.includes('DELETE FROM pos_charge_invoice'),
-    );
-    const charge = queries.findIndex((query) => /DELETE FROM pos_charge\s+WHERE/.test(query.text));
-    expect(invoices).toBeGreaterThanOrEqual(0);
-    expect(charge).toBe(invoices + 1);
-    expect(queries[invoices]?.params).toEqual([FROM, INTO]);
-    expect(queries[charge]?.params).toEqual([FROM, INTO]);
-    const flat = (index: number): string =>
-      (queries[index]?.text ?? '').replace(/\s+/g, ' ').trim();
-    // Only the merged account's pending charge, and only while the kept account has one.
-    const pendingOfFrom =
-      "FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' )";
-    expect(flat(invoices)).toBe(
-      `DELETE FROM pos_charge_invoice WHERE charge_id IN ( SELECT id ${pendingOfFrom} )`,
-    );
-    expect(flat(charge)).toBe(`DELETE ${pendingOfFrom}`);
+    expect(
+      queries.some(
+        (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+      ),
+    ).toBe(true);
+    expect(queries.some((query) => query.text.includes('DELETE FROM pos_charge'))).toBe(false);
   });
 
   it('rejects a composite account foreign key before deleting the source', async () => {

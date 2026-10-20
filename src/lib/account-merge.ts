@@ -1,3 +1,5 @@
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+
 /** One reserved database transaction connection used by an account merge. */
 export interface MergeTx {
   /**
@@ -56,6 +58,13 @@ function quoteIdentifier(identifier: string): string {
 /**
  * Fold one account into another on one reserved transaction connection.
  *
+ * Under both account row locks it refuses with `shop_payment_open`, before
+ * any write, while the merged account has a shop payment that is neither
+ * paid nor closed, or has an unexpired pending charge while the surviving
+ * account has an `open` shop payment. When both accounts have a pending
+ * charge, it locks the merged account's charge row (`SELECT … FOR UPDATE`)
+ * and then deletes that charge's `pos_charge_invoice` rows and the charge.
+ *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
  * @returns A merge count or an operator-safe refusal.
@@ -105,6 +114,22 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       [input.from],
     );
     if (shopPayments.length > 0) {
+      return { ok: false, error: 'shop_payment_open' };
+    }
+    // A pending charge of the merged account would land next to the survivor's
+    // open shop payment (a stranger's amount on the sticker), which `POST /pos`
+    // never allows: refuse the same way and change nothing.
+    const openBesideCharge = await tx.query<{ id: string }>(
+      `SELECT p.id FROM shop_payment AS p
+       WHERE p.account_id = $2 AND p.status = 'open'
+         AND EXISTS (
+           SELECT 1 FROM pos_charge AS c
+           WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now()
+         )
+       LIMIT 1`,
+      accountParams,
+    );
+    if (openBesideCharge.length > 0) {
       return { ok: false, error: 'shop_payment_open' };
     }
 
@@ -384,24 +409,24 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
       accountParams,
     );
-    // `pos_charge_invoice.charge_id` has no cascade: drop the deleted charge's hashes first.
-    await tx.query(
-      `DELETE FROM pos_charge_invoice
-       WHERE charge_id IN (
-         SELECT id FROM pos_charge
-         WHERE account_id = $1 AND status = 'pending' AND EXISTS (
-           SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'
-         )
-       )`,
-      accountParams,
-    );
-    await tx.query(
-      `DELETE FROM pos_charge
+    // The merged account's pending charge goes when the survivor has one. Lock
+    // it first, so a concurrent `recordInvoice` waits in its foreign-key check
+    // and then fails; then drop its hashes (`pos_charge_invoice.charge_id` has
+    // no cascade) and the charge, both by the locked ids.
+    const doomed = await tx.query<{ id: string }>(
+      `SELECT id FROM pos_charge
        WHERE account_id = $1 AND status = 'pending' AND EXISTS (
          SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'
-       )`,
+       )
+       ORDER BY id
+       FOR UPDATE`,
       accountParams,
     );
+    if (doomed.length > 0) {
+      const ids = postgresTextArrayLiteral(doomed.map((row) => row.id));
+      await tx.query('DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])', [ids]);
+      await tx.query('DELETE FROM pos_charge WHERE id = ANY($1::uuid[])', [ids]);
+    }
     await tx.query(
       `DELETE FROM wallet_payment AS src
        WHERE src.account_id = $1

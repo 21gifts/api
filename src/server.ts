@@ -538,6 +538,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       : (deps.shopPayments ??
         new ShopPayments({
           store: new InMemoryShopPaymentStore(posStore),
+          posStore,
           auth: store,
           lnurlServer,
           config: shopConfig,

@@ -15,7 +15,13 @@
 import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import type { PosCharge } from '@/lib/pos-charge';
-import { PostgresPosStore, type PosStore } from '@/lib/pos-store';
+import {
+  PAYMENT_HASH_CLAIM_SQL,
+  PAYMENT_HASH_LOCK_NAMESPACE,
+  PaymentHashClaims,
+  paymentHashLockKey,
+} from '@/lib/payment-hash-claim';
+import { InMemoryPosStore, PostgresPosStore, type PosStore } from '@/lib/pos-store';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { UUID_PATTERN } from '@/lib/uuid';
 
@@ -77,6 +83,11 @@ export interface ShopPayment {
   nextHistoryAt: Date | null;
   /** Offset of the next history page. */
   historyOffset: number;
+  /**
+   * When the payment's successor wait ends, or `null`; set by the
+   * order-status duty for a replaced order.
+   */
+  successorWaitUntil: Date | null;
   /** Creation instant. */
   createdAt: Date;
   /** When the payment last became `accepted`, or `null`. */
@@ -181,6 +192,11 @@ export interface ShopProof {
   result: ShopProofResult | null;
   /** Orchestra `orderId`, or `null`. */
   providerOrder: string | null;
+  /**
+   * The successor order (`supersededByOperationId`) of this proof's replaced
+   * order, or `null`; set by the order-status duty.
+   */
+  supersededByOrder: string | null;
   /** Last known `order.status`, or `null`. */
   orderStatus: string | null;
   /** When the order was first found. */
@@ -255,6 +271,7 @@ export type ShopPaymentPatch = Partial<
     | 'nextSettleAt'
     | 'nextHistoryAt'
     | 'historyOffset'
+    | 'successorWaitUntil'
     | 'acceptedAt'
     | 'paidAt'
     | 'endedAt'
@@ -298,12 +315,27 @@ export type ShopProofDuty = 'receipt' | 'submit' | 'status' | 'stuck';
  * serialises whole transactions instead).
  */
 export interface ShopTx {
+  /**
+   * Take the payment hash claim (`SELECT pg_advisory_xact_lock($1, $2)`,
+   * `docs/shop-stablecoin-payment.md`, Payment hash claim) until the
+   * transaction ends. The first statement of a transaction that may write a
+   * payment hash. A no-op in memory, where the shared in-process map is the
+   * claim.
+   */
+  claimPaymentHash(paymentHash: string): Promise<void>;
   /** Lock the account row (`SELECT … FROM account WHERE id = $1 FOR UPDATE`). */
   lockAccount(accountId: string): Promise<void>;
   /** Lock and read one charge, or `null` when it does not exist. */
   lockCharge(chargeId: string): Promise<PosCharge | null>;
   /** Lock and read one payment, or `null`. */
   lockPayment(paymentId: string): Promise<ShopPayment | null>;
+  /**
+   * Lock and read every proof row of a payment with one
+   * `SELECT … FOR UPDATE` ordered by id (after the payment row lock).
+   *
+   * @returns The proofs, by `id`.
+   */
+  lockProofs(paymentId: string): Promise<ShopProof[]>;
   /** Lock and read one quote, or `null`. */
   lockQuote(quoteId: string): Promise<ShopQuote | null>;
 
@@ -322,8 +354,6 @@ export interface ShopTx {
   cancelPendingCharge(accountId: string, nowMs: number): Promise<PosCharge | null>;
   /** Mark a pending or expired charge paid once (as `PosStore.markPaid`). */
   markChargePaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null>;
-  /** Record a BOLT11 payment hash against a charge (as `PosStore.recordInvoice`). */
-  recordChargeInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean>;
   /** The charge id a payment hash is recorded against, or `null`. */
   chargeIdForInvoice(paymentHash: string): Promise<string | null>;
   /** Delete the `pos_charge_invoice` row of a payment hash, if any. */
@@ -480,6 +510,7 @@ export const SHOP_PAYMENT_SCHEMA_SQL: readonly string[] = [
   next_settle_at     timestamptz,
   next_history_at    timestamptz,
   history_offset     integer NOT NULL DEFAULT 0,
+  successor_wait_until timestamptz,
   created_at         timestamptz NOT NULL,
   accepted_at        timestamptz,
   paid_at            timestamptz,
@@ -541,6 +572,7 @@ export const SHOP_PAYMENT_SCHEMA_SQL: readonly string[] = [
   result             text CHECK (result IN ('accepted', 'superseded', 'late', 'refunded', 'failed',
                        'refused', 'stuck')),
   provider_order     text,
+  superseded_by_order text,
   order_status       text,
   order_found_at     timestamptz,
   refusal            text CHECK (refusal IN ('mismatch', 'expired_order', 'hex_rejected', 'tx_used')),
@@ -571,6 +603,8 @@ export const SHOP_PAYMENT_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS shop_proof_submit_idx ON shop_proof (next_submit_at)`,
   `CREATE INDEX IF NOT EXISTS shop_proof_receipt_idx ON shop_proof (next_receipt_at)`,
   `CREATE INDEX IF NOT EXISTS shop_proof_status_idx ON shop_proof (next_status_at)`,
+  `CREATE INDEX IF NOT EXISTS shop_proof_superseded_idx
+  ON shop_proof (payment_id) WHERE superseded_by_order IS NOT NULL`,
   `CREATE TABLE IF NOT EXISTS shop_proof_lookup (
   id           uuid PRIMARY KEY,
   quote_id     uuid NOT NULL REFERENCES shop_quote (id),
@@ -724,11 +758,15 @@ const PROOF_DUTY: Readonly<
       ms(row.nextSubmitAt) <= nowMs &&
       row.result === null &&
       row.providerOrder === null &&
-      !row.submitStopped,
+      !row.submitStopped &&
+      row.logIndex !== null,
     at: (row) => ms(row.nextSubmitAt),
   },
   status: {
-    due: (row, nowMs) => ms(row.nextStatusAt) <= nowMs && row.providerOrder !== null,
+    due: (row, nowMs) =>
+      ms(row.nextStatusAt) <= nowMs &&
+      row.providerOrder !== null &&
+      !(row.result === 'refused' && row.refusal === 'tx_used'),
     at: (row) => ms(row.nextStatusAt),
   },
   stuck: {
@@ -751,17 +789,26 @@ interface ShopTables {
 class InMemoryShopTx implements ShopTx {
   readonly #t: ShopTables;
   readonly #pos: PosStore;
+  readonly #claims: PaymentHashClaims;
+  /** Hashes whose shop side this transaction claimed; released again on rollback. */
+  readonly claimed: string[] = [];
 
   /**
-   * Bind the transaction view to the store's tables and the charge store.
+   * Bind the transaction view to the store's tables, the charge store, and
+   * the payment hash claim map.
    *
    * @param tables - The store's tables (shared, mutated in place).
    * @param pos - Charge store that charge calls delegate to.
+   * @param claims - The in-process payment hash claim shared with `pos`.
    */
-  constructor(tables: ShopTables, pos: PosStore) {
+  constructor(tables: ShopTables, pos: PosStore, claims: PaymentHashClaims) {
     this.#t = tables;
     this.#pos = pos;
+    this.#claims = claims;
   }
+
+  /** No-op: the shared in-process map is the claim, written by `insertPayment`. */
+  async claimPaymentHash(): Promise<void> {}
 
   /** No-op: the store already serialises whole transactions. */
   async lockAccount(): Promise<void> {}
@@ -774,6 +821,15 @@ class InMemoryShopTx implements ShopTx {
   /** Same as {@link InMemoryShopTx.getPayment}. */
   lockPayment(paymentId: string): Promise<ShopPayment | null> {
     return this.getPayment(paymentId);
+  }
+
+  /** Copies of the payment's proofs, by `id`. */
+  async lockProofs(paymentId: string): Promise<ShopProof[]> {
+    return structuredClone(
+      this.#t.proofs
+        .filter((row) => row.paymentId === paymentId)
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    );
   }
 
   /** Same as {@link InMemoryShopTx.getQuote}. */
@@ -807,11 +863,6 @@ class InMemoryShopTx implements ShopTx {
   /** `PosStore.markPaid`. */
   markChargePaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
     return this.#pos.markPaid(chargeId, paidAtMs);
-  }
-
-  /** `PosStore.recordInvoice`. */
-  recordChargeInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
-    return this.#pos.recordInvoice(chargeId, paymentHash, issuedAtMs);
   }
 
   /** Id of the charge the hash is recorded against, or `null`. */
@@ -850,12 +901,25 @@ class InMemoryShopTx implements ShopTx {
     return this.#payment((row) => row.paymentHash === paymentHash);
   }
 
-  /** Store a copy unless a unique index would refuse it. */
+  /**
+   * Store a copy unless the payment hash claim or a unique index would refuse
+   * it. The claim map is read and written in the same synchronous step as
+   * the push: a hash held by another charge's invoice row or by another
+   * payment refuses; this charge's own invoice row (step 4) does not.
+   */
   async insertPayment(row: ShopPayment): Promise<boolean> {
-    if (this.#t.payments.some((other) => paymentsClash(row, other))) {
+    const holder = this.#claims.holder(row.paymentHash);
+    if (
+      (holder !== null &&
+        (holder.paymentId !== null ||
+          (holder.chargeId !== null && holder.chargeId !== row.posChargeId))) ||
+      this.#t.payments.some((other) => paymentsClash(row, other))
+    ) {
       return false;
     }
     this.#t.payments.push(structuredClone(row));
+    this.#claims.claimShop(row.paymentHash, row.id, row.posChargeId);
+    this.claimed.push(row.paymentHash);
     return true;
   }
 
@@ -1139,23 +1203,31 @@ class InMemoryShopTx implements ShopTx {
 /**
  * Process-local {@link ShopPaymentStore} for tests and boots without a
  * database. Whole transactions run one at a time in call order; a rejected
- * callback restores every shop table to its state before the callback
- * (charge changes go to the given {@link PosStore} and are not undone).
- * Every row handed out is a caller-owned copy. Calling `transaction` from
- * inside a transaction waits forever.
+ * callback restores every shop table to its state before the callback and
+ * releases the payment hashes its inserts claimed (charge changes go to the
+ * given {@link PosStore} and are not undone). The payment hash claim is the
+ * in-process {@link PaymentHashClaims} map it shares with an
+ * `InMemoryPosStore`. Every row handed out is a caller-owned copy. Calling
+ * `transaction` from inside a transaction waits forever.
  */
 export class InMemoryShopPaymentStore implements ShopPaymentStore {
   readonly #tables: ShopTables = { payments: [], quotes: [], offers: [], proofs: [], lookups: [] };
-  readonly #tx: InMemoryShopTx;
+  readonly #pos: PosStore;
+  readonly #claims: PaymentHashClaims;
   #tail: Promise<void> = Promise.resolve();
 
   /**
    * Create empty tables whose charge calls go to `pos`.
    *
    * @param pos - Charge store the charge calls delegate to.
+   * @param claims - The payment hash claim map; default the
+   *   `paymentHashClaims` of `pos` when it is an `InMemoryPosStore`, else a
+   *   new map.
    */
-  constructor(pos: PosStore) {
-    this.#tx = new InMemoryShopTx(this.#tables, pos);
+  constructor(pos: PosStore, claims?: PaymentHashClaims) {
+    this.#pos = pos;
+    this.#claims =
+      claims ?? (pos instanceof InMemoryPosStore ? pos.paymentHashClaims : new PaymentHashClaims());
   }
 
   /**
@@ -1183,14 +1255,18 @@ export class InMemoryShopPaymentStore implements ShopPaymentStore {
    */
   async #run<T>(run: (tx: ShopTx) => Promise<T>): Promise<T> {
     const snapshot = structuredClone(this.#tables);
+    const tx = new InMemoryShopTx(this.#tables, this.#pos, this.#claims);
     try {
-      return await run(this.#tx);
+      return await run(tx);
     } catch (error) {
       this.#tables.payments.splice(0, Infinity, ...snapshot.payments);
       this.#tables.quotes.splice(0, Infinity, ...snapshot.quotes);
       this.#tables.offers.splice(0, Infinity, ...snapshot.offers);
       this.#tables.proofs.splice(0, Infinity, ...snapshot.proofs);
       this.#tables.lookups.splice(0, Infinity, ...snapshot.lookups);
+      for (const paymentHash of tx.claimed) {
+        this.#claims.release(paymentHash, 'shop');
+      }
       throw error;
     }
   }
@@ -1217,6 +1293,7 @@ interface PaymentSqlRow {
   next_settle_at: SqlTime | null;
   next_history_at: SqlTime | null;
   history_offset: SqlInt;
+  successor_wait_until: SqlTime | null;
   created_at: SqlTime;
   accepted_at: SqlTime | null;
   paid_at: SqlTime | null;
@@ -1269,6 +1346,7 @@ interface ProofSqlRow {
   idempotency_key: string;
   result: string | null;
   provider_order: string | null;
+  superseded_by_order: string | null;
   order_status: string | null;
   order_found_at: SqlTime | null;
   refusal: string | null;
@@ -1302,7 +1380,7 @@ interface LookupSqlRow {
 const PAYMENT_COLUMNS =
   'id, account_id, amount_sats, pos_charge_id, bolt11, payment_hash, bolt11_expires_at, status, ' +
   'end_reason, window_ends_at, replacements, next_settle_at, next_history_at, history_offset, ' +
-  'created_at, accepted_at, paid_at, ended_at, closed_at';
+  'successor_wait_until, created_at, accepted_at, paid_at, ended_at, closed_at';
 /** Columns of `shop_quote`. */
 const QUOTE_COLUMNS = 'id, payment_id, expires_at, transfer_amounts, created_at';
 /** Columns of `shop_offer`. */
@@ -1313,9 +1391,9 @@ const OFFER_COLUMNS =
 /** Columns of `shop_proof`. */
 const PROOF_COLUMNS =
   'id, offer_id, payment_id, source, chain_id, tx_hash, log_index, user_op_hash, raw_hex, ' +
-  'transfer_amount, idempotency_key, result, provider_order, order_status, order_found_at, ' +
-  'refusal, submit_stopped, sent_at, last_submit_at, give_up_at, next_submit_at, ' +
-  'next_receipt_at, next_status_at, tries, resolved_at, created_at';
+  'transfer_amount, idempotency_key, result, provider_order, superseded_by_order, order_status, ' +
+  'order_found_at, refusal, submit_stopped, sent_at, last_submit_at, give_up_at, ' +
+  'next_submit_at, next_receipt_at, next_status_at, tries, resolved_at, created_at';
 /** Columns of `shop_proof_lookup`. */
 const LOOKUP_COLUMNS =
   'id, quote_id, method, asset, chain_id, hash, next_try_at, tries, done_at, created_at';
@@ -1328,6 +1406,7 @@ const PAYMENT_PATCH_COLUMNS: Readonly<Record<keyof ShopPaymentPatch, string>> = 
   nextSettleAt: 'next_settle_at',
   nextHistoryAt: 'next_history_at',
   historyOffset: 'history_offset',
+  successorWaitUntil: 'successor_wait_until',
   acceptedAt: 'accepted_at',
   paidAt: 'paid_at',
   endedAt: 'ended_at',
@@ -1344,6 +1423,7 @@ const PROOF_PATCH_COLUMNS: Readonly<Record<keyof ShopProofPatch, string>> = {
   idempotencyKey: 'idempotency_key',
   result: 'result',
   providerOrder: 'provider_order',
+  supersededByOrder: 'superseded_by_order',
   orderStatus: 'order_status',
   orderFoundAt: 'order_found_at',
   refusal: 'refusal',
@@ -1378,8 +1458,10 @@ const PROOF_DUTY_SQL: Readonly<Record<ShopProofDuty, string>> = {
   receipt: `next_receipt_at <= $1
 ORDER BY next_receipt_at, id`,
   submit: `next_submit_at <= $1 AND result IS NULL AND provider_order IS NULL AND NOT submit_stopped
+  AND log_index IS NOT NULL
 ORDER BY next_submit_at, id`,
   status: `next_status_at <= $1 AND provider_order IS NOT NULL
+  AND NOT (result IS NOT DISTINCT FROM 'refused' AND refusal IS NOT DISTINCT FROM 'tx_used')
 ORDER BY next_status_at, id`,
   stuck: `result IS NULL AND provider_order IS NULL AND give_up_at <= $1
 ORDER BY give_up_at, id`,
@@ -1433,6 +1515,7 @@ function mapPayment(row: PaymentSqlRow): ShopPayment {
     nextSettleAt: asMaybeDate(row.next_settle_at),
     nextHistoryAt: asMaybeDate(row.next_history_at),
     historyOffset: Number(row.history_offset),
+    successorWaitUntil: asMaybeDate(row.successor_wait_until),
     createdAt: asDate(row.created_at),
     acceptedAt: asMaybeDate(row.accepted_at),
     paidAt: asMaybeDate(row.paid_at),
@@ -1495,6 +1578,7 @@ function mapProof(row: ProofSqlRow): ShopProof {
     idempotencyKey: row.idempotency_key,
     result: row.result as ShopProofResult | null,
     providerOrder: row.provider_order,
+    supersededByOrder: row.superseded_by_order,
     orderStatus: row.order_status,
     orderFoundAt: asMaybeDate(row.order_found_at),
     refusal: row.refusal as ShopProofRefusal | null,
@@ -1589,6 +1673,14 @@ class PostgresShopTx implements ShopTx {
     return value;
   }
 
+  /** `SELECT pg_advisory_xact_lock($1, $2)` on the hash's namespace and first 32 bits. */
+  async claimPaymentHash(paymentHash: string): Promise<void> {
+    await this.#tx.query(PAYMENT_HASH_CLAIM_SQL, [
+      PAYMENT_HASH_LOCK_NAMESPACE,
+      paymentHashLockKey(paymentHash),
+    ]);
+  }
+
   /** `SELECT … FOR UPDATE` on the account row; a malformed id locks nothing. */
   async lockAccount(accountId: string): Promise<void> {
     if (UUID_PATTERN.test(accountId)) {
@@ -1616,6 +1708,18 @@ class PostgresShopTx implements ShopTx {
     return UUID_PATTERN.test(paymentId) ? this.#onePayment('id = $1 FOR UPDATE', paymentId) : null;
   }
 
+  /** The payment's proofs in one `SELECT … ORDER BY id FOR UPDATE`; a malformed id locks nothing. */
+  async lockProofs(paymentId: string): Promise<ShopProof[]> {
+    if (!UUID_PATTERN.test(paymentId)) {
+      return [];
+    }
+    const rows = await this.#tx.query<ProofSqlRow>(
+      `SELECT ${PROOF_COLUMNS} FROM shop_proof WHERE payment_id = $1 ORDER BY id FOR UPDATE`,
+      [paymentId],
+    );
+    return rows.map(mapProof);
+  }
+
   /** One quote with `FOR UPDATE`, or `null`. */
   async lockQuote(quoteId: string): Promise<ShopQuote | null> {
     return this.#oneQuote('FOR UPDATE', quoteId);
@@ -1639,11 +1743,6 @@ class PostgresShopTx implements ShopTx {
   /** `PostgresPosStore.markPaid` on this transaction. */
   markChargePaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
     return this.#pos.markPaid(chargeId, paidAtMs);
-  }
-
-  /** `PostgresPosStore.recordInvoice` on this transaction. */
-  recordChargeInvoice(chargeId: string, paymentHash: string, issuedAtMs: number): Promise<boolean> {
-    return this.#pos.recordInvoice(chargeId, paymentHash, issuedAtMs);
   }
 
   /** Id of the charge the hash is recorded against, or `null`. */
@@ -1705,6 +1804,7 @@ class PostgresShopTx implements ShopTx {
       row.nextSettleAt,
       row.nextHistoryAt,
       row.historyOffset,
+      row.successorWaitUntil,
       row.createdAt,
       row.acceptedAt,
       row.paidAt,
@@ -1951,6 +2051,7 @@ RETURNING id`,
       row.idempotencyKey,
       row.result,
       row.providerOrder,
+      row.supersededByOrder,
       row.orderStatus,
       row.orderFoundAt,
       row.refusal,

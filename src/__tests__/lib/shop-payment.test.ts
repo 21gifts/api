@@ -29,6 +29,7 @@ import {
   SHOP_ASSETS,
   SHOP_METHODS,
   SHOP_LNURL_HEADERS,
+  SHOP_CREATION_INSERT_LIMIT_MS,
   SHOP_REPLACEMENT_BUDGET_MS,
   SHOP_REPLACEMENT_COMMIT_MARGIN_MS,
   SHOP_SETTLE_FAST_INTERVAL_MS,
@@ -400,6 +401,7 @@ async function setup(
   };
   const svc = new ShopPayments({
     store,
+    posStore: pos,
     auth,
     lnurlServer: LNURL_SERVER,
     config: options.config === 'off' ? null : config,
@@ -449,6 +451,7 @@ function paymentRow(over: Partial<ShopPayment> = {}): ShopPayment {
     nextSettleAt: new Date(T0 + 5_000),
     nextHistoryAt: null,
     historyOffset: 0,
+    successorWaitUntil: null,
     createdAt: new Date(T0),
     acceptedAt: null,
     paidAt: null,
@@ -500,6 +503,7 @@ function proofRow(over: Partial<ShopProof> & Pick<ShopProof, 'offerId' | 'paymen
     idempotencyKey: `pk-${proofSeq}`,
     result: null,
     providerOrder: null,
+    supersededByOrder: null,
     orderStatus: null,
     orderFoundAt: null,
     refusal: null,
@@ -530,7 +534,7 @@ async function quotesOf(h: Harness, id: string): Promise<ShopQuote[]> {
 }
 
 async function payerPayment(h: Harness, sats = SATS): Promise<ShopPayment> {
-  const created = await h.svc.createForPayer(h.account, USER, sats);
+  const created = await h.svc.createForPayer(h.account, USER, sats, clock);
   if (created.kind !== 'payment') {
     throw new Error(`creation ${created.kind}`);
   }
@@ -1898,7 +1902,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     expect(created.kind).toBe('payment');
     const payment = created.kind === 'payment' ? created.payment : null;
     expect(payment).toMatchObject({
@@ -1916,8 +1920,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const charge = chargeRow();
     await h.pos.create(charge);
     const [a, b] = await Promise.all([
-      h.svc.createForCharge(h.account, USER, charge),
-      h.svc.createForCharge(h.account, USER, charge),
+      h.svc.createForCharge(h.account, USER, charge, clock),
+      h.svc.createForCharge(h.account, USER, charge, clock),
     ]);
     expect(a.kind === 'payment' && b.kind === 'payment' && a.payment.id === b.payment.id).toBe(
       true,
@@ -1925,7 +1929,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(h.net.issued).toHaveLength(1);
     expect(h.orchestra.routesCalls).toHaveLength(1);
     // A later run for the same charge re-reads under the lock and returns its payment.
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual(a);
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual(a);
     expect(h.net.issued).toHaveLength(1);
     expect(h.orchestra.routesCalls).toHaveLength(1);
   });
@@ -1933,8 +1937,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('replaces an open payer payment with end_reason replaced; two payers run one after the other', async () => {
     const h = await setup();
     const [first, second] = await Promise.all([
-      h.svc.createForPayer(h.account, USER, 1000),
-      h.svc.createForPayer(h.account, USER, 2000),
+      h.svc.createForPayer(h.account, USER, 1000, clock),
+      h.svc.createForPayer(h.account, USER, 2000, clock),
     ]);
     expect(first.kind).toBe('payment');
     expect(second.kind).toBe('payment');
@@ -1964,28 +1968,38 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(await readPayment(h, old.id)).toMatchObject({ status: 'ended', endReason: 'window' });
 
     const cancelled = chargeRow({ status: 'cancelled' });
-    expect(await h.svc.createForCharge(h.account, USER, cancelled)).toEqual({ kind: 'skipped' });
+    expect(await h.svc.createForCharge(h.account, USER, cancelled, clock)).toEqual({
+      kind: 'skipped',
+    });
     const expired = chargeRow({ expiresAt: new Date(clock) });
     await h.pos.create({ ...expired, status: 'expired' });
-    expect(await h.svc.createForCharge(h.account, USER, expired)).toEqual({ kind: 'skipped' });
+    expect(await h.svc.createForCharge(h.account, USER, expired, clock)).toEqual({
+      kind: 'skipped',
+    });
     expect(h.net.issued).toHaveLength(2);
   });
 
   it('step 2 answers order 4 for a payer while a charge is pending', async () => {
     const h = await setup();
     await h.pos.create(chargeRow());
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'pending_charge' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'pending_charge',
+    });
     expect(h.net.issued).toHaveLength(0);
   });
 
   it('order 6 runs again under the lock: no config, no Orchestra, or an excluded username', async () => {
     for (const options of [{ config: 'off' as const }, { orchestra: 'off' as const }]) {
       const h = await setup(options);
-      expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+      expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+        kind: 'unavailable',
+      });
       expect(h.svc.offersStablecoins(USER)).toBe(false);
     }
     const h = await setup();
-    expect(await h.svc.createForPayer(h.account, 'cb', SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, 'cb', SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.svc.offersStablecoins('invoice')).toBe(false);
     expect(h.svc.offersStablecoins(USER)).toBe(true);
   });
@@ -1993,21 +2007,25 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('order 7: an account starts at most 10 creations a minute', async () => {
     const h = await setup();
     for (let i = 0; i < 10; i += 1) {
-      expect((await h.svc.createForPayer(h.account, USER, SATS)).kind).toBe('payment');
+      expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
     }
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.net.issued).toHaveLength(10);
     clock = T0 + 60_000;
-    expect((await h.svc.createForPayer(h.account, USER, SATS)).kind).toBe('payment');
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
   });
 
   it('order 7: the api starts at most 60 a minute; the api counter is asked first, so an account refusal costs one api hit', async () => {
     const h = await setup();
     for (let i = 0; i < 10; i += 1) {
-      await h.svc.createForPayer(h.account, USER, SATS);
+      await h.svc.createForPayer(h.account, USER, SATS, clock);
     }
     // Refused by the account counter after the api counter recorded it: 11 api hits.
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     let made = 0;
     for (let n = 2; n <= 7; n += 1) {
       const id = `00000000-0000-4000-8000-0000000000b${n}`;
@@ -2015,12 +2033,14 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       const other = await addAccount(h.auth, id, username);
       const count = n === 6 ? 9 : 10;
       for (let i = 0; i < count && n < 7; i += 1) {
-        const created = await h.svc.createForPayer(other, username, SATS);
+        const created = await h.svc.createForPayer(other, username, SATS, clock);
         expect(created.kind).toBe('payment');
         made += 1;
       }
       if (n === 7) {
-        expect(await h.svc.createForPayer(other, username, SATS)).toEqual({ kind: 'unavailable' });
+        expect(await h.svc.createForPayer(other, username, SATS, clock)).toEqual({
+          kind: 'unavailable',
+        });
       }
     }
     expect(made).toBe(49);
@@ -2029,11 +2049,13 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 3: a failed route list offers nothing until a fetch succeeds; the list is reused for validForMs', async () => {
     const h = await setup();
     h.orchestra.routesResult = { ok: false };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.net.issued).toHaveLength(0);
     h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 30_000 };
     clock = T0 + 1_000;
-    expect((await h.svc.createForPayer(h.account, USER, SATS)).kind).toBe('payment');
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
     expect(h.orchestra.routesCalls).toHaveLength(2);
     clock = T0 + 30_999;
     await payerPayment(h);
@@ -2046,14 +2068,18 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 3: no candidate pair offers nothing, and the account’s next creation waits 60 s', async () => {
     const h = await setup();
     h.orchestra.routesResult = { ok: true, assets: [], validForMs: 0 };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     h.orchestra.routesResult = { ok: true, assets: defaultRoutes(), validForMs: 0 };
     clock = T0 + 59_999;
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.orchestra.routesCalls).toHaveLength(1);
     expect(h.net.issued).toHaveLength(0);
     clock = T0 + 60_000;
-    expect((await h.svc.createForPayer(h.account, USER, SATS)).kind).toBe('payment');
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
   });
 
   it('step 3: no route list once its 1 s share is used up', async () => {
@@ -2063,7 +2089,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       clock += 2_000;
       return original(accountId, nowMs);
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.orchestra.routesCalls).toHaveLength(0);
   });
 
@@ -2086,13 +2114,19 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
   it('step 4: a failed mint, a wrong amount, or an undecodable BOLT11 stops with order 8 and records nothing', async () => {
     const h = await setup();
     h.net.invoiceStatus = 500;
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     h.net.invoiceStatus = 200;
     h.net.satsDelta = 1;
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     h.net.satsDelta = 0;
     h.net.prOverride = 'lnbc1garbage';
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     expect(eventsNamed('shop.mint.failed')).toHaveLength(3);
     expect(h.orchestra.quoteCalls).toHaveLength(0);
     expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
@@ -2103,7 +2137,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.net.onWellKnown = () => {
       clock += 4_000;
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     expect(h.net.issued).toHaveLength(0);
   });
 
@@ -2129,11 +2165,61 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     );
     await h.pos.create(charge);
     h.net.nextHash = held.paymentHash;
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
-      { paymentId: held.id },
+      { paymentId: expect.any(String), holderPaymentId: held.id },
     ]);
+    expect(eventsNamed('shop.alert.duplicate_invoice')[0]?.fields?.['paymentId']).not.toBe(held.id);
     expect(await h.pos.findChargeForPayment({ paymentHash: held.paymentHash })).toBeUndefined();
+  });
+
+  it('step 4: a hash held by another charge’s shop payment names that charge too', async () => {
+    const h = await setup();
+    const otherCharge = crypto.randomUUID();
+    const hash = nextHash();
+    await h.store.transaction((tx) =>
+      tx.insertPayment(
+        paymentRow({ accountId: crypto.randomUUID(), posChargeId: otherCharge, paymentHash: hash }),
+      ),
+    );
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.net.nextHash = hash;
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    expect(eventsNamed('shop.alert.duplicate_invoice')[0]?.fields).toMatchObject({
+      holderChargeId: otherCharge,
+    });
+  });
+
+  it('step 4: the charge’s own shop payment holding the minted hash is used, and the procedure ends', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const hash = nextHash();
+    h.net.nextHash = hash;
+    const own = paymentRow({
+      posChargeId: charge.id,
+      paymentHash: hash,
+      windowEndsAt: charge.expiresAt,
+    });
+    // The charge's own payment appears after step 2, during the mint.
+    h.net.onInvoice = async () => {
+      h.net.onInvoice = null;
+      await h.store.transaction((tx) => tx.insertPayment(own));
+    };
+    const record = vi.spyOn(h.pos, 'recordInvoice');
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'payment',
+      payment: own,
+    });
+    expect(record).not.toHaveBeenCalled();
+    expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await h.pos.findChargeForPayment({ paymentHash: hash })).toBeUndefined();
   });
 
   it('step 4: a hash recorded against another charge stops as order 8; against this charge goes on', async () => {
@@ -2145,16 +2231,115 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const charge = chargeRow();
     await h.pos.create(charge);
     h.net.nextHash = hash;
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
-      { accountId: ACCOUNT_ID },
+      { paymentId: expect.any(String), holderChargeId: other.id },
     ]);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
 
     const own = nextHash();
     await h.pos.recordInvoice(charge.id, own, clock);
     h.net.nextHash = own;
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     expect(created.kind === 'payment' && created.payment.paymentHash === own).toBe(true);
+  });
+
+  it('step 4: recordInvoice runs as its own claim transaction, outside any shop transaction', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    let inShopTx = false;
+    const transaction = h.store.transaction.bind(h.store);
+    h.store.transaction = async (run) =>
+      transaction(async (tx) => {
+        inShopTx = true;
+        try {
+          return await run(tx);
+        } finally {
+          inShopTx = false;
+        }
+      });
+    const seen: boolean[] = [];
+    const record = h.pos.recordInvoice.bind(h.pos);
+    h.pos.recordInvoice = async (...args) => {
+      seen.push(inShopTx);
+      return record(...args);
+    };
+    expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
+    expect(seen).toEqual([false]);
+  });
+
+  it('step 4: other_payment from recordInvoice stops as order 8 with the holder in the alert', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.pos.recordInvoice = async () => ({
+      outcome: 'other_payment',
+      holderChargeId: 'charge-x',
+      holderPaymentId: 'payment-x',
+    });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: expect.any(String), holderPaymentId: 'payment-x', holderChargeId: 'charge-x' },
+    ]);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+  });
+
+  it('step 4: a recordInvoice error logs pos.invoice.record_failed, writes nothing, and the pay link stays pinned', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.pos.recordInvoice = async () => {
+      throw new Error('db');
+    };
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'skipped',
+    });
+    expect(eventsNamed('pos.invoice.record_failed').map((entry) => entry.fields)).toEqual([
+      { accountId: ACCOUNT_ID, paymentId: expect.any(String) },
+    ]);
+    expect(eventsNamed('shop.creation.failed')).toHaveLength(0);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+    expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+  });
+
+  it('step 4: a payer creation stops as order 8 when findChargeForPayment finds the hash recorded against a charge', async () => {
+    const h = await setup();
+    const other = chargeRow({ accountId: crypto.randomUUID() });
+    await h.pos.create(other);
+    const hash = nextHash();
+    await h.pos.recordInvoice(other.id, hash, clock);
+    h.net.nextHash = hash;
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: expect.any(String), holderChargeId: other.id },
+    ]);
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await h.store.transaction((tx) => tx.paymentForHash(hash))).toBeNull();
+  });
+
+  it('step 4: a findChargeForPayment error makes a payer creation write nothing and answer order 9', async () => {
+    const h = await setup();
+    h.pos.findChargeForPayment = async () => {
+      throw new Error('db');
+    };
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(h.orchestra.quoteCalls).toHaveLength(0);
+    expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
+    expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
   });
 
   it('step 4: a charge that stopped being open during the mint ends without shop.alert.duplicate_invoice', async () => {
@@ -2164,7 +2349,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.net.onInvoice = async () => {
       await h.pos.cancelPending(ACCOUNT_ID, clock);
     };
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'skipped' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'skipped',
+    });
     expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
     expect(h.orchestra.quoteCalls).toHaveLength(0);
   });
@@ -2175,7 +2362,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       h.net.onInvoice = null;
       await h.pos.create(chargeRow());
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'pending_charge' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'pending_charge',
+    });
     const hash = h.net.issued[0]!.hash;
     expect(await h.pos.findChargeForPayment({ paymentHash: hash })).toBeUndefined();
     expect(await h.store.transaction((tx) => tx.paymentForHash(hash))).toBeNull();
@@ -2198,7 +2387,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     ]);
 
     h.orchestra.budget = -3;
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.orchestra.quoteCalls).toHaveLength(2);
   });
 
@@ -2303,7 +2494,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       rates: { USD: '95238' },
     } as unknown as Parameters<InMemoryFxSpotStore['save']>[0]);
     const h = await setup({ fxSpot: fx });
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     const rejected = eventsNamed('shop.offer.rejected');
     expect(rejected.length).toBeGreaterThan(0);
     expect(rejected.every((entry) => entry.fields?.['check'] === 'price')).toBe(true);
@@ -2318,7 +2511,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       } as unknown as FxSpotStore,
     });
     const before = eventsNamed('shop.offer.rejected').length;
-    expect(await edge.svc.createForPayer(edge.account, USER, SATS)).toEqual({
+    expect(await edge.svc.createForPayer(edge.account, USER, SATS, clock)).toEqual({
       kind: 'unavailable',
     });
     const edgeRejected = eventsNamed('shop.offer.rejected').slice(before);
@@ -2348,7 +2541,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     ];
     for (const fxSpot of cases) {
       const other = await setup({ fxSpot: fxSpot! });
-      expect((await other.svc.createForPayer(other.account, USER, SATS)).kind).toBe('payment');
+      expect((await other.svc.createForPayer(other.account, USER, SATS, clock)).kind).toBe(
+        'payment',
+      );
     }
   });
 
@@ -2357,7 +2552,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.orchestra.quoteImpl = () => ({ ok: false, reason: 'unavailable' });
     const charge = chargeRow();
     await h.pos.create(charge);
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
     // The losing BOLT11 stays recorded against the charge.
     expect((await h.pos.findChargeForPayment({ paymentHash: h.net.issued[0]!.hash }))?.id).toBe(
       charge.id,
@@ -2365,10 +2562,12 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
     h.orchestra.quoteImpl = null;
     clock = T0 + 59_999;
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(h.net.issued).toHaveLength(1);
     clock = T0 + 60_000;
-    expect((await h.svc.createForCharge(h.account, USER, charge)).kind).toBe('payment');
+    expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
   });
 
   it('step 8: a charge cancelled during the quotes gets no shop payment', async () => {
@@ -2378,7 +2577,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.orchestra.onQuote = async () => {
       await h.pos.cancelPending(ACCOUNT_ID, clock);
     };
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'skipped' });
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'skipped',
+    });
     expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
   });
 
@@ -2389,7 +2590,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       h.orchestra.onQuote = null;
       await h.pos.create(chargeRow());
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'pending_charge' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'pending_charge',
+    });
     expect((await readPayment(h, open.id)).status).toBe('open');
   });
 
@@ -2398,7 +2601,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const payer = await payerPayment(h);
     const charge = chargeRow();
     await h.pos.create(charge);
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     expect(created).toMatchObject({
       kind: 'payment',
       payment: { posChargeId: charge.id, status: 'open', amountSats: CHARGE_SATS },
@@ -2419,7 +2622,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       h2.orchestra.onQuote = null;
       clock = T0 + 300_000;
     };
-    const created2 = await h2.svc.createForCharge(h2.account, USER, charge2);
+    const created2 = await h2.svc.createForCharge(h2.account, USER, charge2, clock);
     expect(created2).toMatchObject({
       kind: 'payment',
       payment: { posChargeId: charge2.id, status: 'open' },
@@ -2446,7 +2649,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       });
       await h.store.transaction((tx) => tx.insertPayment(own!));
     };
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     expect(created).toEqual({ kind: 'payment', payment: own });
   });
 
@@ -2466,7 +2669,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         });
         await h.store.transaction((tx) => tx.insertPayment(own!));
       };
-      const created = await h.svc.createForCharge(h.account, USER, charge);
+      const created = await h.svc.createForCharge(h.account, USER, charge, clock);
       expect(created).toEqual({ kind: 'payment', payment: own });
       expect((await readPayment(h, own!.id)).status).toBe('open');
       expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
@@ -2484,7 +2687,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       own = paymentRow({ posChargeId: charge.id, status: 'accepted', acceptedAt: new Date(clock) });
       await h.store.transaction((tx) => tx.insertPayment(own!));
     };
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
       kind: 'payment',
       payment: own,
     });
@@ -2501,20 +2704,22 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         await h.pos.recordInvoice(charge.id, hash, clock);
       }
       h.net.nextHash = hash;
+      // The claim keeps a holder from appearing on a memory boot; the backstop
+      // still answers one that the read finds after step 4.
+      const holder = paymentRow({
+        accountId: crypto.randomUUID(),
+        paymentHash: hash,
+        status: 'paid',
+        paidAt: new Date(clock),
+      });
       h.orchestra.onQuote = async () => {
         h.orchestra.onQuote = null;
-        await h.store.transaction((tx) =>
-          tx.insertPayment(
-            paymentRow({
-              accountId: crypto.randomUUID(),
-              paymentHash: hash,
-              status: 'paid',
-              paidAt: new Date(clock),
-            }),
-          ),
-        );
+        h.store.hooks.paymentForHash = async () => holder;
       };
-      expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'mint_failed' });
+      expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+        kind: 'mint_failed',
+      });
+      delete h.store.hooks.paymentForHash;
       expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(1);
       expect((await h.pos.findChargeForPayment({ paymentHash: hash }))?.id).toBe(
         insertedByUs ? undefined : charge.id,
@@ -2539,7 +2744,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         ),
       );
     };
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'mint_failed',
+    });
   });
 
   it('step 8: a held hash writes nothing else: the payer’s earlier open payment stays open', async () => {
@@ -2557,7 +2764,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       h.orchestra.onQuote = null;
       await h.store.transaction((tx) => tx.insertPayment(holder));
     };
-    expect(await h.svc.createForPayer(h.account, USER, 2000)).toEqual({ kind: 'mint_failed' });
+    expect(await h.svc.createForPayer(h.account, USER, 2000, clock)).toEqual({
+      kind: 'mint_failed',
+    });
     expect(await readPayment(h, earlier.id)).toMatchObject({
       status: 'open',
       endReason: null,
@@ -2583,13 +2792,19 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       }
       h.net.nextHash = hash;
       const holder = paymentRow({ accountId: crypto.randomUUID(), paymentHash: hash });
-      h.store.hooks.insertPayment = async (tx) => {
+      let visible = false;
+      h.store.hooks.insertPayment = async () => {
         // The other account's insert commits between the check and this insert.
-        await tx.insertPayment(holder);
+        visible = true;
         return false;
       };
-      expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({ kind: 'mint_failed' });
+      h.store.hooks.paymentForHash = async (tx, ...args) =>
+        visible ? holder : tx.paymentForHash(...(args as unknown as [string]));
+      expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+        kind: 'mint_failed',
+      });
       delete h.store.hooks.insertPayment;
+      delete h.store.hooks.paymentForHash;
       expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
       expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
       expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
@@ -2607,7 +2822,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     h.store.hooks.insertPayment = async () => {
       throw new Error('disk');
     };
-    await expect(h.svc.createForPayer(h.account, USER, 2000)).rejects.toThrow('disk');
+    await expect(h.svc.createForPayer(h.account, USER, 2000, clock)).rejects.toThrow('disk');
     delete h.store.hooks.insertPayment;
     expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
     expect(eventsNamed('shop.alert.duplicate_invoice')).toHaveLength(0);
@@ -2629,7 +2844,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       await tx.insertPayment(own);
       return false;
     };
-    expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
       kind: 'payment',
       payment: own,
     });
@@ -2649,19 +2864,166 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         return tx.insertPayment(...(args as unknown as [ShopPayment]));
       };
       if (kind === 'payer') {
-        expect((await h.svc.createForPayer(h.account, USER, SATS)).kind).toBe('payment');
+        expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
       } else {
         const charge = chargeRow();
         await h.pos.create(charge);
-        expect((await h.svc.createForCharge(h.account, USER, charge)).kind).toBe('payment');
+        expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
       }
       expect(refused).toBe(true);
     },
   );
+  it('step 8: takes the hash claim first, then the account row, then the charge row', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const calls: string[] = [];
+    for (const name of [
+      'claimPaymentHash',
+      'lockAccount',
+      'lockCharge',
+      'chargeIdForInvoice',
+      'openPayment',
+      'insertPayment',
+    ] as const) {
+      h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
+    const step8 = calls.slice(calls.indexOf('claimPaymentHash'));
+    expect(step8).toEqual([
+      'claimPaymentHash',
+      'lockAccount',
+      'lockCharge',
+      'chargeIdForInvoice',
+      'openPayment',
+      'insertPayment',
+    ]);
+    expect(calls.filter((name) => name === 'claimPaymentHash')).toHaveLength(1);
+  });
+
+  it('step 8: a payer whose hash a charge recorded after step 4 ends nothing and inserts nothing', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    const other = chargeRow({ accountId: crypto.randomUUID() });
+    await h.pos.create(other);
+    const hash = nextHash();
+    h.net.nextHash = hash;
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      expect(await h.pos.recordInvoice(other.id, hash, clock)).toEqual({ outcome: 'recorded' });
+    };
+    events = [];
+    expect(await h.svc.createForPayer(h.account, USER, 2000, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+    expect(await h.store.transaction((tx) => tx.paymentForHash(hash))).toBeNull();
+    expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: expect.any(String), holderChargeId: other.id },
+    ]);
+  });
+
+  it('step 8: a charge whose hash another charge holds at the insert stops before writing', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      h.store.hooks.chargeIdForInvoice = async () => 'other-charge';
+    };
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    delete h.store.hooks.chargeIdForInvoice;
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+    expect(eventsNamed('shop.alert.duplicate_invoice')[0]?.fields).toMatchObject({
+      holderChargeId: 'other-charge',
+    });
+  });
+
+  it.each([
+    [SHOP_CREATION_INSERT_LIMIT_MS - 1, 'payment'],
+    [SHOP_CREATION_INSERT_LIMIT_MS, 'unavailable'],
+  ] as const)('step 8: a payer request %i ms old at the insert gives %s', async (ageMs, kind) => {
+    const h = await setup();
+    const arrivedMs = clock;
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      clock = arrivedMs + ageMs;
+    };
+    expect((await h.svc.createForPayer(h.account, USER, SATS, arrivedMs)).kind).toBe(kind);
+    expect((await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))) !== null).toBe(
+      kind === 'payment',
+    );
+  });
+
+  it('step 8: the 16 s check runs after the locks, so a lock wait counts', async () => {
+    const h = await setup();
+    const arrivedMs = clock;
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      clock = arrivedMs + SHOP_CREATION_INSERT_LIMIT_MS;
+      return tx.lockAccount(...(args as unknown as [string]));
+    };
+    expect(await h.svc.createForPayer(h.account, USER, SATS, arrivedMs)).toEqual({
+      kind: 'unavailable',
+    });
+    delete h.store.hooks.lockAccount;
+    expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
+  });
+
+  it('step 8: a payer whose client disconnected writes nothing and answers order 9', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    const controller = new AbortController();
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      controller.abort();
+    };
+    expect(await h.svc.createForPayer(h.account, USER, 2000, clock, controller.signal)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+    const live = new AbortController();
+    expect((await h.svc.createForPayer(h.account, USER, 2000, clock, live.signal)).kind).toBe(
+      'payment',
+    );
+  });
+
+  it('step 8: the background creation of POST /pos writes nothing 16 s after its request; the pay link stays pinned', async () => {
+    const h = await setup();
+    const arrivedMs = clock;
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      clock = arrivedMs + SHOP_CREATION_INSERT_LIMIT_MS;
+    };
+    const charge = chargeRow();
+    expect(await h.svc.createCharge(h.account, charge, arrivedMs)).toBe(true);
+    // A later caller joins the running creation, which keeps the first arrival.
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'unavailable',
+    });
+    expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
+    // The pay link's own creation runs late too: today's request, pinned to the charge.
+    h.orchestra.onQuote = async () => {
+      h.orchestra.onQuote = null;
+      clock += SHOP_CREATION_INSERT_LIMIT_MS;
+    };
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
+      kind: 'today',
+      pinSats: CHARGE_SATS,
+    });
+  });
+
   it('step 8: a second lost insert in a row gives up without writing', async () => {
     const h = await setup();
     h.store.hooks.insertPayment = async () => false;
-    expect(await h.svc.createForPayer(h.account, USER, SATS)).toEqual({ kind: 'unavailable' });
+    expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
+      kind: 'unavailable',
+    });
     expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
   });
 });
@@ -2671,7 +3033,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
 describe('pay link without and with timeout (Pay link: No open amount, Open amount)', () => {
   it('answers today’s unpinned request with no open amount and no timeout', async () => {
     const h = await setup();
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: null,
     });
@@ -2682,7 +3044,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     const charge = chargeRow();
     await h.pos.create(charge);
     const { status, json, text } = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, NO_QUERY),
+      await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
     );
     expect(status).toBe(200);
     expect(Object.keys(json).sort()).toEqual(
@@ -2722,7 +3084,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     const h = await setup();
     await h.pos.create(chargeRow());
     h.orchestra.routesResult = { ok: false };
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -2730,12 +3092,12 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     const thrown = await setup();
     await thrown.pos.create(chargeRow());
     thrown.orchestra.routesImpl = () => Promise.reject(new Error('boom'));
-    expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
     // The thrown creation is no longer in flight: the next request starts a new one.
-    expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -2745,7 +3107,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     await slow.pos.create(chargeRow());
     slow.orchestra.routesImpl = () => new Promise(() => undefined);
     sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-    expect(await slow.svc.payLink(slow.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await slow.svc.payLink(slow.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -2759,11 +3121,13 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       const charge = chargeRow();
       await h.pos.create(charge);
       h.orchestra.routesImpl = () => new Promise(() => undefined);
-      h.svc.startForCharge(h.account, charge);
+      h.svc.startForCharge(h.account, charge, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       clock = T0 + 5_000;
       sleepImpl = (ms) => (ms === 3_000 ? Promise.resolve() : defaultSleep(ms));
-      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
@@ -2772,7 +3136,9 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       // Once that budget is used up, the request answers without a wait.
       sleepCalls = [];
       clock = T0 + 8_000;
-      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
@@ -2800,12 +3166,14 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       clock = T0;
       const h = await setup();
       h.orchestra.routesImpl = () => new Promise(() => undefined);
-      void h.svc.createForPayer(h.account, USER, SATS);
+      void h.svc.createForPayer(h.account, USER, SATS, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       await h.pos.create(chargeRow());
       clock = T0 + 5_000;
       sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
@@ -2822,7 +3190,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       clock = T0;
       const h = await setup();
       const release = heldRoutes(h);
-      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       const charge = chargeRow();
       await h.pos.create(charge);
@@ -2834,7 +3202,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
               endWait = resolve;
             })
           : defaultSleep(ms);
-      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
       // Still queued, the request already waits 8 s from its arrival.
       await vi.waitFor(() => expect(sleepCalls).toEqual([8_000]));
       clock = T0 + 12_000;
@@ -2862,13 +3230,13 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
               releasePayer = resolve;
             })
           : Promise.resolve({ ok: false });
-      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       await h.pos.create(chargeRow());
       clock = T0 + 5_000;
       // The 8 s waits never end: only the shared creation ends both requests.
-      const first = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
-      const second = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const first = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
+      const second = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
       await vi.waitFor(() => expect(sleepCalls).toEqual([8_000, 8_000]));
       clock = T0 + 12_000;
       releasePayer({ ok: false });
@@ -2902,7 +3270,9 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       clock = T0 + 62_000;
       sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
       // Answered while the replacement still holds the lock.
-      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
@@ -2922,12 +3292,12 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       clock = T0;
       const h = await setup();
       const release = heldRoutes(h);
-      const payer = h.svc.createForPayer(h.account, USER, SATS);
+      const payer = h.svc.createForPayer(h.account, USER, SATS, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
       const charge = chargeRow();
       await h.pos.create(charge);
       // The budget sleep never ends: only the stopped run ends the wait.
-      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const answer = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
       await new Promise((resolve) => setTimeout(resolve, 0));
       await h.pos.cancelPending(ACCOUNT_ID, clock);
       release({ ok: false });
@@ -2951,13 +3321,15 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       const charge = chargeRow();
       await h.pos.create(charge);
       h.orchestra.routesResult = { ok: false };
-      expect(await h.svc.createForCharge(h.account, USER, charge)).toEqual({
+      expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
         kind: 'unavailable',
       });
       clock = T0 + 5_000;
       h.orchestra.routesImpl = () => new Promise(() => undefined);
       sleepImpl = (ms) => (ms === 8_000 ? Promise.resolve() : defaultSleep(ms));
-      expect(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })).toEqual({
+      expect(
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+      ).toEqual({
         kind: 'today',
         pinSats: CHARGE_SATS,
       });
@@ -2970,7 +3342,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     const h = await setup({ username: 'cb' });
     const charge = chargeRow();
     await h.pos.create(charge);
-    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -2983,7 +3355,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       endedAt: new Date(T0),
     });
     await h.store.transaction((tx) => tx.insertPayment(payment));
-    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -3001,7 +3373,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
           },
         ),
       );
-      expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY)).toEqual({
+      expect(await h.svc.payLink(h.account, 'cb', METADATA, NO_QUERY, clock)).toEqual({
         kind: 'today',
         pinSats: null,
       });
@@ -3013,7 +3385,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     const payment = await payerPayment(h);
     for (const timeout of [null, '0', '5']) {
       const { status, json } = await bodyOf(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }),
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
       );
       expect(status).toBe(200);
       expect((json['quote'] as Record<string, unknown>)['payment']).toBe(payment.id);
@@ -3024,7 +3396,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
   it('timeout: waits every 250 ms up to the timeout, then answers 404 with the standard body', async () => {
     const h = await setup();
     const { status, json } = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '3' }),
+      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '3' }, clock),
     );
     expect(status).toBe(404);
     expect(json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
@@ -3033,13 +3405,16 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
 
   it('timeout: values above 10 count as 10; empty or unparseable count as 0', async () => {
     const h = await setup();
-    await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '99' });
+    await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '99' }, clock);
     expect(sleepCalls).toHaveLength(40);
     sleepCalls = [];
     for (const timeout of ['', 'abc', '-1', '1.5']) {
       expect(
-        (await bodyOf(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout })))
-          .status,
+        (
+          await bodyOf(
+            await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
+          )
+        ).status,
       ).toBe(404);
     }
     expect(sleepCalls).toEqual([]);
@@ -3056,11 +3431,14 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     });
     await h.store.transaction((tx) => tx.insertPayment(payment));
     expect(
-      (await bodyOf(await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '0' })))
-        .status,
+      (
+        await bodyOf(
+          await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '0' }, clock),
+        )
+      ).status,
     ).toBe(404);
     // LNURL wallets (no timeout) still get today's request.
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: null,
     });
@@ -3078,7 +3456,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       }
     };
     const { status, json } = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }),
+      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
     );
     expect(status).toBe(200);
     expect(json['minSendable']).toBe(CHARGE_SATS * 1000);
@@ -3087,7 +3465,9 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
   it('timeout: a pending charge without payment and an excluded username answers today’s pinned request', async () => {
     const h = await setup({ username: 'cb' });
     await h.pos.create(chargeRow());
-    expect(await h.svc.payLink(h.account, 'cb', METADATA, { ...NO_QUERY, timeout: '3' })).toEqual({
+    expect(
+      await h.svc.payLink(h.account, 'cb', METADATA, { ...NO_QUERY, timeout: '3' }, clock),
+    ).toEqual({
       kind: 'today',
       pinSats: CHARGE_SATS,
     });
@@ -3101,11 +3481,11 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     });
     sleepImpl = (ms) => (ms === 250 ? gate : new Promise(() => undefined));
     const waiting = Array.from({ length: 50 }, () =>
-      h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }),
+      h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
     );
     await vi.waitFor(() => expect(sleepCalls).toHaveLength(50));
     const extra = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }),
+      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
     );
     expect(extra.status).toBe(404);
     expect(sleepCalls).toHaveLength(50);
@@ -3115,7 +3495,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       expect((await bodyOf(answer)).status).toBe(404);
     }
     sleepImpl = defaultSleep;
-    await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '1' });
+    await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '1' }, clock);
     expect(sleepCalls).toHaveLength(54);
   });
 
@@ -3128,7 +3508,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       reads += 1;
       return row === null ? null : { ...row, status: 'ended' };
     };
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: null,
     });
@@ -3138,11 +3518,17 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     );
     // The simplified flow without an open amount is the 404.
     const simplified = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, {
-        ...NO_QUERY,
-        method: 'Polygon',
-        asset: 'USDT',
-      }),
+      await h.svc.payLink(
+        h.account,
+        USER,
+        METADATA,
+        {
+          ...NO_QUERY,
+          method: 'Polygon',
+          asset: 'USDT',
+        },
+        clock,
+      ),
     );
     expect(simplified.status).toBe(404);
     expect(simplified.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
@@ -3156,7 +3542,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       h.orchestra.onQuote = null;
       await h.pos.cancelPending(ACCOUNT_ID, clock);
     };
-    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY)).toEqual({
+    expect(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
       pinSats: null,
     });
@@ -3175,7 +3561,13 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
         }
         await h.pos.markPaid(charge.id, clock);
       };
-      const answer = await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const answer = await h.svc.payLink(
+        h.account,
+        USER,
+        METADATA,
+        { ...NO_QUERY, timeout },
+        clock,
+      );
       if (timeout === null) {
         expect(answer).toEqual({ kind: 'today', pinSats: null });
       } else {
@@ -3193,7 +3585,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       const h = await setup();
       const charge = chargeRow();
       await h.pos.create(charge);
-      const created = await h.svc.createForCharge(h.account, USER, charge);
+      const created = await h.svc.createForCharge(h.account, USER, charge, clock);
       expect(created.kind).toBe('payment');
       let ended = false;
       h.store.hooks.getPayment = async (tx, ...args) => {
@@ -3205,7 +3597,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
         }
         return row;
       };
-      const answer = await h.svc.payLink(h.account, USER, METADATA, query);
+      const answer = await h.svc.payLink(h.account, USER, METADATA, query, clock);
       expect(ended).toBe(true);
       if (query === NO_QUERY) {
         expect(answer).toEqual({ kind: 'today', pinSats: CHARGE_SATS });
@@ -3226,7 +3618,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       return row === null ? null : { ...row, status: 'ended' };
     };
     const answer = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '0' }),
+      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '0' }, clock),
     );
     expect(answer.status).toBe(404);
     expect(answer.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
@@ -3245,7 +3637,7 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       }
     };
     const answer = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }),
+      await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout: '10' }, clock),
     );
     expect(answer.status).toBe(200);
     expect(answer.json['minSendable']).toBe(CHARGE_SATS * 1000);
@@ -3269,7 +3661,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     const payment = await payerPayment(h);
     const [first] = await quotesOf(h, payment.id);
     clock = T0 + 45_001;
-    const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY));
+    const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock));
     const quote = answer.json['quote'] as Record<string, string>;
     expect(quote['payment']).toBe(payment.id);
     expect(quote['id']).not.toBe(first!.id);
@@ -3309,8 +3701,8 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     await payerPayment(h);
     clock = T0 + 50_000;
     const [a, b] = await Promise.all([
-      h.svc.payLink(h.account, USER, METADATA, NO_QUERY),
-      h.svc.payLink(h.account, USER, METADATA, NO_QUERY),
+      h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
+      h.svc.payLink(h.account, USER, METADATA, NO_QUERY, clock),
     ]);
     const qa = (await bodyOf(a)).json['quote'] as Record<string, string>;
     const qb = (await bodyOf(b)).json['quote'] as Record<string, string>;
@@ -3446,7 +3838,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       // The quote read expires at T0 + 90 s, 2 s into the fetch's wait.
       const arrivalMs = T0 + 88_000;
       clock = arrivalMs;
-      const answering = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout });
+      const answering = h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock);
       await vi.waitFor(() => expect(timers).toHaveLength(2));
       timers.sort((x, y) => x.atMs - y.atMs || Number(y.fetch) - Number(x.fetch));
       const [earliest, later] = timers as [(typeof timers)[0], (typeof timers)[0]];
@@ -3486,7 +3878,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       new Promise((resolve) => {
         releaseCreation = resolve;
       });
-    const payer = h.svc.createForPayer(h.account, USER, SATS + 1);
+    const payer = h.svc.createForPayer(h.account, USER, SATS + 1, clock);
     await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
     // The fetch's replacement queues behind it, so the fetch waits 4 s from
     // its arrival; that wait ends on wake.
@@ -3617,7 +4009,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
   async function holdLock(h: Harness): Promise<void> {
     h.orchestra.routesImpl = () => new Promise(() => undefined);
     const before = h.orchestra.routesCalls.length;
-    void h.svc.createForPayer(h.account, USER, SATS + 1);
+    void h.svc.createForPayer(h.account, USER, SATS + 1, clock);
     await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(before + 1));
   }
 
@@ -3633,7 +4025,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       await holdLock(h);
       sleepImpl = (ms) => (ms === 4_000 ? Promise.resolve() : defaultSleep(ms));
       const answer = await bodyOf(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }),
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
       );
       expect(answer.status).toBe(200);
       expect((answer.json['quote'] as Record<string, string>)['id']).toBe(first!.id);
@@ -3666,7 +4058,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       const [first] = await quotesOf(h, payment.id);
       clock = T0 + 50_000;
       const answer = await bodyOf(
-        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }),
+        await h.svc.payLink(h.account, USER, METADATA, { ...NO_QUERY, timeout }, clock),
       );
       const quote = answer.json['quote'] as Record<string, string>;
       expect(quote['id']).not.toBe(first!.id);
@@ -3706,7 +4098,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
         new Promise((resolve) => {
           release = resolve;
         });
-      const payer = h.svc.createForPayer(h.account, USER, SATS + 1);
+      const payer = h.svc.createForPayer(h.account, USER, SATS + 1, clock);
       await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(2));
       // The fetch's replacement is queued behind the payer creation.
       const read = h.svc.currentQuote(h.account, USER, payment);
@@ -3757,29 +4149,47 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
     const h = await setup();
     const payment = await payerPayment(h);
     const ln = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, {
-        ...NO_QUERY,
-        method: 'Lightning',
-        asset: 'BTC',
-      }),
+      await h.svc.payLink(
+        h.account,
+        USER,
+        METADATA,
+        {
+          ...NO_QUERY,
+          method: 'Lightning',
+          asset: 'BTC',
+        },
+        clock,
+      ),
     );
     expect(ln).toMatchObject({ status: 200, json: { pr: payment.bolt11 } });
     const usdt = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, {
-        ...NO_QUERY,
-        method: 'Polygon',
-        asset: 'USDT',
-      }),
+      await h.svc.payLink(
+        h.account,
+        USER,
+        METADATA,
+        {
+          ...NO_QUERY,
+          method: 'Polygon',
+          asset: 'USDT',
+        },
+        clock,
+      ),
     );
     expect(usdt.status).toBe(200);
     expect(usdt.json['blockchain']).toBe('Polygon');
     const repeated = await bodyOf(
-      await h.svc.payLink(h.account, USER, METADATA, {
-        ...NO_QUERY,
-        method: 'Polygon',
-        asset: 'USDT',
-        repeated: true,
-      }),
+      await h.svc.payLink(
+        h.account,
+        USER,
+        METADATA,
+        {
+          ...NO_QUERY,
+          method: 'Polygon',
+          asset: 'USDT',
+          repeated: true,
+        },
+        clock,
+      ),
     );
     expect(repeated.status).toBe(400);
   });
@@ -3789,21 +4199,33 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
     expect(
       (
         await bodyOf(
-          await h.svc.payLink(h.account, 'cb', METADATA, {
-            ...NO_QUERY,
-            method: 'Polygon',
-            asset: 'USDT',
-          }),
+          await h.svc.payLink(
+            h.account,
+            'cb',
+            METADATA,
+            {
+              ...NO_QUERY,
+              method: 'Polygon',
+              asset: 'USDT',
+            },
+            clock,
+          ),
         )
       ).status,
     ).toBe(404);
     await h.pos.create(chargeRow());
     const answer = await bodyOf(
-      await h.svc.payLink(h.account, 'cb', METADATA, {
-        ...NO_QUERY,
-        method: 'Polygon',
-        asset: 'USDT',
-      }),
+      await h.svc.payLink(
+        h.account,
+        'cb',
+        METADATA,
+        {
+          ...NO_QUERY,
+          method: 'Polygon',
+          asset: 'USDT',
+        },
+        clock,
+      ),
     );
     expect(answer.status).toBe(404);
     expect(answer.json['standard']).toBe('OpenCryptoPay');
@@ -4054,7 +4476,7 @@ describe('till hooks (By a till charge, Till)', () => {
     const h = await setup();
     const payer = await payerPayment(h);
     const charge = chargeRow();
-    expect(await h.svc.createCharge(h.account, charge)).toBe(true);
+    expect(await h.svc.createCharge(h.account, charge, clock)).toBe(true);
     expect(await readPayment(h, payer.id)).toMatchObject({
       status: 'ended',
       endReason: 'superseded',
@@ -4080,7 +4502,7 @@ describe('till hooks (By a till charge, Till)', () => {
     await h.store.transaction((tx) => tx.insertPayment(payment));
     clock = T0 + 300_000;
     const charge = chargeRow();
-    expect(await h.svc.createCharge(h.account, charge)).toBe(true);
+    expect(await h.svc.createCharge(h.account, charge, clock)).toBe(true);
     expect(await readPayment(h, payment.id)).toMatchObject({
       status: 'ended',
       endReason: 'window',
@@ -4098,14 +4520,14 @@ describe('till hooks (By a till charge, Till)', () => {
     await h.pos.create(chargeRow());
     const payment = paymentRow();
     await h.store.transaction((tx) => tx.insertPayment(payment));
-    expect(await h.svc.createCharge(h.account, chargeRow())).toBe(false);
+    expect(await h.svc.createCharge(h.account, chargeRow(), clock)).toBe(false);
     expect((await readPayment(h, payment.id)).status).toBe('open');
   });
 
   it('logs shop.creation.failed when the background creation throws', async () => {
     const h = await setup();
     h.orchestra.routesImpl = () => Promise.reject(new Error('boom'));
-    await h.svc.createCharge(h.account, chargeRow());
+    await h.svc.createCharge(h.account, chargeRow(), clock);
     await vi.waitFor(() => {
       expect(eventsNamed('shop.creation.failed')).toEqual([
         { event: 'shop.creation.failed', fields: { accountId: ACCOUNT_ID, name: 'Error' } },
@@ -4118,7 +4540,7 @@ describe('till hooks (By a till charge, Till)', () => {
     const anonymous = await addAccount(h.auth, '00000000-0000-4000-8000-0000000000c1', null);
     const charge = chargeRow({ accountId: anonymous.id });
     await h.pos.create(charge);
-    h.svc.startForCharge(anonymous, charge);
+    h.svc.startForCharge(anonymous, charge, clock);
     await vi.waitFor(() => expect(h.orchestra.routesCalls).toHaveLength(1));
     expect(eventsNamed('shop.payment.opened')).toHaveLength(0);
     expect(await h.svc.shopPaymentOfCharge(charge.id)).toBeNull();
@@ -4128,7 +4550,7 @@ describe('till hooks (By a till charge, Till)', () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     const id = created.kind === 'payment' ? created.payment.id : '';
     clock = T0 + 10_000;
     expect((await h.svc.cancelCharge(ACCOUNT_ID, clock))?.id).toBe(charge.id);
@@ -4161,7 +4583,7 @@ describe('till hooks (By a till charge, Till)', () => {
     const h = await setup();
     const charge = chargeRow();
     await h.pos.create(charge);
-    const created = await h.svc.createForCharge(h.account, USER, charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
     const payment = created.kind === 'payment' ? created.payment : paymentRow();
     clock = T0 + 20_000;
     const paid = await h.svc.chargePaid(charge, payment.paymentHash, clock);
@@ -4180,7 +4602,7 @@ describe('till hooks (By a till charge, Till)', () => {
       const h = await setup();
       const charge = chargeRow();
       await h.pos.create(charge);
-      const created = await h.svc.createForCharge(h.account, USER, charge);
+      const created = await h.svc.createForCharge(h.account, USER, charge, clock);
       const id = created.kind === 'payment' ? created.payment.id : '';
       expect((await h.svc.chargePaid(charge, settled, clock))?.status).toBe('paid');
       expect(await readPayment(h, id)).toMatchObject({ status: 'ended', endReason: 'charge_paid' });

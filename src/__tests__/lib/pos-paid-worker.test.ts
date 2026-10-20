@@ -418,6 +418,7 @@ describe('runPosPaidTick with the shop payment service', () => {
     const net = network(new Map(), new Map([[HASH_A, settled]]));
     const shop = new ShopPayments({
       store: new InMemoryShopPaymentStore(store),
+      posStore: store,
       auth: {} as AuthStore,
       lnurlServer: LNURL,
       config: null,

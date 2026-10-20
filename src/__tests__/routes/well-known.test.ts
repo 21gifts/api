@@ -471,7 +471,32 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
       'ada',
       walletPayDoc()['metadata'],
       query,
+      NOW,
     );
+  });
+
+  it("passes the fetch's arrival, taken before the wallet's pay request resolves", async () => {
+    const { shop, payLink } = stubShop({ kind: 'today', pinSats: null });
+    const auth = new InMemoryAuthStore();
+    await seedVerifiedWallet(auth);
+    let clock = NOW;
+    const app = new Hono().route(
+      '/.well-known',
+      wellKnownRoutes({
+        auth,
+        fetchImpl: async () => {
+          clock += 3_000;
+          return new Response(JSON.stringify(walletPayDoc()), { status: 200 });
+        },
+        posStore: new InMemoryPosStore(),
+        now: () => clock,
+        lnurlServer: LNURL_CONFIG,
+        shopPayments: shop,
+      }),
+    );
+    expect((await app.request('/.well-known/lnurlp/ada')).status).toBe(200);
+    expect(clock).toBe(NOW + 3_000);
+    expect(payLink.mock.calls[0]?.[4]).toBe(NOW);
   });
 
   it("pins today's request to the service's sats", async () => {
@@ -514,6 +539,7 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
     function realShop(posStore: InMemoryPosStore, auth: InMemoryAuthStore): ShopPayments {
       return new ShopPayments({
         store: new InMemoryShopPaymentStore(posStore),
+        posStore,
         auth,
         lnurlServer: LNURL_CONFIG,
         config: null,

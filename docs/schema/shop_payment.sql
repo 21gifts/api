@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS shop_payment (
   next_settle_at     timestamptz,
   next_history_at    timestamptz,
   history_offset     integer NOT NULL DEFAULT 0,
+  successor_wait_until timestamptz,
   created_at         timestamptz NOT NULL,
   accepted_at        timestamptz,
   paid_at            timestamptz,
@@ -87,6 +88,7 @@ CREATE TABLE IF NOT EXISTS shop_proof (
   result             text CHECK (result IN ('accepted', 'superseded', 'late', 'refunded', 'failed',
                        'refused', 'stuck')),
   provider_order     text,
+  superseded_by_order text,
   order_status       text,
   order_found_at     timestamptz,
   refusal            text CHECK (refusal IN ('mismatch', 'expired_order', 'hex_rejected', 'tx_used')),
@@ -117,6 +119,8 @@ CREATE INDEX IF NOT EXISTS shop_proof_user_op_idx
 CREATE INDEX IF NOT EXISTS shop_proof_submit_idx ON shop_proof (next_submit_at);
 CREATE INDEX IF NOT EXISTS shop_proof_receipt_idx ON shop_proof (next_receipt_at);
 CREATE INDEX IF NOT EXISTS shop_proof_status_idx ON shop_proof (next_status_at);
+CREATE INDEX IF NOT EXISTS shop_proof_superseded_idx
+  ON shop_proof (payment_id) WHERE superseded_by_order IS NOT NULL;
 
 CREATE TABLE IF NOT EXISTS shop_proof_lookup (
   id           uuid PRIMARY KEY,

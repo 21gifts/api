@@ -125,7 +125,8 @@ api/
 │   │   ├── contact.ts        # Contact public/debug JSON projection (reuses forum text rules)
 │   │   ├── contact-store.ts  # ContactStore port, InMemoryContactStore, PostgresContactStore
 │   │   ├── pos-charge.ts     # Point-of-sale charge types, TTL, paid display window, and JSON
-│   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL (charges + recorded invoices)
+│   │   ├── pos-store.ts      # PosStore port, InMemoryPosStore, PostgresPosStore, POS_SCHEMA_SQL (charges + recorded invoices); recordInvoice is a payment hash claim with four outcomes
+│   │   ├── payment-hash-claim.ts # Payment hash claim: advisory-lock keys (PAYMENT_HASH_LOCK_NAMESPACE, paymentHashLockKey) and the in-process PaymentHashClaims map of a memory boot
 │   │   ├── pos-paid-worker.ts # Paid watcher: Spark invoice FINALIZED or LUD-21 settled → charge paid (with its shop payment); verifyLightningPayment; starts the shop payment tick
 │   │   ├── shop-payment.ts   # Shop payment in USDT and USDC: method table, OpenCryptoPay pay request and error body, offer checks, ShopPayments (creation, quotes, pay link, callback, wait, till hooks, settlement), proof state rules
 │   │   ├── shop-payment-store.ts # ShopPaymentStore port, InMemory/Postgres adapters, SHOP_PAYMENT_SCHEMA_SQL (shop_payment, shop_quote, shop_offer, shop_proof, shop_proof_lookup)
@@ -542,7 +543,7 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
 `PostgresBannerStore`, `migrateBannerSchema`,
 `PostgresContactStore`, `migrateContactSchema`,
-`PostgresPosStore`, `migratePosSchema`,
+`PostgresPosStore`, `migratePosSchema`, `paymentHashLockKey`,
 `PostgresShopPaymentStore`, `migrateShopPaymentSchema`,
 `PostgresWalletStore`, `migrateWalletSchema`,
 `PostgresMemberEventStore`, `migrateMemberEventSchema`,
@@ -574,7 +575,7 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `BTC_FIAT_SPOT_URL`;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`,
-`lnurlServerRoutes`, and `accountByReceivingAddress`, which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
+`lnurlServerRoutes`, `accountByReceivingAddress`, and `duplicateInvoiceLogFields` (an invoice route with a pending charge), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
 `parseMultipartCoord`, `loadLatestGoalRateDay`,
 `bindGoalRateDay`, `canonicalGoalAmount`, `fiatToSats`, and `satsToFiatAmount`, which
 run only when a member may post; posting needs a verified wallet, which only the LNURL

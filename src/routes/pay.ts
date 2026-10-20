@@ -24,7 +24,11 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
 import type { PosCharge } from '@/lib/pos-charge';
-import type { PosStore } from '@/lib/pos-store';
+import {
+  duplicateInvoiceLogFields,
+  type PosStore,
+  type RecordInvoiceResult,
+} from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
@@ -171,9 +175,12 @@ async function lookupPayAccount(
  * Record a minted BOLT11 against the open charge and, when free in-app
  * payments are on, return the charge's Spark invoice (issuing it once).
  *
- * The Spark invoice charges the charge amount to the shop's verified wallet
- * key with memo `pos:<chargeId>`; a repeat call returns the stored string.
- * Store failures log `pos.invoice.record_failed` or
+ * When `recordInvoice` returns `other_payment` (another charge or another
+ * shop payment holds the payment hash), the BOLT11 must not be handed out:
+ * logs `shop.alert.duplicate_invoice` and returns `blocked`, without a Spark
+ * invoice. The Spark invoice charges the charge amount to the shop's
+ * verified wallet key with memo `pos:<chargeId>`; a repeat call returns the
+ * stored string. Store failures log `pos.invoice.record_failed` or
  * `pos.spark_invoice.issue_failed` and never fail the BOLT11 response.
  *
  * @param deps - Route collaborators.
@@ -181,7 +188,7 @@ async function lookupPayAccount(
  * @param sparkPubkey - The shop's verified wallet key.
  * @param paymentHash - Payment hash of the minted BOLT11.
  * @param issuedAtMs - When the charge was found open, before the mint (epoch ms).
- * @returns The Spark invoice, or `null`.
+ * @returns `blocked`, or the Spark invoice (`null` when there is none).
  */
 async function attachToCharge(
   deps: PayRouteDeps,
@@ -189,12 +196,38 @@ async function attachToCharge(
   sparkPubkey: string,
   paymentHash: string,
   issuedAtMs: number,
-): Promise<string | null> {
+): Promise<{ blocked: true } | { blocked: false; sparkInvoice: string | null }> {
+  let recorded: RecordInvoiceResult | null = null;
   try {
-    await deps.posStore.recordInvoice(pending.id, paymentHash, issuedAtMs);
+    recorded = await deps.posStore.recordInvoice(pending.id, paymentHash, issuedAtMs);
   } catch {
     logEvent('pos.invoice.record_failed', { accountId: pending.accountId });
   }
+  if (recorded?.outcome === 'other_payment') {
+    logEvent('shop.alert.duplicate_invoice', duplicateInvoiceLogFields(pending.id, recorded));
+    return { blocked: true };
+  }
+  return {
+    blocked: false,
+    sparkInvoice: await chargeSparkInvoice(deps, pending, sparkPubkey, issuedAtMs),
+  };
+}
+
+/**
+ * The charge's Spark invoice when free in-app payments are on, issued once.
+ *
+ * @param deps - Route collaborators.
+ * @param pending - The open charge.
+ * @param sparkPubkey - The shop's verified wallet key.
+ * @param issuedAtMs - When the charge was found open, before the mint (epoch ms).
+ * @returns The Spark invoice, or `null`.
+ */
+async function chargeSparkInvoice(
+  deps: PayRouteDeps,
+  pending: PosCharge,
+  sparkPubkey: string,
+  issuedAtMs: number,
+): Promise<string | null> {
   if (deps.freePayments !== true) {
     return null;
   }
@@ -377,27 +410,36 @@ export function payRoutes(deps: PayRouteDeps): Hono {
         return c.json({ error: 'Lightning Address could not be resolved' }, 502);
       }
       // The till pin makes any accepted amount the charge amount.
-      const sparkInvoice =
-        lookup.pending === null
-          ? memberSparkInvoice(
-              deps,
-              lookup.sparkPubkey,
-              amountSats,
-              parsed.comment,
-              metadata.commentAllowed,
-              issuedAtMs,
-            )
-          : await attachToCharge(
-              deps,
-              lookup.pending,
-              lookup.sparkPubkey,
-              decoded.paymentHash,
-              issuedAtMs,
-            );
+      let sparkInvoice: string | null;
+      if (lookup.pending === null) {
+        sparkInvoice = memberSparkInvoice(
+          deps,
+          lookup.sparkPubkey,
+          amountSats,
+          parsed.comment,
+          metadata.commentAllowed,
+          issuedAtMs,
+        );
+      } else {
+        const attached = await attachToCharge(
+          deps,
+          lookup.pending,
+          lookup.sparkPubkey,
+          decoded.paymentHash,
+          issuedAtMs,
+        );
+        if (attached.blocked) {
+          // Another payment holds the hash: answer as for a failed mint.
+          return c.json({ error: 'Lightning Address could not be resolved' }, 502);
+        }
+        sparkInvoice = attached.sparkInvoice;
+      }
       logEvent('pay.invoice', { username, amountSats });
       return c.json({ pr: invoice.pr, amountSats, sparkInvoice });
     })
     .post('/:username/payment', async (c) => {
+      // The request's arrival: step 8 of the creation writes nothing 16 s after it.
+      const arrivedMs = deps.now();
       const shop = deps.shopPayments;
       const lookup = await lookupPayAccount(c.req.param('username'), deps);
       if (!lookup.ok) {
@@ -421,7 +463,13 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       }
       let created: Awaited<ReturnType<ShopPayments['createForPayer']>>;
       try {
-        created = await shop.createForPayer(lookup.account, lookup.username, parsed.amountSats);
+        created = await shop.createForPayer(
+          lookup.account,
+          lookup.username,
+          parsed.amountSats,
+          arrivedMs,
+          c.req.raw.signal,
+        );
       } catch (error) {
         // A store failure: the page cannot tell whether a payment opened, so
         // it repeats the request, as after any other 5xx.

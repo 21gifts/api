@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import type { MergeDb } from '@/lib/account-merge';
 import { openBootStores } from '@/lib/boot-stores';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { PostgresAuthStore } from '@/lib/auth/postgres-store';
@@ -645,6 +646,40 @@ describe('openBootStores', () => {
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
     );
+  });
+
+  it('hands the transaction port to the SQL point-of-sale store for the payment hash claim', async () => {
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> =>
+        (text.includes('min(paid_at)') ? [{ min: null, max: null }] : []) as T[],
+      execute: async () => undefined,
+    };
+    const statements: string[] = [];
+    const transactions: MergeDb = {
+      begin: (run) =>
+        run({
+          query: async <Q>(text: string): Promise<Q[]> => {
+            statements.push(text);
+            return [] as Q[];
+          },
+        }),
+    };
+    const stores = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => client,
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+      transactions,
+    );
+    expect(await stores.posStore.recordInvoice('c1', 'a'.repeat(64), 0)).toEqual({
+      outcome: 'not_open',
+    });
+    expect(statements[0]).toBe('SELECT pg_advisory_xact_lock($1, $2)');
   });
 
   it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
