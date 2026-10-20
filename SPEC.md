@@ -2208,7 +2208,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Store throw or missing BTC-USD day → **Response** `503`:
+Store throw → **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
@@ -2231,7 +2231,7 @@ Store throw or missing BTC-USD day → **Response** `503`:
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
 ### `GET /me/loans`
 
@@ -2460,8 +2460,7 @@ A session has the same auth and 401 / 409 / 404 as `GET /members/:accountId`.
 An operator token skips the session and `forum.read` gate; 404 still
 applies. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
-stats are unavailable" }` when the gift store throws or a gift day lacks
-BTC-USD.
+stats are unavailable" }` when the gift store throws.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
@@ -3032,8 +3031,7 @@ profile-note read → **503** `{ "error": "Messages are unavailable" }`
 
 Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
 the same JSON as `GET /me/activity` for the account behind the key. 503
-`{ "error": "Gift stats are unavailable" }` when the gift store throws or a
-gift day lacks BTC-USD.
+`{ "error": "Gift stats are unavailable" }` when the gift store throws.
 
 ### `POST /me/name`
 
@@ -5175,18 +5173,18 @@ null the day's other currencies. A currency every listed gift lacks stays null.
 
 `fx.quotes` on this route stays USD-only. The fiat book is not the amount.
 
-| Field       | Type                                                                                         | Meaning                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `day`       | string                                                                                       | UTC `YYYY-MM-DD` of the query                                                                             |
-| `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                              |
-| `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                 |
-| `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                    |
-| `totalUsd`  | string or null                                                                               | Sum of stored payment-time USD (`"1.00"`); `"0.00"` when empty; `null` if any gift lacks stored USD       |
-| `totalChf`  | string or null                                                                               | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                  |
-| `totalEur`  | string or null                                                                               | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                  |
-| `totalPhp`  | string or null                                                                               | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                  |
-| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                           |
-| `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when that day has the cross |
+| Field       | Type                                                                                         | Meaning                                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `day`       | string                                                                                       | UTC `YYYY-MM-DD` of the query                                                                                             |
+| `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                                              |
+| `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                                 |
+| `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                                    |
+| `totalUsd`  | string or null                                                                               | Sum of stored USD strings (`"1.00"`); `"0.00"` when the day is empty; `null` only when every listed gift lacks stored USD |
+| `totalChf`  | string or null                                                                               | Sum of stored CHF strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored CHF            |
+| `totalEur`  | string or null                                                                               | Sum of stored EUR strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored EUR            |
+| `totalPhp`  | string or null                                                                               | Sum of stored PHP strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored PHP            |
+| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                                           |
+| `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                  |
 
 `gifts[]` item:
 
@@ -5201,13 +5199,13 @@ null the day's other currencies. A currency every listed gift lacks stays null.
 | `amountPhp`  | string or null | Stored payment-time PHP, or `null` when missing |
 | `recipient`  | string         | Recipient handle (`recipient_wos_user`)         |
 
-**Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
+**Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure only; a missing stored amount is never 503).
 
 ### `GET /fx/spot`
 
 Public current price of 1 BTC in USD, CHF, EUR, and PHP. No auth. It is
-independent of gifts: it does not read `gift` and does not change how
-`GET /gifts/stats` prices its days (those keep their daily rates).
+independent of gifts: it does not read `gift`.
+`GET /gifts/stats`. Gift stats are stored strings and do not read the daily rate books.
 
 A background worker fetches one Coinbase response with every pair
 (`BTC_FIAT_SPOT_URL`, default
@@ -5312,22 +5310,22 @@ Coinbase or Frankfurter call. The rate books are not read.
 }
 ```
 
-| Field            | Type                                                                                                                                             | Meaning                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                    |
-| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                       |
-| `totalUsd`       | string or null                                                                                                                                   | Sum of stored payment-time USD (`"1234.56"`); `"0.00"` when empty; `null` if any gift lacks stored USD                       |
-| `totalChf`       | string or null                                                                                                                                   | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                                     |
-| `totalEur`       | string or null                                                                                                                                   | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                                     |
-| `totalPhp`       | string or null                                                                                                                                   | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                                     |
-| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                     |
-| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                   |
-| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                |
-| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                  |
-| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; fiat `null` if any gift to that recipient lacks the cross                              |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                            |
-| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when any selected gift day has that cross      |
+| Field            | Type                                                                                                                                             | Meaning                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                             |
+| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                                |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored USD  |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored CHF                |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored EUR                |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored PHP                |
+| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                              |
+| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                            |
+| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                         |
+| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                           |
+| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat          |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; each fiat field sums stored strings and is `null` only when no gift to that recipient stored it |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                     |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                              |
 
 **Response** `503`:
 
@@ -5335,7 +5333,7 @@ Coinbase or Frankfurter call. The rate books are not read.
 { "error": "Gift stats are unavailable" }
 ```
 
-503 is store failure or missing BTC-USD only. Missing CHF/EUR/PHP is JSON
+503 is a store failure only. A missing stored amount is JSON
 `null`, never 503.
 
 ### `GET /invoices/passkey`
