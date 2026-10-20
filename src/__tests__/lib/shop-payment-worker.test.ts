@@ -1268,6 +1268,25 @@ describe('duty 7: stuck proofs', () => {
       loggedEvents(warn).find((line) => line['event'] === 'shop.alert.proof_stuck'),
     ).not.toHaveProperty('orderId');
   });
+
+  it('leaves a proof an operator retried after the selection', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(h, proofRow({ giveUpAt: new Date(T0) }));
+    // Another container marked it stuck and an operator retried it meanwhile.
+    const writes = afterSelection(h, 'stuck', () =>
+      h.store.transaction((tx) =>
+        tx.updateProof(uid(0x401), {}, { giveUpAt: new Date(T0 + 86_400_000) }),
+      ),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(writes).toEqual([]);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      result: null,
+      giveUpAt: new Date(T0 + 86_400_000),
+    });
+    expect(events()).not.toContain('shop.alert.proof_stuck');
+  });
 });
 
 describe('duty 8: order status', () => {

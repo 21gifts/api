@@ -722,7 +722,13 @@ async function markStuck(shop: ShopPayments, nowMs: number): Promise<void> {
     const stuck = await shop.store.transaction(async (tx) => {
       await lockPaymentForProofs(tx, row.paymentId);
       const current = await tx.getProof(row.id);
-      if (current === null || current.providerOrder !== null || current.submitStopped) {
+      // An operator retry since the selection moved `give_up_at` ahead.
+      if (
+        current === null ||
+        current.providerOrder !== null ||
+        current.submitStopped ||
+        current.giveUpAt.getTime() > nowMs
+      ) {
         return null;
       }
       const updated = await tx.updateProof(
