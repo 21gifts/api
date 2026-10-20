@@ -1542,8 +1542,9 @@ async function shopKind0Args(
  * reads at most `WORKER_BATCH` identities after the kind 0 cursor (wrapping
  * to the first rows) and visits each, also one whose content is unchanged or
  * whose reads throw, and it does not start while the previous kind 0 pass
- * for the store is still in flight, so ticks never overlap on a shop and a
- * nack or error clears the shop's cache entry. A tick reads at most
+ * for the store is still in flight, so ticks never overlap on a shop; a
+ * nack, or an error after the reservation, clears the shop's cache entry (a
+ * read that throws before it leaves the entry as it was). A tick reads at most
  * `WORKER_BATCH` shops, plus the NIP-05
  * allocation ({@link listShopNip05Entries}, the same listed names as
  * `/.well-known/nostr.json`). That allocation runs only when a visited shop

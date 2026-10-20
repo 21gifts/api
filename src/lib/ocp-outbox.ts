@@ -44,8 +44,9 @@ export interface OcpOutboxDeps {
 }
 
 /**
- * Answer body, or `''` when it cannot be read. A body of only whitespace is
- * no readable answer either, so callers test the trimmed text for a verdict.
+ * Answer body, or `''` when it cannot be read. The place lane's 400 and 409
+ * checks test the trimmed text, so a body of only whitespace is no verdict
+ * there.
  */
 async function bodyText(response: Response): Promise<string> {
   try {

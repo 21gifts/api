@@ -226,7 +226,9 @@ not, in the same loop and with the same rules as account profiles
   one; a shop pass of one kind does not start while the previous pass of
   that kind is still in flight in the process (it is skipped for that tick
   and reads nothing), so two ticks never work on one shop's cache entry at
-  once, and a failure clears the shop's cache entry.
+  once, and a nack or a failure after the reservation clears the shop's
+  cache entry (a kind 0 read that throws before it leaves the entry as it
+  was).
 
 Kind 0 content of a listed shop:
 
