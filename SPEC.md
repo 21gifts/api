@@ -616,11 +616,23 @@ than 60 s ago, so the till can show the confirmation after a late poll.
 `history` includes paid rows. A paid charge no longer pins the LNURL-pay
 bounds.
 
+The currency the operator typed and that exact decimal string are stored on
+the charge at creation. This response returns that string to the shop.
+`GET /pay/:username` returns the same string to the payer. Both show it.
+Typing 12.00 stores 12.00. Both sides show 12.00, never 12.01 or 11.99.
+Paying in bitcoin does not replace it. The payer's own display currency does
+not replace it. A body that carries only `amountSats`, so either side prices
+those sats from a spot or a daily close, is existing code that breaks
+[docs/fiat-amounts.md](docs/fiat-amounts.md). It is not the contract.
+
 **Response** `200`:
 
 ```json
 { "charge": null, "history": [] }
 ```
+
+The charge examples below are the current bodies. A charge in them carries
+only `amountSats`. That breaks the rule above. It is not the contract.
 
 **Response** `200` (paid 10 s ago):
 
@@ -687,8 +699,12 @@ and returns the trimmed display name (or the normalised username when the
 name is blank) plus `minSats`, `maxSats`, and `charge` from the member's
 receiving address (see [Receiving address](#receiving-address)). No open charge → `charge` is `null` and the bounds stay
 the wallet sat range. An unexpired pending point-of-sale charge → both
-bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only
-(`expiresAt` is ISO-8601). A bad wallet window is still 502 before any pin.
+bounds equal that amount and `charge` carries that amount, `expiresAt`
+(ISO-8601), and the typed currency string from
+[docs/fiat-amounts.md](docs/fiat-amounts.md). A charge object of only
+`amountSats` and `expiresAt` is existing code that breaks that rule. It is
+not the contract. The shop and the payer both show that typed string.
+Typing 12.00 shows 12.00 on both sides, never 12.01 or 11.99. A bad wallet window is still 502 before any pin.
 `currentPending` throwing is the existing 502. Does not return the
 callback, the address, or provider metadata.
 
@@ -697,6 +713,10 @@ callback, the address, or provider metadata.
 ```json
 { "name": "Ada", "username": "ada", "minSats": 1, "maxSats": 100000000, "charge": null }
 ```
+
+The pending example below is the current body. Its `charge` carries only
+`amountSats` and `expiresAt`. That breaks the rule above. It is not the
+contract.
 
 **Response** `200` (unexpired pending charge):
 
