@@ -28,7 +28,7 @@ const HASH_A = 'a'.repeat(64);
 const HASH_B = 'b'.repeat(64);
 
 function charge(id: string, partial: Partial<PosCharge> = {}): PosCharge {
-  return {
+  const base: PosCharge = {
     id,
     accountId: `acc-${id}`,
     amountSats: 21,
@@ -37,8 +37,14 @@ function charge(id: string, partial: Partial<PosCharge> = {}): PosCharge {
     expiresAt: new Date(NOW - 1_000 + POS_CHARGE_TTL_MS),
     paidAt: null,
     sparkInvoice: null,
-    ...partial,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
   };
+  return Object.assign(base, partial);
 }
 
 function frame(flags: number, payload: Uint8Array): Uint8Array {

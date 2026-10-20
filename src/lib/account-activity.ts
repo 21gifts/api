@@ -20,10 +20,9 @@ import {
   type SpendDay,
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
-import { logEvent } from '@/lib/log';
 import { usdCentsToString } from '@/lib/money';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
-import { InMemoryFiatStore, type FiatCross, type FiatRateBook } from '@/lib/usd-fiat-store';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
 
 const PAYMENT_HASH_RE = /^[0-9a-f]{64}$/;
 const FALLBACK_RECIPIENT = 'zap';
@@ -157,18 +156,14 @@ export function matchConfirmedGivenZaps(
  * handle matches the local part of the account's receiving address (its
  * username, once the in-app wallet is verified). A loan is a note with
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
- * Does not change `GET /gifts/stats`. Empty input is zeros without Coinbase and
- * without Frankfurter. Missing BTC-USD throws the same `fx.rate.missing` as
- * {@link buildGiftStats}. Missing CHF/EUR/PHP is JSON `null`, never a throw;
- * when fiat `ensureDays` throws, log `account.activity.fiat_failed` and continue
- * with an empty fiat map. Series (`donatedOverTime` / `receivedOverTime`) are
- * the same `spendOverTime` day objects as `GET /gifts/stats`, including additive
- * CHF/EUR/PHP.
+ * Does not change `GET /gifts/stats`. Empty input is zeros. Amounts are the
+ * stored figures. A missing stored amount stays null and is not priced from a
+ * daily close. Series (`donatedOverTime` / `receivedOverTime`) are the same
+ * `spendOverTime` day objects as `GET /gifts/stats`.
  *
  * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
- *   book, and clock.
+ *   book, and clock. The books are not read.
  * @returns Activity totals and series.
- * @throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate.
  */
 export async function buildAccountActivity(args: {
   account: Account;
@@ -177,8 +172,8 @@ export async function buildAccountActivity(args: {
   rates: BtcUsdRateBook;
   now: () => number;
   /**
-   * USD→CHF/EUR/PHP book. Default empty `InMemoryFiatStore`.
-   * Missing fiat is JSON null, never a throw.
+   * Accepted so existing callers still type-check. Not read.
+   * A missing stored amount stays null.
    */
   fiatRates?: FiatRateBook;
 }): Promise<AccountActivity> {
@@ -196,8 +191,6 @@ export async function buildAccountActivity(args: {
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
-  const fiatRates = args.fiatRates ?? new InMemoryFiatStore();
-
   if (givenRows.length === 0 && receivedRows.length === 0) {
     const empty = buildGiftStats([], new Map());
     return {
@@ -209,35 +202,8 @@ export async function buildAccountActivity(args: {
     };
   }
 
-  const legacyDays = [
-    ...new Set(
-      givenRows
-        .concat(receivedRows)
-        .filter((row) => row.amountUsd === undefined)
-        .map((row) => row.paidAt.toISOString().slice(0, 10)),
-    ),
-  ];
-  let rateMap: ReadonlyMap<string, string> = new Map();
-  if (legacyDays.length > 0) {
-    rateMap = await args.rates.ensureDays(legacyDays, args.now());
-    for (const day of legacyDays) {
-      if (!rateMap.has(day)) {
-        throw new Error('fx.rate.missing');
-      }
-    }
-  }
-
-  let fiatMap: ReadonlyMap<string, FiatCross> = new Map();
-  try {
-    if (legacyDays.length > 0) {
-      fiatMap = await fiatRates.ensureDays(legacyDays, args.now());
-    }
-  } catch {
-    logEvent('account.activity.fiat_failed');
-  }
-
-  const givenStats = buildGiftStats(givenRows, rateMap, fiatMap);
-  const receivedStats = buildGiftStats(receivedRows, rateMap, fiatMap);
+  const givenStats = buildGiftStats(givenRows, new Map());
+  const receivedStats = buildGiftStats(receivedRows, new Map());
   return {
     donatedSats: givenStats.totalSats,
     receivedSats: receivedStats.totalSats,
@@ -338,7 +304,7 @@ async function receivedZapsForAccount(
     });
     const prev = creditedByMessageId.get(ingest.messageId) ?? 0;
     creditedByMessageId.set(ingest.messageId, prev + ingest.amountSats);
-    const prevFiat = creditedFiatByMessageId.get(ingest.messageId) ?? ZERO_FIAT;
+    const prevFiat = creditedFiatByMessageId.get(ingest.messageId) ?? null;
     creditedFiatByMessageId.set(ingest.messageId, addFiat(prevFiat, fiatCents(ingest)));
   }
   for (const message of authored) {
@@ -353,9 +319,9 @@ async function receivedZapsForAccount(
     }
     const credited = creditedByMessageId.get(message.id) ?? 0;
     if (message.sats > credited) {
-      const creditedFiat = creditedFiatByMessageId.get(message.id) ?? ZERO_FIAT;
+      const creditedFiat = creditedFiatByMessageId.get(message.id);
       const fiat =
-        credited === 0
+        creditedFiat === undefined
           ? storedGiftFiat(message)
           : fiatFromCents(subtractFiat(fiatCents(message), creditedFiat));
       rows.push({
@@ -445,8 +411,6 @@ interface FiatCents {
   php: number | null;
 }
 
-const ZERO_FIAT: FiatCents = { usd: 0, chf: 0, eur: 0, php: 0 };
-
 /** Parse a stored two-decimal amount. Anything else is missing. */
 function storedCents(value: string | null | undefined): number | null {
   if (value === undefined || value === null || !/^\d+\.\d{2}$/.test(value)) {
@@ -469,21 +433,42 @@ function fiatCents(row: {
   };
 }
 
-function addFiat(left: FiatCents, right: FiatCents): FiatCents {
+function addFiat(left: FiatCents | null, right: FiatCents): FiatCents {
+  if (left === null) {
+    return right;
+  }
+  const sum = (acc: number | null, next: number | null): number | null => {
+    if (acc === null) {
+      return next;
+    }
+    if (next === null) {
+      return acc;
+    }
+    return acc + next;
+  };
   return {
-    usd: left.usd === null || right.usd === null ? null : left.usd + right.usd,
-    chf: left.chf === null || right.chf === null ? null : left.chf + right.chf,
-    eur: left.eur === null || right.eur === null ? null : left.eur + right.eur,
-    php: left.php === null || right.php === null ? null : left.php + right.php,
+    usd: sum(left.usd, right.usd),
+    chf: sum(left.chf, right.chf),
+    eur: sum(left.eur, right.eur),
+    php: sum(left.php, right.php),
   };
 }
 
 function subtractFiat(left: FiatCents, right: FiatCents): FiatCents {
+  const rest = (kept: number | null, taken: number | null): number | null => {
+    if (taken === null) {
+      return kept;
+    }
+    if (kept === null) {
+      return null;
+    }
+    return kept - taken;
+  };
   return {
-    usd: left.usd === null || right.usd === null ? null : left.usd - right.usd,
-    chf: left.chf === null || right.chf === null ? null : left.chf - right.chf,
-    eur: left.eur === null || right.eur === null ? null : left.eur - right.eur,
-    php: left.php === null || right.php === null ? null : left.php - right.php,
+    usd: rest(left.usd, right.usd),
+    chf: rest(left.chf, right.chf),
+    eur: rest(left.eur, right.eur),
+    php: rest(left.php, right.php),
   };
 }
 

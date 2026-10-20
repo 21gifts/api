@@ -23,12 +23,8 @@ import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
-import type { PosCharge } from '@/lib/pos-charge';
-import {
-  duplicateInvoiceLogFields,
-  type PosStore,
-  type RecordInvoiceResult,
-} from '@/lib/pos-store';
+import { serializePosCharge, serializePosFiat, type PosCharge, type PosFiatJson } from '@/lib/pos-charge';
+import { duplicateInvoiceLogFields, type PosStore, type RecordInvoiceResult } from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
@@ -69,7 +65,7 @@ type PayLookup =
       minSats: number;
       maxSats: number;
       metadata: { minSendable: number; maxSendable: number; commentAllowed?: number };
-      charge: { amountSats: number; expiresAt: string } | null;
+      charge: ({ id: string; amountSats: number; expiresAt: string } & PosFiatJson) | null;
       sparkPubkey: string;
       pending: PosCharge | null;
     }
@@ -159,8 +155,10 @@ async function lookupPayAccount(
       maxSats: pending.amountSats,
       metadata,
       charge: {
+        id: pending.id,
         amountSats: pending.amountSats,
         expiresAt: pending.expiresAt.toISOString(),
+        ...serializePosFiat(pending),
       },
       sparkPubkey,
       pending,
@@ -361,11 +359,32 @@ function withinPayRange(lookup: Extract<PayLookup, { ok: true }>, amountSats: nu
  * @param deps - Auth store, fetch, POS store, and clock (required), the
  *   optional LNURL server (omitted when it is off), `freePayments` (Spark
  *   invoices), and optional randomness.
- * @returns Hono app with `GET /:username`, `POST /:username/invoice`, and
- *   `POST /:username/payment`.
+ * @returns Hono app with the two receipt reads, `GET /:username`, `POST /:username/invoice`, and `POST /:username/payment`.
  */
 export function payRoutes(deps: PayRouteDeps): Hono {
   return new Hono()
+    .get('/charges/:id', async (c) => {
+      const charge = await deps.posStore.findChargeForPayment({ chargeId: c.req.param('id') });
+      if (charge === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      return c.json(serializePosCharge(charge));
+    })
+    .get('/:username/charges/:id', async (c) => {
+      const username = normalizeUsername(c.req.param('username'));
+      if (username === null) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const account = await deps.auth.getAccountByUsername(username);
+      if (account === undefined) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      const charge = await deps.posStore.findChargeForPayment({ chargeId: c.req.param('id') });
+      if (charge === undefined || charge.accountId !== account.id) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      return c.json(serializePosCharge(charge));
+    })
     .get('/:username', async (c) => {
       const lookup = await lookupPayAccount(c.req.param('username'), deps);
       if (!lookup.ok) {

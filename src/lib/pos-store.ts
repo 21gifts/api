@@ -15,7 +15,7 @@ import {
   PaymentHashClaims,
   paymentHashLockKey,
 } from '@/lib/payment-hash-claim';
-import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
+import type { PosCharge, PosChargeStatus, PosFiatCode } from '@/lib/pos-charge';
 import { UUID_PATTERN } from '@/lib/uuid';
 
 /** POS charge used to mark an account as active on a UTC day. */
@@ -240,7 +240,8 @@ export interface PosStore {
 /**
  * Idempotent DDL for the `pos_charge` and `pos_charge_invoice` tables
  * (matches `docs/schema/pos_charge.sql`). Existing tables gain `paid_at`,
- * `spark_invoice`, and the `paid` status.
+ * `spark_invoice`, the `paid` status, and the typed-fiat columns. Those
+ * columns are written only on insert.
  */
 export const POS_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS pos_charge (
@@ -271,6 +272,15 @@ export const POS_SCHEMA_SQL: readonly string[] = [
 )`,
   `CREATE INDEX IF NOT EXISTS pos_charge_invoice_charge_idx
   ON pos_charge_invoice (charge_id, created_at)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_currency text`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_text text`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
+  `ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_amount_currency_check`,
+  `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_amount_currency_check
+  CHECK (amount_currency IN ('USD', 'CHF', 'EUR', 'PHP'))`,
 ];
 
 /**
@@ -635,11 +645,28 @@ interface PosSqlRow {
   expires_at: Date | string;
   paid_at: Date | string | null;
   spark_invoice: string | null;
+  amount_currency?: string | null;
+  amount_text?: string | null;
+  fiat_usd?: string | null;
+  fiat_chf?: string | null;
+  fiat_eur?: string | null;
+  fiat_php?: string | null;
 }
 
-/** Columns selected into {@link PosSqlRow}. */
-const POS_COLUMNS =
-  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice';
+/** Columns written on insert. Numeric casts stay out of this list. */
+const POS_INSERT_COLUMNS =
+  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice, amount_currency, amount_text, fiat_usd, fiat_chf, fiat_eur, fiat_php';
+
+/** Columns selected into {@link PosSqlRow}. Numerics come back as text. */
+const POS_SELECT_COLUMNS =
+  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice, amount_currency, amount_text, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf, fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php';
+
+/** Select list with a table alias, so `::text` stays on that table's column. */
+function prefixedPosSelect(alias: string): string {
+  return POS_SELECT_COLUMNS.split(', ')
+    .map((column) => `${alias}.${column}`)
+    .join(', ');
+}
 
 /** Coerce Postgres timestamps; copy so callers cannot mutate driver dates. */
 function asDate(value: Date | string): Date {
@@ -649,6 +676,22 @@ function asDate(value: Date | string): Date {
 /** Coerce `amount_sats`; `Number()` only when the value is not already a number. */
 function asAmountSats(value: number | string | bigint): number {
   return typeof value === 'number' ? value : Number(value);
+}
+
+/** Currency code, or `null` when the column is missing or not one of the four. */
+function asFiatCode(value: string | null | undefined): PosFiatCode | null {
+  if (value === 'USD' || value === 'CHF' || value === 'EUR' || value === 'PHP') {
+    return value;
+  }
+  return null;
+}
+
+/** Numeric or text column as stored text, or `null` when it was not selected. */
+function asFiatText(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return value;
 }
 
 /** Map a SQL row onto {@link PosCharge}. Unexported. */
@@ -662,6 +705,12 @@ function mapPosRow(row: PosSqlRow): PosCharge {
     expiresAt: asDate(row.expires_at),
     paidAt: row.paid_at === null ? null : asDate(row.paid_at),
     sparkInvoice: row.spark_invoice,
+    amountCurrency: asFiatCode(row.amount_currency),
+    amountText: asFiatText(row.amount_text),
+    fiatUsd: asFiatText(row.fiat_usd),
+    fiatChf: asFiatText(row.fiat_chf),
+    fiatEur: asFiatText(row.fiat_eur),
+    fiatPhp: asFiatText(row.fiat_php),
   };
 }
 
@@ -713,7 +762,7 @@ RETURNING id`,
   async currentPending(accountId: string, nowMs: number): Promise<PosCharge | null> {
     await this.#expireDue(accountId, nowMs);
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT ${POS_COLUMNS}
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1 AND status = 'pending'
 ORDER BY created_at DESC, id DESC
@@ -736,8 +785,8 @@ LIMIT 1`,
       await this.#expireDue(row.accountId, row.createdAt.getTime());
     }
     await this.#sql.execute(
-      `INSERT INTO pos_charge (${POS_COLUMNS})
-VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+      `INSERT INTO pos_charge (${POS_INSERT_COLUMNS})
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         row.id,
         row.accountId,
@@ -747,6 +796,12 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
         row.expiresAt.toISOString(),
         row.paidAt === null ? null : row.paidAt.toISOString(),
         row.sparkInvoice,
+        row.amountCurrency,
+        row.amountText,
+        row.fiatUsd,
+        row.fiatChf,
+        row.fiatEur,
+        row.fiatPhp,
       ],
     );
     logEvent('pos.create', { accountId: row.accountId });
@@ -766,7 +821,7 @@ VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
       `UPDATE pos_charge
 SET status = 'cancelled'
 WHERE account_id = $1 AND status = 'pending'
-RETURNING ${POS_COLUMNS}`,
+RETURNING ${POS_SELECT_COLUMNS}`,
       [accountId],
     );
     const cancelled = newestFirst(rows.map((row) => mapPosRow(row)));
@@ -787,7 +842,7 @@ RETURNING ${POS_COLUMNS}`,
    */
   async listForAccount(accountId: string, limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT ${POS_COLUMNS}
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1
 ORDER BY created_at DESC, id DESC
@@ -805,7 +860,7 @@ LIMIT $2`,
    */
   async listLatest(limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT ${POS_COLUMNS}
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 ORDER BY created_at DESC, id DESC
 LIMIT $1`,
@@ -936,14 +991,14 @@ RETURNING payment_hash`,
     const rows =
       'paymentHash' in ref
         ? await this.#sql.query<PosSqlRow>(
-            `SELECT c.${POS_COLUMNS.replaceAll(', ', ', c.')}
+            `SELECT ${prefixedPosSelect('c')}
 FROM pos_charge_invoice i
 JOIN pos_charge c ON c.id = i.charge_id
 WHERE i.payment_hash = $1`,
             [ref.paymentHash],
           )
         : await this.#sql.query<PosSqlRow>(
-            `SELECT ${POS_COLUMNS}
+            `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 WHERE id = $1`,
             [ref.chargeId],
@@ -961,8 +1016,7 @@ WHERE id = $1`,
    */
   async listWatched(sinceMs: number): Promise<PosWatch[]> {
     const rows = await this.#sql.query<PosSqlRow & { payment_hash: string | null }>(
-      `SELECT c.id, c.account_id, c.amount_sats, c.status, c.created_at, c.expires_at,
-       c.paid_at, c.spark_invoice, i.payment_hash
+      `SELECT ${prefixedPosSelect('c')}, i.payment_hash
 FROM pos_charge c
 LEFT JOIN pos_charge_invoice i ON i.charge_id = c.id
 WHERE c.status IN ('pending', 'expired') AND c.expires_at > $1
@@ -996,7 +1050,7 @@ ORDER BY c.created_at ASC, c.id ASC, i.created_at ASC, i.payment_hash ASC`,
       `UPDATE pos_charge
 SET status = 'paid', paid_at = $2
 WHERE id = $1 AND status IN ('pending', 'expired')
-RETURNING ${POS_COLUMNS}`,
+RETURNING ${POS_SELECT_COLUMNS}`,
       [chargeId, new Date(paidAtMs).toISOString()],
     );
     const row = rows[0];

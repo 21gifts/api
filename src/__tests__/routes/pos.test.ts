@@ -4,6 +4,8 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { ShopNoteRef } from '@/lib/message-store';
 import type { ActivityPing } from '@/lib/ocp-activity';
 import type { MapFetch } from '@/lib/ocp-place';
+import type { FxSpotQuote } from '@/lib/fx-spot';
+import type { FxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS, POS_PAID_SHOW_MS, type PosCharge } from '@/lib/pos-charge';
 import { ShopPayments } from '@/lib/shop-payment';
@@ -601,6 +603,12 @@ describe('POS routes', () => {
       expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const app = mount(await readyStore(), lnurlFetch(), {
       store: pos,
@@ -683,6 +691,12 @@ describe('GET /pos paid confirmation', () => {
       expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
       ...partial,
     };
   }
@@ -719,6 +733,12 @@ describe('GET /pos paid confirmation', () => {
       createdAt: new Date(nowMs).toISOString(),
       expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS).toISOString(),
       paidAt: new Date(nowMs + 10_000).toISOString(),
+      amountCurrency: null,
+      amount: null,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
     };
     clock = nowMs + 10_000 + POS_PAID_SHOW_MS - 1;
     const shown = await read(app);
@@ -856,6 +876,12 @@ describe('POS with shop payments', () => {
       expiresAt: new Date(nowMs + POS_CHARGE_TTL_MS),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     };
     await pos.create(charge);
     const shopPaymentOfCharge = vi.fn(async () => ({ id: 'p1', status: 'accepted' as const }));
@@ -886,5 +912,179 @@ describe('POS with shop payments', () => {
       nowMs,
     );
     expect(await pos.currentPending('acc', nowMs)).toBeNull();
+  });
+});
+
+describe('POST /pos typed fiat', () => {
+  const NULL_JSON = {
+    amountCurrency: null,
+    amount: null,
+    amountUsd: null,
+    amountChf: null,
+    amountEur: null,
+    amountPhp: null,
+  };
+
+  function spot(rates: FxSpotQuote['rates'], latestThrows = false): FxSpotStore {
+    return {
+      latest: async () => {
+        if (latestThrows) {
+          throw new Error('spot down');
+        }
+        return { asOf: '2026-10-20T00:00:00.000Z', source: 'coinbase-exchange-rates', rates };
+      },
+      save: async () => undefined,
+    };
+  }
+
+  async function till(quote?: FxSpotStore): Promise<{ app: Hono; store: InMemoryPosStore }> {
+    const store = new InMemoryPosStore();
+    const app = new Hono().route(
+      '/pos',
+      posRoutes({
+        store,
+        authStore: await readyStore(),
+        now,
+        fetchImpl: lnurlFetch(),
+        lnurlServer: LNURL_SERVER,
+        ...(quote === undefined ? {} : { spot: quote }),
+      }),
+    );
+    return { app, store };
+  }
+
+  async function post(app: Hono, body: unknown): Promise<Response> {
+    return app.request('/pos', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  }
+
+  it('stores six nulls for a sats-only body', async () => {
+    const { app, store } = await till();
+    const res = await post(app, { amountSats: 21 });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { charge: object }).charge).toEqual(
+      expect.objectContaining({ amountSats: 21, ...NULL_JSON }),
+    );
+    expect(await store.listLatest(1)).toEqual([
+      expect.objectContaining({
+        amountSats: 21,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      }),
+    ]);
+  });
+
+  it('keeps 12.00 PHP and freezes the other three from the spot', async () => {
+    const { app, store } = await till(
+      spot({ USD: '100000', CHF: '90000', EUR: '95000', PHP: '5000000' }),
+    );
+    const res = await post(app, { amountSats: 21, amountCurrency: 'PHP', amount: '12.00' });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { charge: object }).charge).toEqual(
+      expect.objectContaining({
+        amountSats: 21,
+        amountCurrency: 'PHP',
+        amount: '12.00',
+        amountUsd: '0.24',
+        amountChf: '0.22',
+        amountEur: '0.23',
+        amountPhp: '12.00',
+      }),
+    );
+    expect((await store.listLatest(1))[0]).toEqual(
+      expect.objectContaining({
+        amountSats: 21,
+        amountCurrency: 'PHP',
+        amountText: '12.00',
+        fiatUsd: '0.24',
+        fiatChf: '0.22',
+        fiatEur: '0.23',
+        fiatPhp: null,
+      }),
+    );
+  });
+
+  it('leaves a missing spot leg null', async () => {
+    const { app, store } = await till(spot({ USD: '100000', CHF: '90000', PHP: '5000000' }));
+    const res = await post(app, { amountSats: 21, amountCurrency: 'PHP', amount: '12.00' });
+    expect(res.status).toBe(201);
+    const charge = ((await res.json()) as { charge: Record<string, unknown> }).charge;
+    expect(charge['amountEur']).toBeNull();
+    expect(charge['amountUsd']).toBe('0.24');
+    expect(charge['amountPhp']).toBe('12.00');
+    expect((await store.listLatest(1))[0]?.fiatEur).toBeNull();
+    expect((await store.listLatest(1))[0]?.fiatPhp).toBeNull();
+  });
+
+  it('still stores the typed string when the spot read throws', async () => {
+    const { app, store } = await till(
+      spot({ USD: '100000', CHF: '90000', EUR: '95000', PHP: '5000000' }, true),
+    );
+    const res = await post(app, { amountSats: 21, amountCurrency: 'PHP', amount: '12.00' });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { charge: object }).charge).toEqual(
+      expect.objectContaining({
+        amountSats: 21,
+        amountCurrency: 'PHP',
+        amount: '12.00',
+        amountPhp: '12.00',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+      }),
+    );
+    expect((await store.listLatest(1))[0]).toEqual(
+      expect.objectContaining({
+        amountText: '12.00',
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      }),
+    );
+  });
+
+  it('rejects a currency and an amount that are not sent together', async () => {
+    const { app } = await till();
+    const currencyOnly = await post(app, { amountSats: 21, amountCurrency: 'PHP' });
+    const amountOnly = await post(app, { amountSats: 21, amount: '12.00' });
+    expect(currencyOnly.status).toBe(400);
+    expect(await currencyOnly.json()).toEqual({
+      error: 'Expected amountCurrency and amount together',
+    });
+    expect(amountOnly.status).toBe(400);
+    expect(await amountOnly.json()).toEqual({
+      error: 'Expected amountCurrency and amount together',
+    });
+  });
+
+  it('rejects a bad amount or a bad currency', async () => {
+    const { app } = await till();
+    const zero = await post(app, { amountSats: 21, amountCurrency: 'PHP', amount: '0' });
+    const jpy = await post(app, { amountSats: 21, amountCurrency: 'JPY', amount: '12.00' });
+    expect(zero.status).toBe(400);
+    expect(await zero.json()).toEqual({ error: 'Expected a typed fiat amount' });
+    expect(jpy.status).toBe(400);
+    expect(await jpy.json()).toEqual({ error: 'Expected a typed fiat amount' });
+  });
+
+  it('keeps a trimmed comma amount and the client amountSats', async () => {
+    const { app, store } = await till(
+      spot({ USD: '100000', CHF: '90000', EUR: '95000', PHP: '5000000' }),
+    );
+    const res = await post(app, { amountSats: 21, amountCurrency: 'PHP', amount: ' 12,00 ' });
+    expect(res.status).toBe(201);
+    expect(((await res.json()) as { charge: object }).charge).toEqual(
+      expect.objectContaining({ amountSats: 21, amount: '12.00', amountPhp: '12.00' }),
+    );
+    expect((await store.listLatest(1))[0]?.amountSats).toBe(21);
+    expect((await store.listLatest(1))[0]?.amountText).toBe('12.00');
   });
 });

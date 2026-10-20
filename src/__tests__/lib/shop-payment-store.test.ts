@@ -161,6 +161,12 @@ function charge(partial: Partial<PosCharge> = {}): PosCharge {
     expiresAt: new Date(T0 + POS_CHARGE_TTL_MS),
     paidAt: null,
     sparkInvoice: null,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
     ...partial,
   };
 }

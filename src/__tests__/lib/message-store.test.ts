@@ -16,7 +16,6 @@ import {
   type ZapIngestRow,
 } from '@/lib/message-store';
 import { resolveMediaDir, videoFilePath } from '@/lib/video';
-import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -10239,6 +10238,63 @@ describe('PostgresMessageStore', () => {
     expect(await memory.listCreditPayers('m1')).toEqual([
       { accountId: 'giver', sats: 21, usd: null, chf: '1.00', eur: '1.00', php: '1.00' },
     ]);
+    await memory.recordZapReceipt('r-a', 'm2', 21, null);
+    await memory.updateZapReceiptGift('r-a', { payerAccountId: 'giver' });
+    await memory.recordZapIngest({
+      id: 'zi-a',
+      createdAt: paidAt,
+      receiptId: 'r-a',
+      noteEventId: null,
+      messageId: 'm2',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: 'nope',
+      amountChf: '1.00',
+      amountEur: null,
+      amountPhp: null,
+      receiptPubkey: null,
+      receipt: { id: 'r-a', kind: 9735 },
+    });
+    await memory.recordZapReceipt('r-b', 'm2', 21, null);
+    await memory.updateZapReceiptGift('r-b', { payerAccountId: 'giver' });
+    await memory.recordZapIngest({
+      id: 'zi-b',
+      createdAt: paidAt,
+      receiptId: 'r-b',
+      noteEventId: null,
+      messageId: 'm2',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: '1.00',
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      receiptPubkey: null,
+      receipt: { id: 'r-b', kind: 9735 },
+    });
+    await memory.recordZapReceipt('r-c', 'm2', 21, null);
+    await memory.updateZapReceiptGift('r-c', { payerAccountId: 'giver' });
+    await memory.recordZapIngest({
+      id: 'zi-c',
+      createdAt: paidAt,
+      receiptId: 'r-c',
+      noteEventId: null,
+      messageId: 'm2',
+      outcome: 'indexed',
+      reason: null,
+      amountSats: 21,
+      amountUsd: '2.00',
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      receiptPubkey: null,
+      receipt: { id: 'r-c', kind: 9735 },
+    });
+    expect(await memory.listCreditPayers('m2')).toEqual([
+      { accountId: 'giver', sats: 63, usd: '3.00', chf: '1.00', eur: null, php: null },
+    ]);
   });
 
   it('listCreditPayers sums sats and recorded fiat', async () => {
@@ -10259,6 +10315,8 @@ describe('PostgresMessageStore', () => {
     ]);
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_ingest/);
     expect(sql.queries[0]?.text).toMatch(/recorded_at <= m.goal_funded_at/);
+    expect(sql.queries[0]?.text).toContain('SUM(i.fiat_usd)::text');
+    expect(sql.queries[0]?.text).not.toContain('COUNT(i.fiat_usd) = COUNT(*)');
   });
 
   it('ignores a gift that arrives after the credit has filled', async () => {
@@ -10920,50 +10978,19 @@ describe('PostgresMessageStore', () => {
 });
 
 describe('migrateMessageSchema fiat backfill', () => {
-  function fiatUpdates(sql: MockSql): { text: string; params: readonly unknown[] }[] {
-    return sql.executes.filter((row) => row.text.includes('SET fiat_usd'));
-  }
-
-  it('writes stored fiat for a priced message and skips a bad timestamp and a day without a rate', async () => {
+  it('executes no statement containing SET fiat_usd', async () => {
     const sql = new MockSql();
     sql.queryQueue = [
-      [
-        { id: 'm-priced', created_at: new Date('2026-06-01T12:00:00.000Z'), amount_sats: 1000 },
-        { id: 'm-bad', created_at: 'not-a-date', amount_sats: 1000 },
-        { id: 'm-norate', created_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 },
-      ],
+      [{ id: 'm-priced', created_at: new Date('2026-06-01T12:00:00.000Z'), amount_sats: 1000 }],
       [
         { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: null },
         { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
+        { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
         { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
       ],
-      [],
     ];
     await migrateMessageSchema(sql);
-    expect(fiatUpdates(sql)).toEqual([
-      expect.objectContaining({
-        params: ['m-priced', '1.00', '0.80', null, '50.00'],
-      }),
-    ]);
-  });
-
-  it('does not update when every created_at is invalid', async () => {
-    const sql = new MockSql();
-    sql.queryQueue = [[{ id: 'm-bad', created_at: 'nope', amount_sats: 21 }]];
-    await migrateMessageSchema(sql);
-    expect(fiatUpdates(sql)).toEqual([]);
-  });
-
-  it('does not update when the day has no BTC rate', async () => {
-    const sql = new MockSql();
-    sql.queryQueue = [
-      [{ id: 'm-open', created_at: new Date('2026-06-01T00:00:00.000Z'), amount_sats: 21 }],
-      [],
-      [],
-    ];
-    await migrateMessageSchema(sql);
-    expect(fiatUpdates(sql)).toEqual([]);
+    expect(sql.executes.filter((row) => row.text.includes('SET fiat_usd'))).toEqual([]);
   });
 });
 
@@ -10976,12 +11003,20 @@ describe('message payment fiat snapshot', () => {
       });
   }
 
-  it('freezes spot crosses when a paid note omits fiat', async () => {
+  it('the omitted snapshot stays null when a paid note omits fiat', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryMessageStore([], {
-      fetchImpl: spotFetch('100000'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
+      fiatRates: {
+        ensureDays: async () => {
+          rateCalls += 1;
+          return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+        },
+      },
       now: () => Date.parse('2026-06-01T00:00:00.000Z'),
     });
     const created = await store.create({
@@ -10990,17 +11025,79 @@ describe('message payment fiat snapshot', () => {
       sats: 1000,
       createdAt: new Date('2026-06-01T12:00:00.000Z'),
     });
-    expect(created.amountUsd).toBe('1.00');
-    expect(created.amountChf).toBe('0.80');
-    expect(created.amountEur).toBe('0.90');
-    expect(created.amountPhp).toBe('50.00');
+    expect(created.amountUsd).toBeNull();
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
-  it('still freezes USD when the cross book throws', async () => {
+  it('stores four nulls when create is given a snapshot of four nulls', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create(
+      { ...EARLY, id: 'm-snap-nulls' },
+      undefined,
+      undefined,
+      undefined,
+      { usd: null, chf: null, eur: null, php: null },
+    );
+    expect(created.amountUsd).toBeNull();
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    const row = await store.getById('m-snap-nulls');
+    expect(row?.amountUsd).toBeNull();
+    expect(row?.amountChf).toBeNull();
+    expect(row?.amountEur).toBeNull();
+    expect(row?.amountPhp).toBeNull();
+  });
+
+  it('stores four nulls when the snapshot argument is omitted', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create({ ...EARLY, id: 'm-snap-omit' });
+    expect(created.amountUsd).toBeNull();
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    const row = await store.getById('m-snap-omit');
+    expect(row?.amountUsd).toBeNull();
+    expect(row?.amountChf).toBeNull();
+    expect(row?.amountEur).toBeNull();
+    expect(row?.amountPhp).toBeNull();
+  });
+
+  it('stores the snapshot strings unchanged, including trailing zeros', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.create(
+      { ...EARLY, id: 'm-snap-text' },
+      undefined,
+      undefined,
+      undefined,
+      { usd: '1.00', chf: '0.90', eur: '0.85', php: '12.00' },
+    );
+    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountChf).toBe('0.90');
+    expect(created.amountEur).toBe('0.85');
+    expect(created.amountPhp).toBe('12.00');
+    const row = await store.getById('m-snap-text');
+    expect(row?.amountUsd).toBe('1.00');
+    expect(row?.amountChf).toBe('0.90');
+    expect(row?.amountEur).toBe('0.85');
+    expect(row?.amountPhp).toBe('12.00');
+  });
+
+  it('the omitted snapshot stays null when the cross book throws', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryMessageStore([], {
-      fetchImpl: spotFetch('100000'),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
       fiatRates: {
         ensureDays: async () => {
+          rateCalls += 1;
           throw new Error('frankfurter down');
         },
       },
@@ -11011,8 +11108,12 @@ describe('message payment fiat snapshot', () => {
       sats: 1000,
       createdAt: new Date('2026-06-01T12:00:00.000Z'),
     });
-    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountUsd).toBeNull();
     expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
   it('adds a later snapshot onto stored fiat and rejects a bad amount', async () => {

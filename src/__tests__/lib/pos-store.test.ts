@@ -64,13 +64,19 @@ function charge(partial: Partial<PosCharge> & Pick<PosCharge, 'id'>): PosCharge 
     expiresAt: new Date(T0 + POS_CHARGE_TTL_MS),
     paidAt: null,
     sparkInvoice: null,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
     ...partial,
   };
 }
 
 describe('POS_SCHEMA_SQL', () => {
   it('creates pos_charge and its account/created_at index', () => {
-    expect(POS_SCHEMA_SQL).toHaveLength(10);
+    expect(POS_SCHEMA_SQL).toHaveLength(18);
     expect(POS_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS pos_charge/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/amount_sats bigint NOT NULL CHECK \(amount_sats > 0\)/);
@@ -100,6 +106,34 @@ describe('POS_SCHEMA_SQL', () => {
     expect(POS_SCHEMA_SQL[8]).toMatch(/payment_hash text PRIMARY KEY/);
     expect(POS_SCHEMA_SQL[8]).toMatch(/charge_id uuid NOT NULL REFERENCES pos_charge \(id\)/);
     expect(POS_SCHEMA_SQL[9]).toMatch(/CREATE INDEX IF NOT EXISTS pos_charge_invoice_charge_idx/);
+  });
+
+  it('adds the typed fiat columns and the currency check', () => {
+    expect(POS_SCHEMA_SQL[10]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_currency text',
+    );
+    expect(POS_SCHEMA_SQL[11]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_text text',
+    );
+    expect(POS_SCHEMA_SQL[12]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[13]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[14]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[15]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[16]).toBe(
+      'ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_amount_currency_check',
+    );
+    expect(POS_SCHEMA_SQL[17]).toBe(
+      `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_amount_currency_check
+  CHECK (amount_currency IN ('USD', 'CHF', 'EUR', 'PHP'))`,
+    );
   });
 });
 
@@ -555,6 +589,12 @@ describe('PostgresPosStore', () => {
         expiresAt: new Date('2026-09-01T12:05:00.000Z'),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       },
       {
         id: 'c2',
@@ -565,6 +605,53 @@ describe('PostgresPosStore', () => {
         expiresAt: new Date('2026-08-31T12:05:00.000Z'),
         paidAt: new Date('2026-08-31T12:01:00.000Z'),
         sparkInvoice: 'spark1x',
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      },
+    ]);
+  });
+
+  it('maps a PHP typed amount and stored fiat text, leaving a null PHP numeric null', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      {
+        id: 'c-php',
+        account_id: 'acc',
+        amount_sats: 21,
+        status: 'pending',
+        created_at: new Date('2026-09-01T12:00:00.000Z'),
+        expires_at: new Date('2026-09-01T12:05:00.000Z'),
+        paid_at: null,
+        spark_invoice: null,
+        amount_currency: 'PHP',
+        amount_text: '12.00',
+        fiat_usd: '1.00',
+        fiat_chf: '0.90',
+        fiat_eur: '0.85',
+        fiat_php: null,
+      },
+    ];
+    const listed = await new PostgresPosStore(sql).listLatest(10);
+    expect(listed).toEqual([
+      {
+        id: 'c-php',
+        accountId: 'acc',
+        amountSats: 21,
+        status: 'pending',
+        createdAt: new Date('2026-09-01T12:00:00.000Z'),
+        expiresAt: new Date('2026-09-01T12:05:00.000Z'),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: 'PHP',
+        amountText: '12.00',
+        fiatUsd: '1.00',
+        fiatChf: '0.90',
+        fiatEur: '0.85',
+        fiatPhp: null,
       },
     ]);
   });
@@ -617,8 +704,9 @@ describe('PostgresPosStore', () => {
     const created = await new PostgresPosStore(sql).create(row);
     expect(sql.queries[0]?.text).toMatch(/SET status = 'expired'/);
     expect(sql.queries[0]?.params).toEqual(['acc', row.createdAt.toISOString()]);
-    expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO pos_charge \(id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice\)/,
+    expect(sql.executes[0]?.text).toContain(
+      'INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at, ' +
+        'paid_at, spark_invoice, amount_currency, amount_text, fiat_usd, fiat_chf, fiat_eur, fiat_php)',
     );
     expect(sql.executes[0]?.params).toEqual([
       'c1',
@@ -627,6 +715,12 @@ describe('PostgresPosStore', () => {
       'pending',
       row.createdAt.toISOString(),
       row.expiresAt.toISOString(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
       null,
       null,
     ]);
@@ -714,6 +808,12 @@ describe('PostgresPosStore', () => {
       expiresAt: new Date('2026-09-01T12:05:00.000Z'),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.cancel')).toBe(true);
   });
@@ -945,6 +1045,12 @@ describe('PostgresPosStore', () => {
     expect(sql.executes[0]?.params.slice(6)).toEqual([
       new Date(T0 + 1_000).toISOString(),
       'spark1x',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
   });
 

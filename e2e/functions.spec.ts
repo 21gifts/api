@@ -4451,3 +4451,29 @@ test('Function: migrateShopPaymentSchema — default boot has no DATABASE_URL', 
 }) => {
   await noDatabase(request);
 });
+
+test('Function: parseTypedFiatAmount — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: isPosFiatCode — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: freezePosFiatCrosses — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: serializePosFiat — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: payRoutes — GET /pay/charges/:id is 404 when missing', async ({ request }) => {
+  expect((await request.get('/pay/charges/:id')).status()).toBe(404);
+});
+
+test('Function: payRoutes — GET /pay/:username/charges/:id is 404 when missing', async ({
+  request,
+}) => {
+  expect((await request.get('/pay/:username/charges/:id')).status()).toBe(404);
+});

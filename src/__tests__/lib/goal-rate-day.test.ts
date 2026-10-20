@@ -53,21 +53,26 @@ describe('loadLatestGoalRateDay', () => {
     });
   });
 
-  it('throws when a legacy day has no BTC-USD rate', async () => {
+  it('returns null fiat for a legacy day that stored only sats', async () => {
     const legacy: GiftRow = {
       paidAt: new Date('2026-06-01T12:00:00.000Z'),
       amountSats: 1000,
       kind: 'daily',
       recipientWosUser: 'ada',
     };
-    await expect(
-      loadLatestGoalRateDay({
-        store: new InMemoryGiftStore([legacy]),
-        rates: new InMemoryBtcUsdStore(),
-        fiatRates: new InMemoryFiatStore(),
-        now: () => Date.parse('2026-06-01T00:00:00.000Z'),
-      }),
-    ).rejects.toThrow('fx.rate.missing');
+    const day = await loadLatestGoalRateDay({
+      store: new InMemoryGiftStore([legacy]),
+      rates: new InMemoryBtcUsdStore(),
+      fiatRates: new InMemoryFiatStore(),
+      now: () => Date.parse('2026-06-01T00:00:00.000Z'),
+    });
+    expect(day).toEqual({
+      sats: 1000,
+      usd: null,
+      chf: null,
+      eur: null,
+      php: null,
+    });
   });
 
   it('keeps the day when the fiat book throws', async () => {
@@ -90,7 +95,7 @@ describe('loadLatestGoalRateDay', () => {
         now: () => Date.parse('2026-06-01T00:00:00.000Z'),
       });
       expect(day?.sats).toBe(1000);
-      expect(day?.usd).toBe('1.00');
+      expect(day?.usd).toBeNull();
       expect(day?.chf).toBeNull();
       expect(day?.eur).toBeNull();
       expect(day?.php).toBeNull();

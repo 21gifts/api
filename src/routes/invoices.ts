@@ -3,7 +3,6 @@ import { Hono } from 'hono';
 import { z } from 'zod';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
-import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import {
   GIFT_INVOICE_MAX_MSAT,
   GIFT_INVOICE_MIN_MSAT,
@@ -24,17 +23,9 @@ import {
 } from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import {
-  crossForPaymentDay,
-  fiatFromSats,
-  fiatFromUsd,
-  normalizeAmountUsd,
-  paymentRateDays,
-  type FiatAmounts,
-  type FiatCrossRates,
-} from '@/lib/money';
+import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
-import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
@@ -128,9 +119,7 @@ export interface InvoiceRouteDeps {
    */
   gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
-   * USD→CHF/EUR/PHP crosses for the payment-time snapshot (default: empty
-   * {@link InMemoryFiatStore}). A missing cross or a Frankfurter failure
-   * leaves that currency null and does not fail proof.
+   * Accepted and not read by proof.
    */
   fiatRates?: FiatRateBook;
 }
@@ -362,57 +351,23 @@ async function accountHasPosted(
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
-  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
   /**
    * One payment-time snapshot for the gift, the forum credit, and the group row.
    *
-   * A caller-supplied `amountUsd` stays the USD string (not a sats conversion).
-   * Otherwise one Coinbase spot is used. Each of CHF, EUR, and PHP comes from
-   * the payment UTC day, or from the nearest earlier quote within 10 days
-   * when that day has not been published yet. When loading that window throws,
-   * the earlier days are loaded on their own, so one failed fetch of today
-   * still uses a rate already on file. A second failure keeps the sent USD and
-   * leaves the missing crosses null. A spot failure yields null amounts and
-   * does not throw.
+   * An omitted `amountUsd` is null for USD, CHF, EUR, and PHP. A supplied `amountUsd` is stored as
+   * that USD string. CHF, EUR, and PHP stay null. The daily rate book is not read. A string that is
+   * not normalized stores null.
    *
    * @param invoice - Proven invoice.
-   * @param paidAtMs - Proof clock, epoch milliseconds.
-   * @returns Snapshot, or `null` when pricing is unavailable.
+   * @returns Snapshot, or `null` when `amountUsd` was omitted or the string is not normalized.
    */
-  async function paymentFiat(invoice: GiftInvoice, paidAtMs: number): Promise<FiatAmounts | null> {
-    const day = new Date(paidAtMs).toISOString().slice(0, 10);
-    const window = paymentRateDays(day);
-    let crosses: FiatCrossRates = {};
-    try {
-      const found = await fiatRates.ensureDays(window, paidAtMs);
-      crosses = crossForPaymentDay(found, day);
-    } catch {
-      logEvent('invoice.fiat_failed', { id: invoice.id });
-      try {
-        const found = await fiatRates.ensureDays(window.slice(1), paidAtMs);
-        crosses = crossForPaymentDay(found, day);
-      } catch {
-        crosses = {};
-      }
-    }
-    if (invoice.amountUsd !== undefined) {
-      try {
-        return fiatFromUsd(invoice.amountUsd, crosses);
-      } catch {
-        return null;
-      }
-    }
-    const sats = Math.floor(invoice.amountMsat / 1000);
-    if (sats <= 0) {
-      return null;
-    }
-    const spot = await fetchBtcUsdSpot(deps.fetchImpl);
-    if (spot === null) {
+  async function paymentFiat(invoice: GiftInvoice): Promise<FiatAmounts | null> {
+    if (invoice.amountUsd === undefined) {
       return null;
     }
     try {
-      return fiatFromSats(sats, spot, crosses);
+      return fiatFromUsd(invoice.amountUsd, {});
     } catch {
       return null;
     }
@@ -614,7 +569,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   }
 
   async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
-    const fiat = await paymentFiat(invoice, paidAtMs);
+    const fiat = await paymentFiat(invoice);
     await persistProvenGift(invoice, paidAtMs, fiat);
     await attachSpendGiftReply(invoice, paidAtMs, fiat);
     await attachSpendGroupGift(invoice, paidAtMs, fiat);

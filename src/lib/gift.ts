@@ -7,13 +7,7 @@
  */
 
 import { FX_SOURCE_COINBASE_DAILY_CLOSE } from '@/lib/btc-usd-store';
-import {
-  quoteFromLargestSibling,
-  satsToBtcString,
-  satsToUsdCents,
-  usdCentsToFiatCents,
-  usdCentsToString,
-} from '@/lib/money';
+import { satsToBtcString, usdCentsToString } from '@/lib/money';
 import { FX_SOURCE_FRANKFURTER_ECB, type FiatCross } from '@/lib/usd-fiat-store';
 
 /** Outbound gift classification stored on `gift.kind`. */
@@ -41,7 +35,7 @@ export interface GiftRow {
    * gift paid to a wallet address. `undefined` when the source did not read it.
    */
   description?: string | undefined;
-  /** Stored payment-time USD. `undefined` selects the legacy daily-close path. */
+  /** Stored payment-time USD. `undefined` or `null` is a missing figure, not a later price. */
   amountUsd?: string | null;
   /** Stored payment-time CHF. */
   amountChf?: string | null;
@@ -70,21 +64,21 @@ export interface SpendDay {
   btc: string;
   /** BTC string for `cumulativeSats`. */
   cumulativeBtc: string;
-  /** USD string for that day's gifts at each gift's UTC-day rate. */
+  /** USD string for that day's gifts that stored USD. All missing is `null`. A gap day is `"0.00"`. */
   usd: string | null;
-  /** Running USD total through this day inclusive. */
+  /** Running USD of days that stored USD. A null day does not clear it. */
   cumulativeUsd: string | null;
-  /** CHF string for that day's gifts, or `null` if any gift that day lacks CHF. */
+  /** CHF string for that day's gifts that stored CHF. All missing is `null`. A gap day is `"0.00"`. */
   chf: string | null;
-  /** Running CHF total through this day inclusive, or `null` once a gap appears. */
+  /** Running CHF of days that stored CHF. A null day does not clear it. */
   cumulativeChf: string | null;
-  /** EUR string for that day's gifts, or `null` if any gift that day lacks EUR. */
+  /** EUR string for that day's gifts that stored EUR. All missing is `null`. A gap day is `"0.00"`. */
   eur: string | null;
-  /** Running EUR total through this day inclusive, or `null` once a gap appears. */
+  /** Running EUR of days that stored EUR. A null day does not clear it. */
   cumulativeEur: string | null;
-  /** PHP string for that day's gifts, or `null` if any gift that day lacks PHP. */
+  /** PHP string for that day's gifts that stored PHP. All missing is `null`. A gap day is `"0.00"`. */
   php: string | null;
-  /** Running PHP total through this day inclusive, or `null` once a gap appears. */
+  /** Running PHP of days that stored PHP. A null day does not clear it. */
   cumulativePhp: string | null;
 }
 
@@ -98,13 +92,13 @@ export interface RecipientSpend {
   sats: number;
   /** BTC string for `sats`. */
   btc: string;
-  /** USD string (sum of per-gift historical conversions). */
+  /** Sum of stored USD on gifts to this recipient. All missing is `null`. */
   usd: string | null;
-  /** CHF string, or `null` if any gift to this recipient lacks CHF. */
+  /** Sum of stored CHF on gifts to this recipient. All missing is `null`. */
   chf: string | null;
-  /** EUR string, or `null` if any gift to this recipient lacks EUR. */
+  /** Sum of stored EUR on gifts to this recipient. All missing is `null`. */
   eur: string | null;
-  /** PHP string, or `null` if any gift to this recipient lacks PHP. */
+  /** Sum of stored PHP on gifts to this recipient. All missing is `null`. */
   php: string | null;
 }
 
@@ -118,13 +112,13 @@ export interface MonthSpend {
   sats: number;
   /** BTC string for `sats`. */
   btc: string;
-  /** USD string (sum of per-gift historical conversions). */
+  /** Sum of stored USD in this month. All missing is `null`. A gap month is `"0.00"`. */
   usd: string | null;
-  /** CHF string, or `null` if any gift in this month lacks CHF. Zero-sats gap months are `"0.00"`. */
+  /** Sum of stored CHF in this month. All missing is `null`. A gap month is `"0.00"`. */
   chf: string | null;
-  /** EUR string, or `null` if any gift in this month lacks EUR. Zero-sats gap months are `"0.00"`. */
+  /** Sum of stored EUR in this month. All missing is `null`. A gap month is `"0.00"`. */
   eur: string | null;
-  /** PHP string, or `null` if any gift in this month lacks PHP. Zero-sats gap months are `"0.00"`. */
+  /** Sum of stored PHP in this month. All missing is `null`. A gap month is `"0.00"`. */
   php: string | null;
 }
 
@@ -156,13 +150,13 @@ export interface GiftStats {
   totalSats: number;
   /** BTC string for `totalSats`. */
   totalBtc: string;
-  /** Stored payment-time USD sum; `null` if any gift lacks it. Empty input is `"0.00"`. */
+  /** Sum of stored USD. All missing is `null`. Empty input is `"0.00"`. */
   totalUsd: string | null;
-  /** CHF string, or `null` if any gift lacks CHF. Empty input is `"0.00"`. */
+  /** Sum of stored CHF. All missing is `null`. Empty input is `"0.00"`. */
   totalChf: string | null;
-  /** EUR string, or `null` if any gift lacks EUR. Empty input is `"0.00"`. */
+  /** Sum of stored EUR. All missing is `null`. Empty input is `"0.00"`. */
   totalEur: string | null;
-  /** PHP string, or `null` if any gift lacks PHP. Empty input is `"0.00"`. */
+  /** Sum of stored PHP. All missing is `null`. Empty input is `"0.00"`. */
   totalPhp: string | null;
   /** Number of outbound gifts. */
   giftCount: number;
@@ -212,13 +206,13 @@ export interface GiftDay {
   totalSats: number;
   /** BTC string for `totalSats`. */
   totalBtc: string;
-  /** USD string for that day's gifts. */
+  /** Sum of stored USD that UTC day. Every row missing it is `null`. An empty day is `"0.00"`. */
   totalUsd: string | null;
-  /** CHF string, or `null` if any gift that day lacks CHF. Empty day is `"0.00"`. */
+  /** Sum of stored CHF that UTC day. Every row missing it is `null`. An empty day is `"0.00"`. */
   totalChf: string | null;
-  /** EUR string, or `null` if any gift that day lacks EUR. Empty day is `"0.00"`. */
+  /** Sum of stored EUR that UTC day. Every row missing it is `null`. An empty day is `"0.00"`. */
   totalEur: string | null;
-  /** PHP string, or `null` if any gift that day lacks PHP. Empty day is `"0.00"`. */
+  /** Sum of stored PHP that UTC day. Every row missing it is `null`. An empty day is `"0.00"`. */
   totalPhp: string | null;
   /** Gifts that UTC day, `paidAt` then `recipient` ascending. */
   gifts: GiftDayGift[];
@@ -255,7 +249,7 @@ interface GiftFiatCents {
   php: number | null;
 }
 
-/** Running / bucket totals that go null once any gift in the bucket lacks a cross. */
+/** Bucket totals. A null figure is skipped. All missing stays null. */
 interface FiatBucket {
   giftCount: number;
   sats: number;
@@ -411,112 +405,12 @@ function storedMoney(value: string | number | null | undefined): string | null {
 }
 
 /** Parse a stored two-decimal amount into cents without floating-point money math. */
-function storedCents(value: string | null): number | null {
-  if (value === null) {
-    return null;
-  }
+function storedCents(value: string): number {
   const match = /^(\d+)\.(\d{2})$/.exec(value);
   if (match === null) {
     throw new Error('invalid stored fiat amount');
   }
   return Number(match[1]) * 100 + Number(match[2]);
-}
-
-type StoredQuoteKey = 'amountChf' | 'amountEur' | 'amountPhp';
-
-/** A gift whose USD was stored, so a missing cross can be scaled. */
-function isStoredUsd(row: GiftRow): row is GiftRow & { amountUsd: string } {
-  return typeof row.amountUsd === 'string';
-}
-
-/**
- * Same-day gifts that can price one stored cross.
- *
- * A null quote is not a reference. Order is the caller's order.
- *
- * @param rows - Stored snapshots already limited to one UTC day.
- * @param key - Stored cross to copy.
- * @returns USD plus that quote.
- */
-function siblingQuoteRefs(
-  rows: readonly (GiftRow & { amountUsd: string })[],
-  key: StoredQuoteKey,
-): { usd: string; quote: string }[] {
-  const refs: { usd: string; quote: string }[] = [];
-  for (const row of rows) {
-    const quote = row[key];
-    if (typeof quote !== 'string') {
-      continue;
-    }
-    refs.push({ usd: row.amountUsd, quote });
-  }
-  return refs;
-}
-
-/**
- * Fill a null stored cross from the largest same-day gift. An existing cross
- * stays. No reference leaves the cross null. The stored USD is not changed.
- *
- * @param amountUsd - USD of the gift being filled.
- * @param current - Stored cross, or null when it was not saved.
- * @param refs - Same-day references for this cross.
- * @returns The cross to aggregate.
- */
-function filledStoredQuote(
-  amountUsd: string,
-  current: string | null | undefined,
-  refs: readonly { usd: string; quote: string }[],
-): string | null | undefined {
-  if (typeof current === 'string') {
-    return current;
-  }
-  return quoteFromLargestSibling(amountUsd, refs) ?? current;
-}
-
-/**
- * Copy missing stored CHF/EUR/PHP from the largest same-day gift that has them.
- *
- * A legacy row (`amountUsd` omitted) is unchanged, so a missing daily close
- * still fails closed. A stored USD with no same-day reference stays null and
- * still makes that day's sum null. Input rows are not mutated.
- *
- * @param rows - Gifts in the order the caller will aggregate.
- * @returns Rows with null stored crosses filled where a sibling can price them.
- */
-function withSiblingCrosses(rows: readonly GiftRow[]): GiftRow[] {
-  const byDay = new Map<string, (GiftRow & { amountUsd: string })[]>();
-  for (const row of rows) {
-    if (!isStoredUsd(row)) {
-      continue;
-    }
-    const day = utcDayString(row.paidAt);
-    const list = byDay.get(day) ?? [];
-    list.push(row);
-    byDay.set(day, list);
-  }
-  if (byDay.size === 0) {
-    return [...rows];
-  }
-  const replaced = new Map<GiftRow, GiftRow>();
-  for (const list of byDay.values()) {
-    const chfRefs = siblingQuoteRefs(list, 'amountChf');
-    const eurRefs = siblingQuoteRefs(list, 'amountEur');
-    const phpRefs = siblingQuoteRefs(list, 'amountPhp');
-    for (const row of list) {
-      const amountChf = filledStoredQuote(row.amountUsd, row.amountChf, chfRefs) ?? null;
-      const amountEur = filledStoredQuote(row.amountUsd, row.amountEur, eurRefs) ?? null;
-      const amountPhp = filledStoredQuote(row.amountUsd, row.amountPhp, phpRefs) ?? null;
-      if (
-        amountChf === (row.amountChf ?? null) &&
-        amountEur === (row.amountEur ?? null) &&
-        amountPhp === (row.amountPhp ?? null)
-      ) {
-        continue;
-      }
-      replaced.set(row, { ...row, amountChf, amountEur, amountPhp });
-    }
-  }
-  return rows.map((row) => replaced.get(row) ?? row);
 }
 
 /**
@@ -541,95 +435,64 @@ export function giftsForRecipient(rows: readonly GiftRow[], recipient: string): 
   return rows.filter((row) => row.recipientWosUser.toLowerCase() === target);
 }
 
-/**
- * Convert USD cents to one quote, or `null` when that day's cross is missing.
- *
- * @param usdCents - Historical USD cents for the gift.
- * @param rate - Quote-per-USD decimal string, or `undefined` when missing.
- * @returns Quote cents, or `null`.
- */
-function quoteCents(usdCents: number, rate: string | undefined): number | null {
-  if (rate === undefined) {
+/** Stored cents, or null when the column was not a string. */
+function crossCents(value: string | null | undefined): number | null {
+  if (typeof value !== 'string') {
     return null;
   }
-  return usdCentsToFiatCents(usdCents, rate);
+  return storedCents(value);
 }
 
 /**
- * Per-gift CHF/EUR/PHP cents from that UTC day's USD-cross book.
+ * Stored cents on one gift. Each currency is its own stored string.
  *
- * Missing keys are omitted on {@link FiatCross}; those quotes are `null`.
- * Does not throw.
+ * A missing USD does not discard a stored CHF, EUR, or PHP. A missing
+ * currency stays null. No daily rate is read. A missing string does not throw.
  *
- * @param usdCents - Historical USD cents for the gift.
- * @param day - Gift UTC day.
- * @param fiatRates - Optional day → cross map.
- * @returns Quote cents (`null` when that currency cannot be converted).
+ * @param row - One outbound gift.
+ * @returns USD cents and the three crosses, each null when that string is missing.
  */
-function giftFiatCents(
-  usdCents: number,
-  day: string,
-  fiatRates: ReadonlyMap<string, FiatCross>,
-): GiftFiatCents {
-  const cross = fiatRates.get(day);
+function giftAmounts(row: GiftRow): { usd: number | null; fiat: GiftFiatCents } {
   return {
-    chf: quoteCents(usdCents, cross?.CHF),
-    eur: quoteCents(usdCents, cross?.EUR),
-    php: quoteCents(usdCents, cross?.PHP),
+    usd: crossCents(row.amountUsd),
+    fiat: {
+      chf: crossCents(row.amountChf),
+      eur: crossCents(row.amountEur),
+      php: crossCents(row.amountPhp),
+    },
   };
 }
 
-/** Resolve stored payment-time amounts, falling back only for legacy rows. */
-function giftAmounts(
-  row: GiftRow,
-  day: string,
-  rates: ReadonlyMap<string, string>,
-  fiatRates: ReadonlyMap<string, FiatCross>,
-): { usd: number | null; fiat: GiftFiatCents } {
-  if (row.amountUsd !== undefined) {
-    return {
-      usd: storedCents(row.amountUsd),
-      fiat: {
-        chf: storedCents(row.amountChf ?? null),
-        eur: storedCents(row.amountEur ?? null),
-        php: storedCents(row.amountPhp ?? null),
-      },
-    };
-  }
-  const rate = rates.get(day);
-  if (rate === undefined) {
-    throw new Error('fx.rate.missing');
-  }
-  const usd = satsToUsdCents(row.amountSats, rate);
-  return { usd, fiat: giftFiatCents(usd, day, fiatRates) };
-}
-
 /**
- * Add quote cents. A missing addend makes the sum `null` (do not under-count).
+ * Add cents that are present. A null side is skipped. Both null stays null.
  *
- * @param acc - Running total.
- * @param next - Next gift's cents.
- * @returns Sum, or `null` if either side is missing.
+ * @param acc - Running total, or null when nothing stored has been seen.
+ * @param next - This figure's cents, or null when this row has none.
+ * @returns The sum of the figures that exist.
  */
-function addMaybe(acc: number | null, next: number | null): number | null {
-  if (acc === null || next === null) {
-    return null;
+function addPresent(acc: number | null, next: number | null): number | null {
+  if (acc === null) {
+    return next;
+  }
+  if (next === null) {
+    return acc;
   }
   return acc + next;
 }
 
 /**
- * Fold one gift into a day map. A missing day starts at 0. A stored `null`
- * stays `null` (`null ?? 0` would hide it and under-count the next gift).
+ * Fold one gift into a day map. The day starts null. A null gift is skipped.
  *
- * @param map - Day → cents, `null` once any gift that day lacked the currency.
+ * The day stays null only when every gift that day lacks that currency.
+ *
+ * @param map - Day → cents.
  * @param day - UTC day.
- * @param next - This gift's cents, or `null`.
+ * @param next - This gift's cents, or null.
  * @returns The new day total.
  */
 function foldDay(map: Map<string, number | null>, day: string, next: number | null): number | null {
-  const prev = map.has(day) ? (map.get(day) ?? null) : 0;
-  return addMaybe(prev, next);
+  const prev = map.has(day) ? (map.get(day) ?? null) : null;
+  return addPresent(prev, next);
 }
 
 /**
@@ -685,10 +548,17 @@ function quotesForGiftDays(
 /**
  * Empty fiat bucket used when first inserting a recipient or month.
  *
- * @returns Zeroed bucket with numeric (not null) quote cents.
+ * @returns A bucket whose fiat sums are null until a stored figure arrives.
  */
 function emptyFiatBucket(): FiatBucket {
-  return { giftCount: 0, sats: 0, usdCents: 0, chfCents: 0, eurCents: 0, phpCents: 0 };
+  return {
+    giftCount: 0,
+    sats: 0,
+    usdCents: null,
+    chfCents: null,
+    eurCents: null,
+    phpCents: null,
+  };
 }
 
 /**
@@ -707,16 +577,16 @@ function addToBucket(
 ): void {
   bucket.giftCount += 1;
   bucket.sats += amountSats;
-  bucket.usdCents = addMaybe(bucket.usdCents, usdCents);
-  bucket.chfCents = addMaybe(bucket.chfCents, fiat.chf);
-  bucket.eurCents = addMaybe(bucket.eurCents, fiat.eur);
-  bucket.phpCents = addMaybe(bucket.phpCents, fiat.php);
+  bucket.usdCents = addPresent(bucket.usdCents, usdCents);
+  bucket.chfCents = addPresent(bucket.chfCents, fiat.chf);
+  bucket.eurCents = addPresent(bucket.eurCents, fiat.eur);
+  bucket.phpCents = addPresent(bucket.phpCents, fiat.php);
 }
 
 /**
- * Day/month series value: days/months with **no gifts** are `"0.00"` without
- * a fiat rate; days/months that have gifts (including zero-sat gifts) use
- * the converted cents, or `null` when a gift lacked that cross.
+ * Day/month series value: days/months with **no gifts** are `"0.00"`.
+ * A day or month that has gifts sums the stored figures, or `null` when
+ * every gift lacks that currency.
  *
  * @param hasGifts - Whether any gift landed in this bucket.
  * @param cents - Quote cents when gifts exist.
@@ -726,14 +596,18 @@ function seriesFiat(hasGifts: boolean, cents: number | null | undefined): string
   if (!hasGifts) {
     return usdCentsToString(0);
   }
-  return formatMaybeCents(cents ?? null);
+  if (cents === undefined || cents === null) {
+    return null;
+  }
+  return formatMaybeCents(cents);
 }
 
 /**
- * Cumulative quote string. A null running total stays null; a zero-sats gap
- * keeps the previous running string when it is still a number.
+ * Cumulative quote string. A null running total stays null until a stored
+ * figure arrives. A gap day does not change it. One missing row does not
+ * clear a total that already has a figure.
  *
- * @param running - Running cents, or `null` once a gift lacked this quote.
+ * @param running - Running cents, or `null` when no stored figure has been seen.
  * @returns Display string or `null`.
  */
 function cumulativeFiat(running: number | null): string | null {
@@ -744,28 +618,24 @@ function cumulativeFiat(running: number | null): string | null {
  * Aggregate outbound gifts into the public stats payload.
  *
  * Empty input yields zeros (including `totalChf`/`totalEur`/`totalPhp`
- * `"0.00"`), null dates, empty series, and `fx` with USD-only `quotes` — no
- * rates required. Non-empty input looks up each gift's UTC-day BTC-USD rate;
- * a missing BTC-USD rate throws `Error('fx.rate.missing')`. A stored snapshot
- * whose CHF, EUR, or PHP is null takes that amount from the largest same-day
- * gift that has a positive USD amount and that cross. The stored USD is not
- * changed. A legacy row still uses that day's close. A missing cross with no
- * such gift stays `null` and does **not** throw. Gap days in `spendOverTime` and
- * gap months in `byMonth` use zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
- * without needing a rate. `spendOverTime[].officialCount` is the number of
- * distinct case-insensitive recipient handles that UTC day with kind `daily`
- * or `welcome` (gap days 0; moderator excluded). `giftCount` remains every
- * outbound row.
+ * `"0.00"`), null dates, empty series, and `fx` with USD-only `quotes`.
+ * Amounts are the stored figures only. Each currency is read from its own
+ * string. A missing USD does not discard a stored CHF, EUR, or PHP. One null
+ * does not null the currency, the other currencies, or a later cumulative. A
+ * currency every row lacks stays null. Gap days and gap months are `"0.00"` and do not change a running
+ * cumulative. `spendOverTime[].officialCount` is the number of distinct
+ * case-insensitive recipient handles that UTC day with kind `daily` or
+ * `welcome` (gap days 0; moderator excluded). `giftCount` remains every
+ * outbound row. `fiatRates` is quote metadata, not the amount.
  *
  * @param rows - Outbound gifts (order does not matter).
- * @param rates - UTC day → USD-per-BTC string for every gift day.
- * @param fiatRates - Optional UTC day → USD-cross map. Omitted/empty is allowed.
+ * @param _rates - Ignored. A daily close does not price a stored amount.
+ * @param fiatRates - Optional UTC day → USD-cross map for `fx.quotes` only.
  * @returns Aggregated {@link GiftStats}.
- * @throws `Error('fx.rate.missing')` when a gift day has no BTC-USD rate.
  */
 export function buildGiftStats(
   rows: readonly GiftRow[],
-  rates: ReadonlyMap<string, string>,
+  _rates: ReadonlyMap<string, string>,
   fiatRates?: ReadonlyMap<string, FiatCross>,
 ): GiftStats {
   const fiat = fiatRates ?? new Map<string, FiatCross>();
@@ -788,9 +658,7 @@ export function buildGiftStats(
     };
   }
 
-  const sorted = withSiblingCrosses(
-    [...rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime()),
-  );
+  const sorted = [...rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime());
   const first = sorted[0] as GiftRow;
   const last = sorted[sorted.length - 1] as GiftRow;
 
@@ -804,21 +672,21 @@ export function buildGiftStats(
   const byRecipient = new Map<string, FiatBucket>();
   const byMonth = new Map<string, FiatBucket>();
   let totalSats = 0;
-  let totalUsdCents: number | null = 0;
-  let totalChfCents: number | null = 0;
-  let totalEurCents: number | null = 0;
-  let totalPhpCents: number | null = 0;
+  let totalUsdCents: number | null = null;
+  let totalChfCents: number | null = null;
+  let totalEurCents: number | null = null;
+  let totalPhpCents: number | null = null;
 
   for (const row of sorted) {
     const day = utcDayString(row.paidAt);
-    const amounts = giftAmounts(row, day, rates, fiat);
+    const amounts = giftAmounts(row);
     const usdCents = amounts.usd;
     const converted = amounts.fiat;
     totalSats += row.amountSats;
-    totalUsdCents = addMaybe(totalUsdCents, usdCents);
-    totalChfCents = addMaybe(totalChfCents, converted.chf);
-    totalEurCents = addMaybe(totalEurCents, converted.eur);
-    totalPhpCents = addMaybe(totalPhpCents, converted.php);
+    totalUsdCents = addPresent(totalUsdCents, usdCents);
+    totalChfCents = addPresent(totalChfCents, converted.chf);
+    totalEurCents = addPresent(totalEurCents, converted.eur);
+    totalPhpCents = addPresent(totalPhpCents, converted.php);
     byDaySats.set(day, (byDaySats.get(day) ?? 0) + row.amountSats);
     byDayGiftCount.set(day, (byDayGiftCount.get(day) ?? 0) + 1);
     if (row.kind === 'daily' || row.kind === 'welcome') {
@@ -843,26 +711,22 @@ export function buildGiftStats(
 
   const spendOverTime: SpendDay[] = [];
   let cumulativeSats = 0;
-  let cumulativeUsdCents: number | null = 0;
-  let cumulativeChfCents: number | null = 0;
-  let cumulativeEurCents: number | null = 0;
-  let cumulativePhpCents: number | null = 0;
+  let cumulativeUsdCents: number | null = null;
+  let cumulativeChfCents: number | null = null;
+  let cumulativeEurCents: number | null = null;
+  let cumulativePhpCents: number | null = null;
   const startMs = utcDayMs(utcDayString(first.paidAt));
   const endMs = utcDayMs(utcDayString(last.paidAt));
   for (let ms = startMs; ms <= endMs; ms += MS_PER_DAY) {
     const day = new Date(ms).toISOString().slice(0, 10);
     const sats = byDaySats.get(day) ?? 0;
-    const usdCents = byDayUsdCents.has(day) ? (byDayUsdCents.get(day) ?? null) : 0;
     cumulativeSats += sats;
-    cumulativeUsdCents = addMaybe(cumulativeUsdCents, usdCents);
     const hasGifts = byDaySats.has(day);
     if (hasGifts) {
-      const dayChf = byDayChfCents.get(day) ?? null;
-      const dayEur = byDayEurCents.get(day) ?? null;
-      const dayPhp = byDayPhpCents.get(day) ?? null;
-      cumulativeChfCents = addMaybe(cumulativeChfCents, dayChf);
-      cumulativeEurCents = addMaybe(cumulativeEurCents, dayEur);
-      cumulativePhpCents = addMaybe(cumulativePhpCents, dayPhp);
+      cumulativeUsdCents = addPresent(cumulativeUsdCents, byDayUsdCents.get(day) ?? null);
+      cumulativeChfCents = addPresent(cumulativeChfCents, byDayChfCents.get(day) ?? null);
+      cumulativeEurCents = addPresent(cumulativeEurCents, byDayEurCents.get(day) ?? null);
+      cumulativePhpCents = addPresent(cumulativePhpCents, byDayPhpCents.get(day) ?? null);
     }
     spendOverTime.push({
       day,
@@ -872,7 +736,7 @@ export function buildGiftStats(
       cumulativeSats,
       btc: satsToBtcString(sats),
       cumulativeBtc: satsToBtcString(cumulativeSats),
-      usd: formatMaybeCents(usdCents),
+      usd: seriesFiat(hasGifts, byDayUsdCents.get(day)),
       cumulativeUsd: formatMaybeCents(cumulativeUsdCents),
       chf: seriesFiat(hasGifts, byDayChfCents.get(day)),
       cumulativeChf: cumulativeFiat(cumulativeChfCents),
@@ -942,36 +806,32 @@ export function buildGiftStats(
  * List outbound gifts that fall on one UTC calendar day.
  *
  * Empty (no rows that day) yields zeros (including `totalChf`/`totalEur`/
- * `totalPhp` `"0.00"`) and `gifts: []` with no rates required. Non-empty looks
- * up `day`'s BTC-USD rate; a missing BTC-USD rate throws
- * `Error('fx.rate.missing')`. A stored snapshot whose CHF, EUR, or PHP is null
- * takes that amount from the largest same-day gift that has it. The stored USD
- * is not changed. A missing cross with no such gift stays `null` and does
- * **not** throw.
+ * `totalPhp` `"0.00"`) and `gifts: []`. Amounts are the stored figures only.
+ * Each currency is read from its own string. A missing USD does not discard
+ * a stored CHF, EUR, or PHP. One null does not null the day's other figures.
+ * A currency every listed gift lacks stays null. The gift's own JSON stays null for a currency it lacks.
+ * `fiatRates` is quote metadata, not the amount.
  *
  * @param day - UTC `YYYY-MM-DD` (caller already validated).
  * @param rows - Outbound gifts (any days; other days are ignored).
- * @param rates - UTC day → USD-per-BTC string.
- * @param fiatRates - Optional UTC day → USD-cross map. Omitted/empty is allowed.
+ * @param _rates - Ignored. A daily close does not price a stored amount.
+ * @param fiatRates - Optional UTC day → USD-cross map for `fx.quotes` only.
  * @returns {@link GiftDay} for `day`.
- * @throws `Error('fx.rate.missing')` when a listed gift has no BTC-USD rate.
  */
 export function buildGiftDay(
   day: string,
   rows: readonly GiftRow[],
-  rates: ReadonlyMap<string, string>,
+  _rates: ReadonlyMap<string, string>,
   fiatRates?: ReadonlyMap<string, FiatCross>,
 ): GiftDay {
   const fiat = fiatRates ?? new Map<string, FiatCross>();
-  const matching = withSiblingCrosses(
-    rows
-      .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
-      .sort(
-        (a, b) =>
-          a.paidAt.getTime() - b.paidAt.getTime() ||
-          a.recipientWosUser.localeCompare(b.recipientWosUser),
-      ),
-  );
+  const matching = rows
+    .filter((row) => utcDayFromPaidAt(row.paidAt) === day)
+    .sort(
+      (a, b) =>
+        a.paidAt.getTime() - b.paidAt.getTime() ||
+        a.recipientWosUser.localeCompare(b.recipientWosUser),
+    );
   if (matching.length === 0) {
     return {
       day,
@@ -988,20 +848,20 @@ export function buildGiftDay(
   }
 
   let totalSats = 0;
-  let totalUsdCents: number | null = 0;
-  let totalChfCents: number | null = 0;
-  let totalEurCents: number | null = 0;
-  let totalPhpCents: number | null = 0;
+  let totalUsdCents: number | null = null;
+  let totalChfCents: number | null = null;
+  let totalEurCents: number | null = null;
+  let totalPhpCents: number | null = null;
   const gifts: GiftDayGift[] = [];
   for (const row of matching) {
-    const amounts = giftAmounts(row, day, rates, fiat);
+    const amounts = giftAmounts(row);
     const usdCents = amounts.usd;
     const converted = amounts.fiat;
     totalSats += row.amountSats;
-    totalUsdCents = addMaybe(totalUsdCents, usdCents);
-    totalChfCents = addMaybe(totalChfCents, converted.chf);
-    totalEurCents = addMaybe(totalEurCents, converted.eur);
-    totalPhpCents = addMaybe(totalPhpCents, converted.php);
+    totalUsdCents = addPresent(totalUsdCents, usdCents);
+    totalChfCents = addPresent(totalChfCents, converted.chf);
+    totalEurCents = addPresent(totalEurCents, converted.eur);
+    totalPhpCents = addPresent(totalPhpCents, converted.php);
     gifts.push({
       paidAt: row.paidAt.toISOString(),
       amountSats: row.amountSats,

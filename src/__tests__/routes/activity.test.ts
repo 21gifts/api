@@ -190,7 +190,7 @@ describe('account activity routes', () => {
     expect(await res.json()).toEqual(EMPTY);
   });
 
-  it('GET /members/:accountId/activity returns 503 when a remainder day has no FX rate', async () => {
+  it('GET /members/:accountId/activity returns 200 with null fiat when the gift stores none', async () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
@@ -205,14 +205,27 @@ describe('account activity routes', () => {
       `/members/${ACCOUNT_ID}/activity`,
       { headers: AUTH },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{
+        usd: string | null;
+        chf: string | null;
+        eur: string | null;
+        php: string | null;
+      }>;
+    };
+    expect(body.receivedSats).toBe(21);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
+    expect(body.receivedOverTime[0]?.chf).toBeNull();
+    expect(body.receivedOverTime[0]?.eur).toBeNull();
+    expect(body.receivedOverTime[0]?.php).toBeNull();
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
-      true,
+      false,
     );
   });
 
-  it('GET /view/:viewKey/activity returns 503 when a remainder day has no FX rate', async () => {
+  it('GET /view/:viewKey/activity returns 200 with null fiat when the gift stores none', async () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
@@ -226,8 +239,21 @@ describe('account activity routes', () => {
     const res = await createApp({ authStore, messageStore, giftStore, now }).request(
       `/view/${VIEW_KEY}/activity`,
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{
+        usd: string | null;
+        chf: string | null;
+        eur: string | null;
+        php: string | null;
+      }>;
+    };
+    expect(body.receivedSats).toBe(21);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
+    expect(body.receivedOverTime[0]?.chf).toBeNull();
+    expect(body.receivedOverTime[0]?.eur).toBeNull();
+    expect(body.receivedOverTime[0]?.php).toBeNull();
   });
 
   it('GET /members/:accountId/activity returns 503 when the gift store throws', async () => {
@@ -246,6 +272,25 @@ describe('account activity routes', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.failed')).toBe(true);
   });
 
+  it('GET /members/:accountId/activity returns 503 when the gift store throws fx.rate.missing', async () => {
+    const authStore = await seedSession();
+    await seedMember(authStore);
+    const giftStore = {
+      listOutbound: async () => {
+        throw new Error('fx.rate.missing');
+      },
+    };
+    const res = await createApp({ authStore, giftStore, now }).request(
+      `/members/${ACCOUNT_ID}/activity`,
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
+      true,
+    );
+  });
+
   it('GET /view/:viewKey/activity returns 503 when the gift store throws', async () => {
     const authStore = await seedSession();
     await seedMember(authStore);
@@ -259,6 +304,24 @@ describe('account activity routes', () => {
     );
     expect(res.status).toBe(503);
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.failed')).toBe(true);
+  });
+
+  it('GET /view/:viewKey/activity returns 503 when the gift store throws fx.rate.missing', async () => {
+    const authStore = await seedSession();
+    await seedMember(authStore);
+    const giftStore = {
+      listOutbound: async () => {
+        throw new Error('fx.rate.missing');
+      },
+    };
+    const res = await createApp({ authStore, giftStore, now }).request(
+      `/view/${VIEW_KEY}/activity`,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
+      true,
+    );
   });
 
   it('GET /me/activity returns 503 when the gift store throws', async () => {
@@ -275,7 +338,24 @@ describe('account activity routes', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.failed')).toBe(true);
   });
 
-  it('returns 503 when a remainder day has no FX rate', async () => {
+  it('GET /me/activity returns 503 when the gift store throws fx.rate.missing', async () => {
+    const authStore = await seedSession();
+    const giftStore = {
+      listOutbound: async () => {
+        throw new Error('fx.rate.missing');
+      },
+    };
+    const res = await createApp({ authStore, giftStore, now }).request('/me/activity', {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
+      true,
+    );
+  });
+
+  it('GET /me/activity returns 200 with null fiat when the note and gift store none', async () => {
     const authStore = await seedSession({ wallet: true });
     const messageStore = new InMemoryMessageStore([
       {
@@ -303,14 +383,27 @@ describe('account activity routes', () => {
         headers: AUTH,
       },
     );
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      receivedSats: number;
+      receivedOverTime: Array<{
+        usd: string | null;
+        chf: string | null;
+        eur: string | null;
+        php: string | null;
+      }>;
+    };
+    expect(body.receivedSats).toBe(42);
+    expect(body.receivedOverTime[0]?.usd).toBeNull();
+    expect(body.receivedOverTime[0]?.chf).toBeNull();
+    expect(body.receivedOverTime[0]?.eur).toBeNull();
+    expect(body.receivedOverTime[0]?.php).toBeNull();
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fx_incomplete')).toBe(
-      true,
+      false,
     );
   });
 
-  it('GET /me/activity converts CHF from a seeded fiat book', async () => {
+  it('GET /me/activity leaves CHF null when the gift stores none and a fiat book is seeded', async () => {
     const authStore = await seedSession({ wallet: true });
     const giftStore = new InMemoryGiftStore([
       {
@@ -334,19 +427,19 @@ describe('account activity routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       receivedOverTime: Array<{
-        cumulativeUsd: string;
+        cumulativeUsd: string | null;
         cumulativeChf: string | null;
         cumulativeEur: string | null;
         cumulativePhp: string | null;
       }>;
     };
-    expect(body.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
-    expect(body.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
-    expect(body.receivedOverTime[0]?.cumulativeEur).toBe('0.90');
-    expect(body.receivedOverTime[0]?.cumulativePhp).toBe('50.00');
+    expect(body.receivedOverTime[0]?.cumulativeUsd).toBeNull();
+    expect(body.receivedOverTime[0]?.cumulativeChf).toBeNull();
+    expect(body.receivedOverTime[0]?.cumulativeEur).toBeNull();
+    expect(body.receivedOverTime[0]?.cumulativePhp).toBeNull();
   });
 
-  it('GET /view/:viewKey/activity converts CHF from a seeded fiat book', async () => {
+  it('GET /view/:viewKey/activity leaves CHF null when the gift stores none and a fiat book is seeded', async () => {
     const authStore = await seedSession();
     const messageStore = await seedMember(authStore);
     const giftStore = new InMemoryGiftStore([
@@ -375,7 +468,7 @@ describe('account activity routes', () => {
         cumulativeChf: string | null;
       }>;
     };
-    expect(body.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
+    expect(body.receivedOverTime[0]?.cumulativeChf).toBeNull();
   });
 
   it('GET /me/activity counts house gifts to the username only once the wallet is verified', async () => {
@@ -428,14 +521,14 @@ describe('account activity routes', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       receivedOverTime: Array<{
-        cumulativeUsd: string;
+        cumulativeUsd: string | null;
         cumulativeChf: string | null;
       }>;
     };
-    expect(body.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+    expect(body.receivedOverTime[0]?.cumulativeUsd).toBeNull();
     expect(body.receivedOverTime[0]?.cumulativeChf).toBeNull();
     expect(parsedEvents(warn).some((e) => e['event'] === 'account.activity.fiat_failed')).toBe(
-      true,
+      false,
     );
   });
 });

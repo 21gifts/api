@@ -237,6 +237,12 @@ describe('GET /.well-known/lnurlp/:username', () => {
         expiresAt: new Date(NOW + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
       const fetchImpl: FetchFn = async () =>
         new Response(JSON.stringify(walletPayDoc()), { status: 200 });
@@ -578,6 +584,12 @@ describe('GET /.well-known/lnurlp/:username with shop payments', () => {
         expiresAt: new Date(NOW + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
       const app = await mountReal(posStore);
       const res = await app.request('/.well-known/lnurlp/ada');

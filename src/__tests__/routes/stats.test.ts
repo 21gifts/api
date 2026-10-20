@@ -66,7 +66,7 @@ describe('GET /gifts/stats', () => {
     expect(await res.json()).toEqual(EMPTY_STATS);
   });
 
-  it('aggregates gifts when rates cover every gift day', async () => {
+  it('aggregates sats and leaves fiat null when the gift stores none', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([GIFT]),
       btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
@@ -76,22 +76,39 @@ describe('GET /gifts/stats', () => {
       giftCount: number;
       totalSats: number;
       totalBtc: string;
-      totalUsd: string;
+      totalUsd: string | null;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
     };
     expect(body.giftCount).toBe(1);
     expect(body.totalSats).toBe(1000);
     expect(body.totalBtc).toBe('0.00001000');
-    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
   });
 
-  it('returns 503 when a gift day has no rate after ensureDays', async () => {
+  it('returns 200 with null fiat when the btc book is empty', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([GIFT]),
       btcUsdRates: new InMemoryBtcUsdStore(),
     }).request('/gifts/stats');
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Gift stats are unavailable' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.fx_incomplete')).toBe(true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totalSats: number;
+      totalUsd: string | null;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
+    };
+    expect(body.totalSats).toBe(1000);
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.fx_incomplete')).toBe(false);
   });
 
   it('returns 503 when the store throws', async () => {
@@ -106,7 +123,7 @@ describe('GET /gifts/stats', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.failed')).toBe(true);
   });
 
-  it('returns 503 when ensureDays throws', async () => {
+  it('returns 200 with null fiat when ensureDays throws', async () => {
     const rates = {
       ensureDays: async () => {
         throw new Error('upstream down');
@@ -116,8 +133,20 @@ describe('GET /gifts/stats', () => {
       giftStore: new InMemoryGiftStore([GIFT]),
       btcUsdRates: rates,
     }).request('/gifts/stats');
-    expect(res.status).toBe(503);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.failed')).toBe(true);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      totalSats: number;
+      totalUsd: string | null;
+      totalChf: string | null;
+      totalEur: string | null;
+      totalPhp: string | null;
+    };
+    expect(body.totalSats).toBe(1000);
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.failed')).toBe(false);
   });
 
   it('defaults rates and clock when the route factory omits them', async () => {
@@ -224,7 +253,7 @@ describe('GET /gifts/stats', () => {
     expect(body.totalSats).toBe(1000);
   });
 
-  it('converts CHF/EUR/PHP from a seeded fiat book', async () => {
+  it('leaves CHF/EUR/PHP null when the gift stores none and a fiat book is seeded', async () => {
     const res = await createApp({
       giftStore: new InMemoryGiftStore([GIFT]),
       btcUsdRates: new InMemoryBtcUsdStore({ '2026-06-01': '100000' }),
@@ -234,15 +263,15 @@ describe('GET /gifts/stats', () => {
     }).request('/gifts/stats');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      totalUsd: string;
+      totalUsd: string | null;
       totalChf: string | null;
       totalEur: string | null;
       totalPhp: string | null;
     };
-    expect(body.totalUsd).toBe('1.00');
-    expect(body.totalChf).toBe('0.80');
-    expect(body.totalEur).toBe('0.90');
-    expect(body.totalPhp).toBe('50.00');
+    expect(body.totalUsd).toBeNull();
+    expect(body.totalChf).toBeNull();
+    expect(body.totalEur).toBeNull();
+    expect(body.totalPhp).toBeNull();
   });
 
   it('returns 200 with null fiat totals when fiat ensureDays throws', async () => {
@@ -258,16 +287,16 @@ describe('GET /gifts/stats', () => {
     }).request('/gifts/stats');
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
-      totalUsd: string;
+      totalUsd: string | null;
       totalChf: string | null;
       totalEur: string | null;
       totalPhp: string | null;
     };
-    expect(body.totalUsd).toBe('1.00');
+    expect(body.totalUsd).toBeNull();
     expect(body.totalChf).toBeNull();
     expect(body.totalEur).toBeNull();
     expect(body.totalPhp).toBeNull();
-    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.fiat_failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'gifts.stats.fiat_failed')).toBe(false);
   });
 
   it('does not call fiat ensureDays when the selection is empty', async () => {
