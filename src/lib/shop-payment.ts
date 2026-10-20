@@ -1325,8 +1325,9 @@ export async function refuseProof(
  * @param foundAt - When the order was first found, for a proof that takes
  *   it from another row ({@link refuseProof}'s heir); `null` for now.
  * @returns The proof after evaluation, the proof unchanged when it already
- *   holds this order with a final status, or `'conflict'` when another row
- *   already holds that order id (nothing changed).
+ *   holds this order with a final status, `null` when the proof does not
+ *   exist, or `'conflict'` when another row already holds that order id
+ *   (nothing changed).
  */
 export async function recordProofOrder(
   tx: ShopTx,

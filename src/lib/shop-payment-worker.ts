@@ -840,8 +840,9 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
       return;
     }
     // The next read is scheduled only while `next_status_at` is still the
-    // one the selection read: a row another container stopped meanwhile
-    // (24 h or final status) stays stopped, its status is still applied.
+    // one the selection read: a row another container stopped meanwhile at
+    // 24 h stays stopped, its status is still applied (a final status
+    // returned above).
     const armed = sameInstant(current.nextStatusAt, proof.nextStatusAt);
     const order = read.ok ? read.order : null;
     if (order === null) {
