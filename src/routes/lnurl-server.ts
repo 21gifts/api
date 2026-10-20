@@ -507,7 +507,7 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         const overLimit = !proofLimiter.allow(clientIp, deps.now());
         const found = await shopAccount(deps, c.req.param('username'));
         if (found === null) {
-          return overLimit ? shopError(503, 'Too many requests') : shopError(404, 'Not found');
+          return overLimit ? shopError(503, 'Too many requests') : shopError(404, 'Quote expired');
         }
         return await handleShopProof(
           shop,

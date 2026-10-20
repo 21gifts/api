@@ -156,6 +156,40 @@ describe('duty 2: settlement', () => {
   });
 });
 
+describe('duty 2: a failing settlement read', () => {
+  it('waits for every read and its write before the tick rejects with the first failure', async () => {
+    const h = harness();
+    await seed(h, { nextSettleAt: new Date(T0) });
+    await h.store.transaction((tx) => tx.updatePayment(uid(2), {}, { nextSettleAt: new Date(T0) }));
+    const apply = h.shop.applySettlement.bind(h.shop);
+    const finished: string[] = [];
+    let release: () => void = () => undefined;
+    const slow = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    vi.spyOn(h.shop, 'applySettlement').mockImplementation(async (paymentId, settled, nowMs) => {
+      if (paymentId === PAYMENT_ID) {
+        throw new Error('first failed');
+      }
+      await slow;
+      await apply(paymentId, settled, nowMs);
+      finished.push(paymentId);
+    });
+    let settledTick = false;
+    const tick = runShopPaymentTick(h.shop, 2).finally(() => {
+      settledTick = true;
+    });
+    for (let i = 0; i < 10; i += 1) {
+      await Promise.resolve();
+    }
+    expect(settledTick).toBe(false);
+    release();
+    await expect(tick).rejects.toThrow('first failed');
+    expect(finished).toEqual([uid(2)]);
+    expect((await getPayment(h, uid(2)))?.nextSettleAt?.getTime()).toBe(T0 + 5_000);
+  });
+});
+
 describe('duty 2: settlement limit', () => {
   it('reads at most 8 payments per tick, all 8 in parallel, and leaves the rest for the next tick', async () => {
     const h = harness();
@@ -386,14 +420,15 @@ describe('duty 3: orders', () => {
     });
     const ended = T0 + 120_000 + 30 * 60_000;
     h.clock.now = ended;
-    // A failed read after the watch ended keeps the offset and reads again.
+    // The offers alone end the watch: a failed read after it keeps the
+    // offset and clears next_history_at when no successor wait keeps it.
     h.orchestra.history.mockResolvedValueOnce({ ok: false, reason: 'error' });
     await runShopPaymentTick(h.shop, 1);
-    expect(await getPayment(h)).toMatchObject({
-      historyOffset: 200,
-      nextHistoryAt: new Date(ended + 10_000),
-    });
-    // So does a full page; the first successful short page ends the watch.
+    expect(await getPayment(h)).toMatchObject({ historyOffset: 200, nextHistoryAt: null });
+    // A full page is still read on at 10 s; the next short page ends the reads.
+    await h.store.transaction((tx) =>
+      tx.updatePayment(PAYMENT_ID, {}, { nextHistoryAt: new Date(ended) }),
+    );
     h.clock.now = ended + 10_000;
     h.orchestra.history.mockResolvedValueOnce({ ok: true, orders: [], full: true });
     await runShopPaymentTick(h.shop, 1);
@@ -497,6 +532,32 @@ describe('duty 3: the successor wait', () => {
         successorOrderId: 'o-b',
       },
     ]);
+  });
+
+  it('reads again after 60 s when a read fails while only the successor wait keeps the payment', async () => {
+    const h = harness();
+    await waiting(h);
+    h.orchestra.history.mockResolvedValueOnce({ ok: false, reason: 'error' });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({
+      historyOffset: 0,
+      nextHistoryAt: new Date(watchEnded + SHOP_SUCCESSOR_HISTORY_INTERVAL_MS),
+      successorWaitUntil: new Date(watchEnded + 1),
+    });
+    expect(events()).not.toContain('shop.alert.successor_missing');
+  });
+
+  it('logs shop.alert.successor_missing when the wait has passed, also after a failed read', async () => {
+    const h = harness();
+    await waiting(h, { successorWaitUntil: new Date(watchEnded), historyOffset: 200 });
+    h.orchestra.history.mockResolvedValueOnce({ ok: false, reason: 'error' });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({
+      historyOffset: 200,
+      nextHistoryAt: null,
+      successorWaitUntil: null,
+    });
+    expect(events()).toContain('shop.alert.successor_missing');
   });
 
   it('clears next_history_at without an alert when no wait is set', async () => {
@@ -1043,9 +1104,14 @@ describe('duty 7: stuck proofs', () => {
           paymentId: PAYMENT_ID,
           proofId: uid(0x401),
           offerId: OFFER_USDT,
+          quoteId: QUOTE_ID,
+          providerRef: 'q-usdt-pol',
         }),
       ],
     );
+    expect(
+      loggedEvents(warn).find((line) => line['event'] === 'shop.alert.proof_stuck'),
+    ).not.toHaveProperty('orderId');
   });
 });
 
@@ -1143,7 +1209,11 @@ describe('duty 8: order status', () => {
     expect(loggedEvents(warn)).toContainEqual(
       expect.objectContaining({
         event: 'shop.alert.order_stuck',
+        paymentId: PAYMENT_ID,
         proofId: uid(0x402),
+        offerId: OFFER_USDT,
+        quoteId: QUOTE_ID,
+        providerRef: 'q-usdt-pol',
         orderId: 'o2',
       }),
     );

@@ -82,10 +82,18 @@ export interface OrchestraQuote {
   transaction: { chainId: number; to: string; data: string; value: string } | null;
 }
 
-/** Result of {@link OrchestraClient.quote}. */
+/**
+ * Result of {@link OrchestraClient.quote}. A failure names why (`refused`: a
+ * final answer other than HTTP 200; `body`: an HTTP 200 whose body does not
+ * parse; `unavailable`, `budget`, `paused`) and whether any attempt was sent.
+ */
 export type OrchestraQuoteResult =
   | { ok: true; quote: OrchestraQuote }
-  | { ok: false; reason: 'refused' | 'unavailable' | 'budget' | 'paused' };
+  | {
+      ok: false;
+      reason: 'refused' | 'body' | 'unavailable' | 'budget' | 'paused';
+      sent: boolean;
+    };
 
 /** Who asks for a submit; decides which part of the submit budget it may use. */
 export type OrchestraSubmitCaller = 'proof-first' | 'proof-repeat' | 'watcher';
@@ -431,9 +439,11 @@ export class OrchestraClient {
    * @param request - Pair, sat amount, BOLT11, tag, and refund address.
    * @param idempotencyKey - `X-Idempotency-Key`, kept for the retry.
    * @param deadlineMs - Absolute epoch ms after which no attempt starts.
-   * @returns The parsed quote; `refused` for an unparsable 200 or a final
-   *   answer; `unavailable` when the retryable attempts or the time ran out;
-   *   `budget` or `paused` when an attempt could not be sent.
+   * @returns The parsed quote of an HTTP 200; `body` for a 200 whose body
+   *   does not parse; `refused` for any other final answer (another 2xx
+   *   included); `unavailable` when the retryable attempts or the time ran
+   *   out; `budget` or `paused` when an attempt could not be sent. A failure
+   *   says whether any attempt was sent (`sent`).
    */
   async quote(
     request: OrchestraQuoteRequest,
@@ -453,11 +463,12 @@ export class OrchestraClient {
       includeCalldata: true,
     };
     const log: LogFields = { paymentId: request.tag };
+    let anySent = false;
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const resumeAtMs = this.pausedUntil.quote;
       if (attempt > 0 && resumeAtMs > this.deps.now()) {
         if (resumeAtMs >= deadlineMs) {
-          return { ok: false, reason: 'paused' };
+          return { ok: false, reason: 'paused', sent: anySent };
         }
         await this.sleep(resumeAtMs - this.deps.now());
       }
@@ -467,8 +478,9 @@ export class OrchestraClient {
       }
       const gate = this.gate('quote', null, log);
       if (gate !== 'ok') {
-        return { ok: false, reason: gate };
+        return { ok: false, reason: gate, sent: anySent };
       }
+      anySent = true;
       const sent = await this.send(
         'quote',
         'POST',
@@ -481,19 +493,19 @@ export class OrchestraClient {
       if (sent.kind === 'transport') {
         continue;
       }
-      if (sent.status >= 200 && sent.status <= 299) {
+      if (sent.status === 200) {
         const quote = parseQuote(sent.body);
-        return quote === null ? { ok: false, reason: 'refused' } : { ok: true, quote };
+        return quote === null ? { ok: false, reason: 'body', sent: true } : { ok: true, quote };
       }
       const retryable =
         sent.status === 429 ||
         sent.status >= 500 ||
         (sent.status === 409 && sent.code === 'idempotency_in_progress');
       if (!retryable) {
-        return { ok: false, reason: 'refused' };
+        return { ok: false, reason: 'refused', sent: true };
       }
     }
-    return { ok: false, reason: 'unavailable' };
+    return { ok: false, reason: 'unavailable', sent: anySent };
   }
 
   /**

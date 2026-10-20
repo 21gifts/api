@@ -8,7 +8,7 @@
  */
 
 import type { FetchFn } from '@/lib/lnurlp';
-import { errorLogFields, logEvent } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
 import {
   ORCHESTRA_FINAL_STATUSES,
   ORCHESTRA_HISTORY_PAGE_SIZE,
@@ -139,6 +139,27 @@ async function patchProof(
 }
 
 /**
+ * The ids of a proof alert (Logging): the payment, the proof, its offer, the
+ * offer's quote (`quoteId`) and Orchestra quote (`providerRef`), and the
+ * order (`orderId`) when the proof holds one.
+ *
+ * @param tx - Transaction.
+ * @param proof - The proof.
+ * @returns The log fields.
+ */
+async function proofAlertFields(tx: ShopTx, proof: ShopProof): Promise<LogFields> {
+  const offer = await tx.getOffer(proof.offerId);
+  return {
+    paymentId: proof.paymentId,
+    proofId: proof.id,
+    offerId: proof.offerId,
+    /* v8 ignore next -- a proof's offer is a foreign key */
+    ...(offer === null ? {} : { quoteId: offer.quoteId, providerRef: offer.providerRef }),
+    ...(proof.providerOrder === null ? {} : { orderId: proof.providerOrder }),
+  };
+}
+
+/**
  * Duty 1: end every `open` payment whose window has passed.
  *
  * @param shop - Service.
@@ -183,7 +204,9 @@ function alertAcceptedLong(
 
 /**
  * Duty 2: settlement reads, up to 8 in parallel, `accepted` and
- * charge-backed payments first (the store's order).
+ * charge-backed payments first (the store's order). The duty waits for every
+ * read and its write to end, then rethrows the first failure, so the tick
+ * stops only after all of them.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
@@ -194,7 +217,9 @@ async function settle(shop: ShopPayments, nowMs: number): Promise<void> {
   );
   alertAcceptedLong(shop, due, nowMs);
   const { lnurlServer, fetchImpl } = shop.deps;
-  await Promise.all(
+  // Every read ends before the tick goes on (and before a failing tick lets
+  // the next one start); the first failure is rethrown after all of them.
+  const outcomes = await Promise.allSettled(
     due.map(async (payment) => {
       const outcome = await verifyLightningPayment(
         lnurlServer,
@@ -206,6 +231,13 @@ async function settle(shop: ShopPayments, nowMs: number): Promise<void> {
       await shop.applySettlement(payment.id, settled, shop.deps.now());
     }),
   );
+  const failed = outcomes.find(
+    (outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected',
+  );
+  if (failed !== undefined) {
+    const reason: unknown = failed.reason;
+    throw reason;
+  }
 }
 
 /**
@@ -293,12 +325,14 @@ function waitingForSuccessor(proofs: readonly ShopProof[]): SuccessorWait | null
 
 /**
  * Duty 3 (odd ticks): one history page of the payment whose
- * `next_history_at` is due. A failed read is retried at the cadence and
- * keeps the offset, also after the order watch ended; a budget refusal waits
- * for the next odd tick. Once the order watch of the payment's last offer
- * with an issued detail has ended, the first successful short page decides
- * `next_history_at` under the payment row and its proof rows
- * (`lockPaymentForProofs`): while some proof waits for a successor (its
+ * `next_history_at` is due. A failed read keeps the offset; a budget refusal
+ * waits for the next odd tick. Whether the order watch of the payment's last
+ * offer with an issued detail has ended is decided from the offers alone;
+ * while it runs, or while a full page is read on, the next read is
+ * {@link SHOP_HISTORY_INTERVAL_MS} later. Once it has ended, every read, a
+ * failed one included, decides `next_history_at` under the payment row and
+ * its proof rows (`lockPaymentForProofs`): while some proof waits for a
+ * successor (its
  * `superseded_by_order` is held by no proof) and `successor_wait_until` has
  * not passed, the payment is read again after
  * {@link SHOP_SUCCESSOR_HISTORY_INTERVAL_MS}; when that wait has passed, the
@@ -356,8 +390,9 @@ async function readOrders(shop: ShopPayments, nowMs: number): Promise<void> {
     : page.ok
       ? 0
       : payment.historyOffset;
-  // Only a successful short page ends the watch: a failed read changes nothing.
-  const watchEnded = page.ok && !full && watchEndMs <= afterMs;
+  // The offers alone decide whether the order watch ended; a full page is
+  // still read on at the cadence first.
+  const watchEnded = !full && watchEndMs <= afterMs;
   await shop.store.transaction(async (tx) => {
     const locked = await lockPaymentForProofs(tx, payment.id);
     /* v8 ignore next 3 -- no path deletes a payment */
@@ -655,14 +690,10 @@ async function markStuck(shop: ShopPayments, nowMs: number): Promise<void> {
         { result: 'stuck', resolvedAt: new Date(nowMs), nextSubmitAt: null },
       );
       /* v8 ignore next -- a result change clashes with no unique index except accepted */
-      return updated === 'conflict' ? null : updated;
+      return updated === 'conflict' || updated === null ? null : proofAlertFields(tx, updated);
     });
     if (stuck !== null) {
-      logEvent('shop.alert.proof_stuck', {
-        paymentId: stuck.paymentId,
-        proofId: stuck.id,
-        offerId: stuck.offerId,
-      });
+      logEvent('shop.alert.proof_stuck', stuck);
     }
   }
 }
@@ -708,7 +739,13 @@ async function stopReplacedOrder(
   successorId: string,
   nowMs: number,
 ): Promise<void> {
-  const after = await applyProofOrder(tx, proof, { orderId, status: 'unfulfilled' }, nowMs);
+  const after = await applyProofOrder(
+    tx,
+    proof,
+    { orderId, status: 'unfulfilled' },
+    nowMs,
+    'newer',
+  );
   await tx.updateProof(after.id, {}, { nextStatusAt: null, supersededByOrder: successorId });
   const waitUntilMs = nowMs + SHOP_SUCCESSOR_WAIT_MS;
   const current = payment.successorWaitUntil;
@@ -766,7 +803,13 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
       await stopReplacedOrder(tx, locked.payment, current, orderId, successor, nowMs);
       return;
     }
-    const after = await applyProofOrder(tx, current, { orderId, status: order.status }, nowMs);
+    const after = await applyProofOrder(
+      tx,
+      current,
+      { orderId, status: order.status },
+      nowMs,
+      'newer',
+    );
     if (!ORCHESTRA_FINAL_STATUSES.has(order.status)) {
       await tx.updateProof(after.id, {}, { nextStatusAt: nextStatusAt(after, nowMs) });
     }
@@ -800,13 +843,12 @@ async function readStatuses(shop: ShopPayments, nowMs: number): Promise<void> {
       continue;
     }
     if (nowMs - (row.orderFoundAt ?? row.createdAt).getTime() >= SHOP_UNRESOLVED_LIMIT_MS) {
-      await patchProof(shop, row, { nextStatusAt: null });
-      logEvent('shop.alert.order_stuck', {
-        paymentId: row.paymentId,
-        proofId: row.id,
-        offerId: row.offerId,
-        orderId,
+      const fields = await shop.store.transaction(async (tx) => {
+        await tx.lockPayment(row.paymentId);
+        await tx.updateProof(row.id, {}, { nextStatusAt: null });
+        return proofAlertFields(tx, row);
       });
+      logEvent('shop.alert.order_stuck', fields);
       continue;
     }
     await readStatus(shop, row, orderId);

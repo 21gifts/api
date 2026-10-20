@@ -1403,16 +1403,21 @@ function withoutOpenAmount(
   return { kind: 'today', pinSats: null };
 }
 
-/** Thrown out of the step-8 transaction when another payment holds the BOLT11's hash. */
+/**
+ * Thrown out of the step-8 transaction when another payment, or another
+ * charge's invoice row, holds the BOLT11's hash.
+ */
 class HashHeldError extends Error {
   /**
-   * Name the payment that holds the hash.
+   * Name the payment or charge that holds the hash.
    *
-   * @param holderId - Id of the payment that holds the hash.
-   * @param holderChargeId - That payment's charge, or `null` for a payer's.
+   * @param holderId - Id of the payment that holds the hash, or `null` when
+   *   a charge's invoice row holds it.
+   * @param holderChargeId - That payment's charge (`null` for a payer's), or
+   *   the charge whose invoice row holds the hash.
    */
   constructor(
-    readonly holderId: string,
+    readonly holderId: string | null,
     readonly holderChargeId: string | null,
   ) {
     super('payment hash held');
@@ -1626,26 +1631,30 @@ export class ShopPayments {
    * offer checks. Pairs beyond the quote budget are skipped in request order.
    * Without a stored USD spot younger than ten minutes it sends no call and
    * logs `shop.offer.rejected` with `check` `price` per pair, because no
-   * pair could pass the price check.
+   * pair could pass the price check. A failed quote logs
+   * `shop.offer.rejected` too: `check` `body` for an HTTP 200 whose body does
+   * not parse, `http` for a request sent without an HTTP 200 answer, and
+   * `budget` when no request could be sent (budget, pause, or deadline).
    *
    * @param pairs - Candidate pairs in request order.
    * @param target - Payment id, sats, BOLT11, and its expiry.
    * @param deadlineMs - Absolute deadline.
-   * @returns Offers not yet tied to a quote row (`quoteId` is `''`).
+   * @returns Offers not yet tied to a quote row (`quoteId` is `''`), and
+   *   whether any quote request was sent to Orchestra.
    */
   async #requestOffers(
     pairs: readonly ShopPair[],
     target: { paymentId: string; amountSats: number; bolt11: string; bolt11ExpiresAtMs: number },
     deadlineMs: number,
-  ): Promise<ShopOffer[]> {
+  ): Promise<{ offers: ShopOffer[]; sent: boolean }> {
     const { orchestra, config } = this.#deps;
     /* v8 ignore next 3 -- callers check offersStablecoins first */
     if (orchestra === null || config === null) {
-      return [];
+      return { offers: [], sent: false };
     }
     const allowed = pairs.slice(0, Math.max(0, orchestra.quoteBudgetLeft()));
     if (allowed.length === 0) {
-      return [];
+      return { offers: [], sent: false };
     }
     const spot = await this.#spot();
     if (spot === null) {
@@ -1657,7 +1666,7 @@ export class ShopPayments {
           check: 'price',
         });
       }
-      return [];
+      return { offers: [], sent: false };
     }
     const chainIds = [...new Set(allowed.map((pair) => pair.method.chainId))];
     const gasByChain = new Map<number, Promise<bigint | null>>();
@@ -1695,10 +1704,19 @@ export class ShopPayments {
     );
     const offers: ShopOffer[] = [];
     const batchDeposits = new Set<string>();
+    let sent = false;
     for (const { pair, result, idempotencyKey } of quotes) {
       if (!result.ok) {
+        sent ||= result.sent;
+        logEvent('shop.offer.rejected', {
+          paymentId: target.paymentId,
+          method: pair.method.method,
+          asset: pair.asset,
+          check: result.reason === 'body' ? 'body' : result.sent ? 'http' : 'budget',
+        });
         continue;
       }
+      sent = true;
       const nowMs = this.#deps.now();
       const check = checkOffer({
         pair,
@@ -1749,7 +1767,7 @@ export class ShopPayments {
         createdAt: new Date(nowMs),
       });
     }
-    return offers;
+    return { offers, sent };
   }
 
   /**
@@ -1842,15 +1860,8 @@ export class ShopPayments {
     if (!this.offersStablecoins(username)) {
       return;
     }
-    void this.createForCharge(account, username, charge, requestArrivedMs).catch(
-      (error: unknown) => {
-        logEvent('shop.creation.failed', {
-          accountId: account.id,
-          chargeId: charge.id,
-          ...errorLogFields(error),
-        });
-      },
-    );
+    // The in-flight creation logs its own failure (`shop.creation.failed`).
+    void this.createForCharge(account, username, charge, requestArrivedMs).catch(() => undefined);
   }
 
   /**
@@ -1876,7 +1887,10 @@ export class ShopPayments {
 
   /**
    * The charge's in-flight creation: the one already queued or running, or
-   * a new run queued now and registered until it ends (also on a throw).
+   * a new run queued now and registered until it ends (also on a throw). A
+   * run that throws logs `shop.creation.failed` once (`accountId`,
+   * `chargeId`, and the error), whichever request started or joined it, and
+   * rejects every caller.
    *
    * @param account - Shop account.
    * @param username - Its username.
@@ -1902,9 +1916,18 @@ export class ShopPayments {
       charge,
       amountSats: charge.amountSats,
       requestArrivedMs,
-    }).finally(() => {
-      this.#chargeCreations.delete(charge.id);
-    });
+    })
+      .catch((error: unknown) => {
+        logEvent('shop.creation.failed', {
+          accountId: account.id,
+          chargeId: charge.id,
+          ...errorLogFields(error),
+        });
+        throw error;
+      })
+      .finally(() => {
+        this.#chargeCreations.delete(charge.id);
+      });
     this.#chargeCreations.set(charge.id, promise);
     return promise;
   }
@@ -2083,7 +2106,7 @@ export class ShopPayments {
       }
     }
     // Steps 5 and 6: quotes and offer checks.
-    const offers = await this.#requestOffers(
+    const { offers } = await this.#requestOffers(
       pairs,
       {
         paymentId,
@@ -2211,7 +2234,8 @@ export class ShopPayments {
    * @param minted - The BOLT11.
    * @param offers - Offers that passed the checks.
    * @returns The outcome.
-   * @throws {@link HashHeldError} when another payment holds the hash, so the
+   * @throws {@link HashHeldError} when another payment holds the hash, or
+   *   another charge's invoice row claimed it after the check, so the
    *   transaction rolls back every write it made.
    */
   async #insertPaymentTx(
@@ -2316,6 +2340,16 @@ export class ShopPayments {
         const holder = await hashHolder();
         if (holder !== null) {
           return { kind: 'payment', payment: holder };
+        }
+        // So does another charge's invoice row that claimed the hash after the
+        // check (on a memory boot `InMemoryPosStore.recordInvoice` does not
+        // wait for this transaction): nothing stays ended or inserted.
+        const invoiceHolder = await tx.chargeIdForInvoice(minted.paymentHash);
+        if (
+          invoiceHolder !== null &&
+          (input.kind === 'payer' || invoiceHolder !== input.charge.id)
+        ) {
+          throw new HashHeldError(null, invoiceHolder);
         }
         if (input.kind === 'charge') {
           const own = await tx.paymentForCharge(input.charge.id);
@@ -2531,8 +2565,8 @@ export class ShopPayments {
       return read;
     }
     return this.#deps.store.transaction(async (tx) => {
-      const nowMs = this.#deps.now();
       await tx.lockAccount(account.id);
+      const nowMs = this.#deps.now();
       const locked = await tx.lockPayment(payment.id);
       if (locked === null || locked.status !== 'open' || nowMs >= locked.windowEndsAt.getTime()) {
         return null;
@@ -2596,6 +2630,8 @@ export class ShopPayments {
   /**
    * The payment's in-flight replacement: the one already queued or running,
    * or a new run queued now and registered until it ends (also on a throw).
+   * A run that throws logs `shop.creation.failed` once (`accountId`,
+   * `paymentId`, and the error) and rejects every caller.
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
@@ -2610,9 +2646,18 @@ export class ShopPayments {
       startMs: null,
       promise: this.#replace(account, paymentId, (startMs) => {
         entry.startMs = startMs;
-      }).finally(() => {
-        this.#replacements.delete(paymentId);
-      }),
+      })
+        .catch((error: unknown) => {
+          logEvent('shop.creation.failed', {
+            accountId: account.id,
+            paymentId,
+            ...errorLogFields(error),
+          });
+          throw error;
+        })
+        .finally(() => {
+          this.#replacements.delete(paymentId);
+        }),
     };
     this.#replacements.set(paymentId, entry);
     return entry;
@@ -2626,6 +2671,11 @@ export class ShopPayments {
    * at the start is still the payment's newest, increments `replacements`
    * conditionally and inserts the quote (Lightning-only when no offer
    * passes); otherwise it inserts nothing and answers the current quote.
+   * When no quote request was sent (no route list, no candidate pair, no
+   * fresh spot, or no budget), the same conditional update leaves
+   * `replacements` as it is, because a Lightning-only row made without an
+   * Orchestra call is not a replacement. The clock is read after the account
+   * lock is taken.
    *
    * @param account - Shop account.
    * @param paymentId - Payment id.
@@ -2657,9 +2707,9 @@ export class ShopPayments {
         paymentId,
       );
       const pairs = routes === null ? [] : candidatePairs(routes, config.evmRpc, paymentId);
-      const offers =
+      const { offers, sent } =
         pairs.length === 0
-          ? []
+          ? { offers: [], sent: false }
           : await this.#requestOffers(
               pairs,
               {
@@ -2671,23 +2721,26 @@ export class ShopPayments {
               deadlineMs,
             );
       return this.#deps.store.transaction(async (tx) => {
-        const nowMs = this.#deps.now();
         await tx.lockAccount(account.id);
+        const nowMs = this.#deps.now();
         // A quote inserted since the read (a fetch's Lightning-only fallback,
         // or another container's replacement) is the current one: it is
         // answered as it stands and never replaced here.
         const quotes = await tx.quotesOf(paymentId);
         const newest = quotes[quotes.length - 1];
+        const where = {
+          statuses: ['open' as const],
+          replacements: read.payment.replacements,
+          windowEndsAfter: new Date(nowMs + SHOP_REPLACE_BEFORE_MS - 1),
+        };
+        // Only a replacement that sent a quote request counts; a
+        // Lightning-only row made without one is not a replacement.
         const counted =
           newest !== undefined && newest.id === read.quote.id
             ? await tx.updatePayment(
                 paymentId,
-                {
-                  statuses: ['open'],
-                  replacements: read.payment.replacements,
-                  windowEndsAfter: new Date(nowMs + SHOP_REPLACE_BEFORE_MS - 1),
-                },
-                { replacements: read.payment.replacements + 1 },
+                where,
+                sent ? { replacements: read.payment.replacements + 1 } : {},
               )
             : null;
         if (counted === null) {
@@ -2897,7 +2950,11 @@ export class ShopPayments {
    * before, that logs `shop.alert.double_settled` or
    * `shop.alert.cancelled_settled` ({@link markPaymentPaid}), and a cancelled
    * charge stays cancelled. The Spark invoice or another BOLT11 ends an
-   * `open` payment with `charge_paid`.
+   * `open` payment with `charge_paid`. The account to lock is the charge's
+   * current one: an account merge can move the charge after the watch read
+   * it, so the charge is read again under the account lock and, when it
+   * moved, the new account is locked, at most twice; a charge that is gone
+   * or keeps moving changes nothing and is read again on the next tick.
    *
    * @param charge - The watched charge.
    * @param settled - The settled payment hash, or `null` for the Spark invoice.
@@ -2906,7 +2963,9 @@ export class ShopPayments {
    */
   chargePaid(charge: PosCharge, settled: string | null, nowMs: number): Promise<PosCharge | null> {
     return this.#deps.store.transaction(async (tx) => {
-      await tx.lockAccount(charge.accountId);
+      if (!(await lockAccountOfCharge(tx, charge.id, charge.accountId))) {
+        return null;
+      }
       // The charge as it was before this call: markChargePaid leaves a paid
       // or cancelled charge unchanged and returns null for it.
       const before = await tx.lockCharge(charge.id);
@@ -3040,6 +3099,38 @@ export async function lockAccountOf(
 }
 
 /**
+ * Lock the account a charge belongs to, as {@link lockAccountOf} does for a
+ * payment: after each account lock the charge is read again; when an account
+ * merge moved it meanwhile, the account it moved to is locked, at most twice
+ * in all.
+ *
+ * @param tx - Transaction.
+ * @param chargeId - Charge id.
+ * @param peekedAccountId - The charge's account as the caller read it.
+ * @returns `true` when the charge's current account is locked; `false` when
+ *   the charge is gone or still moved after the second lock.
+ */
+async function lockAccountOfCharge(
+  tx: ShopTx,
+  chargeId: string,
+  peekedAccountId: string,
+): Promise<boolean> {
+  let accountId = peekedAccountId;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    await tx.lockAccount(accountId);
+    const current = await tx.getCharge(chargeId);
+    if (current === null) {
+      return false;
+    }
+    if (current.accountId === accountId) {
+      return true;
+    }
+    accountId = current.accountId;
+  }
+  return false;
+}
+
+/**
  * End an `open` payment with a reason.
  *
  * @param tx - Transaction.
@@ -3116,7 +3207,9 @@ export async function markPaymentPaid(
 }
 
 /**
- * The final settlement read found the BOLT11 unpaid: close the payment.
+ * The final settlement read found the BOLT11 unpaid: close the payment. An
+ * `open` or `accepted` payment ends here too (`window` or `expired_unpaid`)
+ * and logs `shop.payment.ended` with its reason.
  *
  * @param tx - Transaction (account locked).
  * @param payment - The payment (not paid, not closed).
@@ -3133,6 +3226,8 @@ async function closePayment(tx: ShopTx, payment: ShopPayment, nowMs: number): Pr
       { statuses: [payment.status], notClosed: true },
       { ...patch, status: 'ended', endReason: reason, endedAt: new Date(nowMs) },
     );
+    // The caller holds the payment row and read its status, so the update applies.
+    logEvent('shop.payment.ended', { paymentId: payment.id, reason });
     if (payment.status === 'accepted') {
       logEvent('shop.alert.accepted_unpaid', { paymentId: payment.id });
     }

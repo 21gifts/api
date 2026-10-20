@@ -1387,6 +1387,7 @@ describe('merging two rows of one deposit', () => {
         txHash: H2,
         providerOrder: 'o1',
         orderStatus: 'processing',
+        createdAt: new Date(T0 - 1_000),
       }),
     );
     h.orchestra.submit.mockResolvedValueOnce({
@@ -1399,6 +1400,96 @@ describe('merging two rows of one deposit', () => {
       result: 'refused',
       refusal: 'tx_used',
     });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({ result: null, providerOrder: 'o1' });
+  });
+
+  it('refuses the submitted row when both rows were created at the same time and it has the greater id', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e3), txHash: H1 }),
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    expect(await submitProof(h.shop, uid(0x4e3), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e3),
+      result: 'refused',
+      refusal: 'tx_used',
+    });
+    expect((await getProof(h, uid(0x4e2)))?.result).toBeNull();
+  });
+
+  it.each([
+    ['a later created_at', T0 + 1_000, uid(0x4e2)],
+    ['the same created_at and the greater id', T0, uid(0x4e2)],
+  ])(
+    'refuses the holder of another offer on a submit when it is newer (%s), and answers the submitted proof as it stands',
+    async (_name, createdAt, holderId) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1 }),
+        proofRow({
+          id: holderId,
+          offerId: OFFER_USDC,
+          txHash: H2,
+          providerOrder: 'o1',
+          orderStatus: 'processing',
+          createdAt: new Date(createdAt),
+        }),
+      );
+      h.orchestra.submit.mockResolvedValueOnce({
+        kind: 'order',
+        orderId: 'o1',
+        status: 'processing',
+      });
+      expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+        id: uid(0x4e1),
+        result: null,
+        providerOrder: null,
+      });
+      expect(await getProof(h, holderId)).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: 'o1',
+      });
+    },
+  );
+
+  it('refuses the filled row on the storing path even when the holder of another offer is newer', async () => {
+    const h = harness();
+    await seed(h);
+    const proof = proofRow({ id: uid(0x4e1), txHash: H1 });
+    await insertProofs(
+      h,
+      proof,
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    const after = await h.store.transaction(async (tx) => {
+      await lockPaymentForProofs(tx, PAYMENT_ID);
+      return applyProofOrder(tx, proof, { orderId: 'o1', status: 'processing' }, T0, 'filling');
+    });
+    expect(after).toMatchObject({ id: uid(0x4e1), result: 'refused', refusal: 'tx_used' });
+    expect((await getProof(h, uid(0x4e2)))?.result).toBeNull();
   });
 
   it('refuses an accepted row with tx_used when the order it takes belongs to another offer, and ends its payment', async () => {
@@ -1434,7 +1525,7 @@ describe('merging two rows of one deposit', () => {
     );
     const after = await h.store.transaction(async (tx) => {
       await lockPaymentForProofs(tx, PAYMENT_ID);
-      return applyProofOrder(tx, accepted, { orderId: 'o2', status: 'refunding' }, T0);
+      return applyProofOrder(tx, accepted, { orderId: 'o2', status: 'refunding' }, T0, 'filling');
     });
     expect(after).toMatchObject({
       id: uid(0x4e1),
@@ -1447,9 +1538,98 @@ describe('merging two rows of one deposit', () => {
     expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
     expect((await getProof(h, uid(0x4e2)))?.providerOrder).toBe('o2');
     const kept = await h.store.transaction((tx) =>
-      applyProofOrder(tx, failed, { orderId: 'o2', status: 'refunding' }, T0),
+      applyProofOrder(tx, failed, { orderId: 'o2', status: 'refunding' }, T0, 'filling'),
     );
     expect(kept).toMatchObject({ id: uid(0x4e3), providerOrder: 'o3', result: 'failed' });
+  });
+
+  it("keeps a successor order that carries the replaced proof's transaction as its own unlogged proof", async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({
+        id: uid(0x4f1),
+        txHash: H1,
+        logIndex: 3,
+        providerOrder: 'o1',
+        orderStatus: 'unfulfilled',
+        orderFoundAt: new Date(T0 - 1_000),
+        supersededByOrder: 'o2',
+        createdAt: new Date(T0 - 1_000),
+      }),
+    );
+    const { proof, created } = await storeProof(h.shop, {
+      offer: offerRow(),
+      paymentId: PAYMENT_ID,
+      source: 'detected',
+      txHash: H1,
+      logIndex: null,
+      userOpHash: null,
+      rawHex: null,
+      transferAmount: null,
+      order: { orderId: 'o2', status: 'processing' },
+    });
+    expect(created).toBe(true);
+    expect(proof).toMatchObject({ logIndex: null, providerOrder: 'o2' });
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+    expect(await readProofReceipt(h.shop, proof, POLYGON_RPC, 1_000)).toBe('held');
+    const rows = await proofsOf(h);
+    expect(rows.map((row) => [row.id, row.logIndex, row.providerOrder])).toEqual(
+      expect.arrayContaining([
+        [uid(0x4f1), 3, 'o1'],
+        [proof.id, null, 'o2'],
+      ]),
+    );
+    expect(rows).toHaveLength(2);
+    expect(await getProof(h, proof.id)).toMatchObject({ nextReceiptAt: null, result: null });
+    expect(events()).not.toContain('shop.alert.detected_mismatch');
+  });
+
+  it('fills a free log of the same transaction while another order holds the other one', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4f1), txHash: H1, logIndex: 3, providerOrder: 'o1' }),
+      proofRow({
+        id: uid(0x4f2),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        providerOrder: 'o2',
+        nextReceiptAt: new Date(T0),
+      }),
+    );
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog(), usdtLog(BigInt(AMOUNT_IN), 5)]);
+    const detected = (await getProof(h, uid(0x4f2)))!;
+    expect(await readProofReceipt(h.shop, detected, POLYGON_RPC, 1_000)).toBe('filled');
+    expect(await getProof(h, uid(0x4f2))).toMatchObject({ logIndex: 5, providerOrder: 'o2' });
+    expect(await getProof(h, uid(0x4f1))).toMatchObject({ logIndex: 3, providerOrder: 'o1' });
+  });
+
+  it('merges a row with an order into the holder of its only log when the holder has the same order or none', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4f1), txHash: H1, logIndex: 3, providerOrder: 'o1' }),
+      proofRow({
+        id: uid(0x4f2),
+        source: 'detected',
+        txHash: H1,
+        logIndex: null,
+        transferAmount: null,
+        createdAt: new Date(T0 + 5),
+      }),
+    );
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+    const detected = (await getProof(h, uid(0x4f2)))!;
+    expect(await readProofReceipt(h.shop, detected, POLYGON_RPC, 1_000)).toBe('filled');
+    expect((await proofsOf(h)).map((row) => [row.id, row.providerOrder])).toEqual([
+      [uid(0x4f1), 'o1'],
+    ]);
   });
 
   it('applyProofOrder merges with a holder that has no order found time', async () => {
@@ -1474,7 +1654,7 @@ describe('merging two rows of one deposit', () => {
       }),
     );
     const merged = await h.store.transaction((tx) =>
-      applyProofOrder(tx, proof, { orderId: 'o1', status: 'swapping' }, T0),
+      applyProofOrder(tx, proof, { orderId: 'o1', status: 'swapping' }, T0, 'filling'),
     );
     expect(merged).toMatchObject({ id: uid(0x4e2), orderStatus: 'processing', logIndex: 3 });
   });
@@ -2054,7 +2234,13 @@ describe('retryStuckProof', () => {
       nextReceiptAt: null,
     });
     expect(loggedEvents(warn).filter((line) => line['event'] === 'shop.proof.retried')).toEqual([
-      expect.objectContaining({ paymentId: PAYMENT_ID, proofId: uid(0x401), offerId: OFFER_USDT }),
+      expect.objectContaining({
+        paymentId: PAYMENT_ID,
+        proofId: uid(0x401),
+        offerId: OFFER_USDT,
+        quoteId: QUOTE_ID,
+        providerRef: 'q-usdt-pol',
+      }),
       expect.objectContaining({ proofId: uid(0x403) }),
       expect.objectContaining({ proofId: uid(0x404) }),
       expect.objectContaining({ proofId: uid(0x405) }),

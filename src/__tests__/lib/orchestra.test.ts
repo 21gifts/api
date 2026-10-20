@@ -402,14 +402,32 @@ describe('OrchestraClient.quote', () => {
     ['a missing to', { ...QUOTE_BODY, transaction: { ...tx, to: undefined } }],
     ['a numeric data', { ...QUOTE_BODY, transaction: { ...tx, data: 1 } }],
     ['a numeric value', { ...QUOTE_BODY, transaction: { ...tx, value: 0 } }],
-  ])('refuses a 200 with %s', async (_label, body) => {
+  ])('refuses a 200 with %s as an unparsable body', async (_label, body) => {
     const { client } = harness([() => json(body)]);
-    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({ ok: false, reason: 'refused' });
+    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'body',
+      sent: true,
+    });
   });
 
-  it('refuses a 200 that is not JSON', async () => {
+  it('refuses a 200 that is not JSON as an unparsable body', async () => {
     const { client } = harness([() => new Response('ok', { status: 200 })]);
-    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({ ok: false, reason: 'refused' });
+    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'body',
+      sent: true,
+    });
+  });
+
+  it('refuses a quote answered with another 2xx than 200, without a retry', async () => {
+    const { client, calls } = harness([() => json(QUOTE_BODY, 201)]);
+    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'refused',
+      sent: true,
+    });
+    expect(calls).toHaveLength(1);
   });
 
   it.each([
@@ -419,7 +437,11 @@ describe('OrchestraClient.quote', () => {
     ['404 without a body', () => new Response('', { status: 404 })],
   ])('refuses %s without a retry', async (_label, responder) => {
     const { client, calls } = harness([responder]);
-    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({ ok: false, reason: 'refused' });
+    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'refused',
+      sent: true,
+    });
     expect(calls).toHaveLength(1);
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([]);
   });
@@ -448,6 +470,7 @@ describe('OrchestraClient.quote', () => {
     expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
       ok: false,
       reason: 'unavailable',
+      sent: true,
     });
     expect(calls).toHaveLength(2);
     expect(eventsNamed('shop.orchestra.error')).toEqual([
@@ -458,7 +481,11 @@ describe('OrchestraClient.quote', () => {
 
   it('sends nothing once the deadline has passed', async () => {
     const { client, calls } = harness();
-    expect(await client.quote(REQUEST, 'k', T0)).toEqual({ ok: false, reason: 'unavailable' });
+    expect(await client.quote(REQUEST, 'k', T0)).toEqual({
+      ok: false,
+      reason: 'unavailable',
+      sent: false,
+    });
     expect(calls).toHaveLength(0);
   });
 
@@ -472,6 +499,7 @@ describe('OrchestraClient.quote', () => {
     expect(await h.client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
       ok: false,
       reason: 'unavailable',
+      sent: true,
     });
     expect(h.calls).toHaveLength(1);
   });
@@ -493,8 +521,16 @@ describe('OrchestraClient.quote', () => {
     const { client, calls, clock } = harness([
       () => err(429, 'rate_limited', { 'X-RateLimit-Reset': String(T0 + 10_000) }),
     ]);
-    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({ ok: false, reason: 'paused' });
-    expect(await client.quote(REQUEST, 'k2', T0 + 5000)).toEqual({ ok: false, reason: 'paused' });
+    expect(await client.quote(REQUEST, 'k', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'paused',
+      sent: true,
+    });
+    expect(await client.quote(REQUEST, 'k2', T0 + 5000)).toEqual({
+      ok: false,
+      reason: 'paused',
+      sent: false,
+    });
     expect(client.quoteBudgetLeft()).toBe(0);
     expect(calls).toHaveLength(1);
     clock.t = T0 + 10_000;
@@ -562,6 +598,7 @@ describe('OrchestraClient.quote', () => {
     expect(await client.quote(REQUEST, 'over', clock.t + 5000)).toEqual({
       ok: false,
       reason: 'budget',
+      sent: false,
     });
     expect(calls).toHaveLength(ORCHESTRA_QUOTES_PER_MINUTE);
     expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([{ ...LOG, endpoint: 'quote' }]);
@@ -588,6 +625,7 @@ describe('OrchestraClient.quote', () => {
     expect(await client.quote(REQUEST, 'last', T0 + 5000)).toEqual({
       ok: false,
       reason: 'budget',
+      sent: true,
     });
     expect(calls).toHaveLength(ORCHESTRA_QUOTES_PER_MINUTE);
   });

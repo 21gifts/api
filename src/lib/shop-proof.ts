@@ -175,7 +175,7 @@ export type ShopHexVerification =
 export type ShopHexSendOutcome = 'sent' | 'rejected' | 'retry';
 
 /** Outcome of {@link readProofReceipt}. */
-export type ShopReceiptOutcome = 'filled' | 'pending' | 'failed' | 'mismatch' | 'error';
+export type ShopReceiptOutcome = 'filled' | 'pending' | 'failed' | 'mismatch' | 'held' | 'error';
 
 /** Result of {@link submitProofAttempt}. */
 export interface ShopSubmitAttempt {
@@ -189,7 +189,9 @@ export interface ShopSubmitAttempt {
 const repeatSubmits = new WeakMap<ShopPayments, IpRateLimiter>();
 
 /**
- * Log one proof event with its ids (never a key, URL, raw hex, or BOLT11).
+ * Log one proof event with its ids (never a key, URL, raw hex, or BOLT11):
+ * the payment, the proof, its offer, and its order (`orderId`) when it holds
+ * one; callers add the offer's `quoteId` and `providerRef`.
  *
  * @param event - Event name.
  * @param proof - The proof.
@@ -200,6 +202,7 @@ function proofLog(event: string, proof: ShopProof, extra: LogFields = {}): void 
     paymentId: proof.paymentId,
     proofId: proof.id,
     offerId: proof.offerId,
+    ...(proof.providerOrder === null ? {} : { orderId: proof.providerOrder }),
     ...extra,
   });
 }
@@ -323,17 +326,22 @@ function offersFor(
  * order paid by the same transaction keeps its own row; among the free logs
  * the first whose value equals `amountIn` wins, else the first one. Only
  * when no free log remains is a held log returned (same preference), and
- * filling it in merges the two rows of one deposit.
+ * filling it in merges the two rows of one deposit. A log in `blocked` (held
+ * by a row with another order) is never returned, because two rows with
+ * different orders never merge.
  *
  * @param logs - Receipt logs.
  * @param offer - The offer.
  * @param held - Log indexes other rows of this offer and transaction hold.
+ * @param blocked - Log indexes held by such a row with an order other than
+ *   the reading row's.
  * @returns The decoded transfer, or `undefined`.
  */
 function offerTransfer(
   logs: readonly EvmLog[],
   offer: ShopOffer,
   held: ReadonlySet<number>,
+  blocked: ReadonlySet<number>,
 ): Erc20TransferLog | undefined {
   const transfers = logs
     .map(decodeTransferLog)
@@ -341,7 +349,8 @@ function offerTransfer(
       (transfer): transfer is Erc20TransferLog =>
         transfer !== null &&
         transfer.token === offer.tokenAddress &&
-        transfer.to === offer.depositAddress,
+        transfer.to === offer.depositAddress &&
+        !blocked.has(transfer.logIndex),
     );
   const amount = BigInt(offer.amountIn);
   const free = transfers.filter((transfer) => !held.has(transfer.logIndex));
@@ -529,13 +538,53 @@ function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
 }
 
 /**
+ * Whether two rows hold different orders (both non-null); such rows are two
+ * proofs, never one deposit, and never merge.
+ *
+ * @param a - One row.
+ * @param b - The other row.
+ * @returns `true` when both hold an order and the orders differ.
+ */
+function ordersDiffer(a: ShopProof, b: ShopProof): boolean {
+  return (
+    a.providerOrder !== null && b.providerOrder !== null && a.providerOrder !== b.providerOrder
+  );
+}
+
+/**
+ * The newer of two rows: the later `created_at`, then the greater id.
+ *
+ * @param a - One row.
+ * @param b - The other row.
+ * @returns The newer row.
+ */
+function newerOf(a: ShopProof, b: ShopProof): ShopProof {
+  const diff = a.createdAt.getTime() - b.createdAt.getTime();
+  if (diff !== 0) {
+    return diff > 0 ? a : b;
+  }
+  return a.id > b.id ? a : b;
+}
+
+/**
+ * Which row step 3 or 4 refuses as `tx_used` when the colliding row belongs
+ * to another offer: `filling` (step 4, a 23505 while a row is filled in)
+ * refuses the row being filled in; `newer` (step 3, a submit or status read
+ * returned an order another row holds) refuses the newer of the two rows.
+ */
+export type ShopOrderCollision = 'filling' | 'newer';
+
+/**
  * Step 3 and 4 of Storing and submitting: a row being filled in collides
  * with `holder`, which already holds the log index or the order. Another
- * offer's row: the filled row is `refused` with `tx_used` through
+ * offer's row: the filled row (step 4) or the newer of the two rows (step 3,
+ * `collision` `newer`) is `refused` with `tx_used` through
  * `refuseProof` (from any result the States table allows, an `accepted` one
  * included, which ends its payment with `proof_refused` unless another proof
  * takes its place); it is no longer submitted or read, its order status
- * included, and nothing is deleted. The same offer:
+ * included, and nothing is deleted. When the holder is refused, the filled
+ * row is answered as it stands. Two rows of the same offer that hold
+ * different orders are two proofs and are left as they are. The same offer:
  * the kept row takes every value of the other row it lacks, and a final
  * order status of either row for the kept order (a final status is terminal,
  * so it is the newer one); the other row is deleted, then the values are
@@ -546,6 +595,7 @@ function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
  * @param patch - What was being written onto it.
  * @param holder - The row that holds the value.
  * @param nowMs - Clock.
+ * @param collision - Which row another offer's collision refuses.
  * @returns The surviving row after evaluation.
  */
 async function mergeDeposit(
@@ -554,10 +604,19 @@ async function mergeDeposit(
   patch: ShopProofPatch,
   holder: ShopProof,
   nowMs: number,
+  collision: ShopOrderCollision,
 ): Promise<ShopProof> {
   if (holder.offerId !== filling.offerId) {
+    if (collision === 'newer' && newerOf(filling, holder) === holder) {
+      await refuseProof(tx, holder.id, 'tx_used', nowMs);
+      return filling;
+    }
     /* v8 ignore next -- the row being filled in was read in this transaction */
     return (await refuseProof(tx, filling.id, 'tx_used', nowMs)) ?? filling;
+  }
+  /* v8 ignore next 3 -- a fill never takes a log another order holds, and an order only goes to a row without one */
+  if (ordersDiffer({ ...filling, ...patch }, holder)) {
+    return filling;
   }
   const intended: ShopProof = { ...filling, ...patch };
   const [keep, other] = keepOf(intended, holder);
@@ -627,7 +686,7 @@ async function fillProof(
     if (holder === undefined) {
       return proof;
     }
-    return mergeDeposit(tx, proof, patch, holder, nowMs);
+    return mergeDeposit(tx, proof, patch, holder, nowMs, 'filling');
   }
   /* v8 ignore next 3 -- the row was read in this transaction */
   if (updated === null) {
@@ -639,13 +698,17 @@ async function fillProof(
 
 /**
  * Record an Orchestra order on a proof (`recordProofOrder`); when another
- * row already holds the order id, the rows are one deposit and merge, or the
- * newer one is refused with `tx_used` (steps 3 and 4).
+ * row already holds the order id, the rows are one deposit: a row of the
+ * same offer merges, and of a row of another offer one is refused with
+ * `tx_used` (steps 3 and 4).
  *
  * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - Stored proof.
  * @param order - Order id and status.
  * @param nowMs - Clock.
+ * @param collision - Which row another offer's collision refuses: `filling`
+ *   (step 4, the storing step) refuses this proof; `newer` (step 3, a
+ *   submit or status answer) refuses the newer of the two rows.
  * @returns The proof (or the row it merged into) after evaluation.
  */
 export async function applyProofOrder(
@@ -653,13 +716,14 @@ export async function applyProofOrder(
   proof: ShopProof,
   order: { orderId: string; status: string },
   nowMs: number,
+  collision: ShopOrderCollision,
 ): Promise<ShopProof> {
   const recorded = await recordProofOrder(tx, proof.id, order, nowMs);
   if (recorded !== 'conflict') {
     /* v8 ignore next -- the row was read in this transaction */
     return recorded ?? proof;
   }
-  return mergeOrderHolder(tx, proof, order.orderId, order.status, nowMs);
+  return mergeOrderHolder(tx, proof, order.orderId, order.status, nowMs, collision);
 }
 
 /**
@@ -670,6 +734,7 @@ export async function applyProofOrder(
  * @param orderId - Order id.
  * @param status - The order status to write.
  * @param nowMs - Clock.
+ * @param collision - Which row another offer's collision refuses.
  * @returns The surviving row.
  */
 async function mergeOrderHolder(
@@ -678,6 +743,7 @@ async function mergeOrderHolder(
   orderId: string,
   status: string,
   nowMs: number,
+  collision: ShopOrderCollision,
 ): Promise<ShopProof> {
   const holder = (await tx.findProofs({ providerOrder: orderId })).find(
     (row) => row.id !== proof.id,
@@ -697,6 +763,7 @@ async function mergeOrderHolder(
     },
     holder,
     nowMs,
+    collision,
   );
 }
 
@@ -761,7 +828,7 @@ export function storeProof(
       let proof =
         Object.keys(patch).length === 0 ? existing : await fillProof(tx, existing, patch, nowMs);
       if (candidate.order !== null && proof.providerOrder === null) {
-        proof = await applyProofOrder(tx, proof, candidate.order, nowMs);
+        proof = await applyProofOrder(tx, proof, candidate.order, nowMs, 'filling');
       }
       return { proof, created: false };
     }
@@ -813,7 +880,9 @@ export function storeProof(
       source: candidate.source,
     });
     const proof =
-      candidate.order === null ? row : await applyProofOrder(tx, row, candidate.order, nowMs);
+      candidate.order === null
+        ? row
+        : await applyProofOrder(tx, row, candidate.order, nowMs, 'filling');
     return { proof, created: true };
   });
 }
@@ -919,7 +988,13 @@ export async function submitProofAttempt(
       if (current.providerOrder !== null) {
         return current.providerOrder === answer.orderId &&
           ORCHESTRA_FINAL_STATUSES.has(answer.status)
-          ? applyProofOrder(tx, current, { orderId: answer.orderId, status: answer.status }, nowMs)
+          ? applyProofOrder(
+              tx,
+              current,
+              { orderId: answer.orderId, status: answer.status },
+              nowMs,
+              'newer',
+            )
           : current;
       }
       return applyProofOrder(
@@ -927,6 +1002,7 @@ export async function submitProofAttempt(
         current,
         { orderId: answer.orderId, status: answer.status },
         nowMs,
+        'newer',
       );
     }
     if (current.result !== null || current.providerOrder !== null) {
@@ -1119,12 +1195,23 @@ export async function readProofReceipt(
       return 'filled';
     }
     const held = new Set<number>();
+    const blocked = new Set<number>();
     for (const row of await tx.findProofs({ chainId: current.chainId, txHash: current.txHash })) {
       if (row.id !== current.id && row.offerId === current.offerId && row.logIndex !== null) {
         held.add(row.logIndex);
+        if (ordersDiffer(row, current)) {
+          blocked.add(row.logIndex);
+        }
       }
     }
-    const transfer = offerTransfer(logs, offer, held);
+    const transfer = offerTransfer(logs, offer, held, blocked);
+    if (transfer === undefined && offerTransfer(logs, offer, held, new Set()) !== undefined) {
+      // The only matching logs are held by rows with another order (a
+      // successor or recovered order of the same transaction): this row is
+      // its own proof, stays unlogged, and is no longer read.
+      await tx.updateProof(current.id, {}, { nextReceiptAt: null });
+      return 'held';
+    }
     if (transfer === undefined) {
       await tx.updateProof(current.id, {}, { nextReceiptAt: null });
       proofLog('shop.alert.detected_mismatch', current, {
@@ -1669,7 +1756,9 @@ export function retryStuckProof(
     if (retried === null || retried === 'conflict') {
       return 'not_stuck';
     }
-    proofLog('shop.proof.retried', retried);
+    const offer = await tx.getOffer(retried.offerId);
+    /* v8 ignore next -- a proof's offer is a foreign key */
+    proofLog('shop.proof.retried', retried, offer === null ? {} : offerLogFields(offer));
     return 'retried';
   });
 }

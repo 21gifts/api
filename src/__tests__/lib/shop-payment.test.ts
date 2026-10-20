@@ -2818,7 +2818,9 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     let shared: string | null = null;
     h.orchestra.quoteImpl = (request) => {
       if (request.sourceChain === 'base') {
-        return { ok: false, reason: 'refused' };
+        return request.sourceAsset === 'USDT'
+          ? { ok: false, reason: 'body', sent: true }
+          : { ok: false, reason: 'refused', sent: true };
       }
       if (request.sourceChain === 'ethereum' && request.sourceAsset === 'USDC') {
         return { ok: true, quote: h.orchestra.validQuote(request, { targetAmountOut: '1' }) };
@@ -2843,6 +2845,8 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const rejected = eventsNamed('shop.offer.rejected').map((entry) => entry.fields);
     expect(rejected).toEqual(
       expect.arrayContaining([
+        { paymentId: payment.id, method: 'Base', asset: 'USDT', check: 'body' },
+        { paymentId: payment.id, method: 'Base', asset: 'USDC', check: 'http' },
         {
           paymentId: payment.id,
           providerRef: expect.stringMatching(/^oq-/),
@@ -2873,7 +2877,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
         },
       ]),
     );
-    expect(rejected).toHaveLength(4);
+    expect(rejected).toHaveLength(6);
     expect(eventsNamed('shop.alert.shared_deposit_address').map((entry) => entry.fields)).toEqual([
       {
         paymentId: payment.id,
@@ -3058,7 +3062,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
 
   it('step 7: no kept quote writes nothing; the next creation of the account waits 60 s', async () => {
     const h = await setup();
-    h.orchestra.quoteImpl = () => ({ ok: false, reason: 'unavailable' });
+    h.orchestra.quoteImpl = () => ({ ok: false, reason: 'unavailable', sent: true });
     const charge = chargeRow();
     await h.pos.create(charge);
     expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
@@ -3530,6 +3534,55 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     });
   });
 
+  it('step 8 on a memory boot: an invoice row that claims the hash after the check rolls back the end of the open payment', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    const other = chargeRow({ accountId: crypto.randomUUID() });
+    await h.pos.create(other);
+    const hash = nextHash();
+    h.net.nextHash = hash;
+    h.store.hooks.insertPayment = async (tx, ...args) => {
+      // InMemoryPosStore.recordInvoice does not wait for the shop transaction.
+      expect(await h.pos.recordInvoice(other.id, hash, clock)).toEqual({ outcome: 'recorded' });
+      return tx.insertPayment(...(args as unknown as [ShopPayment]));
+    };
+    events = [];
+    expect(await h.svc.createForPayer(h.account, USER, 2000, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    delete h.store.hooks.insertPayment;
+    expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+    expect(await h.store.transaction((tx) => tx.paymentForHash(hash))).toBeNull();
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: expect.any(String), holderChargeId: other.id },
+    ]);
+    expect((await h.pos.findChargeForPayment({ paymentHash: hash }))?.id).toBe(other.id);
+  });
+
+  it('step 8: a charge creation whose hash another charge claims after the check rolls back too', async () => {
+    const h = await setup();
+    const earlier = await payerPayment(h);
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const otherId = crypto.randomUUID();
+    let inserted = false;
+    h.store.hooks.insertPayment = async () => {
+      inserted = true;
+      return false;
+    };
+    h.store.hooks.chargeIdForInvoice = async (tx, ...args) =>
+      inserted ? otherId : tx.chargeIdForInvoice(...(args as unknown as [string]));
+    expect(await h.svc.createForCharge(h.account, USER, charge, clock)).toEqual({
+      kind: 'mint_failed',
+    });
+    delete h.store.hooks.insertPayment;
+    delete h.store.hooks.chargeIdForInvoice;
+    expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
+    expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
+      { paymentId: expect.any(String), holderChargeId: otherId },
+    ]);
+  });
+
   it('step 8: a second lost insert in a row gives up without writing', async () => {
     const h = await setup();
     h.store.hooks.insertPayment = async () => false;
@@ -3602,7 +3655,8 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     });
 
     const thrown = await setup();
-    await thrown.pos.create(chargeRow());
+    const thrownCharge = chargeRow();
+    await thrown.pos.create(thrownCharge);
     thrown.orchestra.routesImpl = () => Promise.reject(new Error('boom'));
     expect(await thrown.svc.payLink(thrown.account, USER, METADATA, NO_QUERY, clock)).toEqual({
       kind: 'today',
@@ -3614,6 +3668,11 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
       pinSats: CHARGE_SATS,
     });
     expect(thrown.orchestra.routesCalls).toHaveLength(2);
+    // Each failed run logs once, although a pay-link fetch started it.
+    expect(eventsNamed('shop.creation.failed').map((entry) => entry.fields)).toEqual([
+      { accountId: ACCOUNT_ID, chargeId: thrownCharge.id, name: 'Error' },
+      { accountId: ACCOUNT_ID, chargeId: thrownCharge.id, name: 'Error' },
+    ]);
 
     const slow = await setup();
     await slow.pos.create(chargeRow());
@@ -4312,7 +4371,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
   it('a replacement with no committed offer is a Lightning-only quote and counts as a replacement', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
-    h.orchestra.quoteImpl = () => ({ ok: false, reason: 'refused' });
+    h.orchestra.quoteImpl = () => ({ ok: false, reason: 'refused', sent: true });
     clock = T0 + 50_000;
     const read = await h.svc.currentQuote(h.account, USER, payment);
     expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
@@ -4324,7 +4383,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await h.svc.currentQuote(h.account, USER, payment))?.quote.id).toBe(read?.quote.id);
   });
 
-  it('a failed route list during a replacement gives a Lightning-only replacement', async () => {
+  it('a failed route list during a replacement gives a Lightning-only row that is not counted', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     h.orchestra.routesResult = { ok: false };
@@ -4334,7 +4393,31 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect(h.orchestra.routesCalls).toHaveLength(2);
     expect(read?.quote.transferAmounts).toHaveLength(1);
     expect(h.orchestra.quoteCalls).toHaveLength(12);
-    expect((await readPayment(h, payment.id)).replacements).toBe(1);
+    // No quote request was sent, so the Lightning-only row is not a replacement.
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+  });
+
+  it('a replacement whose quote requests were never sent (no budget, or refused before sending) is not counted', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    h.orchestra.budget = 0;
+    clock = T0 + 50_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+    clock = T0;
+    const other = await setup();
+    const second = await payerPayment(other);
+    other.orchestra.quoteImpl = () => ({ ok: false, reason: 'budget', sent: false });
+    clock = T0 + 50_000;
+    const lightning = await other.svc.currentQuote(other.account, USER, second);
+    expect(lightning?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    expect((await readPayment(other, second.id)).replacements).toBe(0);
+    expect(
+      events.filter(
+        (entry) => entry.event === 'shop.offer.rejected' && entry.fields?.['check'] === 'budget',
+      ),
+    ).toHaveLength(12);
   });
 
   it('never replaces in the last 45 s of the window; an expired quote then gets a Lightning-only row that is not a replacement', async () => {
@@ -4432,7 +4515,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
       };
       h.orchestra.quoteImpl = (request) =>
         slow(request)
-          ? { ok: false, reason: 'unavailable' }
+          ? { ok: false, reason: 'unavailable', sent: true }
           : { ok: true, quote: h.orchestra.validQuote(request) };
       // The quote read expires at T0 + 90 s, 2 s into the fetch's wait.
       const arrivalMs = T0 + 88_000;
@@ -4733,6 +4816,38 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     delete h.store.hooks.updatePayment;
     expect(read?.quote.id).toBe(first!.id);
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
+    expect(eventsNamed('shop.creation.failed').map((entry) => entry.fields)).toEqual([
+      { accountId: ACCOUNT_ID, paymentId: payment.id, name: 'Error' },
+    ]);
+  });
+
+  it('reads the clock after the account lock in the replacement and in the Lightning-only fallback', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    clock = T0 + 50_000;
+    let jumps = [T0 + 256_000];
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      const next = jumps.shift();
+      if (next !== undefined) {
+        clock = next;
+      }
+      return tx.lockAccount(...(args as unknown as [string]));
+    };
+    // The account lock was taken with less than 45 s left in the window: no replacement.
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    expect(h.orchestra.quoteCalls).toHaveLength(24);
+    expect((await readPayment(h, payment.id)).replacements).toBe(0);
+    expect(read?.quote.transferAmounts).toEqual([lightningTransferAmount(SATS)]);
+    // The fallback's lock ends after the window: no Lightning-only row, the payment is not open.
+    const other = await setup();
+    clock = T0;
+    const second = await payerPayment(other);
+    other.store.hooks.lockAccount = h.store.hooks.lockAccount;
+    clock = T0 + 299_000;
+    jumps = [T0 + 300_000];
+    const before = (await quotesOf(other, second.id)).length;
+    expect(await other.svc.currentQuote(other.account, USER, second)).toBeNull();
+    expect(await quotesOf(other, second.id)).toHaveLength(before);
   });
 
   it('answers null for a payment that is no longer open', async () => {
@@ -5220,6 +5335,44 @@ describe('till hooks (By a till charge, Till)', () => {
     expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(0);
   });
 
+  it('charge watch: locks the account a merge moved the charge to, read again under the first lock', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
+    const payment = created.kind === 'payment' ? created.payment : paymentRow();
+    const locked: string[] = [];
+    h.store.hooks.lockAccount = async (tx, ...args) => {
+      locked.push(String(args[0]));
+      return tx.lockAccount(...(args as unknown as [string]));
+    };
+    const merged = '00000000-0000-4000-8000-0000000000b9';
+    // The watch read the charge before a merge moved it from `merged` to the shop account.
+    expect(
+      await h.svc.chargePaid({ ...charge, accountId: merged }, payment.paymentHash, clock),
+    ).toMatchObject({ status: 'paid' });
+    expect(locked).toEqual([merged, ACCOUNT_ID]);
+    expect((await readPayment(h, payment.id)).status).toBe('paid');
+  });
+
+  it('charge watch: a charge that is gone or keeps moving changes nothing and is read again on the next tick', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    let moves = 0;
+    h.store.hooks.getCharge = async (tx, ...args) => {
+      const current = await tx.getCharge(...(args as unknown as [string]));
+      moves += 1;
+      return current === null ? null : { ...current, accountId: `moved-${moves}` };
+    };
+    expect(await h.svc.chargePaid(charge, null, clock)).toBeNull();
+    expect(moves).toBe(2);
+    expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('pending');
+    delete h.store.hooks.getCharge;
+    expect(await h.svc.chargePaid(chargeRow(), null, clock)).toBeNull();
+    expect((await h.svc.chargePaid(charge, null, clock))?.status).toBe('paid');
+  });
+
   it('charge watch: the payment’s own hash after the Spark invoice paid the charge logs shop.alert.double_settled', async () => {
     const h = await setup();
     const charge = chargeRow();
@@ -5564,6 +5717,10 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
       closedAt: new Date(finalAt),
     });
     expect(eventsNamed('shop.payment.closed')).toHaveLength(2);
+    // Only the payment that changed status here logs its end.
+    expect(eventsNamed('shop.payment.ended').map((entry) => entry.fields)).toEqual([
+      { paymentId: payment.id, reason: 'window' },
+    ]);
     // Closed is final.
     await ended.h.svc.applySettlement(ended.payment.id, true, finalAt + 1);
     expect((await readPayment(ended.h, ended.payment.id)).status).toBe('ended');
@@ -5580,6 +5737,10 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
       nextSettleAt: null,
     });
     expect(eventsNamed('shop.alert.accepted_unpaid')).toHaveLength(1);
+    expect(eventsNamed('shop.payment.ended').map((entry) => entry.fields)).toContainEqual({
+      paymentId: payment.id,
+      reason: 'expired_unpaid',
+    });
     // Closed is final: a later settled read changes nothing.
     await h.svc.applySettlement(payment.id, true, T0 + 4_300_000);
     expect(await readPayment(h, payment.id)).toMatchObject({

@@ -286,6 +286,8 @@ describe('InMemoryShopPaymentStore', () => {
       expect(await tx.insertCharge(charge())).toBe(true);
       expect(await tx.insertCharge(charge({ id: uid(0x502) }))).toBe(false);
       expect((await tx.lockCharge(uid(0x501)))?.id).toBe(uid(0x501));
+      expect(await tx.getCharge(uid(0x501))).toMatchObject({ id: uid(0x501), accountId: ACC });
+      expect(await tx.getCharge(uid(0x509))).toBeNull();
       expect((await tx.pendingCharge(ACC, T0 + 1))?.id).toBe(uid(0x501));
       expect(await pos.recordInvoice(uid(0x501), 'h1', T0 + 1)).toEqual({ outcome: 'recorded' });
       expect(await tx.chargeIdForInvoice('h1')).toBe(uid(0x501));
@@ -1272,6 +1274,34 @@ describe('PostgresShopPaymentStore', () => {
     expect(tx.calls[0]?.text).toMatch(
       /FROM shop_proof WHERE payment_id = \$1 ORDER BY id FOR UPDATE$/,
     );
+  });
+
+  it('getCharge reads the charge without a lock, and null for a missing row or a malformed id', async () => {
+    const { tx, store } = postgresStore();
+    tx.respond = (text) =>
+      text.includes('FROM pos_charge')
+        ? [
+            {
+              id: uid(0x501),
+              account_id: ACC,
+              amount_sats: 2100,
+              status: 'pending',
+              created_at: ISO(0),
+              expires_at: ISO(POS_CHARGE_TTL_MS),
+              paid_at: null,
+              spark_invoice: null,
+            },
+          ]
+        : [];
+    await store.transaction(async (t) => {
+      expect(await t.getCharge(uid(0x501))).toEqual(charge());
+      expect(await t.getCharge('nope')).toBeNull();
+      tx.respond = () => [];
+      expect(await t.getCharge(uid(0x502))).toBeNull();
+    });
+    expect(tx.calls).toHaveLength(2);
+    expect(tx.calls.every((call) => !call.text.includes('FOR UPDATE'))).toBe(true);
+    expect(tx.calls[0]?.params).toEqual([uid(0x501)]);
   });
 
   it('lockCharge answers null when the row is missing or vanished', async () => {

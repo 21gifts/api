@@ -311,6 +311,7 @@ api/
 │       │   ├── evm-rpc.test.ts
 │       │   ├── evm-transfer.test.ts
 │       │   ├── uuid.test.ts
+│       │   ├── payment-hash-claim.test.ts
 │       │   ├── trust.test.ts
 │       │   ├── trust-store.test.ts
 │       │   ├── api-log.test.ts
@@ -577,7 +578,7 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `BTC_FIAT_SPOT_URL`;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`,
-`lnurlServerRoutes`, `accountByReceivingAddress`, and `duplicateInvoiceLogFields` (an invoice route with a pending charge), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
+`lnurlServerRoutes`, `accountByReceivingAddress`, `duplicateInvoiceLogFields` (an invoice route with a pending charge), and `PaymentHashClaims` (a charge's invoice record or a shop payment of a memory boot), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
 `parseMultipartCoord`, `loadLatestGoalRateDay`,
 `bindGoalRateDay`, `canonicalGoalAmount`, `canonicalDecimal`, `fiatToSats`, and `satsToFiatAmount`, which
 run only when a member may post; posting needs a verified wallet, which only the LNURL

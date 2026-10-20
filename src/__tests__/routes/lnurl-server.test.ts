@@ -1524,7 +1524,8 @@ describe('shop payment routes', () => {
       for (let i = 0; i < 120; i += 1) {
         const res = await app.request('/lnurlp/tx/missing', { headers });
         expect(res.status).toBe(404);
-        expect(await res.json()).toEqual(shopErrorBody(404, 'Not found'));
+        // No quote of a shop payment of an unknown username exists.
+        expect(await res.json()).toEqual(shopErrorBody(404, 'Quote expired'));
       }
       const limited = await app.request('/lnurlp/tx/missing', { headers });
       expect(limited.status).toBe(503);

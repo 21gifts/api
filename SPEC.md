@@ -510,6 +510,12 @@ Otherwise it increments `shop_payment.replacements` with one
 conditional update (`status` `open`, `replacements` unchanged, at least
 45 s left in the window) and inserts the new quote only when that update
 changed the row; otherwise it answers with the quote that is current then.
+A replacement that sent no quote request (no route list, no candidate
+pair, no fresh spot, or no quote budget) runs the same conditional update
+without the increment and inserts its Lightning-only row, because a
+Lightning-only row made without an Orchestra call is not a replacement.
+The replacement and the Lightning-only fallback read the clock after the
+account row lock.
 A second fetch in the same process joins the running replacement. A fetch
 waits for the replacement at most until the earlier of 4 s after it
 arrived and 4 s after the replacement took the lock; a replacement still
@@ -832,7 +838,10 @@ waits for the first:
    `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`. Without a
    fresh rate the check fails. A quote whose chain's gas price
    could not be read is not kept either. A failed check logs
-   `shop.offer.rejected` with the check name.
+   `shop.offer.rejected` with the check name. A quote that failed logs it
+   too: `check` `body` for an HTTP 200 whose body does not parse, `http`
+   for a request sent without an HTTP 200 answer (another 2xx included),
+   and `budget` when no request could be sent.
 7. None kept → stop and start the 60 s no-pair wait.
 8. In one transaction that first takes the payment hash claim
    (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
@@ -959,7 +968,8 @@ service failure → **Response** `503` `Payment is being confirmed` (logs
 proof as after any 5xx.
 
 Invalid username, the username `invoice`, unknown account, or no verified
-wallet → **Response** `404` `Not found`.
+wallet → **Response** `404` `Quote expired`, because no quote of a shop
+payment of that username exists.
 
 Query: `quote`, `method`, an optional `asset`, and exactly one of `tx` or
 `hex`; unknown keys are ignored. Checked in this order: a repeated
@@ -1108,8 +1118,16 @@ one deposit, rows of the same offer merge in one transaction: the
 `accepted` row is kept, else the row that holds an order, else the older
 one; it takes the log index,
 value, and order of the other row that it lacks, and the order's status
-travels with `provider_order`. When the other row belongs to another offer, the
-row whose log index or order is being filled in (the later fill) is recorded `refused` with `refusal` `tx_used`, from any result the
+travels with `provider_order`. Two rows that hold different orders are
+never merged: a row whose only matching transfer log another row of the
+same offer and transaction holds with another order (a successor or
+recovered order paid by the same transaction) keeps no log index, stays
+its own proof, and is no longer read. When the other row belongs to another offer, the
+row whose log index or order is being filled in (the later fill) is
+recorded `refused` with `refusal` `tx_used` when the collision comes from
+storing a proof (step 4); when it comes from a submit or a status read
+that returned an order another row holds (step 3), the newer of the two
+rows (later `created_at`, then the greater id) is, from any result the
 States table allows for `refused`; an `accepted` one included, which lets
 a `superseded` proof take its place or ends the payment with
 `proof_refused`. A proof refused as `tx_used` keeps its order but is no
@@ -1131,10 +1149,9 @@ repeat with 503.
 **Log fields.** Each shop event is one `logEvent` line with `paymentId`,
 and with `quoteId`, `offerId`, `proofId`, `providerRef` (Orchestra's quote
 id), or `orderId` where it applies: the proof events carry the proof's
-offer, quote, provider reference, and order, except
-`shop.alert.proof_stuck` and `shop.proof.retried`, which carry `paymentId`,
-`proofId`, and `offerId`, and `shop.alert.order_stuck`, which adds
-`orderId`; the Orchestra client's
+offer, quote, provider reference, and order (`shop.alert.proof_stuck`,
+`shop.alert.order_stuck`, and `shop.proof.retried` included); the
+Orchestra client's
 `shop.orchestra.error`, `shop.orchestra.rate_limited`,
 `shop.orchestra.budget_exhausted`, and `shop.alert.orchestra_request`
 carry the ids of the payment or proof the call is for. The creation picks
@@ -1146,10 +1163,11 @@ the payment's id before its route-list read, so `shop.route.mismatch`,
 in step 8 carry only `holderChargeId`); from the invoice routes it carries
 `chargeId` (the pending charge), `holderChargeId` when a charge holds the
 hash, and `paymentId` (the holding payment) only when a shop payment holds
-it. `shop.creation.failed` is logged only by a background creation after
-`POST /pos` that throws, with `accountId`, `chargeId`, and the error's
-`name`, `code`, and `errno`; a creation a pay-link fetch started that throws
-logs nothing and is answered from the state.
+it. `shop.creation.failed` is logged once by a charge's creation that
+throws, whether `POST /pos` or a pay-link fetch started or joined it, with
+`accountId`, `chargeId`, and the error's `name`, `code`, and `errno`, and
+once by a quote replacement that throws, with `accountId` and
+`paymentId`; the fetch is answered from the state.
 
 ### `GET /lnurlp/wait/:payment`
 
@@ -1218,7 +1236,11 @@ zap receipt, gift, or message is written for a till payment. Logs:
 charge paid runs in one transaction together with its shop payment
 ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)), locking
 the account row, then the `pos_charge` row, then the `shop_payment` row.
-When the settled hash is the shop payment's `payment_hash`, the shop
+The account is the charge's current one: the charge is read again after
+the account lock, and when an account merge moved it meanwhile, the
+account it moved to is locked instead (at most two account locks; a
+charge gone or still moving changes nothing and is read again on the next
+tick). When the settled hash is the shop payment's `payment_hash`, the shop
 payment moves to `paid`; when the charge was already paid by another
 invoice before, that logs `shop.alert.double_settled`, and when it was
 cancelled before, `shop.alert.cancelled_settled` (the charge stays
@@ -1252,16 +1274,20 @@ rows by their own next-try column, oldest first:
    `shop.alert.cancelled_settled` and stays cancelled). Only a successful
    final read that reports the invoice unpaid closes the payment; an
    `accepted` payment then ends with `expired_unpaid` and logs
-   `shop.alert.accepted_unpaid`. A payment `accepted` for more than one
+   `shop.alert.accepted_unpaid`, an `open` one ends with `window`, and
+   both log `shop.payment.ended` with the reason. The duty waits until
+   every read of the tick and its write have ended before it rethrows the
+   first failure. A payment `accepted` for more than one
    hour logs `shop.alert.accepted_long` once per process.
 3. **Orders** (odd ticks): Orchestra history by the payment's BOLT11 every
    10 s, one page per read, from the first issued detail until 30 minutes
    after its last offer's `expiresAt`, also after the payment is paid or
    closed. An order no proof holds is stored as a `detected` proof, an
-   order recovered from one a proof holds included. A failed read changes
-   nothing and is retried after 10 s at the same offset; only a successful
-   short page ends the reads once that watch has ended. That decision runs
-   under the payment row and its proof rows: while some proof's
+   order recovered from one a proof holds included. A failed read keeps
+   the offset. The offers alone decide whether that watch has ended: while
+   it runs, or while a full page is read on, the next read is after 10 s;
+   once it has ended, every read, a failed one included, decides the next
+   one under the payment row and its proof rows: while some proof's
    `superseded_by_order` is held by no proof and `successor_wait_until` has
    not passed, the payment is read every 60 s
    (`SHOP_SUCCESSOR_HISTORY_INTERVAL_MS`) instead; when the wait passes
@@ -3726,7 +3752,7 @@ every other row. Those charge rows are locked first
 rows and the charges are deleted by the locked ids; a concurrent
 `recordInvoice` for such a charge waits on the lock and then fails, which
 the invoice routes log as `pos.invoice.record_failed`, and a later one
-records nothing (`not_open`). `pos.invoice.record_failed`. A database that
+records nothing (`not_open`). A database that
 cannot run the merge, and any thrown write, is **503**
 `{ "error": "Merge is unavailable" }`. The same 503/401 debug-token
 gate as the other debug account routes applies. Success logs

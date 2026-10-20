@@ -327,6 +327,11 @@ export interface ShopTx {
   lockAccount(accountId: string): Promise<void>;
   /** Lock and read one charge, or `null` when it does not exist. */
   lockCharge(chargeId: string): Promise<PosCharge | null>;
+  /**
+   * Read one charge without a lock (to learn the account to lock first), or
+   * `null` when it does not exist.
+   */
+  getCharge(chargeId: string): Promise<PosCharge | null>;
   /** Lock and read one payment, or `null`. */
   lockPayment(paymentId: string): Promise<ShopPayment | null>;
   /**
@@ -815,6 +820,11 @@ class InMemoryShopTx implements ShopTx {
 
   /** The charge, or `null` (`findChargeForPayment({ chargeId })`). */
   async lockCharge(chargeId: string): Promise<PosCharge | null> {
+    return (await this.#pos.findChargeForPayment({ chargeId })) ?? null;
+  }
+
+  /** The charge, or `null` (`findChargeForPayment({ chargeId })`). */
+  async getCharge(chargeId: string): Promise<PosCharge | null> {
     return (await this.#pos.findChargeForPayment({ chargeId })) ?? null;
   }
 
@@ -1700,6 +1710,11 @@ class PostgresShopTx implements ShopTx {
     if (locked.length === 0) {
       return null;
     }
+    return (await this.#pos.findChargeForPayment({ chargeId })) ?? null;
+  }
+
+  /** The charge without a lock (`PosStore.findChargeForPayment`); a malformed id reads nothing. */
+  async getCharge(chargeId: string): Promise<PosCharge | null> {
     return (await this.#pos.findChargeForPayment({ chargeId })) ?? null;
   }
 
