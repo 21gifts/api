@@ -120,21 +120,45 @@ function callBudget(shop: ShopPayments, calls: number): CallBudget {
 }
 
 /**
- * Patch the schedule of one proof (no result change) under its payment's
- * `shop_payment` row lock; no account row is locked.
+ * Whether two schedule instants are the same (both empty, or the same
+ * millisecond).
+ *
+ * @param a - One instant.
+ * @param b - The other.
+ * @returns `true` when equal.
+ */
+function sameInstant(a: Date | null, b: Date | null): boolean {
+  return (a?.getTime() ?? null) === (b?.getTime() ?? null);
+}
+
+/**
+ * Patch the schedule of one proof (no result change) that a duty decided on
+ * from a row read earlier without a lock (`snapshot`): under its payment's
+ * `shop_payment` row and its proof rows ({@link lockPaymentForProofs}; no
+ * account row is locked) the proof is read again and written only while
+ * `holds` is true of it, so a proof another writer changed or deleted in
+ * between keeps what that writer stored.
  *
  * @param shop - Service.
- * @param proof - The proof.
+ * @param snapshot - The proof as the duty read it.
  * @param patch - Columns to write.
+ * @param holds - Condition on the proof as read under the locks.
+ * @returns `true` when the patch was written.
  */
 async function patchProof(
   shop: ShopPayments,
-  proof: ShopProof,
+  snapshot: ShopProof,
   patch: ShopProofPatch,
-): Promise<void> {
-  await shop.store.transaction(async (tx) => {
-    await tx.lockPayment(proof.paymentId);
-    await tx.updateProof(proof.id, {}, patch);
+  holds: (current: ShopProof) => boolean,
+): Promise<boolean> {
+  return shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, snapshot.paymentId);
+    const current = await tx.getProof(snapshot.id);
+    if (current === null || !holds(current)) {
+      return false;
+    }
+    await tx.updateProof(current.id, {}, patch);
+    return true;
   });
 }
 
@@ -558,27 +582,33 @@ async function readReceipt(
   fetchImpl: FetchFn,
 ): Promise<void> {
   const later: ShopProofPatch = { nextReceiptAt: new Date(nowMs + SLOW_READ_MS) };
+  // Every write is skipped once another writer moved `next_receipt_at` (an
+  // operator retry, another container's read, a merge).
+  const schedule = (patch: ShopProofPatch): Promise<boolean> =>
+    patchProof(shop, proof, patch, (current) =>
+      sameInstant(current.nextReceiptAt, proof.nextReceiptAt),
+    );
   const url = shop.deps.config?.evmRpc.get(proof.chainId);
   const hexResolved =
     proof.source === 'hex' && (proof.result !== null || proof.providerOrder !== null);
   if (nowMs >= proof.giveUpAt.getTime() || proof.logIndex !== null || hexResolved) {
-    await patchProof(shop, proof, { nextReceiptAt: null });
+    await schedule({ nextReceiptAt: null });
     return;
   }
   if (url === undefined) {
-    await patchProof(shop, proof, later);
+    await schedule(later);
     return;
   }
   if (proof.source === 'hex' && proof.sentAt === null) {
     const outcome = await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl);
     if (outcome !== 'sent') {
-      await patchProof(shop, proof, outcome === 'retry' ? later : { nextReceiptAt: null });
+      await schedule(outcome === 'retry' ? later : { nextReceiptAt: null });
     }
     return;
   }
   const outcome = await readProofReceipt(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl);
   if (outcome !== 'pending' && outcome !== 'error') {
-    await patchProof(shop, proof, { nextReceiptAt: null });
+    await schedule({ nextReceiptAt: null });
     return;
   }
   if (
@@ -586,10 +616,10 @@ async function readReceipt(
     proof.source === 'hex' &&
     (await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl)) === 'rejected'
   ) {
-    await patchProof(shop, proof, { nextReceiptAt: null });
+    await schedule({ nextReceiptAt: null });
     return;
   }
-  await patchProof(shop, proof, later);
+  await schedule(later);
 }
 
 /**
@@ -659,12 +689,17 @@ async function submits(shop: ShopPayments, nowMs: number): Promise<void> {
     const unresolved =
       proof.result === null && proof.providerOrder === null && !proof.submitStopped;
     const afterMs = shop.deps.now();
-    await patchProof(shop, proof, {
-      tries,
-      nextSubmitAt: unresolved
-        ? new Date(afterMs + (SUBMIT_DELAYS_MS[tries - 1] ?? SUBMIT_INTERVAL_MS))
-        : null,
-    });
+    await patchProof(
+      shop,
+      proof,
+      {
+        tries,
+        nextSubmitAt: unresolved
+          ? new Date(afterMs + (SUBMIT_DELAYS_MS[tries - 1] ?? SUBMIT_INTERVAL_MS))
+          : null,
+      },
+      (current) => sameInstant(current.nextSubmitAt, proof.nextSubmitAt),
+    );
   }
 }
 
@@ -817,7 +852,11 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
  * Duty 8 (even ticks): one status read of an order that is not final. Rows
  * whose order is already final stop being read, and rows read for 24 h since
  * their order was found stop and log `shop.alert.order_stuck`; neither
- * costs a call.
+ * costs a call. Both stops re-read the proof under the payment row and its
+ * proof rows and clear `next_status_at` only while the proof still holds the
+ * order, status, and `next_status_at` the selection read (and, for the 24 h
+ * stop, its order was still found 24 h ago); the alert is logged after the
+ * commit and only by the transaction that cleared it.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
@@ -835,17 +874,33 @@ async function readStatuses(shop: ShopPayments, nowMs: number): Promise<void> {
     if (orderId === null) {
       continue;
     }
+    // Both stops below were decided on the row read without a lock: each
+    // writes only while the proof still holds the same order with the same
+    // status and `next_status_at` (no final status, replaced order, or
+    // other container's read in between).
+    const unchanged = (current: ShopProof): boolean =>
+      current.providerOrder === orderId &&
+      current.orderStatus === row.orderStatus &&
+      sameInstant(current.nextStatusAt, row.nextStatusAt);
     if (row.orderStatus !== null && ORCHESTRA_FINAL_STATUSES.has(row.orderStatus)) {
-      await patchProof(shop, row, { nextStatusAt: null });
+      await patchProof(shop, row, { nextStatusAt: null }, unchanged);
       continue;
     }
     if (nowMs - (row.orderFoundAt ?? row.createdAt).getTime() >= SHOP_UNRESOLVED_LIMIT_MS) {
-      const fields = await shop.store.transaction(async (tx) => {
-        await tx.lockPayment(row.paymentId);
-        await tx.updateProof(row.id, {}, { nextStatusAt: null });
-        return proofAlertFields(tx, row);
-      });
-      logEvent('shop.alert.order_stuck', fields);
+      const stopped = await patchProof(
+        shop,
+        row,
+        { nextStatusAt: null },
+        (current) =>
+          unchanged(current) &&
+          nowMs - (current.orderFoundAt ?? current.createdAt).getTime() >= SHOP_UNRESOLVED_LIMIT_MS,
+      );
+      if (stopped) {
+        logEvent(
+          'shop.alert.order_stuck',
+          await shop.store.transaction((tx) => proofAlertFields(tx, row)),
+        );
+      }
       continue;
     }
     await readStatus(shop, row, orderId);

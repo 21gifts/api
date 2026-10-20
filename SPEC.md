@@ -1372,7 +1372,11 @@ rows by their own next-try column, oldest first:
    for 10 minutes, then every 60 s, until a final status or 24 h after the
    order was found (`shop.alert.order_stuck`), or an `unfulfilled` status
    with `supersededByOperationId` (see Replaced orders; no alert). A proof
-   refused as `tx_used` is not read.
+   refused as `tx_used` is not read. The stop at a stored final status and
+   the 24 h stop clear `next_status_at` only while the proof, read again
+   under its payment row and proof rows, still holds the order, status,
+   and `next_status_at` the duty selected; the alert is logged once, by the
+   container whose transaction cleared it.
 
 A rejecting tick logs `shop.worker.tick.failed`.
 

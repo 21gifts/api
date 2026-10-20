@@ -1,5 +1,5 @@
 import { SQL } from 'bun';
-import { describe, expect, test } from 'bun:test';
+import { describe, expect, spyOn, test } from 'bun:test';
 import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
 import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
@@ -45,6 +45,7 @@ import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import type { OrchestraClient } from '@/lib/orchestra';
 import { submitProofAttempt, type ShopSubmitAttempt } from '@/lib/shop-proof';
+import { runShopPaymentTick } from '@/lib/shop-payment-worker';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -3824,6 +3825,88 @@ describe('PostgresShopPaymentStore', () => {
       expect(after?.status).toBe('paid');
       expect((await pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('paid');
     } finally {
+      await closeIfPossible(sql);
+    }
+  });
+  test('two containers that selected the same lapsed status row log order_stuck once', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const now = Date.now();
+      // The watchers' clock lies before every row other tests left behind,
+      // so their duties select only this proof.
+      const clockMs = Date.UTC(2001, 0, 1);
+      const payment = shopPayment(await newAccount(), now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const lapsed = shopProof(offer, payment.id, now, {
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(clockMs - 86_400_000),
+        nextSubmitAt: null,
+        nextStatusAt: new Date(clockMs - 1_000),
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(lapsed)).toBe(true);
+      });
+      const container = (): ShopPayments =>
+        new ShopPayments({
+          store,
+          posStore: pos,
+          auth: new PostgresAuthStore(client),
+          lnurlServer: {
+            baseUrl: 'http://lnurl.test',
+            publicBaseUrl: 'https://example.test',
+            host: 'example.test',
+          },
+          config: null,
+          // The 24 h stop makes no call.
+          orchestra: {
+            status: async () => {
+              throw new Error('no status read expected');
+            },
+          } as unknown as OrchestraClient,
+          fxSpot: new PostgresFxSpotStore(client),
+          fetchImpl: fetch,
+          now: () => clockMs,
+        });
+      // Hold the payment row, so that both containers select the row without
+      // a lock and then queue for the payment row.
+      let held = (): void => undefined;
+      const paymentHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockPayment(payment.id);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+      await paymentHeld;
+      await Promise.all([
+        runShopPaymentTick(container(), 2),
+        runShopPaymentTick(container(), 2),
+        holder,
+      ]);
+      const alerts = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((text) => text.startsWith('{'))
+        .map((text) => JSON.parse(text) as Record<string, unknown>)
+        .filter(
+          (line) => line['event'] === 'shop.alert.order_stuck' && line['proofId'] === lapsed.id,
+        );
+      expect(alerts).toHaveLength(1);
+      expect((await store.transaction((tx) => tx.getProof(lapsed.id)))?.nextStatusAt).toBeNull();
+    } finally {
+      warn.mockRestore();
       await closeIfPossible(sql);
     }
   });

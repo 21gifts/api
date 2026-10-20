@@ -1328,8 +1328,13 @@ a row can be read by both; their budgets together stay below
 Orchestra's limit, as [Calls](#calls) states. One order can then be read
 by both containers less than 3 s apart, against Orchestra's guidance that
 one order should be polled no faster than every 3 s; the api accepts
-that for the overlap of a deploy, because the per-IP limit still holds. `next_history_at` is set when the first
-detail of a payment is issued and cleared when the order watch of its
+that for the overlap of a deploy, because the per-IP limit still holds. A
+stop of duty 8 that costs no call (a stored final status, or 24 h after
+the order was found), like every schedule write of duties 5 and 6, reads
+the proof again under its payment row and proof rows and writes only
+while what the duty decided on is unchanged, so both containers that
+selected one row log `shop.alert.order_stuck` once. `next_history_at` is
+set when the first detail of a payment is issued and cleared when the order watch of its
 last offer ends, except while some proof of the payment has a
 `superseded_by_order` that no proof holds as `provider_order` and
 `successor_wait_until` has not passed ([Calls](#calls)); a payment whose order watch has ended and that only this exception keeps is read every 60 s instead of every 10 s. When that time passes first, duty 3 logs `shop.alert.successor_missing` and clears `next_history_at` and

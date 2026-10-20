@@ -8,7 +8,7 @@ import {
   startShopPaymentWorker,
 } from '@/lib/shop-payment-worker';
 import { proofResponse, retryStuckProof } from '@/lib/shop-proof';
-import type { ShopProofLookup } from '@/lib/shop-payment-store';
+import type { ShopProofDuty, ShopProofLookup, ShopTx } from '@/lib/shop-payment-store';
 import {
   AMOUNT_IN,
   DEPOSIT_USDT,
@@ -92,6 +92,56 @@ function lookup(h: Harness, id: string): Promise<ShopProofLookup | null> {
 
 async function lookupDone(h: Harness, hash: string): Promise<ShopProofLookup | null> {
   return h.store.transaction((tx) => tx.findLookup(137, hash, QUOTE_ID));
+}
+
+/**
+ * Run `meanwhile` once, right after the transaction that selects the proofs
+ * due for `duty` commits: another writer (an operator, another container)
+ * acting between a duty's selection and its write.
+ *
+ * @returns The proof ids passed to `updateProof` after `meanwhile` ended.
+ */
+function afterSelection(
+  h: Harness,
+  duty: ShopProofDuty,
+  meanwhile: () => Promise<unknown>,
+): string[] {
+  const writes: string[] = [];
+  let ran = false;
+  let recording = false;
+  const original = h.store.transaction.bind(h.store);
+  const wrapped = async <T>(run: (tx: ShopTx) => Promise<T>): Promise<T> => {
+    let selects = false;
+    const result = await original((tx) =>
+      run(
+        new Proxy(tx, {
+          get: (target, prop) => {
+            const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+            if (typeof value !== 'function') {
+              return value;
+            }
+            return (...args: unknown[]) => {
+              if (prop === 'dueProofs' && args[0] === duty) {
+                selects = true;
+              }
+              if (prop === 'updateProof' && recording) {
+                writes.push(String(args[0]));
+              }
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+          },
+        }),
+      ),
+    );
+    if (selects && !ran) {
+      ran = true;
+      await meanwhile();
+      recording = true;
+    }
+    return result;
+  };
+  vi.spyOn(h.store, 'transaction').mockImplementation(wrapped as never);
+  return writes;
 }
 
 describe('constants', () => {
@@ -994,6 +1044,37 @@ describe('duty 5: receipts', () => {
     expect((await getProof(h, uid(0x401)))?.nextReceiptAt?.getTime()).toBe(T0 + 120_000);
     expect((await getProof(h, uid(0x402)))?.nextReceiptAt?.getTime()).toBe(T0 + 120_000);
   });
+  it('keeps what another writer stored between the selection and the write', async () => {
+    const h = harness();
+    await seed(h);
+    const detected = {
+      ...due,
+      source: 'detected' as const,
+      logIndex: null,
+      transferAmount: null,
+      giveUpAt: new Date(T0),
+    };
+    await insertProofs(
+      h,
+      proofRow(detected),
+      proofRow({ ...detected, id: uid(0x402), txHash: H2, createdAt: new Date(T0 + 1) }),
+    );
+    // An operator retry moves the read ahead; a merge deletes the other row.
+    const writes = afterSelection(h, 'receipt', () =>
+      h.store.transaction(async (tx) => {
+        await tx.updateProof(
+          uid(0x401),
+          {},
+          { giveUpAt: new Date(T0 + 86_400_000), nextReceiptAt: new Date(T0 + 5) },
+        );
+        await tx.deleteProof(uid(0x402));
+      }),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(writes).toEqual([]);
+    expect((await getProof(h, uid(0x401)))?.nextReceiptAt?.getTime()).toBe(T0 + 5);
+    expect(await getProof(h, uid(0x402))).toBeNull();
+  });
 });
 
 describe('duty 6: submits', () => {
@@ -1384,6 +1465,86 @@ describe('duty 8: order status', () => {
     });
     await runShopPaymentTick(h.shop, 2);
     expect(await getProof(h, uid(0x402))).toBeNull();
+  });
+  describe('a stop decided on the selection holds only while the proof is unchanged', () => {
+    const lapsed = { ...ordered, orderFoundAt: new Date(T0 - 86_400_000) };
+
+    function stuckAlerts(): Record<string, unknown>[] {
+      return loggedEvents(warn).filter((line) => line['event'] === 'shop.alert.order_stuck');
+    }
+
+    it('a proof whose order was finalised meanwhile: no alert, no write', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(lapsed));
+      const writes = afterSelection(h, 'status', () =>
+        h.store.transaction((tx) =>
+          tx.updateProof(uid(0x401), {}, { orderStatus: 'completed', nextStatusAt: null }),
+        ),
+      );
+      await runShopPaymentTick(h.shop, 2);
+      expect(writes).toEqual([]);
+      expect(stuckAlerts()).toEqual([]);
+      expect(h.orchestra.status).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'another order',
+        {
+          providerOrder: 'o9',
+          orderFoundAt: new Date(T0),
+          nextStatusAt: new Date(T0 + 10_000),
+        },
+      ],
+      ['a successor', { orderStatus: 'unfulfilled', supersededByOrder: 'o9', nextStatusAt: null }],
+      ['a later found order', { orderFoundAt: new Date(T0 - 1_000) }],
+    ])('a proof that meanwhile holds %s: no alert, no write', async (_name, patch) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(lapsed));
+      const before = { ...proofRow(lapsed), ...patch };
+      const writes = afterSelection(h, 'status', () =>
+        h.store.transaction((tx) => tx.updateProof(uid(0x401), {}, patch)),
+      );
+      await runShopPaymentTick(h.shop, 2);
+      expect(writes).toEqual([]);
+      expect(stuckAlerts()).toEqual([]);
+      expect((await getProof(h, uid(0x401)))?.nextStatusAt).toEqual(before.nextStatusAt);
+    });
+
+    it('a final order replaced by another meanwhile keeps its new schedule', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow({ ...ordered, orderStatus: 'completed' }));
+      const writes = afterSelection(h, 'status', () =>
+        h.store.transaction((tx) =>
+          tx.updateProof(
+            uid(0x401),
+            {},
+            { providerOrder: 'o9', orderStatus: 'processing', nextStatusAt: new Date(T0 + 10_000) },
+          ),
+        ),
+      );
+      await runShopPaymentTick(h.shop, 2);
+      expect(writes).toEqual([]);
+      expect((await getProof(h, uid(0x401)))?.nextStatusAt?.getTime()).toBe(T0 + 10_000);
+    });
+
+    it('two containers that selected the same lapsed row log one alert', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(lapsed));
+      // The second container runs its whole tick between the first one's
+      // selection and its write.
+      const writes = afterSelection(h, 'status', () => runShopPaymentTick(h.shop, 2));
+      await runShopPaymentTick(h.shop, 2);
+      expect(writes).toEqual([]);
+      expect(stuckAlerts()).toEqual([
+        expect.objectContaining({ proofId: uid(0x401), orderId: 'o1' }),
+      ]);
+      expect((await getProof(h, uid(0x401)))?.nextStatusAt).toBeNull();
+    });
   });
 });
 
