@@ -268,6 +268,54 @@ describe('runOcpPlaceOutboxPass', () => {
     ]);
   });
 
+  it('defers the place while OpenCryptoPay does not know nostrPubkey or revision', async () => {
+    for (const [method, note, field] of [
+      ['PUT', shopNote(), 'nostrPubkey'],
+      ['PUT', shopNote(), 'revision'],
+      ['DELETE', shopNote({ shopAccount: null }), 'revision'],
+    ] as const) {
+      const messages = await messagesWith(note);
+      const { push, sent } = mapPush(
+        () =>
+          new Response(JSON.stringify({ error: `Place field is not allowed: ${field}` }), {
+            status: 400,
+          }),
+      );
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      expect(sent.map((request) => request.method)).toEqual([method]);
+      expect(ids.finishPlace).not.toHaveBeenCalled();
+      expect(ids.release).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.place.deferred')).toEqual([
+      expect.objectContaining({
+        messageId: ID,
+        status: 400,
+        error: 'Place field is not allowed: nostrPubkey',
+      }),
+      expect.objectContaining({ error: 'Place field is not allowed: revision' }),
+      expect.objectContaining({ error: 'Place field is not allowed: revision' }),
+    ]);
+    expect(logged('ocp.place.rejected')).toEqual([]);
+  });
+
+  it('rejects any other 400, also another unknown field or a body that is not that JSON', async () => {
+    for (const text of [
+      '{"error":"Place field is not allowed: id"}',
+      '{"error":["Place field is not allowed: nostrPubkey"]}',
+      '{}',
+      'Place field is not allowed: nostrPubkey',
+    ]) {
+      const messages = await messagesWith(shopNote());
+      const { push } = mapPush(() => new Response(text, { status: 400 }));
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+    }
+    expect(logged('ocp.place.rejected')).toHaveLength(4);
+    expect(logged('ocp.place.deferred')).toEqual([]);
+  });
+
   it('treats an unreadable 409 body as another 409', async () => {
     const messages = await messagesWith(shopNote());
     const broken = {
@@ -471,6 +519,17 @@ describe('runOcpPhotoOutboxPass', () => {
     }
   });
 
+  it('treats the plain 404 of an OpenCryptoPay API without the photo route as an unknown place', async () => {
+    const messages = await messagesWith(shopNote(), [PNG]);
+    const ids = stubIdentities();
+    const { push, sent } = mapPush(() => new Response('404 Not Found', { status: 404 }));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent.map((request) => request.url)).toEqual(['https://map.test/map/places/photos']);
+    expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, true);
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+    expect(logged('ocp.photos.rejected')).toEqual([]);
+  });
+
   it('keeps the flag and logs ocp.photos.failed on any other answer or error', async () => {
     const messages = await messagesWith(shopNote());
     for (const answer of [
@@ -485,6 +544,74 @@ describe('runOcpPhotoOutboxPass', () => {
       expect(ids.release).not.toHaveBeenCalled();
     }
     expect(logged('ocp.photos.failed')).toHaveLength(3);
+  });
+});
+
+describe('OpenCryptoPay without openCryptoPay/api#26', () => {
+  it('retries the place once a lease ended and sends the photos after the upgrade', async () => {
+    const messages = await messagesWith(shopNote(), [PNG]);
+    const clock = { now: 1_000_000 };
+    const store = new InMemoryShopIdentityStore(messages, () => clock.now);
+    await store.ensureListed(ID, new Uint8Array(32).fill(7));
+    let upgraded = false;
+    const { push, sent } = mapPush((url) => {
+      if (!upgraded) {
+        return url.endsWith('/photos')
+          ? new Response('404 Not Found', { status: 404 })
+          : new Response('{"error":"Place field is not allowed: nostrPubkey"}', { status: 400 });
+      }
+      return new Response('{}', { status: 200 });
+    });
+    const outbox = deps(store, messages, push);
+
+    await runOcpPlaceOutboxPass(outbox);
+    await runOcpPlaceOutboxPass(outbox);
+    await runOcpPhotoOutboxPass(outbox);
+    expect(sent.map((request) => request.method)).toEqual(['PUT']);
+    expect((await store.getByMessageId(ID))?.ocpPlacePending).toBe(true);
+
+    clock.now += 60_000;
+    upgraded = true;
+    await runOcpPlaceOutboxPass(outbox);
+    await runOcpPhotoOutboxPass(outbox);
+    expect(sent.map((request) => request.url)).toEqual([
+      'https://map.test/map/places',
+      'https://map.test/map/places',
+      'https://map.test/map/places/photos',
+    ]);
+    expect(await store.getByMessageId(ID)).toMatchObject({
+      ocpPlacePending: false,
+      ocpPhotosPending: false,
+      ocpPhotosHash: ocpPhotoSetHash([PNG]),
+    });
+    expect(logged('ocp.place.deferred')).toHaveLength(1);
+  });
+
+  it('keeps the photo state when the old API answers the photo route with 404', async () => {
+    const messages = await messagesWith(shopNote(), [PNG]);
+    const clock = { now: 1_000_000 };
+    const store = new InMemoryShopIdentityStore(messages, () => clock.now);
+    await store.ensureListed(ID, new Uint8Array(32).fill(7));
+    await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'put');
+    const { push, sent } = mapPush((url) =>
+      url.endsWith('/photos')
+        ? new Response('404 Not Found', { status: 404 })
+        : new Response('{"error":"Place field is not allowed: nostrPubkey"}', { status: 400 }),
+    );
+    const outbox = deps(store, messages, push);
+
+    await runOcpPhotoOutboxPass(outbox);
+    await runOcpPhotoOutboxPass(outbox);
+    await runOcpPlaceOutboxPass(outbox);
+    expect(sent.map((request) => request.url)).toEqual([
+      'https://map.test/map/places/photos',
+      'https://map.test/map/places',
+    ]);
+    expect(await store.getByMessageId(ID)).toMatchObject({
+      ocpPlacePending: true,
+      ocpPhotosPending: false,
+      ocpPhotosHash: null,
+    });
   });
 });
 

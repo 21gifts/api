@@ -55,6 +55,33 @@ async function isStaleRevision(response: Response): Promise<boolean> {
   return response.status === 409 && (await bodyText(response)).includes('Stale revision');
 }
 
+/**
+ * The 400 answers of an OpenCryptoPay API without openCryptoPay/api#26: its
+ * place validation names the first field it does not know.
+ */
+const OCP_OLD_API_ERRORS: ReadonlySet<string> = new Set([
+  'Place field is not allowed: nostrPubkey',
+  'Place field is not allowed: revision',
+]);
+
+/**
+ * Whether a 400 is the answer of an OpenCryptoPay API that does not run
+ * openCryptoPay/api#26 yet (`nostrPubkey` or `revision` not allowed).
+ *
+ * @param response - The 400 answer; its body is read.
+ * @returns The fixed error text when it is such an answer, otherwise null.
+ */
+async function oldApiError(response: Response): Promise<string | null> {
+  try {
+    const payload = JSON.parse(await bodyText(response)) as { error?: unknown };
+    return typeof payload.error === 'string' && OCP_OLD_API_ERRORS.has(payload.error)
+      ? payload.error
+      : null;
+  } catch {
+    return null;
+  }
+}
+
 function send(
   mapPush: MapPush,
   path: '/map/places' | '/map/places/photos',
@@ -125,6 +152,13 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
       await identities.release('place', claim);
       return;
     }
+    if (response.status === 400) {
+      const error = await oldApiError(response);
+      if (error !== null) {
+        logEvent('ocp.place.deferred', { messageId, status: 400, error });
+        return;
+      }
+    }
     if (response.status === 400 || response.status === 409) {
       logEvent('ocp.place.rejected', { messageId, status: response.status });
       await identities.finishPlace(claim, 'reject');
@@ -141,8 +175,11 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  *
  * Results: `PUT` 2xx clears the place flag (generation-checked) and queues
  * the photos; 201 also nulls the photo hash; `DELETE` 2xx clears the flag;
- * 409 `Stale revision` only releases; 400 or another 409 logs
- * `ocp.place.rejected` and clears the flag; anything else logs
+ * 409 `Stale revision` only releases; a 400 whose error says the field
+ * `nostrPubkey` or `revision` is not allowed (an OpenCryptoPay API without
+ * openCryptoPay/api#26) logs `ocp.place.deferred` and keeps the flag and the
+ * claim, so the place is sent again when the lease ends; any other 400 or
+ * another 409 logs `ocp.place.rejected` and clears the flag; anything else logs
  * `ocp.place.failed` and keeps the flag until the lease ends.
  *
  * @param deps - Identities, messages and the map target.

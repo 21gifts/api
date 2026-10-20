@@ -206,8 +206,8 @@ Without a public origin, the shop profile does what an account profile does
 `notePageUrl` (`src/lib/nostr/event.ts`) builds note links, so a dev or
 staging shop links to its own site; when it is empty, `https://21.gifts`.
 The shop page is delivered by `21gifts/app` (S4, 21gifts/app#646), so this
-release publishes `website` as `<site origin>/{npub}` and deploys together
-with that page (see Rollout). Accounts keep the fixed
+release publishes `website` as `<site origin>/{npub}` and deploys after
+that page is live (see Rollout). Accounts keep the fixed
 `https://21.gifts` behavior.
 
 Kind 0 of a shop that is no longer listed:
@@ -487,9 +487,16 @@ Rules for every claim:
     before sending.
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker only releases the claim.
-  - 400 or any other 409: log `ocp.place.rejected` with the message id and
-    clear the
-    flag. It is sent again only after the next change.
+  - 400 `Place field is not allowed: nostrPubkey` or
+    `Place field is not allowed: revision`: OpenCryptoPay does not run
+    openCryptoPay/api#26 yet. Log `ocp.place.deferred` with the message id
+    and the error, keep the flag and do not release the claim, so the place
+    is sent again when the lease (`WORKER_LEASE_MS`, 60 s) ends, about once
+    a minute. Its `DELETE` ignores unknown fields, so a `DELETE` succeeds
+    there; should it answer the same 400, it is deferred the same way.
+  - Any other 400, or any other 409: log `ocp.place.rejected` with the
+    message id and clear the flag. It is sent again only after the next
+    change.
   - Any other answer, a network error or a timeout (401 and 5xx included):
     log `ocp.place.failed` and keep the flag; the next attempt
     follows when the lease ends.
@@ -560,20 +567,33 @@ Rules for every claim:
     the flag, and, if the shop is still listed, queue the place (set
     `ocp_place_pending`, raise `ocp_place_generation`). The confirmed place
     `PUT` then queues the photos again.
+    An OpenCryptoPay API without openCryptoPay/api#26 has no photo route
+    and answers the plain `404 Not Found`; it is handled the same way. The
+    queued place is then deferred (above) until that API is live, and the
+    photo row is not claimed while its place is pending, so the photo lane
+    neither loops nor loses the set: the first confirmed place `PUT` queues
+    it again.
   - Any other answer, a network error or a timeout: log `ocp.photos.failed`
     and keep the flag; the next attempt follows when the lease ends.
 
 ### Rollout
 
-This release deploys together with openCryptoPay/api#26 and 21gifts/app#646.
+Deploy order: openCryptoPay/api#26 and 21gifts/app#646 go live first, then
+this API.
 
 - openCryptoPay/api#26 requires `nostrPubkey` on every place write, accepts
   the strictly increasing `revision`, and provides `PUT /map/places/photos`.
 - 21gifts/app#646 is S4, the shop page. Every shop kind 0 publishes
   `website` as `<site origin>/{npub}` (S2), and the staging spec allowed that
-  npub `website` only once the page is live. Deploying the app change in the
-  same release satisfies that: no kind 0 points at a page that does not
-  exist yet.
+  npub `website` only once the page is live. Deploying the app change
+  first satisfies that: no kind 0 points at a page that does not exist
+  yet.
+
+Should this API boot before openCryptoPay/api#26 is live, the push is only
+delayed, not dropped: the old API answers each place `PUT` with
+`Place field is not allowed: nostrPubkey`, the place sender defers it
+(`ocp.place.deferred`) and retries it about once a minute, and the photos
+follow the first confirmed place.
 
 The `shop_identity` outbox columns, all queueing writes, both senders and the
 paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpPlace` and
@@ -586,11 +606,12 @@ paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpP
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
 3. S5 ships in this same release with both outboxes, both senders and start-up.
-4. S4 is 21gifts/app#646 (open); it deploys in the same release.
+4. S4 is 21gifts/app#646 (open); it goes live before this API.
 5. Shop kind 0 uses `<site origin>/{npub}`.
 
-S1, S2, S3 and S5 are one pull request and one release in this repository;
-S4 follows the gates of `21gifts/app`.
+S1, S2, S3 and S5 are one pull request and one release in this repository.
+This pull request meets the handbook, e2e and 100% coverage gates of this
+repo's `CONTRIBUTING.md`; S4 (21gifts/app#646) meets those of 21gifts/app.
 
 ## Not part of this
 
