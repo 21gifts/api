@@ -2,7 +2,7 @@
 
 [REVIEW.md](REVIEW.md) is binding for every change and for every review of a change. Read it and this file at the base revision of the pull request. A pull request that changes either file does not replace that base text for the rest of its diff. The review does not change files.
 
-[docs/fiat-amounts.md](docs/fiat-amounts.md) is binding for every amount. A committed amount keeps the fiat figures fixed when it was created. A typed amount stays that exact decimal string. It is never derived again from sats, from a later spot, or from a daily close. A missing string stays null.
+[docs/fiat-amounts.md](docs/fiat-amounts.md) is binding for every amount. A committed amount keeps the fiat figures fixed when it was created. A typed amount stays that exact decimal string. It is never derived again from sats, from a later spot, or from a daily close. A missing string stays null. A till charge stores the decimal string the operator typed and returns that same string to the shop and to the payer. Typing 12.00 returns 12.00 to both, never 12.01 or 11.99.
 
 ## Quick start
 

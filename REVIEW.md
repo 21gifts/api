@@ -20,7 +20,7 @@ A hard requirement in `CONTRIBUTING.md` or in this file cannot be waived by a se
 
 ## Fiat amounts
 
-Reject the change when a committed amount gains, loses, or replaces a fiat figure from sats, from a later spot, or from a daily close. A typed amount stays that exact decimal string. A missing string stays null. `docs/fiat-amounts.md` is binding.
+Reject the change when a committed amount gains, loses, or replaces a fiat figure from sats, from a later spot, or from a daily close. A typed amount stays that exact decimal string. A missing string stays null. A till charge that does not return the operator's typed decimal string to both the shop and the payer is rejected. A typed 12.00 returned as 12.01 or 11.99 is rejected. `docs/fiat-amounts.md` is binding.
 
 A contradiction of `CONTRIBUTING.md`, or of a document that `CONTRIBUTING.md` names as binding, is a defect on the same terms.
 
