@@ -2641,51 +2641,51 @@ export class ShopPayments {
     retried = false,
   ): Promise<ShopPayLinkAnswer> {
     const current = await this.currentQuote(account, username, payment);
-    if (current === null) {
-      // The payment left `open` meanwhile: answer from the state now. Another
-      // payment that is the open amount now (a new payer amount replaced
-      // this one, or a charge's creation inserted one) is answered as the
-      // open amount, once per request. A state that reads the same payment
-      // `open` again, or another one after that retry, answers as with
-      // nothing waiting; a charge still waiting keeps its pin.
-      const state = await this.#linkState(account.id, this.#deps.now());
-      if (state.kind === 'open' && !retried && state.payment.id !== payment.id) {
-        return this.#openAmountAnswer(
-          account,
-          username,
-          name,
-          metadata,
-          state.payment,
-          query,
-          true,
-        );
-      }
-      return withoutOpenAmount(
-        state.kind === 'open' ? { kind: 'none' } : state,
+    if (current !== null && query.method === null) {
+      const body = shopPayRequest({
         username,
         name,
-        query,
-      );
-    }
-    if (query.method !== null) {
-      const response = await this.callback(account, username, {
-        amount: null,
-        quote: current.quote.id,
-        method: query.method,
-        asset: query.asset,
-        repeated: query.repeated,
+        metadata,
+        publicBaseUrl: this.#deps.lnurlServer.publicBaseUrl,
+        payment: current.payment,
+        quote: current.quote,
       });
-      return { kind: 'response', response };
+      return { kind: 'response', response: shopResponse(body, 200) };
     }
-    const body = shopPayRequest({
+    if (current !== null && query.method !== null) {
+      const response = await this.#callback(
+        account,
+        username,
+        {
+          amount: null,
+          quote: current.quote.id,
+          method: query.method,
+          asset: query.asset,
+          repeated: query.repeated,
+        },
+        payment.id,
+      );
+      if (response !== null) {
+        return { kind: 'response', response };
+      }
+    }
+    // The payment left `open` meanwhile (before its quote was read, or before
+    // the callback read the state): answer from the state now. Another
+    // payment that is the open amount now (a new payer amount replaced this
+    // one, or a charge's creation inserted one) is answered as the open
+    // amount, once per request. A state that reads the same payment `open`
+    // again, or another one after that retry, answers as with nothing
+    // waiting; a charge still waiting keeps its pin.
+    const state = await this.#linkState(account.id, this.#deps.now());
+    if (state.kind === 'open' && !retried && state.payment.id !== payment.id) {
+      return this.#openAmountAnswer(account, username, name, metadata, state.payment, query, true);
+    }
+    return withoutOpenAmount(
+      state.kind === 'open' ? { kind: 'none' } : state,
       username,
       name,
-      metadata,
-      publicBaseUrl: this.#deps.lnurlServer.publicBaseUrl,
-      payment: current.payment,
-      quote: current.quote,
-    });
-    return { kind: 'response', response: shopResponse(body, 200) };
+      query,
+    );
   }
 
   /**
@@ -2951,6 +2951,39 @@ export class ShopPayments {
    * @returns The response.
    */
   async callback(account: Account, username: string, query: ShopCallbackQuery): Promise<Response> {
+    return this.#callback(account, username, query, null);
+  }
+
+  /**
+   * The callback, also for the simplified flow, which names the open
+   * payment its quote belongs to.
+   *
+   * @param account - Shop account.
+   * @param username - Its username.
+   * @param query - Callback query.
+   * @param paymentId - `null` for the callback route; for the simplified
+   *   flow, the open payment whose current quote `query.quote` is.
+   * @returns The response, or `null` when `paymentId` is given and is no
+   *   longer the account's open amount when the callback reads the state.
+   */
+  #callback(
+    account: Account,
+    username: string,
+    query: ShopCallbackQuery,
+    paymentId: null,
+  ): Promise<Response>;
+  #callback(
+    account: Account,
+    username: string,
+    query: ShopCallbackQuery,
+    paymentId: string,
+  ): Promise<Response | null>;
+  async #callback(
+    account: Account,
+    username: string,
+    query: ShopCallbackQuery,
+    paymentId: string | null,
+  ): Promise<Response | null> {
     const nowMs = this.#deps.now();
     const state = await this.#linkState(account.id, nowMs);
     const open = state.kind === 'open' ? state.payment : null;
@@ -2962,6 +2995,9 @@ export class ShopPayments {
     }
     if (query.quote === null || query.asset === null || query.repeated) {
       return shopError(400, 'That payment is not offered');
+    }
+    if (paymentId !== null && open?.id !== paymentId) {
+      return null;
     }
     if (open === null) {
       return shopError(404, 'Quote expired');

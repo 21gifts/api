@@ -592,9 +592,14 @@ without `timeout`. With neither (a pending charge whose shop payment is
 **Simplified flow.** A request with `method` first applies the rules
 above, including `timeout` and replacement. With an open amount it then
 answers exactly as `GET /lnurlp/cb/:username` with that `method`, the
-request's `asset`, and the current quote id; a repeated `quote`, `method`,
-or `asset` key is the callback's 400. Without an open amount it is the
-404 above.
+request's `asset`, and the current quote id; a repeated `quote`,
+`method`, or `asset` key is the callback's 400. When the payment stops
+being `open` after its current quote was read and before that answer
+reads the account's state (for example, a new payer amount replaced it),
+the request reads the state again as under **Open amount** above:
+another open amount is answered the same way, once per request, and
+otherwise it is the 404 above, never the callback's 404 `Quote expired`.
+Without an open amount it is the 404 above.
 
 Usernames `invoice` and `cb`, and any username that ends in `.`, never get
 stablecoin rows: no shop payment is created for them, and they keep

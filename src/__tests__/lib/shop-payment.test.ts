@@ -5192,6 +5192,75 @@ describe('simplified flow (Pay link: Simplified flow)', () => {
     expect(answer.status).toBe(404);
     expect(answer.json['standard']).toBe('OpenCryptoPay');
   });
+
+  /**
+   * Make the fetch read `stale` (in order) as the open amount, and each of
+   * them as still `open`, after a later payer amount replaced it.
+   *
+   * @param h - Harness.
+   * @param stale - Payments the state reads return, one per read.
+   */
+  function staleOpen(h: Harness, stale: ShopPayment[]): void {
+    const ids = new Set(stale.map((row) => row.id));
+    const reads = [...stale];
+    h.store.hooks.openPayment = async (tx, ...args) => {
+      const row = reads.shift();
+      return row === undefined
+        ? tx.openPayment(...(args as unknown as [string]))
+        : { ...row, status: 'open' };
+    };
+    h.store.hooks.getPayment = async (tx, ...args) => {
+      const row = await tx.getPayment(...(args as unknown as [string]));
+      return row !== null && ids.has(row.id) ? { ...row, status: 'open' } : row;
+    };
+  }
+
+  const USDT_QUERY: ShopPayLinkQuery = { ...NO_QUERY, method: 'Polygon', asset: 'USDT' };
+
+  it('answers the payment that replaced the open one between its current quote and the callback’s state read', async () => {
+    const h = await setup();
+    const first = await payerPayment(h, 1000);
+    const second = await payerPayment(h, 2000);
+    // The pay link and the quote read see `first`; the callback's state read sees `second`.
+    staleOpen(h, [first]);
+    const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, USDT_QUERY, clock));
+    const [quote] = await quotesOf(h, second.id);
+    const offers = await h.store.transaction((tx) => tx.offersOf(quote!.id));
+    const offer = offers.find((row) => row.method === 'Polygon' && row.asset === 'USDT')!;
+    expect(answer.status).toBe(200);
+    expect(answer.json['blockchain']).toBe('Polygon');
+    expect(answer.json['uri']).toContain(offer.depositAddress);
+    expect(offer.detailIssuedAt?.getTime()).toBe(clock);
+    const [old] = await quotesOf(h, first.id);
+    const oldOffers = await h.store.transaction((tx) => tx.offersOf(old!.id));
+    expect(oldOffers.every((row) => row.detailIssuedAt === null)).toBe(true);
+  });
+
+  it('answers as with nothing open when the open payment changes again within the retry, or leaves open before the callback', async () => {
+    const h = await setup();
+    const first = await payerPayment(h, 1000);
+    const second = await payerPayment(h, 2000);
+    await payerPayment(h, 3000);
+    // The pay link reads `first` and its callback `second`; the retry reads
+    // `second` and its callback the third payment.
+    staleOpen(h, [first, second, second]);
+    const replaced = await bodyOf(
+      await h.svc.payLink(h.account, USER, METADATA, USDT_QUERY, clock),
+    );
+    expect(replaced.status).toBe(404);
+    expect(replaced.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
+
+    const g = await setup();
+    await payerPayment(g);
+    let reads = 0;
+    g.store.hooks.openPayment = async (tx, ...args) => {
+      reads += 1;
+      return reads === 1 ? tx.openPayment(...(args as unknown as [string])) : null;
+    };
+    const left = await bodyOf(await g.svc.payLink(g.account, USER, METADATA, USDT_QUERY, clock));
+    expect(left.status).toBe(404);
+    expect(left.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
+  });
 });
 
 // ─── Callback ──────────────────────────────────────────────────────────────
@@ -5303,6 +5372,22 @@ describe('callback order table (Callback)', () => {
     expect((await ask(quotes[2]!.id.toUpperCase())).status).toBe(200);
     clock = T0 + 300_000;
     expect((await ask(quotes[2]!.id)).status).toBe(404);
+  });
+
+  it('order 2: a quote of a payment a newer payer amount replaced is 404 Quote expired', async () => {
+    const { h, quote } = await opened();
+    await payerPayment(h, 2000);
+    const response = await h.svc.callback(h.account, USER, {
+      amount: null,
+      quote: quote.id,
+      method: 'Polygon',
+      asset: 'USDT',
+      repeated: false,
+    });
+    expect(await responseJson(response)).toEqual({
+      status: 404,
+      json: shopErrorBody(404, 'Quote expired'),
+    });
   });
 
   it('order 3: Lightning and BTC answer the BOLT11, matched without regard to case', async () => {
