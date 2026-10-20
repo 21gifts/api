@@ -197,11 +197,18 @@ not, in the same loop and with the same rules as account profiles
   so a shop whose reads throw or whose content is unchanged uses a slot too
   and a tick reads at most `WORKER_BATCH` shops, also during an outage,
   plus the NIP-05 allocation: the same listed names as
-  `/.well-known/nostr.json` (every account and every shop note), read at
-  most once per tick and only once a visited shop is listed and the NIP-05
-  domain is set. When that read fails, the tick logs `nostr.profile.nack`
-  with `reason: "nip05"`, publishes no shop kind 0 (never one without its
-  NIP-05) and goes on with kind 10002, kind 1 and conversations;
+  `/.well-known/nostr.json` (every account and every shop note), read only
+  once a visited shop is listed and the NIP-05 domain is set, at first once
+  per tick. Each later shop reads its note fresh, so when the allocation has
+  no entry for a listed shop or one with another name (listed or renamed
+  since the allocation), the tick drops it and reads it once more (at most
+  two reads per tick). When the entry still does not match, that shop gets
+  no kind 0 and no cache entry, the tick logs `nostr.profile.nack` with
+  `reason: "nip05_stale"` and the shop is tried again on its next turn.
+  When a read fails, the tick logs `nostr.profile.nack` with
+  `reason: "nip05"`, publishes no further shop kind 0 in that tick (shops
+  already published in that tick keep theirs; never one without its NIP-05)
+  and goes on with kind 10002, kind 1 and conversations;
 - same `NOSTR_PUBLISH` and
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
   `wss://purplepag.es`;

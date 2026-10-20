@@ -35,7 +35,12 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { stillLook } from '@/lib/nostr/image';
-import { listShopNip05Entries, nip05Domain, nip05Identifier } from '@/lib/nip05';
+import {
+  listShopNip05Entries,
+  nip05Domain,
+  nip05Identifier,
+  type ShopNip05Entry,
+} from '@/lib/nip05';
 import {
   forumVideoUrl,
   isoBmffDisplaySize,
@@ -1457,16 +1462,19 @@ interface ShopKind0Args {
  * account's `lud16` (only when the till account has a name, a username and a
  * non-empty Lightning address); a shop that is no longer listed keeps `profile_name`
  * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
- * and the `website`, without images, NIP-05 or `lud16`. `nip05Local` is
- * only called for a listed shop and only when `domain` is set.
+ * and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
+ * only called for a listed shop and only when `domain` is set, before any
+ * write; it returns the allocation entry only when it carries the name this
+ * read sees. Without such an entry the shop gets no kind 0 this time: the
+ * result is `null` and nothing was written.
  */
 async function shopKind0Args(
   deps: NostrWorkerDeps,
   shops: ShopIdentityStore,
   identity: ShopIdentityRow,
-  nip05Local: (messageId: string) => Promise<string | undefined>,
+  nip05Entry: (messageId: string, name: string) => Promise<ShopNip05Entry | undefined>,
   domain: string | null,
-): Promise<ShopKind0Args> {
+): Promise<ShopKind0Args | null> {
   const note = await deps.messages.getById(identity.messageId);
   const website = `${shopSiteOrigin(deps.env)}/${shopNpub(identity)}`;
   const shop = listedShop(note);
@@ -1482,8 +1490,13 @@ async function shopKind0Args(
       listed: false,
     };
   }
-  // Before any write, so a failing allocation leaves no side effect.
-  const local = domain === null ? undefined : await nip05Local(note.id);
+  // Before any write, so a failing or stale allocation leaves no side effect.
+  let nip05: string | null = null;
+  if (domain !== null) {
+    const entry = await nip05Entry(note.id, shop.name);
+    if (entry === undefined) return null;
+    nip05 = `${entry.local}@${domain}`;
+  }
   if (shop.name !== identity.profileName) {
     // Conditional on this tick's snapshot: a newer rename that committed
     // after the read above is not overwritten (S2 of docs/shop-identity.md).
@@ -1515,7 +1528,7 @@ async function shopKind0Args(
   return {
     name: shop.name,
     lud16,
-    nip05: domain === null || local === undefined ? null : `${local}@${domain}`,
+    nip05,
     about: shopDescription(note.text),
     images: { picture, banner },
     website,
@@ -1530,11 +1543,18 @@ async function shopKind0Args(
  * every visited shop counts, also one whose content is unchanged or whose
  * reads throw, so a tick reads at most `WORKER_BATCH` shops, plus the NIP-05
  * allocation ({@link listShopNip05Entries}, the same listed names as
- * `/.well-known/nostr.json`). That allocation runs at most once per tick and
- * only when a visited shop is listed and the NIP-05 domain is set. When it
- * throws, the tick logs `nostr.profile.nack` with `reason: 'nip05'` for that
- * shop and publishes no shop kind 0 until the next tick (never one without
- * its NIP-05); the rest of the tick still runs.
+ * `/.well-known/nostr.json`). That allocation runs only when a visited shop
+ * is listed and the NIP-05 domain is set, at first once per tick. Each later
+ * shop reads its note fresh, so when the allocation has no entry for a listed
+ * shop or one with another name (listed or renamed since the allocation), the
+ * tick drops it and allocates once more (at most two allocations per tick).
+ * When that entry still does not match, the shop gets no kind 0 and no cache
+ * entry: the tick logs `nostr.profile.nack` with `reason: 'nip05_stale'` and
+ * the shop is tried again on its next turn. When an allocation throws, the
+ * tick logs `nostr.profile.nack` with `reason: 'nip05'` for that shop and
+ * publishes no further shop kind 0 in that tick (shops already published in
+ * that tick keep theirs; never one without its NIP-05); the rest of the tick
+ * still runs.
  *
  * @param deps - Worker deps.
  * @param writeSet - Resolved write relays.
@@ -1549,18 +1569,34 @@ async function publishShopProfiles(
   const watermarks = shopCache(shopProfileWatermarks, shops);
   const urls = writeRelayUrls(writeSet);
   const domain = nip05Domain(deps.env);
-  let nip05Locals: Promise<ReadonlyMap<string, string>> | undefined;
+  let nip05Entries: Promise<ReadonlyMap<string, ShopNip05Entry>> | undefined;
+  let nip05Allocations = 0;
   let nip05Failed = false;
-  const nip05Local = async (messageId: string): Promise<string | undefined> => {
-    nip05Locals ??= listShopNip05Entries(deps.auth, shops, deps.messages).then(
-      (rows) => new Map(rows.map((row) => [row.messageId, row.local] as const)),
-    );
+  const allocateNip05 = async (): Promise<ReadonlyMap<string, ShopNip05Entry>> => {
+    if (nip05Entries === undefined) {
+      nip05Allocations += 1;
+      nip05Entries = listShopNip05Entries(deps.auth, shops, deps.messages).then(
+        (rows) => new Map(rows.map((row) => [row.messageId, row] as const)),
+      );
+    }
     try {
-      return (await nip05Locals).get(messageId);
+      return await nip05Entries;
     } catch (error) {
       nip05Failed = true;
       throw error;
     }
+  };
+  const nip05Entry = async (
+    messageId: string,
+    name: string,
+  ): Promise<ShopNip05Entry | undefined> => {
+    let entry = (await allocateNip05()).get(messageId);
+    if (entry?.name !== name && nip05Allocations < 2) {
+      // Listed or renamed after the allocation: drop it and allocate again.
+      nip05Entries = undefined;
+      entry = (await allocateNip05()).get(messageId);
+    }
+    return entry?.name === name ? entry : undefined;
   };
   let attempted = 0;
   for (const identity of shopRound(await shops.listAll(), shopProfileCursors.get(shops))) {
@@ -1572,7 +1608,12 @@ async function publishShopProfiles(
     advanceShopRound(shopProfileCursors, shops, identity);
     let reservation: Kind0Reservation | undefined;
     try {
-      const args = await shopKind0Args(deps, shops, identity, nip05Local, domain);
+      const args = await shopKind0Args(deps, shops, identity, nip05Entry, domain);
+      if (args === null) {
+        // No reservation was made, so the shop is tried again on its next turn.
+        logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05_stale' });
+        continue;
+      }
       const content = buildKind0Content(
         args.name,
         args.lud16,

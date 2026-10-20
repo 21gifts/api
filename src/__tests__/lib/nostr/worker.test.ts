@@ -8234,6 +8234,119 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       }
     });
 
+    /** Run `change` once, right after shop `first` publishes its kind 0. */
+    function afterShopKind0(ctx: Ctx, first: ShopIdentityRow, change: () => Promise<void>): void {
+      const publisher = ctx.publisher;
+      const publish = publisher.publish.bind(publisher);
+      let done = false;
+      publisher.publish = async (event, urls, timeoutMs) => {
+        const acks = await publish(event, urls, timeoutMs);
+        if (!done && event['pubkey'] === first.nostrPubkey && event['kind'] === 0) {
+          done = true;
+          await change();
+        }
+        return acks;
+      };
+    }
+
+    it('allocates NIP-05 again for a shop renamed after the allocation in the same tick', async () => {
+      const allocate = vi.mocked(listShopNip05Entries);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      const [first, second] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
+      });
+      allocate.mockClear();
+      await tick(ctx);
+      expect(allocate).toHaveBeenCalledTimes(2);
+      expect(content(shopEvents(ctx, first!, 0)[0])['nip05']).toBe('coffee-lab@21.gifts');
+      const events = shopEvents(ctx, second!, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({ name: 'Roastery', nip05: 'roastery@21.gifts' });
+      const json = await buildNostrJson(ctx.auth, ENV, undefined, {
+        identities: ctx.shops,
+        messages: ctx.messages,
+      });
+      expect(json.names['roastery']).toBe(second!.nostrPubkey);
+      expect(logged('nostr.profile.nack')).toEqual([]);
+    });
+
+    it('allocates NIP-05 again for a shop listed after the allocation in the same tick', async () => {
+      const allocate = vi.mocked(listShopNip05Entries);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      await ctx.messages.updateText(uuid(2), 'Only coffee here, no tag at all.');
+      const [first, second] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.updateText(uuid(2), TEXT);
+      });
+      allocate.mockClear();
+      await tick(ctx);
+      expect(allocate).toHaveBeenCalledTimes(2);
+      const events = shopEvents(ctx, second!, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        name: 'Coffee Lab',
+        nip05: `coffee-lab-${uuid(2).replace(/-/g, '').slice(0, 8)}@21.gifts`,
+      });
+      expect(logged('nostr.profile.nack')).toEqual([]);
+    });
+
+    it('publishes nothing for a shop whose NIP-05 is still stale after the second allocation', async () => {
+      const allocate = vi.mocked(listShopNip05Entries);
+      const actual = allocate.getMockImplementation()!;
+      const ctx = await context([
+        { row: shopNote(uuid(1)) },
+        { row: shopNote(uuid(2)) },
+        { row: shopNote(uuid(3)) },
+      ]);
+      for (const id of [uuid(1), uuid(2), uuid(3)]) await ctx.shops.ensureListed(id, KEK);
+      await ctx.messages.updateText(uuid(3), 'Only coffee here, no tag at all.');
+      const [first, second, third] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
+      });
+      allocate.mockClear();
+      allocate.mockImplementationOnce(actual).mockImplementationOnce(async (...args) => {
+        // Renamed again before the second allocation, listed again after it.
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Bakery' });
+        const rows = await actual(...args);
+        await ctx.messages.updateText(uuid(3), TEXT);
+        return rows;
+      });
+      await tick(ctx);
+      expect(allocate).toHaveBeenCalledTimes(2);
+      expect(shopEvents(ctx, first!, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, second!, 0)).toHaveLength(0);
+      expect(shopEvents(ctx, third!, 0)).toHaveLength(0);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(2),
+          reason: 'nip05_stale',
+        },
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(3),
+          reason: 'nip05_stale',
+        },
+      ]);
+      // No rename was written for the stale shop.
+      expect((await ctx.shops.getByMessageId(uuid(2)))?.profileName).toBe('Coffee Lab');
+      await tick(ctx);
+      expect(content(shopEvents(ctx, second!, 0)[0])).toMatchObject({
+        name: 'Bakery',
+        nip05: 'bakery@21.gifts',
+      });
+      expect(content(shopEvents(ctx, third!, 0)[0])).toMatchObject({
+        name: 'Coffee Lab',
+        nip05: `coffee-lab-${uuid(3).replace(/-/g, '').slice(0, 8)}@21.gifts`,
+      });
+    });
+
     it('clears the cache on a nack and retries on the next tick', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }]);
       ctx.publisher.ok = false;
