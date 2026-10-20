@@ -311,6 +311,20 @@ test('Function: updatePhoto — GET /view/:viewKey/about/photo without a key is 
   expect(res.status()).toBe(404);
 });
 
+test('Function: memberPublicMessages — GET /view/:viewKey/posts is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey/posts');
+  expect(res.status()).toBe(404);
+});
+
+test('Function: loadMemberProfileNote — GET /view/:viewKey is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/view/:viewKey');
+  expect(res.status()).toBe(404);
+});
+
 test('Function: buildAccountActivity — GET /me/activity without bearer is 401', async ({
   request,
 }) => {

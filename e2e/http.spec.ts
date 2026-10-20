@@ -120,6 +120,26 @@ test('GET /view/:viewKey/activity is 404 on default boot', async ({ request }) =
   expect(res.status()).toBe(404);
 });
 
+test('GET /view/:viewKey/posts is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/posts');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/shops is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/shops');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/credits is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/credits');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/replies is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/replies');
+  expect(res.status()).toBe(404);
+});
+
 test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/setup/skip', { data: { step: 'name' } });
   expect(res.status()).toBe(401);

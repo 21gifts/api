@@ -1,4 +1,5 @@
 import { aboutMeFromNote } from '@/lib/about-me';
+import type { HeartedPublicMessage } from '@/lib/member-public-feed';
 import {
   accountMissing,
   accountSetup,
@@ -204,16 +205,50 @@ export interface OwnerAccountResponse extends AccountResponse {
 }
 
 /**
- * Public profile card for anyone with the view-key URL. Omits identity
- * ids, role, and the view key itself.
+ * Counts and funding marks the member card already shows.
+ * The share link returns the same marks.
+ */
+export interface ViewProfileFacts {
+  /** Uncapped live top-level posts. */
+  postCount: number;
+  /** Uncapped live replies. */
+  replyCount: number;
+  /** Uncapped live shop notes. */
+  shopCount: number;
+  /** Uncapped live credit notes. */
+  creditCount: number;
+  /** Admission time (epoch ms) when admitted, otherwise `null`. */
+  fundingReviewedAt: number | null;
+  /** Display name of the staff member who admitted them, or `null`. */
+  fundingReviewedByName: string | null;
+}
+
+/** Empty counts and no funding mark. */
+const EMPTY_VIEW_FACTS: ViewProfileFacts = {
+  postCount: 0,
+  replyCount: 0,
+  shopCount: 0,
+  creditCount: 0,
+  fundingReviewedAt: null,
+  fundingReviewedByName: null,
+};
+
+/**
+ * Public profile card for anyone with the view-key URL.
+ * Same visible identity as the member card. Omits `linkingKey`, `viewKey`,
+ * and owner-only settings.
  */
 export interface ViewProfileResponse {
+  /** Account id. Same id as `GET /members/:id`. */
+  id: string;
   /** Display name, or `null` until set. */
   name: string | null;
   /** Unique LUD-16 / NIP-05 local-part, or `null` until set. */
   username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
+  /** Live role. Same value as the member card. */
+  role: Account['role'];
   /** Receiving address (verified in-app wallet), or `null`. Name kept for app compatibility. */
   lightningAddress: string | null;
   /** True when {@link ViewProfileResponse.lightningAddress} is set. */
@@ -238,6 +273,25 @@ export interface ViewProfileResponse {
    * Name-copy, missing, and soft-hidden notes stay `null`. Always present.
    */
   aboutMessageId: string | null;
+  /** Uncapped live top-level posts. */
+  postCount: number;
+  /** Uncapped live replies. */
+  replyCount: number;
+  /** Uncapped live shop notes. */
+  shopCount: number;
+  /** Uncapped live credit notes. */
+  creditCount: number;
+  /** Admission time (epoch ms) when admitted, otherwise `null`. */
+  fundingReviewedAt: number | null;
+  /** Display name of the staff member who admitted them, or `null`. */
+  fundingReviewedByName: string | null;
+  /**
+   * Live profile note, or `null` when none. Same object as
+   * `GET /members/:accountId`. `hearted` is false on this URL.
+   */
+  profileMessage: HeartedPublicMessage | null;
+  /** Present only when the account's staff label is `software_developer`. */
+  staffTag?: 'software_developer';
 }
 
 /**
@@ -794,15 +848,18 @@ export async function serializeOwnerAccountWithPosts(
 /**
  * Project an account to the public read-only profile card.
  *
- * Omits `id`, `linkingKey`, `role`, and `viewKey`.
+ * Same visible identity as the member card: id, role, counts, and the
+ * funding mark. Omits `linkingKey`, `viewKey`, and owner-only settings.
+ * `staffTag` is present only for `software_developer`.
  *
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
- * @returns Ten public profile fields (including username, location, aboutMe,
- *   aboutMeHasPhoto, and aboutMessageId).
+ * @param facts - Post counts and funding mark. Omitted facts are zeros and nulls.
+ * @param profileMessage - Live profile note, or `null`. Omitted means `null`.
+ * @returns The public profile card.
  */
 export function serializeViewProfile(
   account: Account,
@@ -810,12 +867,17 @@ export function serializeViewProfile(
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
   lnurlServer?: LnurlServerConfig,
+  facts: ViewProfileFacts = EMPTY_VIEW_FACTS,
+  profileMessage: HeartedPublicMessage | null = null,
 ): ViewProfileResponse {
   const receiving = receivingAddress(account, lnurlServer);
+  const staffTag = staffTagOf(account.staffTag);
   return {
+    id: account.id,
     name: account.name,
     username: account.username ?? null,
     location: account.location,
+    role: account.role,
     lightningAddress: receiving?.address ?? null,
     lightningAddressVerified: receiving !== null,
     createdAt: account.createdAt,
@@ -823,5 +885,13 @@ export function serializeViewProfile(
     aboutMe,
     aboutMeHasPhoto,
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
+    postCount: facts.postCount,
+    replyCount: facts.replyCount,
+    shopCount: facts.shopCount,
+    creditCount: facts.creditCount,
+    fundingReviewedAt: facts.fundingReviewedAt,
+    fundingReviewedByName: facts.fundingReviewedByName,
+    profileMessage,
+    ...(staffTag === null ? {} : { staffTag }),
   };
 }

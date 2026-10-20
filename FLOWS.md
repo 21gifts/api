@@ -141,8 +141,9 @@ Kind:0 `picture` stays the brand icon. **Do not invent** `POST /me/profile`.
 ### View-key link — **Shipped**
 
 The owner can copy a view-key link from `viewKey` on `GET /me`. The URL is
-`GET /view/:viewKey`. Opening that URL shows a read-only public profile card.
-It cannot write and cannot mint a session. Do not invent extra paths.
+`GET /view/:viewKey`. Opening that URL shows the same public profile as the
+member card, including the post, shop, credit, and reply lists. It cannot
+write and cannot mint a session. The moderator trust graph stays off this URL.
 
 ---
 
