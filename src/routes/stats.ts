@@ -1,5 +1,11 @@
 import { Hono } from 'hono';
-import { buildGiftStats, giftsForRecipient, type GiftRow, type GiftStats } from '@/lib/gift';
+import {
+  buildGiftStats,
+  giftsForRecipient,
+  utcDayFromPaidAt,
+  type GiftRow,
+  type GiftStats,
+} from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import type { BtcUsdRateBook } from '@/lib/btc-usd-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
@@ -44,11 +50,17 @@ export async function loadGiftStatsSnapshot(
 }
 
 /**
- * Last `spendOverTime` day with `sats > 0`. Empty history is `null`.
- * A missing stored amount stays null and does not throw.
+ * Latest gift-day proportion for a currency ask. Last `spendOverTime` day
+ * with `sats > 0` from {@link loadGiftStatsSnapshot} (no recipient filter).
+ * Empty history is `null`. `sats` is that public day total. A currency field
+ * stays that public sum only when every outbound gift on that UTC day stored
+ * a string for it. If any gift on that day lacks the string, that field is
+ * `null`, even when the public series shows a partial sum. The public series
+ * is unchanged. Does not invent a rate.
  *
  * @param deps - Gift store, both rate books, and the clock. The books are not read.
- * @returns That day's sats and four fiat totals, or `null` when no day has sats.
+ * @returns `{ sats, usd, chf, eur, php }`, or `null`. A missing or incomplete
+ * currency is `null` and does not throw.
  */
 export async function loadLatestGoalRateDay(deps: {
   store: GiftStore;
@@ -62,7 +74,14 @@ export async function loadLatestGoalRateDay(deps: {
   if (day === undefined) {
     return null;
   }
-  return { sats: day.sats, usd: day.usd, chf: day.chf, eur: day.eur, php: day.php };
+  const onDay = rows.filter((row) => utcDayFromPaidAt(row.paidAt) === day.day);
+  return {
+    sats: day.sats,
+    usd: onDay.every((row) => typeof row.amountUsd === 'string') ? day.usd : null,
+    chf: onDay.every((row) => typeof row.amountChf === 'string') ? day.chf : null,
+    eur: onDay.every((row) => typeof row.amountEur === 'string') ? day.eur : null,
+    php: onDay.every((row) => typeof row.amountPhp === 'string') ? day.php : null,
+  };
 }
 
 /**

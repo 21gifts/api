@@ -4013,9 +4013,9 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 
 ## Function: loadLatestGoalRateDay
 
-- **Purpose:** Latest gift-day proportion for a currency ask: last `spendOverTime` day with `sats > 0` from `loadGiftStatsSnapshot` (no recipient filter). Empty history is null. Does not invent a rate.
+- **Purpose:** Latest gift-day proportion for a currency ask: last `spendOverTime` day with `sats > 0` from `loadGiftStatsSnapshot` (no recipient filter). Empty history is null. `sats` is that public day total. A currency field stays that public sum only when every outbound gift on that UTC day stored a string for it. If any gift on that day lacks the string, that field is null, even when the public series shows a partial sum. The public series is unchanged. Does not invent a rate.
 - **Inputs:** `{ store, rates, fiatRates, now }` — the same collaborators as `GET /gifts/stats`.
-- **Returns / side effects:** `{ sats, usd, chf, eur, php }` or `null`. A missing stored amount stays null and does not throw. The rate books are not read.
+- **Returns / side effects:** `{ sats, usd, chf, eur, php }` or `null`. A missing or incomplete currency is null and does not throw. The rate books are not read.
 - **Used by:** `bindGoalRateDay`.
 
 ## Function: bindGoalRateDay
