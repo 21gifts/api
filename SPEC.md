@@ -1141,12 +1141,20 @@ status duty reads it) with the refused row's `order_found_at`, so the fast
 reads and the 24 h status limit do not restart, and with a final status the
 refused row stored rather than the submit's answer, and is evaluated. An
 `accepted` refused row hands acceptance to the survivor by that evaluation,
-so the payment stays `accepted`; only when the survivor does not become
-`accepted` does a `superseded` proof take the place or the payment end with
-`proof_refused`. When the newer row that holds the order is already
-`refunded`, `failed`, or `refused`, it cannot be refused and keeps the
-order (Orchestra counted the deposit on its offer); the submitted row is
-then recorded `refused` with `tx_used` instead, and its submits stop.
+or, while the order is `refunding`, `unfulfilled`, or an unknown status,
+the survivor takes `accepted` in the same transaction by a conditional
+update from its own result (an accepted proof keeps that state through
+them; only a final status moves it), so the payment stays `accepted`; only
+when the survivor cannot hold acceptance (its amount is out of the bounds,
+or the order is final and not `completed`) does a `superseded` proof take
+the place or the payment end with `proof_refused`. When the newer row that
+holds the order was already ended by that order (`refunded`, `failed`,
+`refused` with `expired_order`, or a stored final status), it cannot be
+refused and keeps the order (Orchestra counted the deposit on its offer);
+the submitted row is then recorded `refused` with `tx_used` instead, and
+its submits stop. A newer row already `refused` for another reason
+(`mismatch`, `hex_rejected`) whose order is not final keeps its result and
+hands the order to the survivor as above.
 
 **Replaced orders.** A status read that answers `unfulfilled` with a
 `supersededByOperationId` of another order does not move the proof: it

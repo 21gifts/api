@@ -766,7 +766,8 @@ async function mergeOrderHolder(
     // than the answer's (as in mergeDeposit), and the order keeps the time
     // it was found, so the fast reads and the order_stuck limit do not
     // restart. A holder the order already ended stays, and the survivor is
-    // refused `tx_used` instead.
+    // refused `tx_used` instead; a holder refused for another reason hands
+    // the order over and keeps its result.
     const stored = holder.orderStatus;
     await refuseProof(tx, holder.id, 'tx_used', nowMs, {
       proofId: proof.id,

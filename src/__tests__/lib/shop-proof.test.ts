@@ -1582,12 +1582,220 @@ describe('merging two rows of one deposit', () => {
     expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
   });
 
+  /** An accepted newer holder of another offer that holds order `o1`. */
+  function acceptedHolder(partial: Parameters<typeof proofRow>[0] = {}) {
+    return proofRow({
+      id: uid(0x4e2),
+      offerId: OFFER_USDC,
+      txHash: H2,
+      result: 'accepted',
+      resolvedAt: new Date(T0 + 1_000),
+      providerOrder: 'o1',
+      orderStatus: 'processing',
+      orderFoundAt: new Date(T0 + 1_000),
+      nextStatusAt: new Date(T0 + 11_000),
+      createdAt: new Date(T0 + 1_000),
+      ...partial,
+    });
+  }
+
+  it.each(['refunding', 'unfulfilled', 'not_a_status'])(
+    'an accepted newer holder hands acceptance to the survivor while the answered order is %s; the payment never ends',
+    async (status) => {
+      const h = harness();
+      await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+        acceptedHolder(),
+      );
+      h.orchestra.submit.mockResolvedValueOnce({ kind: 'order', orderId: 'o1', status });
+      expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+        id: uid(0x4e1),
+        result: 'accepted',
+        refusal: null,
+        providerOrder: 'o1',
+        orderStatus: status,
+        nextSubmitAt: null,
+      });
+      expect(await getProof(h, uid(0x4e2))).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+      expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+      expect(events()).toContain('shop.proof.accepted');
+      expect(events()).not.toContain('shop.payment.ended');
+    },
+  );
+
+  it('a survivor refused for a mismatch inherits acceptance from an accepted newer holder while the order is refunding', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, result: 'refused', refusal: 'mismatch' }),
+      acceptedHolder(),
+    );
+    await h.store.transaction(async (tx) => {
+      await lockPaymentForProofs(tx, PAYMENT_ID);
+      await applyProofOrder(
+        tx,
+        (await tx.getProof(uid(0x4e1)))!,
+        { orderId: 'o1', status: 'refunding' },
+        T0 + 5_000,
+        'newer',
+      );
+    });
+    expect(await getProof(h, uid(0x4e1))).toMatchObject({
+      result: 'accepted',
+      refusal: null,
+      providerOrder: 'o1',
+    });
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+  });
+
+  it('the survivor that inherited acceptance through refunding ends the payment with orchestra_refunded when the order is refunded', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      acceptedHolder(),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'refunding',
+    });
+    expect((await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000))?.result).toBe('accepted');
+    h.clock.now = T0 + 60_000;
+    h.orchestra.status.mockResolvedValueOnce({
+      ok: true,
+      order: { id: 'o1', status: 'refunded', supersededByOperationId: null },
+    });
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.status).toHaveBeenCalledTimes(1);
+    expect(await getProof(h, uid(0x4e1))).toMatchObject({
+      result: 'refunded',
+      orderStatus: 'refunded',
+    });
+    expect(await getPayment(h)).toMatchObject({
+      status: 'ended',
+      endReason: 'orchestra_refunded',
+    });
+  });
+
+  it.each([
+    ['out of the bounds', { transferAmount: '1' }, 'refunding', null],
+    ['late', { result: 'late' as const }, 'unfulfilled', 'late'],
+    ['answered a final status', {}, 'refunded', 'refunded'],
+  ] as const)(
+    'an accepted newer holder ends the payment with proof_refused when the survivor is %s',
+    async (_name, partial, status, result) => {
+      const h = harness();
+      await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000), ...partial }),
+        acceptedHolder(),
+      );
+      await h.store.transaction(async (tx) => {
+        await lockPaymentForProofs(tx, PAYMENT_ID);
+        await applyProofOrder(
+          tx,
+          (await tx.getProof(uid(0x4e1)))!,
+          { orderId: 'o1', status },
+          T0 + 5_000,
+          'newer',
+        );
+      });
+      expect(await getProof(h, uid(0x4e1))).toMatchObject({ result, providerOrder: 'o1' });
+      expect((await getProof(h, uid(0x4e2)))?.refusal).toBe('tx_used');
+      expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+    },
+  );
+
+  it.each([
+    ['paid', { status: 'paid' as const, paidAt: new Date(T0 + 2_000) }, 'paid'],
+    ['closed', { status: 'accepted' as const, closedAt: new Date(T0 + 2_000) }, 'ended'],
+  ] as const)(
+    'the survivor of an accepted newer holder stays held through refunding when the payment is %s',
+    async (_name, payment, after) => {
+      const h = harness();
+      await seed(h, { acceptedAt: new Date(T0), ...payment });
+      await insertProofs(h, proofRow({ id: uid(0x4e1), txHash: H1 }), acceptedHolder());
+      await h.store.transaction(async (tx) => {
+        await lockPaymentForProofs(tx, PAYMENT_ID);
+        await applyProofOrder(
+          tx,
+          (await tx.getProof(uid(0x4e1)))!,
+          { orderId: 'o1', status: 'refunding' },
+          T0 + 5_000,
+          'newer',
+        );
+      });
+      expect(await getProof(h, uid(0x4e1))).toMatchObject({ result: null, providerOrder: 'o1' });
+      expect((await getPayment(h))?.status).toBe(after);
+    },
+  );
+
+  it.each([
+    ['mismatch', 'processing', 'accepted'],
+    ['hex_rejected', 'refunding', null],
+  ] as const)(
+    'a newer holder of another offer refused for %s with a live order hands the order to the survivor and keeps its result',
+    async (refusal, status, survivorResult) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+        proofRow({
+          id: uid(0x4e2),
+          offerId: OFFER_USDC,
+          txHash: H2,
+          result: 'refused',
+          refusal,
+          resolvedAt: new Date(T0 + 1_000),
+          providerOrder: 'o1',
+          orderStatus: status,
+          orderFoundAt: new Date(T0 + 1_000),
+          createdAt: new Date(T0 + 1_000),
+        }),
+      );
+      h.orchestra.submit.mockResolvedValueOnce({ kind: 'order', orderId: 'o1', status });
+      expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+        id: uid(0x4e1),
+        result: survivorResult,
+        refusal: null,
+        providerOrder: 'o1',
+        orderStatus: status,
+        orderFoundAt: new Date(T0 + 1_000),
+        nextSubmitAt: null,
+      });
+      expect(await getProof(h, uid(0x4e2))).toMatchObject({
+        result: 'refused',
+        refusal,
+        providerOrder: null,
+        orderStatus: null,
+      });
+      expect((await getPayment(h))?.status).toBe(
+        survivorResult === 'accepted' ? 'accepted' : 'open',
+      );
+    },
+  );
+
   const endedHolders = [
     ['refunded', { result: 'refunded' as const, orderStatus: 'refunded' }],
     ['failed', { result: 'failed' as const, orderStatus: 'fallback_delivered' }],
     [
       'refused',
       { result: 'refused' as const, refusal: 'expired_order' as const, orderStatus: 'expired' },
+    ],
+    [
+      'refused for a mismatch with an expired order',
+      { result: 'refused' as const, refusal: 'mismatch' as const, orderStatus: 'expired' },
     ],
   ] as const;
 
