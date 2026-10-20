@@ -722,12 +722,16 @@ export async function applyProofOrder(
 
 /**
  * Merge a proof with the row that already holds an order id. With
- * `collision` `newer`, another offer's holder that is the newer row (later
- * `created_at`, then greater id) is refused `tx_used` and gives the order to
- * `proof`, which records it ({@link refuseProof} with an heir) with the
- * holder's final status if it stored one and the holder's order found time;
- * a holder whose order already ended it (`refunded`, `failed`, `refused`)
- * keeps the order, and `proof` is refused `tx_used`. Every other case is
+ * `collision` `newer`, another offer's holder of the same payment that is the
+ * newer row (later `created_at`, then greater id) is refused `tx_used` and
+ * gives the order to `proof`, which records it ({@link refuseProof} with an
+ * heir) with the holder's final status if it stored one and the holder's
+ * order found time. A holder whose order already ended it (`refunded`,
+ * `failed`, `refused` with `expired_order`, or a stored final status) keeps
+ * the order, and `proof` is refused `tx_used`; a holder `refused` for another
+ * reason keeps its result and hands the order over. Only the payment of
+ * `proof` is locked, so a holder of another payment is never changed: `proof`
+ * is refused `tx_used` instead, as every other case through
  * {@link mergeDeposit}.
  *
  * @param tx - Transaction (payment row and proof rows locked).
@@ -756,13 +760,16 @@ async function mergeOrderHolder(
   if (
     collision === 'newer' &&
     holder.offerId !== proof.offerId &&
+    holder.paymentId === proof.paymentId &&
     newerOf(proof, holder) === holder
   ) {
     // Step 3: the holder is the newer row and is refused `tx_used`. The
     // older row survives and takes the order Orchestra answered for it, in
     // this transaction: its submits stop, the order-status duty follows it,
-    // and an `accepted` holder hands acceptance to it by its evaluation
-    // (refuseProof's heir). A final status the holder stored is never older
+    // and it takes an `accepted` holder's place only when its evaluation
+    // accepts it (refuseProof's heir). Only this payment's rows are locked,
+    // so a holder of another payment falls through to mergeDeposit, which
+    // refuses this proof. A final status the holder stored is never older
     // than the answer's (as in mergeDeposit), and the order keeps the time
     // it was found, so the fast reads and the order_stuck limit do not
     // restart. A holder the order already ended stays, and the survivor is

@@ -32,6 +32,7 @@ import {
   OFFER_USDC,
   OFFER_USDT,
   OTHER_LOG,
+  OTHER_PAYMENT_ID,
   OTHER_QUOTE_ID,
   PAYMENT_ID,
   POLYGON_RPC,
@@ -1600,7 +1601,7 @@ describe('merging two rows of one deposit', () => {
   }
 
   it.each(['refunding', 'unfulfilled', 'not_a_status'])(
-    'an accepted newer holder hands acceptance to the survivor while the answered order is %s; the payment never ends',
+    'an accepted newer holder leaves the survivor held while the answered order is %s; the payment ends with proof_refused',
     async (status) => {
       const h = harness();
       await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
@@ -1610,26 +1611,63 @@ describe('merging two rows of one deposit', () => {
         acceptedHolder(),
       );
       h.orchestra.submit.mockResolvedValueOnce({ kind: 'order', orderId: 'o1', status });
-      expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      const survivor = await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000);
+      expect(survivor).toMatchObject({
         id: uid(0x4e1),
-        result: 'accepted',
+        result: null,
         refusal: null,
         providerOrder: 'o1',
         orderStatus: status,
         nextSubmitAt: null,
+      });
+      expect(await answer(proofResponse(survivor!))).toMatchObject({
+        status: 503,
+        body: { reason: 'Payment is being confirmed' },
       });
       expect(await getProof(h, uid(0x4e2))).toMatchObject({
         result: 'refused',
         refusal: 'tx_used',
         providerOrder: null,
       });
-      expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
-      expect(events()).toContain('shop.proof.accepted');
-      expect(events()).not.toContain('shop.payment.ended');
+      expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+      expect(events()).not.toContain('shop.proof.accepted');
+      expect(events()).toContain('shop.payment.ended');
     },
   );
 
-  it('a survivor refused for a mismatch inherits acceptance from an accepted newer holder while the order is refunding', async () => {
+  it('an accepted newer holder lets the oldest qualifying superseded proof take the place while the survivor is held through refunding', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      acceptedHolder(),
+      proofRow({
+        id: uid(0x4e3),
+        txHash: txHash('a3'),
+        result: 'superseded',
+        resolvedAt: new Date(T0 + 2_000),
+        providerOrder: 'o2',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 + 2_000),
+        createdAt: new Date(T0 + 2_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'refunding',
+    });
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      result: null,
+      providerOrder: 'o1',
+    });
+    expect((await getProof(h, uid(0x4e3)))?.result).toBe('accepted');
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+    expect(events()).not.toContain('shop.payment.ended');
+  });
+
+  it('a survivor refused for a mismatch keeps its result when an accepted newer holder hands it a refunding order', async () => {
     const h = harness();
     await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
     await insertProofs(
@@ -1648,42 +1686,80 @@ describe('merging two rows of one deposit', () => {
       );
     });
     expect(await getProof(h, uid(0x4e1))).toMatchObject({
-      result: 'accepted',
-      refusal: null,
+      result: 'refused',
+      refusal: 'mismatch',
       providerOrder: 'o1',
     });
-    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+    expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
   });
 
-  it('the survivor that inherited acceptance through refunding ends the payment with orchestra_refunded when the order is refunded', async () => {
+  it.each([
+    ['completed', 'accepted', { status: 'accepted', endReason: null }],
+    ['refunded', 'refunded', { status: 'ended', endReason: 'proof_refused' }],
+  ] as const)(
+    'the survivor held through refunding is moved by a later %s order as the States table states',
+    async (status, result, payment) => {
+      const h = harness();
+      await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+        acceptedHolder(),
+      );
+      h.orchestra.submit.mockResolvedValueOnce({
+        kind: 'order',
+        orderId: 'o1',
+        status: 'refunding',
+      });
+      expect((await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000))?.result).toBeNull();
+      expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+      h.clock.now = T0 + 60_000;
+      h.orchestra.status.mockResolvedValueOnce({
+        ok: true,
+        order: { id: 'o1', status, supersededByOperationId: null },
+      });
+      await runShopPaymentTick(h.shop, 2);
+      expect(h.orchestra.status).toHaveBeenCalledTimes(1);
+      expect(await getProof(h, uid(0x4e1))).toMatchObject({ result, orderStatus: status });
+      expect(await getPayment(h)).toMatchObject(payment);
+    },
+  );
+
+  it('a newer holder of another payment is never changed: the submitted proof is refused tx_used', async () => {
     const h = harness();
     await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await h.store.transaction(async (tx) => {
+      await tx.updatePayment(
+        OTHER_PAYMENT_ID,
+        { statuses: ['open'] },
+        { status: 'accepted', acceptedAt: new Date(T0) },
+      );
+    });
     await insertProofs(
       h,
       proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
-      acceptedHolder(),
+      acceptedHolder({ offerId: OFFER_OTHER, paymentId: OTHER_PAYMENT_ID }),
     );
     h.orchestra.submit.mockResolvedValueOnce({
       kind: 'order',
       orderId: 'o1',
-      status: 'refunding',
+      status: 'processing',
     });
-    expect((await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000))?.result).toBe('accepted');
-    h.clock.now = T0 + 60_000;
-    h.orchestra.status.mockResolvedValueOnce({
-      ok: true,
-      order: { id: 'o1', status: 'refunded', supersededByOperationId: null },
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+      nextSubmitAt: null,
     });
-    await runShopPaymentTick(h.shop, 2);
-    expect(h.orchestra.status).toHaveBeenCalledTimes(1);
-    expect(await getProof(h, uid(0x4e1))).toMatchObject({
-      result: 'refunded',
-      orderStatus: 'refunded',
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      paymentId: OTHER_PAYMENT_ID,
+      result: 'accepted',
+      refusal: null,
+      providerOrder: 'o1',
+      orderStatus: 'processing',
     });
-    expect(await getPayment(h)).toMatchObject({
-      status: 'ended',
-      endReason: 'orchestra_refunded',
-    });
+    expect((await getPayment(h, OTHER_PAYMENT_ID))?.status).toBe('accepted');
   });
 
   it.each([

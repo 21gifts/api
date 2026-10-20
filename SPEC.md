@@ -1140,14 +1140,17 @@ that survives: the refused row gives up `provider_order` and
 status duty reads it) with the refused row's `order_found_at`, so the fast
 reads and the 24 h status limit do not restart, and with a final status the
 refused row stored rather than the submit's answer, and is evaluated. An
-`accepted` refused row hands acceptance to the survivor by that evaluation,
-or, while the order is `refunding`, `unfulfilled`, or an unknown status,
-the survivor takes `accepted` in the same transaction by a conditional
-update from its own result (an accepted proof keeps that state through
-them; only a final status moves it), so the payment stays `accepted`; only
-when the survivor cannot hold acceptance (its amount is out of the bounds,
-or the order is final and not `completed`) does a `superseded` proof take
-the place or the payment end with `proof_refused`. When the newer row that
+`accepted` refused row hands its place to the survivor only when that
+evaluation accepts it (a progressing order or `completed`, as the States
+table states); otherwise the oldest qualifying `superseded` proof takes the
+place, or the payment ends with `proof_refused`. While the order is
+`refunding`, `unfulfilled`, or an unknown status the survivor is held, is
+not `accepted`, and answers 503 until the States table accepts it (a later
+`completed` moves it to `accepted` and an `ended` payment that is not
+closed back to `accepted`) or its order is final. Only rows of the locked payment change:
+when the newer row that holds the order belongs to another payment, the
+submitted row is recorded `refused` with `tx_used` instead, as in step 4,
+and the other payment is left as it is. When the newer row that
 holds the order was already ended by that order (`refunded`, `failed`,
 `refused` with `expired_order`, or a stored final status), it cannot be
 refused and keeps the order (Orchestra counted the deposit on its offer);

@@ -1147,54 +1147,6 @@ function endedByOrder(proof: ShopProof): boolean {
 }
 
 /**
- * The heir of an `accepted` proof refused `tx_used` takes `accepted` in the
- * same transaction while the order it took is not final ("an accepted proof
- * keeps that state through them … only a final status moves it"): a
- * `refunding`, `unfulfilled`, or unknown status does not move an accepted
- * proof, so it does not move the acceptance off the order either. The heir
- * needs a known amount within its offer's bounds, a result a progressing
- * order may accept, and a payment that is neither `paid` nor closed; it
- * moves by a conditional update from its current result.
- *
- * @param tx - Transaction; the caller holds the payment row and its proof
- *   rows ({@link lockPaymentForProofs}).
- * @param heir - The heir after it recorded the order.
- * @param status - The status the heir recorded.
- * @param nowMs - Clock.
- * @returns `true` when the heir is `accepted`.
- */
-async function inheritAcceptance(
-  tx: ShopTx,
-  heir: ShopProof,
-  status: string,
-  nowMs: number,
-): Promise<boolean> {
-  if (ORCHESTRA_FINAL_STATUSES.has(status) || !PROGRESS_FROM.includes(heir.result)) {
-    return false;
-  }
-  const payment = await tx.getPayment(heir.paymentId);
-  const offer = await tx.getOffer(heir.offerId);
-  /* v8 ignore next 3 -- foreign keys keep both rows */
-  if (payment === null || offer === null) {
-    return false;
-  }
-  if (payment.status === 'paid' || payment.closedAt !== null || !proofWithinBounds(heir, offer)) {
-    return false;
-  }
-  const accepted = await tx.updateProof(
-    heir.id,
-    { results: [heir.result] },
-    { result: 'accepted', refusal: null, resolvedAt: new Date(nowMs) },
-  );
-  /* v8 ignore next 3 -- the heir is locked through its payment and its result was just read */
-  if (accepted === null || accepted === 'conflict') {
-    return false;
-  }
-  shopLog('shop.proof.accepted', proofLogFields(accepted, offer));
-  return true;
-}
-
-/**
  * Record a proof `refused` (a `hex` transaction rejected or reverted, a
  * submit refused with `xchain_deposit_mismatch`, or the newer of two rows
  * that hold one deposit as `tx_used`), from the results the
@@ -1213,11 +1165,12 @@ async function inheritAcceptance(
  * {@link recordProofOrder} with the status and order found time the caller
  * passes (its submits stop, and the order-status duty reads it), and is
  * evaluated. When the refused proof was `accepted`, the heir takes the place
- * by that evaluation, or, while the order is not final (`refunding`,
- * `unfulfilled`, an unknown status), inherits `accepted` in the same
- * transaction ({@link inheritAcceptance}); only when it can hold neither (out
- * of the bounds, or a final status other than `completed`) does the payment
- * lose its accepted proof as without an heir. When its order already ended
+ * only when that evaluation accepts it (States row 1: a progressing order, or
+ * `completed`); otherwise the payment loses its accepted proof as without an
+ * heir (the oldest qualifying `superseded` proof takes the place, else the
+ * payment ends with `proof_refused`). A `refunding`, `unfulfilled`, or unknown
+ * status holds the heir, which is not `accepted`, until the States table
+ * accepts it or its order is final. When its order already ended
  * this proof (`refunded`, `failed`, `refused` with `expired_order`, or a
  * stored final status), it keeps the order, Orchestra counted the deposit on
  * its offer, and the heir is refused `tx_used` instead, with its submits
@@ -1309,11 +1262,7 @@ export async function refuseProof(
   if (taken === null || taken === 'conflict') {
     return refused;
   }
-  if (
-    proof.result === 'accepted' &&
-    taken.result !== 'accepted' &&
-    !(await inheritAcceptance(tx, taken, heir.order.status, nowMs))
-  ) {
+  if (proof.result === 'accepted' && taken.result !== 'accepted') {
     await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
   }
   /* v8 ignore next -- the refused row is locked through its payment */
