@@ -632,7 +632,9 @@ those sats from a spot or a daily close, is existing code that breaks
 ```
 
 The charge examples below are the current bodies. A charge in them carries
-only `amountSats`. That breaks the rule above. It is not the contract.
+`id`, `amountSats`, `status`, `createdAt`, `expiresAt`, and `paidAt`. It does
+not carry the decimal string the operator typed. That breaks the rule above.
+It is not the contract.
 
 **Response** `200` (paid 10 s ago):
 
