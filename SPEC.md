@@ -985,8 +985,9 @@ whose `tx_hash` or `user_op_hash` equals the `tx`, or whose `tx_hash`
 equals the hash of `hex`, answers from that row (the `accepted` row first,
 then the row of the request's `asset`, then the oldest). Within the budget
 a row without a log index reads its receipt once, a `hex` row that was
-never sent is sent, and an unresolved row whose last submit is empty or at
-least 2 s old is submitted again (at most 5 times per minute per proof).
+never sent is sent, and an unresolved row with a log index whose last
+submit is empty or at least 2 s old is submitted again (at most 5 times per
+minute per proof).
 A hash only proofs of other quotes hold is not a repeat.
 
 **Verification of `tx`.** `eth_getTransactionReceipt`, else
@@ -1015,11 +1016,18 @@ Otherwise the proof is stored with `raw_hex` and sent with
 `eth_sendRawTransaction`. `already known` or `nonce too low` counts as
 sent when `eth_getTransactionByHash` finds the hash; `insufficient funds`,
 `invalid`, or `intrinsic gas` records the proof `refused` and answers 400;
-any other error answers 503 and the watcher sends it again. A failed
-receipt, or a transaction still unknown 10 minutes after the first send,
-records the proof `refused`.
+any other error answers 503 and the watcher sends it again. Within the
+budget the request then reads the receipt once. A `hex` proof is submitted
+only once its receipt with status `0x1` is found and has filled the log
+index, so that Orchestra can see the deposit (a `xchain_deposit_mismatch`
+is then definitive for it too); without a receipt yet the request answers
+**503** `Payment is being confirmed`, the receipts duty reads and sends the
+transaction again, and the submits duty submits it after the fill. A
+receipt with another status records the proof `refused`. A transaction
+the node still does not know keeps the proof unresolved until its
+`give_up_at`, after which it becomes `stuck` like any unresolved proof.
 
-**Submit.** Every verified proof is submitted to Orchestra
+**Submit.** Every verified proof with a log index is submitted to Orchestra
 (`POST /v1/orchestration/submit` with `{ quoteId, txHash }`), also when the
 payment is `ended`, `paid`, or already `accepted`, and after the quote
 expired. An order makes the proof follow its status; `400
@@ -1043,8 +1051,9 @@ A proof becomes `accepted` when its Orchestra order is progressing
 `delivering`) and its transferred value lies within the offer's
 `requiredAmountIn` (or `amountIn`) and `maxAcceptedAmountIn` (or
 `amountIn`), while the payment is neither paid nor closed and no other
-proof of it is `accepted` (otherwise `superseded`), or when its order
-`completed`. A proof whose amount is unknown or outside those bounds, whose
+proof of it is `accepted` (otherwise `superseded`; a `superseded` proof
+whose order resumed is accepted the same way once no proof is `accepted`),
+or when its order `completed`. A proof whose amount is unknown or outside those bounds, whose
 order is `refunding`, `unfulfilled`, or unknown, or whose payment is
 already paid, is held and answers 503 until its order is final. Acceptance
 moves the payment to `accepted`, so it stops being the open amount and the
@@ -1059,10 +1068,23 @@ statuses map as follows: `refunded` → `refunded`, `failed` and
 → `refused` with `refusal` `expired_order`; each moves only from the
 results the States table allows. A progressing order of a proof whose
 payment is already closed makes the proof `late`
-(`shop.alert.late_deposit`). When the proof that was `accepted` leaves
-`accepted`, another eligible proof of the payment takes its place, or else
-the payment ends (`orchestra_refunded`, `orchestra_failed`, or
-`proof_refused`). The amount of a `hex` proof is the amount in its
+(`shop.alert.late_deposit`). When the proof that was `accepted` becomes
+`refunded`, `failed`, or `refused` while the payment is neither paid nor
+closed, the oldest `superseded` proof of the payment (earliest
+`created_at`, then `id`) whose order is progressing and whose amount is
+known and within the bounds becomes `accepted` in the same transaction and
+the payment stays `accepted`; only when none qualifies does the payment end
+(`orchestra_refunded`, `orchestra_failed`, or `proof_refused`).
+
+**Locks.** Every transaction that changes a proof's result, the merge of
+two rows of one deposit, the order-status duty's step for a replaced
+order, and the orders duty's `next_history_at` decision first lock the
+payment's `shop_payment` row, then every proof row of the payment with one
+`SELECT … FOR UPDATE` ordered by id (`lockPaymentForProofs`); none of them
+locks an account row. The settlement step locks the account, `pos_charge`,
+and `shop_payment` rows (a payer's payment only its `shop_payment` row)
+and no proof row, so no two of these wait for each other in opposite
+order. The amount of a `hex` proof is the amount in its
 verified transfer `data`; a `tx` or `detected` proof's is the value of its
 `Transfer` log.
 
@@ -1081,10 +1103,32 @@ value, and order of the other row that it lacks, and the order's status
 travels with `provider_order`. When the other row belongs to another offer, the newer
 row is recorded `refused` with `refusal` `tx_used`, from any result the
 States table allows for `refused`; an `accepted` one included, which lets
-another proof take its place or ends the payment with `proof_refused`.
-Following `supersededByOperationId` moves a proof to the successor order
-with its status unknown (the proof is held) until the next status read,
-which is due at once; the predecessor's status is never carried over.
+a `superseded` proof take its place or ends the payment with
+`proof_refused`. A proof refused as `tx_used` keeps its order but is no
+longer followed: its submits, receipt reads, and status reads stop.
+
+**Replaced orders.** A status read that answers `unfulfilled` with a
+`supersededByOperationId` of another order does not move the proof: it
+keeps its order with the `unfulfilled` status (held, or still `accepted`),
+its status reads stop without `shop.alert.order_stuck`, the successor's id
+is stored as its `superseded_by_order`, and the payment's
+`successor_wait_until` moves 24 h ahead (`SHOP_SUCCESSOR_WAIT_MS`) when it
+is empty or earlier and its `next_history_at` is set to now when it is
+empty. The orders duty then stores the successor order, which carries its
+own `sourceTxHash`, as its own `detected` proof, so every row keeps its own
+transaction and order; an order recovered from an order a proof holds is
+stored the same way. A replaced proof that was never accepted answers a
+repeat with 503.
+
+**Log fields.** Each shop event is one `logEvent` line with `paymentId`,
+and with `quoteId`, `offerId`, `proofId`, `providerRef` (Orchestra's quote
+id), or `orderId` where it applies: the proof events carry the proof's
+offer, quote, provider reference, and order; the Orchestra client's
+`shop.orchestra.error`, `shop.orchestra.rate_limited`,
+`shop.orchestra.budget_exhausted`, and `shop.alert.orchestra_request`
+carry the ids of the payment or proof the call is for. The creation picks
+the payment's id before its route-list read, so `shop.route.mismatch`,
+`shop.mint.failed`, and `shop.alert.duplicate_invoice` carry it too.
 
 ### `GET /lnurlp/wait/:payment`
 
@@ -1150,10 +1194,14 @@ zap receipt, gift, or message is written for a till payment. Logs:
 `pos.verify.failed` (count only), `pos.worker.tick.failed`.
 
 **Shop payment of the charge.** With the LNURL server resolved, marking a
-charge paid runs in one transaction under the account row lock together
-with its shop payment ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)).
+charge paid runs in one transaction together with its shop payment
+([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)), locking
+the account row, then the `pos_charge` row, then the `shop_payment` row.
 When the settled hash is the shop payment's `payment_hash`, the shop
-payment moves to `paid`. When the Spark invoice or another BOLT11 settled,
+payment moves to `paid`; when the charge was already paid by another
+invoice before, that logs `shop.alert.double_settled`, and when it was
+cancelled before, `shop.alert.cancelled_settled` (the charge stays
+cancelled). When the Spark invoice or another BOLT11 settled,
 an `open` shop payment ends with `end_reason` `charge_paid`. The shop
 payment's BOLT11 is recorded against the charge, so Orchestra paying it is
 one of the BOLT11s above.
@@ -1172,10 +1220,12 @@ rows by their own next-try column, oldest first:
    paid nor closed, `accepted` and charge-backed payments first, every 5 s
    for 15 minutes after creation, then every 30 s, and a final read 10
    minutes after the BOLT11 expiry. Each read is applied under the lock of
-   the payment's account; when an account merge moved the payment between
-   the unlocked read and the lock, the account it moved to is locked
-   instead (`lockAccountOf`, at most two locks; a payment still moving is
-   left for the next tick). Settled → `paid`, and `markPaid` for its
+   locks of a charge-backed payment: the account row, then the
+   `pos_charge` row, then the `shop_payment` row; when an account merge
+   moved the payment between the unlocked read and the lock, the account
+   it moved to is locked instead (`lockAccountOf`, at most two locks; a
+   payment still moving is left for the next tick). A payer's payment locks
+   only its `shop_payment` row. Settled → `paid`, and `markPaid` for its
    charge (a charge already paid by another invoice logs
    `shop.alert.double_settled`; a cancelled charge logs
    `shop.alert.cancelled_settled` and stays cancelled). Only a successful
@@ -1186,17 +1236,26 @@ rows by their own next-try column, oldest first:
 3. **Orders** (odd ticks): Orchestra history by the payment's BOLT11 every
    10 s, one page per read, from the first issued detail until 30 minutes
    after its last offer's `expiresAt`, also after the payment is paid or
-   closed. An order no proof holds is stored as a `detected` proof. A
-   failed read changes nothing and is retried after 10 s at the same
-   offset; only a successful short page ends the reads once that watch has
-   ended.
+   closed. An order no proof holds is stored as a `detected` proof, an
+   order recovered from one a proof holds included. A failed read changes
+   nothing and is retried after 10 s at the same offset; only a successful
+   short page ends the reads once that watch has ended. That decision runs
+   under the payment row and its proof rows: while some proof's
+   `superseded_by_order` is held by no proof and `successor_wait_until` has
+   not passed, the payment is read every 60 s
+   (`SHOP_SUCCESSOR_HISTORY_INTERVAL_MS`) instead; when the wait passes
+   first, the duty logs `shop.alert.successor_missing` and clears
+   `next_history_at` and `successor_wait_until` together.
 4. **Lookups:** `tx` hashes not yet found, after 10 s, 30 s, and 60 s, then
    every 2 min for one hour (`shop.proof.lookup_expired`).
 5. **Receipts:** `hex` proofs without a receipt and `detected` proofs
    without a log index, after 30 s, then every 2 min, until `give_up_at`
-   (24 h after it was stored, or after an operator retry). A
-   `hex` transaction without a receipt is sent again, and refused when the
-   node still does not know it 10 minutes after its first send.
+   (24 h after it was stored, or after an operator retry; a `detected`
+   proof's is never moved), and a `hex` proof only while it has neither a
+   result nor an order. A `hex` transaction without a receipt is sent
+   again, however long the node does not know it, so a transaction mined
+   late is still submitted. A receipt that fills the log index of a `hex`
+   proof sets its `next_submit_at` to now.
 6. **Submits:** unresolved proofs that may still be submitted and have a
    log index, after 10 s, 30 s, and 60 s, then every 5 min.
 7. **Stuck proofs:** an unresolved proof past its `give_up_at` (24 h after
@@ -1205,10 +1264,9 @@ rows by their own next-try column, oldest first:
    back.
 8. **Order status** (even ticks): Orchestra status by order id every 10 s
    for 10 minutes, then every 60 s, until a final status or 24 h after the
-   order was found (`shop.alert.order_stuck`). A proof refused as
-   `tx_used` is not read. An order with
-   `supersededByOperationId` is followed by its successor, whose status the
-   next read fetches (see One deposit, two rows).
+   order was found (`shop.alert.order_stuck`), or an `unfulfilled` status
+   with `supersededByOperationId` (see Replaced orders; no alert). A proof
+   refused as `tx_used` is not read.
 
 A rejecting tick logs `shop.worker.tick.failed`.
 
@@ -3655,8 +3713,12 @@ otherwise Hono's default 404. Authenticated with `Authorization: Bearer`
 matching `DEBUG_TOKEN`. No body.
 
 The proof moves from `stuck` back to unresolved, `give_up_at` is set 24 h
-ahead, and `shop.proof.retried` is logged. The watcher then submits it
-again.
+ahead, and `shop.proof.retried` is logged. A `hex` proof without a log
+index gets `next_receipt_at` now, so the receipts duty reads and sends its
+transaction again and the submits duty submits it once the receipt filled
+the log index; any other proof gets `next_submit_at` now and the watcher
+submits it again. It runs under the payment's `shop_payment` row and its
+proof rows.
 
 **Response** `200`: `{ "id": "<uuid>", "result": null }`.
 

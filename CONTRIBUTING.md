@@ -591,7 +591,7 @@ verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:
 the shop payment surface, which exists only when the LNURL server (`LNURL_SERVER_URL` and
 `PUBLIC_BASE_URL`) resolves and offers stablecoins only when `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`,
 `SHOP_EVM_RPC`, and `SHOP_REFUND_ADDRESS` resolve too (their routes answer the default 404 on the
-default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAccountOf`, `markPaymentPaid`,
+default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAccountOf`, `lockPaymentForProofs`, `markPaymentPaid`,
 `evaluateProof`, `refuseProof`, `recordProofOrder`, `shopPairOrder`, `shopMethodByName`, `candidatePairs`,
 `decimalAmount`, `btcAmount`, `PlainJsonNumber`, `shopJson`, `shopResponse`, `shopError`,
 `noPendingPaymentBody`, `isExcludedShopUsername`, `lightningTransferAmount`, `transferAmountsFor`,
@@ -600,7 +600,7 @@ default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAc
 `evmGetUserOperationReceipt`, `evmGetTransactionByHash`, `evmGasPrice`, `evmSendRawTransaction`,
 `normalizeEvmAddress`, `erc20TransferData`, `parseErc20TransferData`, `decodeTransferLog`,
 `decodeSignedEvmTransaction`, `recommendedMinFee`, `hexFeeReaches`, `proofResponse`,
-`shopProofContext`, `verifyTxProof`, `verifyHexProof`, `applyProofOrder`, `followProofOrder`,
+`shopProofContext`, `verifyTxProof`, `verifyHexProof`, `applyProofOrder`,
 `storeProof`, `submitProofAttempt`, `submitProof`, `refuseHexProof`, `sendHexProof`,
 `readProofReceipt`, `handleShopProof`, `retryStuckProof`, `runShopPaymentTick`,
 `startShopPaymentWorker`, `verifyLightningPayment`, `debugShopProofsRoutes`, and `normalizeUuid`

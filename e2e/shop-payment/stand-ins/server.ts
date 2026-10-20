@@ -18,7 +18,9 @@
  *   spot price at `/__spot` (the api's `BTC_FIAT_SPOT_URL`);
  *
  * Every request the api makes is checked against the contract; a deviation
- * is recorded and served at `GET /__control/violations`.
+ * is recorded and served at `GET /__control/violations`, a `hex` transaction
+ * the api submits to Orchestra before an RPC stand-in served its receipt
+ * included.
  *
  * Run: `bun e2e/shop-payment/stand-ins/server.ts`.
  */
@@ -37,6 +39,7 @@ import type {
   ControlOrder,
   ControlQuote,
   DetectMode,
+  ReplaceResult,
   ShopBehaviour,
   ShopState,
   TransferRequest,
@@ -138,6 +141,7 @@ const DEFAULT_BEHAVIOUR: ShopBehaviour = {
   completeAfterMs: 500,
   quoteTtlMs: 120_000,
   refusePairs: [],
+  mineAfterMs: null,
 };
 
 // ---------------------------------------------------------------------------
@@ -163,6 +167,10 @@ interface Order extends ControlOrder {
   createdAt: string;
   updatedAt: string;
   errorCode: string | null;
+  /** The order that replaced this one (`supersededByOperationId`), or `null`. */
+  supersededBy: string | null;
+  /** The order this one was recovered from (`recoveredFromOperationId`), or `null`. */
+  recoveredFrom: string | null;
 }
 
 interface Log {
@@ -213,6 +221,14 @@ const idempotency = new Map<
 >();
 /** Every `eth_sendRawTransaction` the api sent, in order, with the hash of its raw transaction. */
 const broadcasts: Broadcast[] = [];
+/** Hashes of raw transactions the api broadcast. */
+const broadcastHashes = new Set<string>();
+/**
+ * Hashes whose receipt an RPC stand-in has served: a broadcast `hex`
+ * transaction may be submitted to Orchestra only after this (Verification of
+ * `hex`, step 5: the proof is submitted once its receipt is found).
+ */
+const receiptsServed = new Set<string>();
 const chains = new Map<number, { txs: Map<string, ChainTx>; userOps: Map<string, UserOp> }>();
 for (const chainId of RPC_CHAIN_IDS) {
   chains.set(chainId, { txs: new Map(), userOps: new Map() });
@@ -278,8 +294,8 @@ function orderJson(order: Order): Record<string, unknown> {
     updatedAt: order.updatedAt,
     amountOut: order.status === 'completed' ? 'paid' : null,
     errorCode: order.errorCode,
-    supersededByOperationId: null,
-    recoveredFromOperationId: null,
+    supersededByOperationId: order.supersededBy,
+    recoveredFromOperationId: order.recoveredFrom,
   };
 }
 
@@ -337,6 +353,8 @@ function createOrder(quote: Quote, txHash: string, viaSubmit: boolean): Order {
     createdAt: now,
     updatedAt: now,
     errorCode: null,
+    supersededBy: null,
+    recoveredFrom: null,
   };
   orders.set(order.id, order);
   return order;
@@ -579,6 +597,9 @@ async function submitRoute(req: Request): Promise<Response> {
     if (!/^0x[0-9a-f]{64}$/.test(txHash)) {
       violation('orchestra submit: txHash is not 0x + 64 lowercase hex');
     }
+    if (broadcastHashes.has(txHash) && !receiptsServed.has(txHash)) {
+      violation('orchestra submit: hex transaction submitted before its receipt');
+    }
     quote.submitCount += 1;
     const record = (status: number) => {
       submits.push({ username: quote.username, quoteId: quote.quoteId, txHash, status });
@@ -731,7 +752,11 @@ function rpc(chainId: number) {
       case 'eth_getTransactionReceipt': {
         receiptReads.set(first, (receiptReads.get(first) ?? 0) + 1);
         const tx = chain.txs.get(first);
-        return result(tx === undefined || !tx.mined ? null : receiptJson(tx));
+        if (tx === undefined || !tx.mined) {
+          return result(null);
+        }
+        receiptsServed.add(first);
+        return result(receiptJson(tx));
       }
       case 'eth_getUserOperationReceipt': {
         receiptReads.set(first, (receiptReads.get(first) ?? 0) + 1);
@@ -775,6 +800,7 @@ function rpc(chainId: number) {
         const raw = first as `0x${string}`;
         const hash = keccak256(raw);
         broadcasts.push({ chainId, hash });
+        broadcastHashes.add(hash);
         const known = chain.txs.get(hash);
         if (known !== undefined) {
           return json({ jsonrpc: '2.0', id, error: { code: -32000, message: 'already known' } });
@@ -808,15 +834,27 @@ function rpc(chainId: number) {
             logIndex: 0,
           });
         }
-        chain.txs.set(hash, {
+        // A shop's behaviour may hold the transaction unmined for a while.
+        const recipient = data.length === 2 + 8 + 128 ? `0x${data.slice(34, 74)}` : '';
+        const shopQuote = quotesByDeposit.get(recipient);
+        const mineAfterMs =
+          shopQuote === undefined ? null : behaviourOf(shopQuote.username).mineAfterMs;
+        const sent: ChainTx = {
           hash,
           from,
           to,
           status: '0x1',
           logs,
           blockNumber: (blockNumber += 1),
-          mined: true,
-        });
+          mined: mineAfterMs === null,
+        };
+        chain.txs.set(hash, sent);
+        if (mineAfterMs !== null) {
+          setTimeout(() => {
+            sent.blockNumber = blockNumber += 1;
+            sent.mined = true;
+          }, mineAfterMs);
+        }
         return result(hash);
       }
       default:
@@ -974,6 +1012,46 @@ async function lnurl(req: Request): Promise<Response> {
   return lnurlError(404, 'Not found');
 }
 
+/**
+ * Orchestra replaces an order: the order stays `unfulfilled` for good with
+ * `supersededByOperationId`, and its successor, `processing` with
+ * `recoveredFromOperationId`, carries its own source transaction (mined, one
+ * transfer of the quote's amount to the same deposit address).
+ */
+function replaceOrder(order: Order, quote: Quote): ReplaceResult {
+  const chain = chains.get(quote.chainId);
+  if (chain === undefined) {
+    throw new Error(`no chain ${quote.chainId}`);
+  }
+  const txHash = hex32();
+  const from = address();
+  chain.txs.set(txHash, {
+    hash: txHash,
+    from,
+    to: quote.token,
+    status: '0x1',
+    logs: [
+      {
+        address: quote.token,
+        topics: [
+          TRANSFER_TOPIC,
+          `0x${pad32(from.slice(2))}`,
+          `0x${pad32(quote.depositAddress.slice(2))}`,
+        ],
+        data: `0x${pad32(BigInt(quote.amountIn).toString(16))}`,
+        logIndex: 0,
+      },
+    ],
+    blockNumber: (blockNumber += 1),
+    mined: true,
+  });
+  const successor = createOrder(quote, txHash, false);
+  successor.recoveredFrom = order.id;
+  order.supersededBy = successor.id;
+  setStatus(order, 'unfulfilled');
+  return { successorId: successor.id, successorTxHash: txHash };
+}
+
 // ---------------------------------------------------------------------------
 // Control.
 
@@ -1074,6 +1152,19 @@ async function control(req: Request): Promise<Response> {
       }
       invoice.settled = true;
       return json({ settled: true });
+    }
+    if (
+      parts[1] === 'orders' &&
+      parts.length === 4 &&
+      parts[3] === 'replace' &&
+      req.method === 'POST'
+    ) {
+      const order = orders.get(parts[2] ?? '');
+      const quote = order === undefined ? undefined : quotes.get(order.quoteId);
+      if (order === undefined || quote === undefined) {
+        return json({ error: 'Not found' }, 404);
+      }
+      return json(replaceOrder(order, quote));
     }
     if (parts[1] === 'orders' && parts.length === 3 && req.method === 'POST') {
       const order = orders.get(parts[2] ?? '');

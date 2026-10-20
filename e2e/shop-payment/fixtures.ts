@@ -16,6 +16,7 @@ import { createHash, generateKeyPairSync, randomBytes } from 'node:crypto';
 import { expect, type APIRequestContext } from '@playwright/test';
 import type {
   Broadcast,
+  ReplaceResult,
   ShopBehaviour,
   ShopState,
   TransferRequest,
@@ -306,6 +307,35 @@ export class Control {
   async settleInvoice(paymentHash: string): Promise<void> {
     const res = await this.request.post(`${CONTROL_URL}/__control/invoices/${paymentHash}/settle`);
     expect(res.status()).toBe(200);
+  }
+
+  /**
+   * Set an Orchestra order's status; `completed` pays its BOLT11 (or fails
+   * the order with `duplicate_lightning_invoice` when it is paid already).
+   *
+   * @param orderId - Order id.
+   * @param status - The new status.
+   * @returns Resolves once the stand-in answered 200.
+   */
+  async setOrderStatus(orderId: string, status: string): Promise<void> {
+    const res = await this.request.post(`${CONTROL_URL}/__control/orders/${orderId}`, {
+      data: { status },
+    });
+    expect(res.status()).toBe(200);
+  }
+
+  /**
+   * Let Orchestra replace an order: it stays `unfulfilled` with
+   * `supersededByOperationId`, and a `processing` successor recovered from it
+   * carries its own mined source transaction to the same deposit address.
+   *
+   * @param orderId - The order to replace.
+   * @returns The successor's id and source transaction hash.
+   */
+  async replaceOrder(orderId: string): Promise<ReplaceResult> {
+    const res = await this.request.post(`${CONTROL_URL}/__control/orders/${orderId}/replace`);
+    expect(res.status()).toBe(200);
+    return (await res.json()) as ReplaceResult;
   }
 
   /**

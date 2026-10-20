@@ -5,9 +5,10 @@
  * watcher, the Orchestra submit with its key rule, and the operator retry
  * of a `stuck` proof.
  *
- * Every row change runs in {@link ShopPaymentStore.transaction} under the
- * account row lock of the proof's payment. No transaction is held across an
- * RPC or Orchestra call.
+ * Every transaction that changes a proof's result or merges two proof rows
+ * first locks the payment's `shop_payment` row, then every proof row of the
+ * payment ordered by id (`lockPaymentForProofs`); no account row is locked.
+ * No transaction is held across an RPC or Orchestra call.
  */
 
 import type { Account } from '@/lib/auth/store';
@@ -37,7 +38,7 @@ import {
   SHOP_FIRST_STATUS_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
   evaluateProof,
-  lockAccountOf,
+  lockPaymentForProofs,
   recordProofOrder,
   refuseProof,
   shopError,
@@ -75,8 +76,6 @@ export const SHOP_FIRST_LOOKUP_MS = 10_000;
 export const SHOP_FIRST_SUBMIT_MS = 10_000;
 /** First watcher receipt read or resend of a proof without a log index. */
 export const SHOP_FIRST_RECEIPT_MS = 30_000;
-/** A `hex` transaction still unknown this long after its first send is refused. */
-export const SHOP_HEX_UNKNOWN_MS = 10 * 60_000;
 /** Fewest hexadecimal characters of a `hex` proof (after an optional `0x`). */
 export const SHOP_HEX_MIN_CHARS = 100;
 /** Most hexadecimal characters of a `hex` proof (after an optional `0x`). */
@@ -218,25 +217,11 @@ function callTimeout(shop: ShopPayments, deadlineMs: number, limitMs: number): n
 }
 
 /**
- * Lock the account of a payment inside `tx` (`lockAccountOf`: the payment is
- * read again after the lock, so an account merge that moved it meanwhile
- * locks the account it moved to).
- *
- * @param tx - Transaction.
- * @param paymentId - Payment id.
- */
-async function lockPaymentAccount(tx: ShopTx, paymentId: string): Promise<void> {
-  const payment = await tx.getPayment(paymentId);
-  /* v8 ignore next 3 -- a proof's payment is a foreign key */
-  if (payment === null) {
-    return;
-  }
-  await lockAccountOf(tx, paymentId, payment.accountId);
-}
-
-/**
- * Whether a proof is unresolved and may be submitted: no result, no order, no
- * stop after `409 quote_expired`, and for `hex` the transaction was sent.
+ * Whether a proof is unresolved and may be submitted (Storing and
+ * submitting, step 2): no result, no order, no stop after
+ * `409 quote_expired`, and a log index. A `hex` proof gets its log index only
+ * once its receipt with status `0x1` is found, so it is submitted only after
+ * Orchestra can see the deposit.
  *
  * @param proof - Stored proof.
  * @returns `true` when a submit may run.
@@ -246,8 +231,18 @@ function submittable(proof: ShopProof): boolean {
     proof.result === null &&
     proof.providerOrder === null &&
     !proof.submitStopped &&
-    (proof.source !== 'hex' || proof.sentAt !== null)
+    proof.logIndex !== null
   );
+}
+
+/**
+ * The quote and Orchestra quote of a proof's offer, for its log lines.
+ *
+ * @param offer - The proof's offer.
+ * @returns `quoteId` and `providerRef`.
+ */
+function offerLogFields(offer: ShopOffer): LogFields {
+  return { quoteId: offer.quoteId, providerRef: offer.providerRef };
 }
 
 /**
@@ -539,13 +534,14 @@ function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
  * offer's row: the filled row is `refused` with `tx_used` through
  * `refuseProof` (from any result the States table allows, an `accepted` one
  * included, which ends its payment with `proof_refused` unless another proof
- * takes its place) and is no longer read; nothing is deleted. The same offer:
+ * takes its place); it is no longer submitted or read, its order status
+ * included, and nothing is deleted. The same offer:
  * the kept row takes every value of the other row it lacks, and a final
  * order status of either row for the kept order (a final status is terminal,
  * so it is the newer one); the other row is deleted, then the values are
  * written (the indexes are not deferrable).
  *
- * @param tx - Transaction (account locked).
+ * @param tx - Transaction (payment row and proof rows locked).
  * @param filling - The row being filled in, as stored.
  * @param patch - What was being written onto it.
  * @param holder - The row that holds the value.
@@ -560,17 +556,8 @@ async function mergeDeposit(
   nowMs: number,
 ): Promise<ShopProof> {
   if (holder.offerId !== filling.offerId) {
-    const refused = await refuseProof(tx, filling.id, 'tx_used', nowMs);
-    /* v8 ignore next 3 -- the row being filled in was read in this transaction */
-    if (refused === null) {
-      return filling;
-    }
-    if (refused.result !== 'refused') {
-      return refused;
-    }
-    const stopped = await tx.updateProof(refused.id, {}, { nextReceiptAt: null });
-    /* v8 ignore next -- the row was refused in this transaction; clearing a schedule clashes with no index */
-    return stopped === null || stopped === 'conflict' ? refused : stopped;
+    /* v8 ignore next -- the row being filled in was read in this transaction */
+    return (await refuseProof(tx, filling.id, 'tx_used', nowMs)) ?? filling;
   }
   const intended: ShopProof = { ...filling, ...patch };
   const [keep, other] = keepOf(intended, holder);
@@ -609,9 +596,12 @@ async function mergeDeposit(
 
 /**
  * Fill values into a stored row and re-evaluate it; a unique conflict on the
- * log index merges the two rows of one deposit.
+ * log index merges the two rows of one deposit. A row that the fill makes
+ * submittable (a `hex` proof whose receipt was found) and that has no submit
+ * scheduled gets `next_submit_at` now, so the submits duty's 10 s, 30 s,
+ * 60 s, then 5 min count from the fill.
  *
- * @param tx - Transaction (account locked).
+ * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - Stored row.
  * @param patch - Values to fill in (`logIndex` and `transferAmount`, `userOpHash`).
  * @param nowMs - Clock.
@@ -623,7 +613,11 @@ async function fillProof(
   patch: ShopProofPatch,
   nowMs: number,
 ): Promise<ShopProof> {
-  const updated = await tx.updateProof(proof.id, {}, patch);
+  const filled: ShopProofPatch =
+    proof.nextSubmitAt === null && submittable({ ...proof, ...patch })
+      ? { ...patch, nextSubmitAt: new Date(nowMs) }
+      : patch;
+  const updated = await tx.updateProof(proof.id, {}, filled);
   if (updated === 'conflict') {
     const holder = (await tx.findProofs({ chainId: proof.chainId, txHash: proof.txHash })).find(
       (row) => row.id !== proof.id && row.logIndex === patch.logIndex,
@@ -647,7 +641,7 @@ async function fillProof(
  * row already holds the order id, the rows are one deposit and merge, or the
  * newer one is refused with `tx_used` (steps 3 and 4).
  *
- * @param tx - Transaction (account of the payment locked).
+ * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - Stored proof.
  * @param order - Order id and status.
  * @param nowMs - Clock.
@@ -670,11 +664,10 @@ export async function applyProofOrder(
 /**
  * Merge a proof with the row that already holds an order id.
  *
- * @param tx - Transaction (account locked).
+ * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - The proof that was to take the order.
  * @param orderId - Order id.
- * @param status - The order status to write, or `null` to take the holder's
- *   (the status travels with the order id).
+ * @param status - The order status to write.
  * @param nowMs - Clock.
  * @returns The surviving row.
  */
@@ -682,7 +675,7 @@ async function mergeOrderHolder(
   tx: ShopTx,
   proof: ShopProof,
   orderId: string,
-  status: string | null,
+  status: string,
   nowMs: number,
 ): Promise<ShopProof> {
   const holder = (await tx.findProofs({ providerOrder: orderId })).find(
@@ -697,44 +690,13 @@ async function mergeOrderHolder(
     proof,
     {
       providerOrder: orderId,
-      orderStatus: status ?? holder.orderStatus,
+      orderStatus: status,
       orderFoundAt: proof.orderFoundAt ?? new Date(nowMs),
       nextStatusAt: new Date(nowMs + SHOP_FIRST_STATUS_MS),
     },
     holder,
     nowMs,
   );
-}
-
-/**
- * Follow `supersededByOperationId`: the proof's order becomes the successor.
- * Its status is unknown (`null`, which holds the proof) until the next status
- * read, which is due at once; the predecessor's status is not carried over.
- * When another row holds the successor, the rows merge and the kept row
- * takes the holder's status.
- *
- * @param tx - Transaction (account locked).
- * @param proof - Stored proof with an order.
- * @param successorId - The successor order id.
- * @param nowMs - Clock.
- * @returns The proof (or the row it merged into).
- */
-export async function followProofOrder(
-  tx: ShopTx,
-  proof: ShopProof,
-  successorId: string,
-  nowMs: number,
-): Promise<ShopProof> {
-  const updated = await tx.updateProof(
-    proof.id,
-    {},
-    { providerOrder: successorId, orderStatus: null, nextStatusAt: new Date(nowMs) },
-  );
-  if (updated === 'conflict') {
-    return mergeOrderHolder(tx, proof, successorId, null, nowMs);
-  }
-  /* v8 ignore next -- the row was read in this transaction */
-  return updated ?? proof;
 }
 
 /**
@@ -747,8 +709,11 @@ export async function followProofOrder(
  * and while another unlogged row of that offer and transaction exists (the
  * unlogged index admits one) the order is not stored yet, so the orders duty
  * stores it on a later read, once the receipts duty filled that row's log
- * index. A lost insert answers from the winning row. The submit (step 2) is
- * the caller's.
+ * index. A lost insert answers from the winning row. A row with a log index
+ * and no order gets its first watcher submit after 10 s; a row without a log
+ * index (`hex`, `detected`) gets its first receipt read after 30 s and no
+ * submit. Runs under the payment row and its proof rows
+ * (`lockPaymentForProofs`). The submit (step 2) is the caller's.
  *
  * @param shop - Service (store, ids, clock).
  * @param candidate - The verified deposit.
@@ -759,8 +724,8 @@ export function storeProof(
   candidate: ShopProofCandidate,
 ): Promise<StoredShopProof> {
   return shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, candidate.paymentId);
     const nowMs = shop.deps.now();
-    await lockPaymentAccount(tx, candidate.paymentId);
     const { offer } = candidate;
     if (candidate.order !== null) {
       const [holder] = await tx.findProofs({ providerOrder: candidate.order.orderId });
@@ -822,7 +787,7 @@ export function storeProof(
       lastSubmitAt: null,
       giveUpAt: new Date(nowMs + SHOP_UNRESOLVED_LIMIT_MS),
       nextSubmitAt:
-        candidate.source === 'hex' || candidate.order !== null
+        candidate.logIndex === null || candidate.order !== null
           ? null
           : new Date(nowMs + SHOP_FIRST_SUBMIT_MS),
       nextReceiptAt: candidate.logIndex === null ? new Date(nowMs + SHOP_FIRST_RECEIPT_MS) : null,
@@ -842,7 +807,8 @@ export function storeProof(
       return { proof: winner, created: false };
     }
     proofLog(candidate.source === 'detected' ? 'shop.proof.detected' : 'shop.proof.stored', row, {
-      quoteId: offer.quoteId,
+      ...offerLogFields(offer),
+      ...(candidate.order === null ? {} : { orderId: candidate.order.orderId }),
       source: candidate.source,
     });
     const proof =
@@ -916,23 +882,31 @@ export async function submitProofAttempt(
   if (orchestra === null || offer === null || deadlineMs - shop.deps.now() <= 0) {
     return { proof: claim.proof, sent: false };
   }
+  const ids: LogFields = {
+    paymentId: claim.proof.paymentId,
+    proofId: claim.proof.id,
+    offerId: offer.id,
+    ...offerLogFields(offer),
+  };
   const answer = await orchestra.submit(
     offer.providerRef,
     claim.proof.txHash,
     claim.proof.idempotencyKey,
     caller,
     callTimeout(shop, deadlineMs, SHOP_PROOF_ORCHESTRA_MS),
+    ids,
   );
   if (answer.kind === 'budget') {
     return { proof: claim.proof, sent: false };
   }
-  proofLog('shop.proof.submitted', claim.proof, {
-    providerRef: offer.providerRef,
+  logEvent('shop.proof.submitted', {
+    ...ids,
+    ...(answer.kind === 'order' ? { orderId: answer.orderId } : {}),
     answer: answer.kind,
   });
   const proof = await shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, claim.proof.paymentId);
     const nowMs = shop.deps.now();
-    await lockPaymentAccount(tx, claim.proof.paymentId);
     const current = await tx.getProof(proofId);
     if (current === null) {
       return null;
@@ -977,11 +951,11 @@ export async function submitProofAttempt(
       if (late === null || late === 'conflict') {
         return current;
       }
-      proofLog('shop.proof.late', late);
-      proofLog('shop.alert.late_deposit', late);
+      logEvent('shop.proof.late', ids);
+      logEvent('shop.alert.late_deposit', ids);
       return late;
     }
-    proofLog('shop.proof.unresolved', current);
+    logEvent('shop.proof.unresolved', ids);
     return answer.retryable ? current : rotateKey(tx, shop, current);
   });
   return { proof, sent: true };
@@ -1006,10 +980,12 @@ export async function submitProof(
 }
 
 /**
- * Record a rejected or reverted `hex` transaction through `refuseProof`: the
- * proof becomes `refused` with `hex_rejected` from any result the States
- * table allows (an `accepted` proof included, which ends its payment with
- * `proof_refused`) and is no longer read or submitted.
+ * Record a rejected or reverted `hex` transaction through `refuseProof`, under
+ * the payment row and its proof rows (`lockPaymentForProofs`): the proof
+ * becomes `refused` with `hex_rejected` from any result the States table
+ * allows (an `accepted` proof included, which ends its payment with
+ * `proof_refused` unless a `superseded` proof takes its place) and is no
+ * longer read or submitted.
  *
  * @param shop - Service.
  * @param proofId - Proof id.
@@ -1017,19 +993,12 @@ export async function submitProof(
  */
 export function refuseHexProof(shop: ShopPayments, proofId: string): Promise<ShopProof | null> {
   return shop.store.transaction(async (tx) => {
-    const nowMs = shop.deps.now();
     const proof = await tx.getProof(proofId);
     if (proof === null) {
       return null;
     }
-    await lockPaymentAccount(tx, proof.paymentId);
-    const refused = await refuseProof(tx, proofId, 'hex_rejected', nowMs);
-    if (refused?.result !== 'refused') {
-      return refused;
-    }
-    const stopped = await tx.updateProof(proofId, {}, { nextReceiptAt: null });
-    /* v8 ignore next -- the row was refused in this transaction */
-    return stopped === null || stopped === 'conflict' ? refused : stopped;
+    await lockPaymentForProofs(tx, proof.paymentId);
+    return refuseProof(tx, proofId, 'hex_rejected', shop.deps.now());
   });
 }
 
@@ -1038,7 +1007,9 @@ export function refuseHexProof(shop: ShopPayments, proofId: string): Promise<Sho
  * contains `already known` or `nonce too low` counts as sent once
  * `eth_getTransactionByHash` finds the hash; `insufficient funds`, `invalid`,
  * or `intrinsic gas` refuse the proof; anything else is retried later. A
- * first send sets `sent_at` and schedules the first watcher submit.
+ * first send sets `sent_at` and schedules the first receipt read after 30 s;
+ * it schedules no submit, because a `hex` proof is submitted only once its
+ * receipt filled its log index.
  *
  * @param shop - Service.
  * @param proof - Stored `hex` proof.
@@ -1086,13 +1057,7 @@ export async function sendHexProof(
       await tx.updateProof(
         proof.id,
         {},
-        {
-          sentAt: new Date(nowMs),
-          nextReceiptAt: new Date(nowMs + SHOP_FIRST_RECEIPT_MS),
-          ...(submittable({ ...current, sentAt: new Date(nowMs) })
-            ? { nextSubmitAt: new Date(nowMs + SHOP_FIRST_SUBMIT_MS) }
-            : {}),
-        },
+        { sentAt: new Date(nowMs), nextReceiptAt: new Date(nowMs + SHOP_FIRST_RECEIPT_MS) },
       );
     });
   }
@@ -1102,7 +1067,9 @@ export async function sendHexProof(
 /**
  * Read the receipt of a proof without a log index and fill in its log index
  * and value, taking a transfer log no other row of the same offer and
- * transaction holds while one remains (else the rows merge). A failed `hex` transaction is refused; a `detected` (or `hex`)
+ * transaction holds while one remains (else the rows merge). A filled `hex`
+ * proof that may be submitted gets `next_submit_at` now. A failed `hex`
+ * transaction is refused; a `detected` (or `hex`)
  * proof whose successful receipt has no transfer log to its offer, or whose
  * transaction failed, stays held, stops being read, and logs
  * `shop.alert.detected_mismatch`.
@@ -1136,8 +1103,8 @@ export async function readProofReceipt(
   }
   const logs = receipt.value.status === '0x1' ? receipt.value.logs : [];
   return shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, proof.paymentId);
     const nowMs = shop.deps.now();
-    await lockPaymentAccount(tx, proof.paymentId);
     const current = await tx.getProof(proof.id);
     // A same-offer merge can delete the row while the receipt is read.
     if (current === null) {
@@ -1160,7 +1127,11 @@ export async function readProofReceipt(
     const transfer = offerTransfer(logs, offer, held);
     if (transfer === undefined) {
       await tx.updateProof(current.id, {}, { nextReceiptAt: null });
-      proofLog('shop.alert.detected_mismatch', current, { source: current.source });
+      proofLog('shop.alert.detected_mismatch', current, {
+        ...offerLogFields(offer),
+        ...(current.providerOrder === null ? {} : { orderId: current.providerOrder }),
+        source: current.source,
+      });
       return 'mismatch';
     }
     await fillProof(
@@ -1579,7 +1550,11 @@ async function newTxProof(
 
 /**
  * A `hex` proof that is not a repeat: verify, store with `raw_hex`, send,
- * submit.
+ * then read its receipt once within the budget and submit it only when the
+ * receipt filled its log index (Verification of `hex`, step 5). Without a
+ * receipt yet it answers **503** `Payment is being confirmed`, and the
+ * receipts duty reads and sends it until the receipt is found, after which
+ * the submits duty submits it.
  *
  * @param shop - Service.
  * @param context - Quote context.
@@ -1634,17 +1609,25 @@ async function newHexProof(
     url,
     callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS),
   );
-  const current = await reread(shop, proof);
+  const sent = await reread(shop, proof);
   if (outcome !== 'sent') {
-    return proofResponse(current);
+    return proofResponse(sent);
   }
+  if (deadlineMs - shop.deps.now() > 0) {
+    await readProofReceipt(shop, sent, url, callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS));
+  }
+  const current = await reread(shop, sent);
   return proofResponse(await submitForRequest(shop, current, true, deadlineMs));
 }
 
 /**
- * Operator retry (`POST /debug/shop-proofs/:id/retry`): a `stuck` proof
- * becomes unresolved again, `give_up_at` moves 24 h ahead, the watcher
- * submits it on its next tick, and `shop.proof.retried` is logged.
+ * Operator retry (`POST /debug/shop-proofs/:id/retry`), under the payment row
+ * and its proof rows (`lockPaymentForProofs`): a `stuck` proof becomes
+ * unresolved again, `give_up_at` moves 24 h ahead, and `shop.proof.retried`
+ * is logged. A `hex` proof without a log index gets `next_receipt_at` now,
+ * so the receipts duty reads and sends its transaction again (and the
+ * submits duty submits it once the receipt filled the log index); any other
+ * proof gets `next_submit_at` now.
  *
  * @param shop - Service.
  * @param proofId - Proof id (any case).
@@ -1660,12 +1643,17 @@ export function retryStuckProof(
     return Promise.resolve('not_found');
   }
   return shop.store.transaction(async (tx) => {
+    const peek = await tx.getProof(id);
+    if (peek === null) {
+      return 'not_found';
+    }
+    await lockPaymentForProofs(tx, peek.paymentId);
     const nowMs = shop.deps.now();
     const proof = await tx.getProof(id);
+    /* v8 ignore next 3 -- only a same-offer merge deletes a proof, and it runs under the same locks */
     if (proof === null) {
       return 'not_found';
     }
-    await lockPaymentAccount(tx, proof.paymentId);
     const retried = await tx.updateProof(
       id,
       { results: ['stuck'] },
@@ -1673,7 +1661,7 @@ export function retryStuckProof(
         result: null,
         giveUpAt: new Date(nowMs + SHOP_UNRESOLVED_LIMIT_MS),
         tries: 0,
-        ...(proof.source === 'hex' && proof.sentAt === null
+        ...(proof.source === 'hex' && proof.logIndex === null
           ? { nextSubmitAt: null, nextReceiptAt: new Date(nowMs) }
           : { nextSubmitAt: new Date(nowMs) }),
       },

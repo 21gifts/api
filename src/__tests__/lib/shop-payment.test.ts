@@ -45,6 +45,7 @@ import {
   evaluateProof,
   isExcludedShopUsername,
   lightningTransferAmount,
+  lockPaymentForProofs,
   markPaymentPaid,
   noPendingPaymentBody,
   offerDetail,
@@ -164,14 +165,16 @@ class FakeOrchestra {
   routesResult: OrchestraRoutesResult = { ok: true, assets: defaultRoutes(), validForMs: 60_000 };
   routesImpl: (() => Promise<OrchestraRoutesResult>) | null = null;
   routesCalls: number[] = [];
+  routesLogs: log.LogFields[] = [];
   quoteCalls: QuoteCall[] = [];
   quoteImpl: ((request: OrchestraQuoteRequest) => OrchestraQuoteResult) | null = null;
   onQuote: ((request: OrchestraQuoteRequest) => Promise<void>) | null = null;
   budget = 240;
   deposits = 0;
 
-  async routes(timeoutMs: number): Promise<OrchestraRoutesResult> {
+  async routes(timeoutMs: number, fields: log.LogFields): Promise<OrchestraRoutesResult> {
     this.routesCalls.push(timeoutMs);
+    this.routesLogs.push(fields);
     return this.routesImpl === null ? this.routesResult : this.routesImpl();
   }
 
@@ -685,7 +688,7 @@ describe('method table and pair order (Methods)', () => {
 
   it('offers a pair only when the route list names it with the table values, lightning:BTC, and an RPC endpoint', () => {
     const rpc = new Map(SHOP_METHODS.map((method) => [method.chainId, RPC(method.chainId)]));
-    expect(candidatePairs(defaultRoutes(), rpc)).toHaveLength(12);
+    expect(candidatePairs(defaultRoutes(), rpc, 'pay-1')).toHaveLength(12);
 
     const routes = defaultRoutes().map((route) => {
       if (route.chain === 'ethereum' && route.asset === 'USDT') {
@@ -705,7 +708,7 @@ describe('method table and pair order (Methods)', () => {
     const withoutBsc = routes.filter((route) => !(route.chain === 'bsc' && route.asset === 'USDC'));
     const noOptimismRpc = new Map(rpc);
     noOptimismRpc.delete(10);
-    const pairs = candidatePairs(withoutBsc, noOptimismRpc);
+    const pairs = candidatePairs(withoutBsc, noOptimismRpc, 'pay-1');
     expect(pairs.map((pair) => `${pair.method.method}/${pair.asset}`)).toEqual([
       'Ethereum/USDC',
       'Arbitrum/USDC',
@@ -714,9 +717,9 @@ describe('method table and pair order (Methods)', () => {
       'BinanceSmartChain/USDT',
     ]);
     expect(eventsNamed('shop.route.mismatch').map((entry) => entry.fields)).toEqual([
-      { method: 'Ethereum', asset: 'USDT' },
-      { method: 'Arbitrum', asset: 'USDT' },
-      { method: 'Base', asset: 'USDC' },
+      { paymentId: 'pay-1', method: 'Ethereum', asset: 'USDT' },
+      { paymentId: 'pay-1', method: 'Arbitrum', asset: 'USDT' },
+      { paymentId: 'pay-1', method: 'Base', asset: 'USDC' },
     ]);
   });
 });
@@ -1192,6 +1195,231 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     expect(await evaluate(w, crypto.randomUUID())).toBeNull();
   });
 
+  it('lockPaymentForProofs locks the payment row, then its proof rows ordered by id', async () => {
+    const w = await world();
+    const ids = [
+      '00000000-0000-4000-8000-0000000000f3',
+      '00000000-0000-4000-8000-0000000000f1',
+      '00000000-0000-4000-8000-0000000000f2',
+    ];
+    for (const id of ids) {
+      await addProof(w, { id });
+    }
+    const calls: string[] = [];
+    for (const name of ['lockPayment', 'lockProofs', 'lockAccount'] as const) {
+      w.h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    const locked = await w.h.store.transaction((tx) => lockPaymentForProofs(tx, w.payment.id));
+    expect(calls).toEqual(['lockPayment', 'lockProofs']);
+    expect(locked?.payment.id).toBe(w.payment.id);
+    expect(locked?.proofs.map((row) => row.id)).toEqual([...ids].sort());
+    calls.length = 0;
+    expect(
+      await w.h.store.transaction((tx) => lockPaymentForProofs(tx, crypto.randomUUID())),
+    ).toBeNull();
+    // No proof row is locked for a payment that does not exist.
+    expect(calls).toEqual(['lockPayment']);
+  });
+
+  it('evaluateProof, refuseProof, and recordProofOrder take no lock themselves (the caller holds them)', async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    const accepted = await addProof(w, {
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'swapping',
+    });
+    const p = await addProof(w);
+    const calls: string[] = [];
+    for (const name of ['lockPayment', 'lockProofs', 'lockAccount', 'lockCharge'] as const) {
+      w.h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    await w.h.store.transaction(async (tx) => {
+      await recordProofOrder(tx, p.id, { orderId: 'o2', status: 'completed' }, clock);
+      await evaluateProof(tx, accepted.id, clock);
+      await refuseProof(tx, accepted.id, 'mismatch', clock);
+    });
+    expect(calls).toEqual([]);
+    expect((await proof(w, p.id)).result).toBe('accepted');
+  });
+
+  it.each(['open', 'ended'] as const)(
+    'row 1: a superseded proof whose order resumed becomes accepted once no proof is accepted, and the %s payment accepted',
+    async (status) => {
+      const w = await world(
+        status === 'ended' ? { status, endReason: 'window', endedAt: new Date(T0) } : {},
+      );
+      const p = await addProof(w, {
+        result: 'superseded',
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+      });
+      clock = T0 + 2_000;
+      expect(await evaluate(w, p.id)).toMatchObject({
+        result: 'accepted',
+        resolvedAt: new Date(T0 + 2_000),
+      });
+      expect(await readPayment(w.h, w.payment.id)).toMatchObject({
+        status: 'accepted',
+        acceptedAt: new Date(T0 + 2_000),
+        endReason: null,
+      });
+      expect(eventsNamed('shop.proof.accepted').map((entry) => entry.fields)).toEqual([
+        {
+          paymentId: w.payment.id,
+          proofId: p.id,
+          offerId: w.offer.id,
+          quoteId: w.offer.quoteId,
+          providerRef: w.offer.providerRef,
+          orderId: 'o1',
+        },
+      ]);
+    },
+  );
+
+  it('row 1: a superseded proof stays superseded without a second log line while another proof is accepted', async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    await addProof(w, { result: 'accepted', providerOrder: 'o1', orderStatus: 'swapping' });
+    const p = await addProof(w, {
+      result: 'superseded',
+      resolvedAt: new Date(T0),
+      providerOrder: 'o2',
+      orderStatus: 'delivering',
+    });
+    expect(await evaluate(w, p.id)).toMatchObject({
+      result: 'superseded',
+      resolvedAt: new Date(T0),
+    });
+    expect(eventsNamed('shop.proof.superseded')).toHaveLength(0);
+  });
+
+  it('row 1: a superseded proof stays superseded after a unique-index conflict on the accepted proof', async () => {
+    const w = await world();
+    const p = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o1',
+      orderStatus: 'swapping',
+    });
+    const after = await w.h.store.transaction((tx) => {
+      const conflicting = new Proxy(tx, {
+        get: (target, prop) => {
+          if (prop === 'updateProof') {
+            return async () => 'conflict';
+          }
+          const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      return evaluateProof(conflicting, p.id, clock);
+    });
+    expect(after?.result).toBe('superseded');
+    expect(eventsNamed('shop.proof.superseded')).toHaveLength(0);
+  });
+
+  it('a superseded proof with a progressing order after the payment closed stays superseded (late is reached only from null, refused, stuck)', async () => {
+    const w = await world({
+      status: 'ended',
+      endReason: 'window',
+      endedAt: new Date(T0),
+      closedAt: new Date(T0),
+    });
+    const p = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o1',
+      orderStatus: 'swapping',
+    });
+    expect((await evaluate(w, p.id))?.result).toBe('superseded');
+    expect(eventsNamed('shop.proof.late')).toHaveLength(0);
+  });
+
+  it('logs every final proof event with the payment, proof, offer, quote, provider reference, and order', async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    const first = await addProof(w, {
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'swapping',
+    });
+    const p = await addProof(w, { providerOrder: 'o2', orderStatus: 'completed' });
+    const ids = (proofId: string, orderId: string): Record<string, string> => ({
+      paymentId: w.payment.id,
+      proofId,
+      offerId: w.offer.id,
+      quoteId: w.offer.quoteId,
+      providerRef: w.offer.providerRef,
+      orderId,
+    });
+    expect((await evaluate(w, p.id))?.result).toBe('accepted');
+    expect(eventsNamed('shop.proof.superseded').map((entry) => entry.fields)).toEqual([
+      ids(first.id, 'o1'),
+    ]);
+    expect(eventsNamed('shop.proof.accepted').map((entry) => entry.fields)).toEqual([
+      ids(p.id, 'o2'),
+    ]);
+    const failed = await addProof(w, { providerOrder: 'o3', orderStatus: 'failed' });
+    await evaluate(w, failed.id);
+    expect(eventsNamed('shop.proof.failed').map((entry) => entry.fields)).toEqual([
+      ids(failed.id, 'o3'),
+    ]);
+    expect(eventsNamed('shop.alert.order_failed').map((entry) => entry.fields)).toEqual([
+      ids(failed.id, 'o3'),
+    ]);
+    const unordered = await addProof(w);
+    await w.h.store.transaction((tx) => refuseProof(tx, unordered.id, 'mismatch', clock));
+    expect(eventsNamed('shop.proof.refused').map((entry) => entry.fields)).toEqual([
+      {
+        paymentId: w.payment.id,
+        proofId: unordered.id,
+        offerId: w.offer.id,
+        quoteId: w.offer.quoteId,
+        providerRef: w.offer.providerRef,
+        refusal: 'mismatch',
+      },
+    ]);
+  });
+
+  it('refuseProof: every refusal stops the submits and the receipt reads; only tx_used also stops the order-status duty', async () => {
+    const w = await world();
+    const schedule = {
+      nextSubmitAt: new Date(T0 + 10_000),
+      nextReceiptAt: new Date(T0 + 30_000),
+      nextStatusAt: new Date(T0 + 10_000),
+    };
+    const used = await addProof(w, {
+      providerOrder: 'o1',
+      orderStatus: 'refunding',
+      ...schedule,
+    });
+    const rejected = await addProof(w, {
+      providerOrder: 'o2',
+      orderStatus: 'refunding',
+      ...schedule,
+    });
+    expect(
+      await w.h.store.transaction((tx) => refuseProof(tx, used.id, 'tx_used', clock)),
+    ).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: 'o1',
+      nextSubmitAt: null,
+      nextReceiptAt: null,
+      nextStatusAt: null,
+    });
+    expect(
+      await w.h.store.transaction((tx) => refuseProof(tx, rejected.id, 'hex_rejected', clock)),
+    ).toMatchObject({
+      result: 'refused',
+      refusal: 'hex_rejected',
+      nextSubmitAt: null,
+      nextReceiptAt: null,
+      nextStatusAt: schedule.nextStatusAt,
+    });
+  });
+
   it.each([null, 'refused', 'stuck'] as const)(
     'moves %s to accepted on a progressing order with an amount within the bounds, and the payment to accepted',
     async (from) => {
@@ -1530,26 +1758,111 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     },
   );
 
-  it('lets another proof take acceptance when the accepted proof is refunded; the payment stays accepted', async () => {
+  it('row 3: the oldest superseded proof with a progressing order and an amount within the bounds takes the place of a refunded accepted proof', async () => {
     const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
     const first = await addProof(w, {
       result: 'accepted',
       providerOrder: 'o1',
       orderStatus: 'refunded',
     });
-    const held = await addProof(w, { providerOrder: 'o2', orderStatus: 'refunding' });
-    const next = await addProof(w, {
+    const held = await addProof(w, { providerOrder: 'o2', orderStatus: 'swapping' });
+    const unknownAmount = await addProof(w, {
       result: 'superseded',
       providerOrder: 'o3',
       orderStatus: 'swapping',
+      transferAmount: null,
     });
-    const taker = await addProof(w, { providerOrder: 'o4', orderStatus: 'swapping' });
+    const notProgressing = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o4',
+      orderStatus: 'unfulfilled',
+    });
+    const noStatus = await addProof(w, { result: 'superseded' });
+    const taker = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o5',
+      orderStatus: 'delivering',
+    });
+    const younger = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o6',
+      orderStatus: 'delivering',
+    });
+    clock = T0 + 7_000;
     expect((await evaluate(w, first.id))?.result).toBe('refunded');
+    // Only a superseded proof takes the place; a held proof is not re-evaluated.
     expect((await proof(w, held.id)).result).toBeNull();
-    expect((await proof(w, next.id)).result).toBe('superseded');
-    expect((await proof(w, taker.id)).result).toBe('accepted');
-    expect((await readPayment(w.h, w.payment.id)).status).toBe('accepted');
+    for (const id of [unknownAmount.id, notProgressing.id, noStatus.id, younger.id]) {
+      expect((await proof(w, id)).result).toBe('superseded');
+    }
+    expect(await proof(w, taker.id)).toMatchObject({
+      result: 'accepted',
+      resolvedAt: new Date(T0 + 7_000),
+    });
+    expect(await readPayment(w.h, w.payment.id)).toMatchObject({
+      status: 'accepted',
+      acceptedAt: new Date(T0),
+    });
     expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
+    expect(eventsNamed('shop.payment.accepted')).toHaveLength(0);
+    expect(eventsNamed('shop.proof.accepted').map((entry) => entry.fields)).toEqual([
+      {
+        paymentId: w.payment.id,
+        proofId: taker.id,
+        offerId: w.offer.id,
+        quoteId: w.offer.quoteId,
+        providerRef: w.offer.providerRef,
+        orderId: 'o5',
+      },
+    ]);
+  });
+
+  it('row 3: of two superseded proofs created at the same time the lower id takes the place', async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    const first = await addProof(w, {
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'failed',
+    });
+    const createdAt = new Date(T0 + 500);
+    const ids = ['00000000-0000-4000-8000-0000000000b2', '00000000-0000-4000-8000-0000000000b1'];
+    for (const [index, id] of ids.entries()) {
+      await addProof(w, {
+        id,
+        result: 'superseded',
+        providerOrder: `t${index}`,
+        orderStatus: 'swapping',
+        createdAt,
+      });
+    }
+    expect((await evaluate(w, first.id))?.result).toBe('failed');
+    expect((await proof(w, ids[1]!)).result).toBe('accepted');
+    expect((await proof(w, ids[0]!)).result).toBe('superseded');
+    expect((await readPayment(w.h, w.payment.id)).status).toBe('accepted');
+  });
+
+  it('row 3: no superseded proof takes the place of the accepted proof of a closed payment', async () => {
+    const w = await world({
+      status: 'accepted',
+      acceptedAt: new Date(T0),
+      closedAt: new Date(T0),
+    });
+    const first = await addProof(w, {
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'refunded',
+    });
+    const next = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o2',
+      orderStatus: 'swapping',
+    });
+    expect((await evaluate(w, first.id))?.result).toBe('refunded');
+    expect((await proof(w, next.id)).result).toBe('superseded');
+    expect(await readPayment(w.h, w.payment.id)).toMatchObject({
+      status: 'ended',
+      endReason: 'orchestra_refunded',
+    });
   });
 
   it('ends the payment when no other proof takes the place of the lost accepted proof', async () => {
@@ -1570,14 +1883,20 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     ]);
   });
 
-  it('leaves a paid payment paid when its accepted proof is refunded', async () => {
+  it('leaves a paid payment paid when its accepted proof is refunded, and no superseded proof takes the place', async () => {
     const w = await world({ status: 'paid', paidAt: new Date(T0) });
     const p = await addProof(w, {
       result: 'accepted',
       providerOrder: 'o1',
       orderStatus: 'refunded',
     });
+    const next = await addProof(w, {
+      result: 'superseded',
+      providerOrder: 'o2',
+      orderStatus: 'swapping',
+    });
     expect((await evaluate(w, p.id))?.result).toBe('refunded');
+    expect((await proof(w, next.id)).result).toBe('superseded');
     expect((await readPayment(w.h, w.payment.id)).status).toBe('paid');
     expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
   });
@@ -1660,6 +1979,7 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
       {
         paymentId: w.payment.id,
         proofId: p.id,
+        offerId: w.offer.id,
         orderId,
         reason: 'unknown_status',
         status: 'mystery',
@@ -1744,11 +2064,19 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
       endedAt: new Date(clock),
     });
     expect(eventsNamed('shop.proof.refused').map((entry) => entry.fields)).toEqual([
-      { paymentId: w.payment.id, proofId: p.id, refusal: 'tx_used' },
+      {
+        paymentId: w.payment.id,
+        proofId: p.id,
+        offerId: w.offer.id,
+        quoteId: w.offer.quoteId,
+        providerRef: w.offer.providerRef,
+        orderId: p.providerOrder,
+        refusal: 'tx_used',
+      },
     ]);
   });
 
-  it('refuseProof: another proof with a progressing order takes over; the payment stays accepted', async () => {
+  it('refuseProof: a superseded proof with a progressing order takes over; the payment stays accepted', async () => {
     const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
     const p = await addProof(w, {
       result: 'accepted',
@@ -1756,6 +2084,7 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
       orderStatus: 'refunding',
     });
     const taker = await addProof(w, {
+      result: 'superseded',
       providerOrder: crypto.randomUUID(),
       orderStatus: 'delivering',
     });
@@ -2211,7 +2540,13 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(await h.svc.createForPayer(h.account, USER, SATS, clock)).toEqual({
       kind: 'mint_failed',
     });
-    expect(eventsNamed('shop.mint.failed')).toHaveLength(3);
+    const mintFailed = eventsNamed('shop.mint.failed').map((entry) => entry.fields);
+    expect(mintFailed).toHaveLength(3);
+    // Each creation's payment id, chosen before the route list (Logging).
+    // The route list is fetched once and reused; its call carries the first id.
+    expect(h.orchestra.routesLogs).toEqual([{ paymentId: expect.any(String) }]);
+    expect(mintFailed[0]).toEqual({ accountId: ACCOUNT_ID, ...h.orchestra.routesLogs[0] });
+    expect(new Set(mintFailed.map((fields) => fields?.['paymentId'])).size).toBe(3);
     expect(h.orchestra.quoteCalls).toHaveLength(0);
     expect(await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID))).toBeNull();
   });
@@ -2508,15 +2843,44 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     const rejected = eventsNamed('shop.offer.rejected').map((entry) => entry.fields);
     expect(rejected).toEqual(
       expect.arrayContaining([
-        { paymentId: payment.id, method: 'Ethereum', asset: 'USDC', check: 'target' },
-        { paymentId: payment.id, method: 'Arbitrum', asset: 'USDC', check: 'deposit_shared' },
-        { paymentId: payment.id, method: 'Optimism', asset: 'USDT', check: 'gas' },
-        { paymentId: payment.id, method: 'Optimism', asset: 'USDC', check: 'gas' },
+        {
+          paymentId: payment.id,
+          providerRef: expect.stringMatching(/^oq-/),
+          method: 'Ethereum',
+          asset: 'USDC',
+          check: 'target',
+        },
+        {
+          paymentId: payment.id,
+          providerRef: expect.stringMatching(/^oq-/),
+          method: 'Arbitrum',
+          asset: 'USDC',
+          check: 'deposit_shared',
+        },
+        {
+          paymentId: payment.id,
+          providerRef: expect.stringMatching(/^oq-/),
+          method: 'Optimism',
+          asset: 'USDT',
+          check: 'gas',
+        },
+        {
+          paymentId: payment.id,
+          providerRef: expect.stringMatching(/^oq-/),
+          method: 'Optimism',
+          asset: 'USDC',
+          check: 'gas',
+        },
       ]),
     );
     expect(rejected).toHaveLength(4);
     expect(eventsNamed('shop.alert.shared_deposit_address').map((entry) => entry.fields)).toEqual([
-      { paymentId: payment.id, method: 'Arbitrum', asset: 'USDC' },
+      {
+        paymentId: payment.id,
+        providerRef: expect.stringMatching(/^oq-/),
+        method: 'Arbitrum',
+        asset: 'USDC',
+      },
     ]);
     const [quote] = await quotesOf(h, payment.id);
     expect(
@@ -2560,11 +2924,21 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     };
     events = [];
     const second = await payerPayment(h);
-    expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toEqual([
-      { paymentId: second.id, method: 'Polygon', asset: 'USDT', check: 'deposit_shared' },
-    ]);
-    expect(eventsNamed('shop.alert.shared_deposit_address')).toHaveLength(1);
     const [quote] = await quotesOf(h, second.id);
+    const shared = {
+      paymentId: second.id,
+      quoteId: quote!.id,
+      offerId: expect.any(String),
+      providerRef: expect.stringMatching(/^oq-/),
+      method: 'Polygon',
+      asset: 'USDT',
+    };
+    expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toEqual([
+      { ...shared, check: 'deposit_shared' },
+    ]);
+    expect(eventsNamed('shop.alert.shared_deposit_address').map((entry) => entry.fields)).toEqual([
+      shared,
+    ]);
     expect(quote!.transferAmounts.find((entry) => entry.method === 'Polygon')!.assets).toEqual([
       { asset: 'USDC', amount: '1.234' },
     ]);
@@ -2910,8 +3284,11 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect((await h.store.transaction((tx) => tx.openPayment(ACCOUNT_ID)))?.id).toBe(earlier.id);
     expect(eventsNamed('shop.payment.ended')).toHaveLength(0);
     expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
-      { paymentId: holder.id },
+      { paymentId: expect.any(String), holderPaymentId: holder.id },
     ]);
+    expect(eventsNamed('shop.alert.duplicate_invoice')[0]?.fields?.['paymentId']).not.toBe(
+      holder.id,
+    );
   });
 
   it.each([true, false])(
@@ -2943,7 +3320,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       expect(await readPayment(h, earlier.id)).toMatchObject({ status: 'open', endReason: null });
       expect(await h.store.transaction((tx) => tx.paymentForCharge(charge.id))).toBeNull();
       expect(eventsNamed('shop.alert.duplicate_invoice').map((entry) => entry.fields)).toEqual([
-        { paymentId: holder.id },
+        { paymentId: expect.any(String), holderPaymentId: holder.id },
       ]);
       expect((await h.pos.findChargeForPayment({ paymentHash: hash }))?.id).toBe(
         insertedByUs ? undefined : charge.id,
@@ -4749,10 +5126,14 @@ describe('till hooks (By a till charge, Till)', () => {
   it('logs shop.creation.failed when the background creation throws', async () => {
     const h = await setup();
     h.orchestra.routesImpl = () => Promise.reject(new Error('boom'));
-    await h.svc.createCharge(h.account, chargeRow(), clock);
+    const charge = chargeRow();
+    await h.svc.createCharge(h.account, charge, clock);
     await vi.waitFor(() => {
       expect(eventsNamed('shop.creation.failed')).toEqual([
-        { event: 'shop.creation.failed', fields: { accountId: ACCOUNT_ID, name: 'Error' } },
+        {
+          event: 'shop.creation.failed',
+          fields: { accountId: ACCOUNT_ID, chargeId: charge.id, name: 'Error' },
+        },
       ]);
     });
   });
@@ -4818,6 +5199,70 @@ describe('till hooks (By a till charge, Till)', () => {
     expect(eventsNamed('shop.alert.double_settled')).toHaveLength(0);
   });
 
+  it('charge watch: locks the account, then the charge, then the payment, and alerts on neither', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
+    const payment = created.kind === 'payment' ? created.payment : paymentRow();
+    const calls: string[] = [];
+    for (const name of ['lockAccount', 'lockCharge', 'markChargePaid', 'lockPayment'] as const) {
+      h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    expect(await h.svc.chargePaid(charge, payment.paymentHash, clock)).toMatchObject({
+      status: 'paid',
+    });
+    expect(calls).toEqual(['lockAccount', 'lockCharge', 'markChargePaid', 'lockPayment']);
+    expect(eventsNamed('shop.alert.double_settled')).toHaveLength(0);
+    expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(0);
+  });
+
+  it('charge watch: the payment’s own hash after the Spark invoice paid the charge logs shop.alert.double_settled', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const payment = paymentRow({
+      posChargeId: charge.id,
+      status: 'ended',
+      endReason: 'charge_paid',
+    });
+    await h.store.transaction((tx) => tx.insertPayment(payment));
+    // The Spark invoice paid the charge after the watch listed it.
+    await h.pos.markPaid(charge.id, T0);
+    clock = T0 + 20_000;
+    expect(await h.svc.chargePaid(charge, payment.paymentHash, clock)).toBeNull();
+    expect(await readPayment(h, payment.id)).toMatchObject({
+      status: 'paid',
+      paidAt: new Date(T0 + 20_000),
+    });
+    expect(eventsNamed('shop.alert.double_settled').map((entry) => entry.fields)).toEqual([
+      { paymentId: payment.id, chargeId: charge.id },
+    ]);
+    expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(0);
+  });
+
+  it('charge watch: the payment’s own hash after DELETE /pos logs shop.alert.cancelled_settled and keeps the charge cancelled', async () => {
+    const h = await setup();
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const created = await h.svc.createForCharge(h.account, USER, charge, clock);
+    const payment = created.kind === 'payment' ? created.payment : paymentRow();
+    expect((await h.svc.cancelCharge(ACCOUNT_ID, clock))?.status).toBe('cancelled');
+    expect(await h.svc.chargePaid(charge, payment.paymentHash, clock)).toBeNull();
+    expect((await readPayment(h, payment.id)).status).toBe('paid');
+    expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('cancelled');
+    expect(eventsNamed('shop.alert.cancelled_settled').map((entry) => entry.fields)).toEqual([
+      { paymentId: payment.id, chargeId: charge.id },
+    ]);
+    expect(eventsNamed('shop.alert.double_settled')).toHaveLength(0);
+    // A payment already paid moves no more and alerts no more.
+    expect(await h.svc.chargePaid(charge, payment.paymentHash, clock)).toBeNull();
+    expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(1);
+  });
+
   it.each([null, 'ff'.repeat(32)])(
     'charge watch: the Spark invoice or another BOLT11 (%s) ends an open payment with charge_paid',
     async (settled) => {
@@ -4878,7 +5323,7 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
   });
 
   it('a payment a merge moved before the lock: locks the account it moved to, then settles', async () => {
-    const { h, payment } = await withPayment();
+    const { h, payment } = await withPayment({}, chargeRow());
     const stale = crypto.randomUUID();
     let reads = 0;
     h.store.hooks.getPayment = async (tx, ...args) => {
@@ -4899,7 +5344,7 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
   });
 
   it('a payment that keeps moving after two account locks is left for the next tick', async () => {
-    const { h, payment } = await withPayment();
+    const { h, payment } = await withPayment({}, chargeRow());
     h.store.hooks.getPayment = async (tx, ...args) => {
       const row = await tx.getPayment(...(args as unknown as [string]));
       return row === null ? null : { ...row, accountId: crypto.randomUUID() };
@@ -4923,7 +5368,7 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
   });
 
   it('a payment gone after the peek is left alone', async () => {
-    const { h, payment } = await withPayment();
+    const { h, payment } = await withPayment({}, chargeRow());
     let reads = 0;
     h.store.hooks.getPayment = async (tx, ...args) => {
       reads += 1;
@@ -4979,6 +5424,43 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     expect(eventsNamed('shop.payment.paid')).toHaveLength(1);
   });
 
+  /** Record the lock calls of every transaction from now on. */
+  function recordLocks(h: Harness): string[] {
+    const calls: string[] = [];
+    for (const name of [
+      'lockAccount',
+      'lockCharge',
+      'lockPayment',
+      'lockProofs',
+      'markChargePaid',
+    ] as const) {
+      h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    return calls;
+  }
+
+  it('settlement of a charge-backed payment locks the account, then the charge, then the payment, and no proof row', async () => {
+    const charge = chargeRow();
+    const { h, payment } = await withPayment({}, charge);
+    const calls = recordLocks(h);
+    await h.svc.applySettlement(payment.id, true, clock);
+    expect(calls).toEqual(['lockAccount', 'lockCharge', 'lockPayment', 'markChargePaid']);
+    expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('paid');
+  });
+
+  it('settlement of a payer payment locks only its shop_payment row', async () => {
+    const { h, payment } = await withPayment();
+    const calls = recordLocks(h);
+    await h.svc.applySettlement(payment.id, false, clock);
+    expect(calls).toEqual(['lockPayment']);
+    await h.svc.applySettlement(payment.id, true, clock);
+    expect(calls).toEqual(['lockPayment', 'lockPayment']);
+    expect((await readPayment(h, payment.id)).status).toBe('paid');
+  });
+
   it('logs shop.alert.double_settled when the charge was already paid by another invoice', async () => {
     const charge = chargeRow();
     const { h, payment } = await withPayment(
@@ -4988,7 +5470,7 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     await h.pos.markPaid(charge.id, T0);
     await h.svc.applySettlement(payment.id, true, clock);
     expect(eventsNamed('shop.alert.double_settled').map((entry) => entry.fields)).toEqual([
-      { paymentId: payment.id },
+      { paymentId: payment.id, chargeId: charge.id },
     ]);
     expect((await readPayment(h, payment.id)).status).toBe('paid');
   });
@@ -5002,7 +5484,9 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
     await h.pos.cancelPending(ACCOUNT_ID, clock);
     clock = T0 + 30_000;
     await h.svc.applySettlement(payment.id, true, clock);
-    expect(eventsNamed('shop.alert.cancelled_settled')).toHaveLength(1);
+    expect(eventsNamed('shop.alert.cancelled_settled').map((entry) => entry.fields)).toEqual([
+      { paymentId: payment.id, chargeId: charge.id },
+    ]);
     expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('cancelled');
     expect(await readPayment(h, payment.id)).toMatchObject({
       status: 'paid',
@@ -5011,6 +5495,19 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
       endReason: null,
       nextSettleAt: null,
     });
+  });
+
+  it('markPaymentPaid returns the paid row and leaves a charge the caller already marked', async () => {
+    const charge = chargeRow();
+    const { h, payment } = await withPayment({}, charge);
+    const before = await h.pos.findChargeForPayment({ chargeId: charge.id });
+    const paid = await h.store.transaction((tx) =>
+      markPaymentPaid(tx, payment, clock, { before: before ?? null, marked: true }),
+    );
+    expect(paid).toMatchObject({ id: payment.id, status: 'paid', paidAt: new Date(clock) });
+    // marked: the caller already ran markPaid, so the charge is not touched here.
+    expect((await h.pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('pending');
+    expect(eventsNamed('shop.alert.double_settled')).toHaveLength(0);
   });
 
   it('settles a payment whose charge row is gone', async () => {
@@ -5099,7 +5596,11 @@ describe('charge watch settling and settlement cadence (Watcher duty 2, Rows)', 
       endedAt: new Date(T0),
       closedAt: new Date(T0),
     });
-    await h.store.transaction((tx) => markPaymentPaid(tx, payment, clock, true));
+    expect(
+      await h.store.transaction((tx) =>
+        markPaymentPaid(tx, payment, clock, { before: null, marked: false }),
+      ),
+    ).toBeNull();
     expect((await readPayment(h, payment.id)).status).toBe('ended');
     expect(await h.store.transaction((tx) => endPayment(tx, payment, 'window', clock))).toBeNull();
     expect(eventsNamed('shop.payment.paid')).toHaveLength(0);

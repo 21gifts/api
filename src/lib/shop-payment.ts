@@ -256,15 +256,18 @@ export function shopMethodByName(name: string): ShopMethod | undefined {
  * Pairs that a quote may request: in the table, named by Orchestra's route
  * list with `exactOutTo` admitting `lightning:BTC`, the table contract and
  * decimals, and an RPC endpoint for the chain. A route-list pair whose
- * contract or decimals differ from the table logs `shop.route.mismatch`.
+ * contract or decimals differ from the table logs `shop.route.mismatch`
+ * with the payment the pairs are for.
  *
  * @param routes - Orchestra route list.
  * @param evmRpc - Configured RPC endpoints by chain id.
+ * @param paymentId - The payment being created or whose quote is replaced.
  * @returns Candidate pairs in request order.
  */
 export function candidatePairs(
   routes: readonly OrchestraRouteAsset[],
   evmRpc: ReadonlyMap<number, string>,
+  paymentId: string,
 ): ShopPair[] {
   const candidates: ShopPair[] = [];
   for (const pair of shopPairOrder()) {
@@ -278,7 +281,7 @@ export function candidatePairs(
       route.contractAddress !== pair.method.contracts[pair.asset] ||
       route.decimals !== pair.method.decimals
     ) {
-      logEvent('shop.route.mismatch', { method: pair.method.method, asset: pair.asset });
+      logEvent('shop.route.mismatch', { paymentId, method: pair.method.method, asset: pair.asset });
       continue;
     }
     if (!route.exactOutToLightning || !evmRpc.has(pair.method.chainId)) {
@@ -752,8 +755,15 @@ export function checkOffer(input: OfferCheckInput): OfferCheck | null {
 
 // ─── Proof state rules ────────────────────────────────────────────────────
 
-/** Results a proof may move to `accepted` or `superseded` from on a progressing order. */
+/** Results a proof may move to `superseded` or `late` from on a progressing order. */
 const OPEN_RESULTS: readonly (ShopProofResult | null)[] = [null, 'refused', 'stuck'];
+
+/**
+ * Results a proof may move to `accepted` from on a progressing order (States,
+ * row 1): the open results and `superseded`, so a superseded proof whose
+ * order resumed takes the place once no proof is `accepted`.
+ */
+const PROGRESS_FROM: readonly (ShopProofResult | null)[] = [...OPEN_RESULTS, 'superseded'];
 
 /** Final order status → proof result. */
 const FINAL_RESULT: Readonly<Record<string, ShopProofResult>> = {
@@ -811,6 +821,42 @@ function shopLog(event: string, fields: LogFields): void {
 }
 
 /**
+ * The ids of a proof event (Logging): the payment, the proof, its offer, the
+ * offer's quote (`quoteId`) and Orchestra quote (`providerRef`), and the
+ * order (`orderId`) when the proof holds one.
+ *
+ * @param proof - The proof.
+ * @param offer - Its offer.
+ * @returns The log fields.
+ */
+function proofLogFields(proof: ShopProof, offer: ShopOffer): LogFields {
+  return {
+    paymentId: proof.paymentId,
+    proofId: proof.id,
+    offerId: offer.id,
+    quoteId: offer.quoteId,
+    providerRef: offer.providerRef,
+    ...(proof.providerOrder === null ? {} : { orderId: proof.providerOrder }),
+  };
+}
+
+/**
+ * {@link proofLogFields} of a proof whose offer is read in `tx`.
+ *
+ * @param tx - Transaction.
+ * @param proof - The proof.
+ * @returns The log fields.
+ */
+async function proofEventFields(tx: ShopTx, proof: ShopProof): Promise<LogFields> {
+  const offer = await tx.getOffer(proof.offerId);
+  /* v8 ignore next 3 -- a proof's offer is a foreign key */
+  if (offer === null) {
+    return { paymentId: proof.paymentId, proofId: proof.id };
+  }
+  return proofLogFields(proof, offer);
+}
+
+/**
  * Move a payment to `accepted` from `open` or `ended` (not closed).
  *
  * @param tx - Transaction.
@@ -829,9 +875,39 @@ async function acceptPayment(tx: ShopTx, payment: ShopPayment, nowMs: number): P
 }
 
 /**
+ * The first statements of every transaction that changes a proof's result,
+ * merges two proof rows, stops the order-status duty for a replaced order, or
+ * decides the orders duty's `next_history_at` (Storing and submitting): lock
+ * the payment's `shop_payment` row (`SELECT … FOR UPDATE`), then every proof
+ * row of the payment with one `SELECT … FOR UPDATE` ordered by id. No account
+ * row is locked, so this never waits for an account while it holds a payment
+ * row; the settlement step locks no proof row.
+ *
+ * @param tx - Transaction.
+ * @param paymentId - Payment id.
+ * @returns The locked payment and its proofs by id, or `null` when the
+ *   payment does not exist (no proof row is locked then).
+ */
+export async function lockPaymentForProofs(
+  tx: ShopTx,
+  paymentId: string,
+): Promise<{ payment: ShopPayment; proofs: ShopProof[] } | null> {
+  const payment = await tx.lockPayment(paymentId);
+  if (payment === null) {
+    return null;
+  }
+  return { payment, proofs: await tx.lockProofs(paymentId) };
+}
+
+/**
  * Re-evaluate one proof after its order status, value, or payment changed
- * ([States] of the contract). Runs inside `tx`; the caller has locked the
- * account of the payment.
+ * ([States] of the contract). Runs inside `tx`; the caller holds the payment
+ * row and its proof rows ({@link lockPaymentForProofs}). A progressing order
+ * with a known amount within the bounds accepts the proof from null,
+ * `refused`, `stuck`, or `superseded` while no other proof is `accepted` and
+ * the payment is neither `paid` nor closed; while another proof is
+ * `accepted`, an open proof becomes `superseded` and a `superseded` one stays
+ * as it is, without a second log line.
  *
  * @param tx - Transaction.
  * @param proofId - Proof id.
@@ -847,14 +923,14 @@ export async function evaluateProof(
   if (proof === null) {
     return null;
   }
-  const payment = await tx.lockPayment(proof.paymentId);
+  const payment = await tx.getPayment(proof.paymentId);
   const offer = await tx.getOffer(proof.offerId);
   /* v8 ignore next 3 -- foreign keys keep both rows */
   if (payment === null || offer === null) {
     return proof;
   }
   const status = proof.orderStatus;
-  const ids = { paymentId: payment.id, proofId: proof.id, offerId: offer.id };
+  const ids = proofLogFields(proof, offer);
   if (status !== null && ORCHESTRA_FINAL_STATUSES.has(status)) {
     const target = FINAL_RESULT[status];
     /* v8 ignore next 3 -- every final status has a row in FINAL_RESULT */
@@ -873,7 +949,7 @@ export async function evaluateProof(
             { results: ['accepted'] },
             { result: 'superseded', resolvedAt: new Date(nowMs) },
           );
-          shopLog('shop.proof.superseded', { paymentId: payment.id, proofId: other.id });
+          shopLog('shop.proof.superseded', await proofEventFields(tx, other));
         }
       }
       const updated = await tx.updateProof(
@@ -909,11 +985,15 @@ export async function evaluateProof(
   if (
     status === null ||
     !ORCHESTRA_PROGRESSING_STATUSES.has(status) ||
-    !OPEN_RESULTS.includes(proof.result)
+    !PROGRESS_FROM.includes(proof.result)
   ) {
     return proof;
   }
   if (payment.closedAt !== null) {
+    // `late` is reached only from null, `refused`, and `stuck`.
+    if (proof.result === 'superseded') {
+      return proof;
+    }
     const late = await tx.updateProof(
       proof.id,
       { results: OPEN_RESULTS },
@@ -932,7 +1012,7 @@ export async function evaluateProof(
   if (!taken) {
     const accepted = await tx.updateProof(
       proof.id,
-      { results: OPEN_RESULTS },
+      { results: PROGRESS_FROM },
       { result: 'accepted', refusal: null, resolvedAt: new Date(nowMs) },
     );
     if (accepted !== null && accepted !== 'conflict') {
@@ -940,6 +1020,10 @@ export async function evaluateProof(
       await acceptPayment(tx, payment, nowMs);
       return accepted;
     }
+  }
+  // A proof that is already superseded stays so, without a second log line.
+  if (proof.result === 'superseded') {
+    return proof;
   }
   const superseded = await tx.updateProof(
     proof.id,
@@ -952,10 +1036,13 @@ export async function evaluateProof(
 }
 
 /**
- * The accepted proof of a payment left `accepted`: another proof that may
- * take its place is accepted; otherwise an `accepted` payment ends. The proof
- * that just lost acceptance is not re-evaluated here: only a new order status
- * or a newly filled-in value re-evaluates a proof.
+ * The accepted proof of a payment left `accepted` (States, row 3): while the
+ * payment is neither `paid` nor closed, the oldest `superseded` proof of the
+ * payment (earliest `created_at`, then `id`) whose order is progressing and
+ * whose amount is known and within its offer's bounds becomes `accepted` in
+ * the same transaction, and the payment stays `accepted`. Only when no proof
+ * takes the place does an `accepted` payment end. The caller holds the
+ * payment row and its proof rows ({@link lockPaymentForProofs}).
  *
  * @param tx - Transaction.
  * @param paymentId - Payment id.
@@ -970,16 +1057,41 @@ async function paymentLostAcceptance(
   result: ShopProofResult,
   nowMs: number,
 ): Promise<void> {
-  for (const other of await tx.proofsOf(paymentId)) {
-    if (
-      other.id !== lostProofId &&
-      OPEN_RESULTS.includes(other.result) &&
-      other.orderStatus !== null
-    ) {
-      const evaluated = await evaluateProof(tx, other.id, nowMs);
-      if (evaluated?.result === 'accepted') {
-        return;
+  const payment = await tx.getPayment(paymentId);
+  /* v8 ignore next 3 -- a proof's payment is a foreign key */
+  if (payment === null) {
+    return;
+  }
+  if (payment.status !== 'paid' && payment.closedAt === null) {
+    // proofsOf lists the oldest first: created_at, then id.
+    for (const other of await tx.proofsOf(paymentId)) {
+      if (
+        other.id === lostProofId ||
+        other.result !== 'superseded' ||
+        other.orderStatus === null ||
+        !ORCHESTRA_PROGRESSING_STATUSES.has(other.orderStatus)
+      ) {
+        continue;
       }
+      const offer = await tx.getOffer(other.offerId);
+      /* v8 ignore next 3 -- a proof's offer is a foreign key */
+      if (offer === null) {
+        continue;
+      }
+      if (!proofWithinBounds(other, offer)) {
+        continue;
+      }
+      const accepted = await tx.updateProof(
+        other.id,
+        { results: ['superseded'] },
+        { result: 'accepted', refusal: null, resolvedAt: new Date(nowMs) },
+      );
+      /* v8 ignore next 3 -- the rows are locked and the lost proof is no longer accepted */
+      if (accepted === null || accepted === 'conflict') {
+        continue;
+      }
+      shopLog('shop.proof.accepted', proofLogFields(accepted, offer));
+      return;
     }
   }
   const reason = LOSS_REASON[result];
@@ -1021,7 +1133,12 @@ function isUnknownOrderStatus(status: string): boolean {
  * submit refused with `xchain_deposit_mismatch`, or the newer of two rows
  * that hold one deposit as `tx_used`), from the results the
  * States table allows, and end an `accepted` payment that loses its only
- * accepted proof. Runs inside `tx` with the payment's account locked.
+ * accepted proof unless a `superseded` proof takes its place. Runs inside
+ * `tx`; the caller holds the payment row and its proof rows
+ * ({@link lockPaymentForProofs}). The refused proof is no longer submitted
+ * or read by the receipts duty; a `tx_used` refusal also stops the
+ * order-status duty for it (`next_status_at` is cleared), because Orchestra
+ * counted that deposit on another offer.
  *
  * @param tx - Transaction.
  * @param proofId - Proof id.
@@ -1044,17 +1161,23 @@ export async function refuseProof(
   if (!FINAL_FROM.refused.includes(proof.result)) {
     return proof;
   }
-  await tx.lockPayment(proof.paymentId);
   const refused = await tx.updateProof(
     proofId,
     { results: FINAL_FROM.refused },
-    { result: 'refused', refusal, resolvedAt: new Date(nowMs), nextSubmitAt: null },
+    {
+      result: 'refused',
+      refusal,
+      resolvedAt: new Date(nowMs),
+      nextSubmitAt: null,
+      nextReceiptAt: null,
+      ...(refusal === 'tx_used' ? { nextStatusAt: null } : {}),
+    },
   );
   /* v8 ignore next 3 -- the row is locked through its payment and its result was just checked */
   if (refused === null || refused === 'conflict') {
     return tx.getProof(proofId);
   }
-  shopLog('shop.proof.refused', { paymentId: proof.paymentId, proofId, refusal });
+  shopLog('shop.proof.refused', { ...(await proofEventFields(tx, refused)), refusal });
   if (proof.result === 'accepted') {
     await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
   }
@@ -1064,7 +1187,8 @@ export async function refuseProof(
 /**
  * Store an Orchestra order on a proof and re-evaluate it.
  *
- * @param tx - Transaction (account of the payment locked).
+ * @param tx - Transaction; the caller holds the payment row and its proof
+ *   rows ({@link lockPaymentForProofs}).
  * @param proofId - Proof id.
  * @param order - Order id and status.
  * @param nowMs - Clock.
@@ -1102,6 +1226,7 @@ export async function recordProofOrder(
     shopLog('shop.orchestra.error', {
       paymentId: proof.paymentId,
       proofId,
+      offerId: proof.offerId,
       orderId: order.orderId,
       reason: 'unknown_status',
       status: order.status,
@@ -1284,8 +1409,12 @@ class HashHeldError extends Error {
    * Name the payment that holds the hash.
    *
    * @param holderId - Id of the payment that holds the hash.
+   * @param holderChargeId - That payment's charge, or `null` for a payer's.
    */
-  constructor(readonly holderId: string) {
+  constructor(
+    readonly holderId: string,
+    readonly holderChargeId: string | null,
+  ) {
     super('payment hash held');
   }
 }
@@ -1465,9 +1594,10 @@ export class ShopPayments {
    * one the route-list budget refuses, offers no stablecoin.
    *
    * @param deadlineMs - Absolute deadline for the fetch.
+   * @param paymentId - The payment the list is read for (its log lines).
    * @returns Route assets, or `null` when the fetch failed.
    */
-  async #routeList(deadlineMs: number): Promise<OrchestraRouteAsset[] | null> {
+  async #routeList(deadlineMs: number, paymentId: string): Promise<OrchestraRouteAsset[] | null> {
     const nowMs = this.#deps.now();
     if (this.#routes !== null && nowMs < this.#routes.untilMs) {
       return this.#routes.assets;
@@ -1481,7 +1611,7 @@ export class ShopPayments {
     if (timeoutMs <= 0) {
       return null;
     }
-    const result = await orchestra.routes(timeoutMs);
+    const result = await orchestra.routes(timeoutMs, { paymentId });
     if (!result.ok) {
       this.#routes = null;
       return null;
@@ -1579,7 +1709,12 @@ export class ShopPayments {
         usdPerBtc: nowMs - spot.asOfMs < SHOP_SPOT_MAX_AGE_MS ? spot.usd : null,
         nowMs,
       });
-      const fields = { paymentId: target.paymentId, method: pair.method.method, asset: pair.asset };
+      const fields = {
+        paymentId: target.paymentId,
+        providerRef: result.quote.quoteId,
+        method: pair.method.method,
+        asset: pair.asset,
+      };
       if (check !== null) {
         logEvent('shop.offer.rejected', { ...fields, check });
         if (check === 'deposit_shared') {
@@ -1673,17 +1808,16 @@ export class ShopPayments {
     );
     for (const offer of offers) {
       if (!inserted.some((row) => row.id === offer.id)) {
-        logEvent('shop.offer.rejected', {
+        const fields = {
           paymentId: payment.id,
+          quoteId: quote.id,
+          offerId: offer.id,
+          providerRef: offer.providerRef,
           method: offer.method,
           asset: offer.asset,
-          check: 'deposit_shared',
-        });
-        logEvent('shop.alert.shared_deposit_address', {
-          paymentId: payment.id,
-          method: offer.method,
-          asset: offer.asset,
-        });
+        };
+        logEvent('shop.offer.rejected', { ...fields, check: 'deposit_shared' });
+        logEvent('shop.alert.shared_deposit_address', fields);
       }
     }
     const patch = {
@@ -1710,7 +1844,11 @@ export class ShopPayments {
     }
     void this.createForCharge(account, username, charge, requestArrivedMs).catch(
       (error: unknown) => {
-        logEvent('shop.creation.failed', { accountId: account.id, ...errorLogFields(error) });
+        logEvent('shop.creation.failed', {
+          accountId: account.id,
+          chargeId: charge.id,
+          ...errorLogFields(error),
+        });
       },
     );
   }
@@ -1869,20 +2007,22 @@ export class ShopPayments {
     if (config === null) {
       return { kind: 'unavailable' };
     }
+    // The payment's id is chosen before step 3, so every log line of the
+    // procedure carries it.
+    const paymentId = this.#newId();
     // Step 3: route list.
-    const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS);
+    const routes = await this.#routeList(startMs + SHOP_ROUTES_TIMEOUT_MS, paymentId);
     if (routes === null) {
       // No stablecoin until a route-list fetch succeeds; the next creation fetches again.
       return { kind: 'unavailable' };
     }
-    const pairs = candidatePairs(routes, config.evmRpc);
+    const pairs = candidatePairs(routes, config.evmRpc, paymentId);
     if (pairs.length === 0) {
       this.#noPairUntil.set(account.id, this.#deps.now() + SHOP_NO_PAIR_WAIT_MS);
       return { kind: 'unavailable' };
     }
     // Step 4: mint.
-    const paymentId = this.#newId();
-    const minted = await this.#mint(account, input.amountSats);
+    const minted = await this.#mint(account, input.amountSats, paymentId);
     if (minted === null) {
       return { kind: 'mint_failed' };
     }
@@ -1968,12 +2108,14 @@ export class ShopPayments {
    *
    * @param account - Shop account.
    * @param amountSats - Sats.
+   * @param paymentId - The payment being created (its log lines).
    * @returns The BOLT11, its hash, its expiry, and the request time, or
    *   `null` when the mint failed or the amount differs.
    */
   async #mint(
     account: Account,
     amountSats: number,
+    paymentId: string,
   ): Promise<{
     bolt11: string;
     paymentHash: string;
@@ -2000,12 +2142,12 @@ export class ShopPayments {
       now: this.#deps.now,
     });
     if (!invoice.ok) {
-      logEvent('shop.mint.failed', { accountId: account.id });
+      logEvent('shop.mint.failed', { accountId: account.id, paymentId });
       return null;
     }
     const decoded = decodeBolt11(invoice.pr);
     if (decoded === null || decoded.amountMsat !== amountSats * 1000) {
-      logEvent('shop.mint.failed', { accountId: account.id });
+      logEvent('shop.mint.failed', { accountId: account.id, paymentId });
       return null;
     }
     return {
@@ -2042,7 +2184,13 @@ export class ShopPayments {
         throw error;
       }
       // The transaction rolled back: an open payment it ended stays open.
-      logEvent('shop.alert.duplicate_invoice', { paymentId: error.holderId });
+      logEvent(
+        'shop.alert.duplicate_invoice',
+        duplicateInvoiceFields(paymentId, {
+          paymentId: error.holderId,
+          chargeId: error.holderChargeId,
+        }),
+      );
       if (input.kind === 'charge' && recordedByUs) {
         await this.#deps.store.transaction((tx) => tx.deleteChargeInvoice(minted.paymentHash));
       }
@@ -2137,7 +2285,7 @@ export class ShopPayments {
         if (input.kind === 'charge' && holder.posChargeId === input.charge.id) {
           return holder;
         }
-        throw new HashHeldError(holder.id);
+        throw new HashHeldError(holder.id, holder.posChargeId);
       };
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const open = await tx.openPayment(accountId);
@@ -2504,8 +2652,11 @@ export class ShopPayments {
       if (config === null) {
         return read;
       }
-      const routes = await this.#routeList(Math.min(deadlineMs, startMs + SHOP_ROUTES_TIMEOUT_MS));
-      const pairs = routes === null ? [] : candidatePairs(routes, config.evmRpc);
+      const routes = await this.#routeList(
+        Math.min(deadlineMs, startMs + SHOP_ROUTES_TIMEOUT_MS),
+        paymentId,
+      );
+      const pairs = routes === null ? [] : candidatePairs(routes, config.evmRpc, paymentId);
       const offers =
         pairs.length === 0
           ? []
@@ -2739,9 +2890,14 @@ export class ShopPayments {
 
   /**
    * The charge watch found an invoice of a charge settled: mark the charge
-   * paid and settle its shop payment in the same transaction under the
-   * account row lock. The payment's own hash moves it to `paid`; the Spark
-   * invoice or another BOLT11 ends an `open` payment with `charge_paid`.
+   * paid and settle its shop payment in the same transaction, taking the
+   * account row lock, then the `pos_charge` row, then the `shop_payment` row
+   * (the order the settlement step uses). The payment's own hash moves it to
+   * `paid`; when the charge was already paid by another invoice or cancelled
+   * before, that logs `shop.alert.double_settled` or
+   * `shop.alert.cancelled_settled` ({@link markPaymentPaid}), and a cancelled
+   * charge stays cancelled. The Spark invoice or another BOLT11 ends an
+   * `open` payment with `charge_paid`.
    *
    * @param charge - The watched charge.
    * @param settled - The settled payment hash, or `null` for the Spark invoice.
@@ -2751,13 +2907,21 @@ export class ShopPayments {
   chargePaid(charge: PosCharge, settled: string | null, nowMs: number): Promise<PosCharge | null> {
     return this.#deps.store.transaction(async (tx) => {
       await tx.lockAccount(charge.accountId);
+      // The charge as it was before this call: markChargePaid leaves a paid
+      // or cancelled charge unchanged and returns null for it.
+      const before = await tx.lockCharge(charge.id);
       const paid = await tx.markChargePaid(charge.id, nowMs);
-      const payment = await tx.paymentForCharge(charge.id);
+      const found = await tx.paymentForCharge(charge.id);
+      if (found === null) {
+        return paid;
+      }
+      const payment = await tx.lockPayment(found.id);
+      /* v8 ignore next 3 -- the row was just read, and no path deletes a payment */
       if (payment === null) {
         return paid;
       }
       if (settled !== null && settled === payment.paymentHash) {
-        await markPaymentPaid(tx, payment, nowMs, false);
+        await markPaymentPaid(tx, payment, nowMs, { before, marked: paid !== null });
       } else if (payment.status === 'open') {
         await endPayment(tx, payment, 'charge_paid', nowMs);
       }
@@ -2786,13 +2950,15 @@ export class ShopPayments {
    * scheduled; the final read, 10 minutes after the BOLT11 expiry, closes the
    * payment (an `accepted` one ends with `expired_unpaid`).
    *
-   * The account to lock comes from an unlocked read. An account merge can
-   * move the payment before the lock is taken, so the payment is read again
-   * under the account lock; when it moved, the new account is locked and the
-   * payment read again, at most twice. Only then is the payment row locked,
-   * so this never holds a payment row while it waits for an account (a merge
-   * takes the account locks first). A payment that keeps moving is left for
-   * the next tick.
+   * Lock order (States): a charge-backed payment takes the account row lock
+   * first, then the `pos_charge` row, then the `shop_payment` row, the order
+   * the charge watch uses; a payer's payment, which has no charge, locks only
+   * its `shop_payment` row. No proof row is locked. The account to lock comes
+   * from an unlocked read. An account merge can move the payment before the
+   * lock is taken, so the payment is read again under the account lock; when
+   * it moved, the new account is locked and the payment read again, at most
+   * twice ({@link lockAccountOf}). A payment that keeps moving is left for the
+   * next tick.
    *
    * @param paymentId - Payment id.
    * @param settled - Read result: `true` settled, `false` unpaid, `null` failed.
@@ -2804,11 +2970,15 @@ export class ShopPayments {
       if (peek === null) {
         return;
       }
-      if (!(await lockAccountOf(tx, paymentId, peek.accountId))) {
-        return;
+      let charge: PosCharge | null = null;
+      if (peek.posChargeId !== null) {
+        if (!(await lockAccountOf(tx, paymentId, peek.accountId))) {
+          return;
+        }
+        charge = await tx.lockCharge(peek.posChargeId);
       }
       const payment = await tx.lockPayment(paymentId);
-      /* v8 ignore next 3 -- the row was just read under its account lock, and no path deletes a payment */
+      /* v8 ignore next 3 -- the row was just read, and no path deletes a payment */
       if (payment === null) {
         return;
       }
@@ -2816,7 +2986,7 @@ export class ShopPayments {
         return;
       }
       if (settled === true) {
-        await markPaymentPaid(tx, payment, nowMs, true);
+        await markPaymentPaid(tx, payment, nowMs, { before: charge, marked: false });
         return;
       }
       const finalAtMs = payment.bolt11ExpiresAt.getTime() + SHOP_FINAL_SETTLE_DELAY_MS;
@@ -2896,48 +3066,53 @@ export async function endPayment(
 }
 
 /**
- * Move a payment to `paid` (its BOLT11 settled). With `settleCharge`, also
- * run `markPaid` for its charge: a charge already paid (by another invoice,
- * since this payment was still unpaid) logs `shop.alert.double_settled`; a
- * cancelled charge logs `shop.alert.cancelled_settled` and stays cancelled.
+ * Move a payment to `paid` (its BOLT11 settled) and settle its charge. Only
+ * when this call moved the payment: a charge that was `cancelled` before
+ * logs `shop.alert.cancelled_settled` and stays cancelled; a charge that was
+ * already `paid` before, by another invoice since this payment was still
+ * unpaid, logs `shop.alert.double_settled`; otherwise `markPaid` runs for
+ * the charge when the caller has not marked it yet.
  *
- * @param tx - Transaction (account locked).
+ * @param tx - Transaction; the caller holds the account row, then the
+ *   charge row, then the payment row (a payer's payment: only its row).
  * @param payment - The payment.
  * @param nowMs - Clock.
- * @param settleCharge - `false` when the caller (the charge watch) already
- *   marked the charge paid in this transaction.
+ * @param charge - `before`: the payment's charge as the caller locked it
+ *   before any change in this transaction (`null` for a payer's payment);
+ *   `marked`: `true` when the caller (the charge watch) already marked that
+ *   charge paid in this transaction.
+ * @returns The `paid` payment, or `null` when this call did not move it
+ *   (already paid, closed, or gone).
  */
 export async function markPaymentPaid(
   tx: ShopTx,
   payment: ShopPayment,
   nowMs: number,
-  settleCharge: boolean,
-): Promise<void> {
+  charge: { before: PosCharge | null; marked: boolean },
+): Promise<ShopPayment | null> {
   const paid = await tx.updatePayment(
     payment.id,
     { statuses: ['open', 'ended', 'accepted'], notClosed: true },
     { status: 'paid', paidAt: new Date(nowMs), endedAt: null, endReason: null, nextSettleAt: null },
   );
   if (paid === null) {
-    return;
+    return null;
   }
   logEvent('shop.payment.paid', { paymentId: payment.id });
-  if (!settleCharge || payment.posChargeId === null) {
-    return;
+  const { before, marked } = charge;
+  if (before === null || marked) {
+    return paid;
   }
-  const charge = await tx.lockCharge(payment.posChargeId);
-  if (charge === null) {
-    return;
+  if (before.status === 'cancelled') {
+    logEvent('shop.alert.cancelled_settled', { paymentId: payment.id, chargeId: before.id });
+    return paid;
   }
-  if (charge.status === 'cancelled') {
-    logEvent('shop.alert.cancelled_settled', { paymentId: payment.id });
-    return;
+  if (before.status === 'paid') {
+    logEvent('shop.alert.double_settled', { paymentId: payment.id, chargeId: before.id });
+    return paid;
   }
-  if (charge.status === 'paid') {
-    logEvent('shop.alert.double_settled', { paymentId: payment.id });
-    return;
-  }
-  await tx.markChargePaid(charge.id, nowMs);
+  await tx.markChargePaid(before.id, nowMs);
+  return paid;
 }
 
 /**

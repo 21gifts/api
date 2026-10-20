@@ -4102,7 +4102,7 @@ test('Function: applyProofOrder — GET /lnurlp/tx/:username is 404 when the LNU
   await proofRouteOff(request);
 });
 
-test('Function: followProofOrder — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+test('Function: lockPaymentForProofs — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
   request,
 }) => {
   await proofRouteOff(request);

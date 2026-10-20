@@ -17,6 +17,8 @@ const BASE = 'https://orchestra.example';
 const KEY = 'fn_secret';
 const T0 = Date.parse('2026-10-17T12:00:00.000Z');
 const BOLT11 = 'lnbc10u1pexample';
+/** Ids a caller passes for its log lines. */
+const LOG = { paymentId: 'pay_1' } as const;
 
 interface Call {
   url: string;
@@ -183,7 +185,7 @@ describe('OrchestraClient.routes', () => {
         }),
     ]);
 
-    const result = await client.routes(5000);
+    const result = await client.routes(5000, LOG);
 
     expect(result).toEqual({
       ok: true,
@@ -229,7 +231,7 @@ describe('OrchestraClient.routes', () => {
     ['a non-JSON body', () => new Response('<html>', { status: 200 })],
   ])('fails on %s', async (_label, responder) => {
     const { client } = harness([responder]);
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
   });
 
   it('fails and logs on a non-2xx answer and on a transport error', async () => {
@@ -239,11 +241,11 @@ describe('OrchestraClient.routes', () => {
         throw new TypeError('fetch failed');
       },
     ]);
-    expect(await client.routes(5000)).toEqual({ ok: false });
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     expect(eventsNamed('shop.orchestra.error')).toEqual([
-      { endpoint: 'routes', status: 500 },
-      { endpoint: 'routes', status: 'transport' },
+      { ...LOG, endpoint: 'routes', status: 500 },
+      { ...LOG, endpoint: 'routes', status: 'transport' },
     ]);
   });
 
@@ -252,14 +254,16 @@ describe('OrchestraClient.routes', () => {
       () => err(429, 'rate_limited', { 'Retry-After': '2' }),
       () => json({ assets: [], validForMs: 0 }),
     ]);
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     clock.t += 1999;
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     expect(calls).toHaveLength(1);
     clock.t += 1;
-    expect(await client.routes(5000)).toEqual({ ok: true, assets: [], validForMs: 0 });
-    expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ endpoint: 'routes' }]);
-    expect(eventsNamed('shop.orchestra.error')).toEqual([{ endpoint: 'routes', status: 429 }]);
+    expect(await client.routes(5000, LOG)).toEqual({ ok: true, assets: [], validForMs: 0 });
+    expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ ...LOG, endpoint: 'routes' }]);
+    expect(eventsNamed('shop.orchestra.error')).toEqual([
+      { ...LOG, endpoint: 'routes', status: 429 },
+    ]);
   });
 });
 
@@ -267,27 +271,29 @@ describe('OrchestraClient.routes budget', () => {
   it('sends 25 route-list fetches per sliding minute; the 26th is not sent and logs budget_exhausted', async () => {
     const { client, calls, clock } = harness([], () => json({ assets: [], validForMs: 0 }));
     for (let i = 0; i < ORCHESTRA_ROUTES_PER_MINUTE; i += 1) {
-      expect((await client.routes(5000)).ok).toBe(true);
+      expect((await client.routes(5000, LOG)).ok).toBe(true);
     }
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     expect(calls).toHaveLength(25);
-    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([{ endpoint: 'routes' }]);
+    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([
+      { ...LOG, endpoint: 'routes' },
+    ]);
     // The window slides: the first fetch leaves it 60 s after it was sent.
     clock.t += 59_999;
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     expect(calls).toHaveLength(25);
     clock.t += 1;
-    expect((await client.routes(5000)).ok).toBe(true);
+    expect((await client.routes(5000, LOG)).ok).toBe(true);
     expect(calls).toHaveLength(26);
   });
 
   it('counts failed fetches, and the routes budget leaves the quote budget alone', async () => {
     const { client, calls } = harness([], () => err(500, 'internal'));
     for (let i = 0; i < ORCHESTRA_ROUTES_PER_MINUTE; i += 1) {
-      expect(await client.routes(5000)).toEqual({ ok: false });
+      expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     }
     expect(calls).toHaveLength(25);
-    await client.routes(5000);
+    await client.routes(5000, LOG);
     expect(calls).toHaveLength(25);
     expect(client.quoteBudgetLeft()).toBe(ORCHESTRA_QUOTES_PER_MINUTE);
   });
@@ -297,9 +303,9 @@ describe('OrchestraClient.routes budget', () => {
       [() => err(429, 'rate_limited', { 'Retry-After': '10' })],
       () => json(QUOTE_BODY),
     );
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     clock.t += 1_000;
-    expect(await client.routes(5000)).toEqual({ ok: false });
+    expect(await client.routes(5000, LOG)).toEqual({ ok: false });
     expect(calls).toHaveLength(1);
     expect((await client.quote(REQUEST, 'k-after-429', clock.t + 5000)).ok).toBe(true);
     expect(calls).toHaveLength(2);
@@ -445,8 +451,8 @@ describe('OrchestraClient.quote', () => {
     });
     expect(calls).toHaveLength(2);
     expect(eventsNamed('shop.orchestra.error')).toEqual([
-      { endpoint: 'quote', status: 502 },
-      { endpoint: 'quote', status: 503 },
+      { ...LOG, endpoint: 'quote', status: 502 },
+      { ...LOG, endpoint: 'quote', status: 503 },
     ]);
   });
 
@@ -493,7 +499,7 @@ describe('OrchestraClient.quote', () => {
     expect(calls).toHaveLength(1);
     clock.t = T0 + 10_000;
     expect(client.quoteBudgetLeft()).toBe(ORCHESTRA_QUOTES_PER_MINUTE - 1);
-    expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ endpoint: 'quote' }]);
+    expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ ...LOG, endpoint: 'quote' }]);
   });
 
   it('sends the retry of a 429 once its pause ends before the deadline, with the same key', async () => {
@@ -558,7 +564,7 @@ describe('OrchestraClient.quote', () => {
       reason: 'budget',
     });
     expect(calls).toHaveLength(ORCHESTRA_QUOTES_PER_MINUTE);
-    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([{ endpoint: 'quote' }]);
+    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([{ ...LOG, endpoint: 'quote' }]);
     clock.t += 59_999;
     expect(client.quoteBudgetLeft()).toBe(0);
     clock.t += 1;
@@ -590,7 +596,7 @@ describe('OrchestraClient.quote', () => {
 describe('OrchestraClient.submit', () => {
   it('sends only quoteId and txHash and returns the order', async () => {
     const { client, calls } = harness([() => json({ orderId: 'ord_1', status: 'confirming' })]);
-    expect(await client.submit('q_1', '0xhash', 'sub-1', 'proof-first', 5000)).toEqual({
+    expect(await client.submit('q_1', '0xhash', 'sub-1', 'proof-first', 5000, LOG)).toEqual({
       kind: 'order',
       orderId: 'ord_1',
       status: 'confirming',
@@ -607,7 +613,7 @@ describe('OrchestraClient.submit', () => {
 
   it('stores an empty status when the 200 has none', async () => {
     const { client } = harness([() => json({ orderId: 'ord_2', status: 7 })]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'order',
       orderId: 'ord_2',
       status: '',
@@ -673,7 +679,7 @@ describe('OrchestraClient.submit', () => {
     ],
   ])('maps %s without an alert', async (_label, responder, expected) => {
     const { client } = harness([responder]);
-    expect(await client.submit('q', 'h', 'k', 'proof-repeat', 5000)).toEqual(expected);
+    expect(await client.submit('q', 'h', 'k', 'proof-repeat', 5000, LOG)).toEqual(expected);
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([]);
   });
 
@@ -683,23 +689,23 @@ describe('OrchestraClient.submit', () => {
     [400, 'invalid_tx_hash'],
   ])('leaves HTTP %i unresolved, not retryable, and alerts', async (status, code) => {
     const { client } = harness([() => err(status, code)]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: false,
     });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([
-      { endpoint: 'submit', status, code },
+      { ...LOG, endpoint: 'submit', status, code },
     ]);
   });
 
   it('alerts with an empty code when the 400 has no error body', async () => {
     const { client } = harness([() => new Response('bad', { status: 400 })]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: false,
     });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([
-      { endpoint: 'submit', status: 400, code: '' },
+      { ...LOG, endpoint: 'submit', status: 400, code: '' },
     ]);
   });
 
@@ -710,7 +716,7 @@ describe('OrchestraClient.submit', () => {
   ): Promise<string[]> {
     const kinds: string[] = [];
     for (let i = 0; i < times; i += 1) {
-      kinds.push((await client.submit('q', 'h', `${caller}${i}`, caller, 5000)).kind);
+      kinds.push((await client.submit('q', 'h', `${caller}${i}`, caller, 5000, LOG)).kind);
     }
     return kinds;
   }
@@ -724,9 +730,9 @@ describe('OrchestraClient.submit', () => {
     expect(await run(client, 'watcher', 1)).toEqual(['budget']);
     expect(calls).toHaveLength(30);
     expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([
-      { endpoint: 'submit' },
-      { endpoint: 'submit' },
-      { endpoint: 'submit' },
+      { ...LOG, endpoint: 'submit' },
+      { ...LOG, endpoint: 'submit' },
+      { ...LOG, endpoint: 'submit' },
     ]);
     clock.t += 60_000;
     expect(await run(client, 'proof-first', 1)).toEqual(['order']);
@@ -760,15 +766,15 @@ describe('OrchestraClient.submit', () => {
         err(429, 'rate_limited', { 'Retry-After': 'soon', 'X-RateLimit-Reset': String(T0 + 3000) }),
       () => json({ orderId: 'o', status: 's' }),
     ]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: true,
     });
     clock.t = T0 + 2999;
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({ kind: 'budget' });
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({ kind: 'budget' });
     expect(calls).toHaveLength(1);
     clock.t = T0 + 3000;
-    expect((await client.submit('q', 'h', 'k', 'watcher', 5000)).kind).toBe('order');
+    expect((await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).kind).toBe('order');
   });
 
   it('does not pause on a 429 whose reset header is not a time', async () => {
@@ -776,24 +782,24 @@ describe('OrchestraClient.submit', () => {
       () => err(429, 'rate_limited', { 'X-RateLimit-Reset': 'later' }),
       () => json({ orderId: 'o', status: 's' }),
     ]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: true,
     });
-    expect((await client.submit('q', 'h', 'k', 'watcher', 5000)).kind).toBe('order');
+    expect((await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).kind).toBe('order');
     expect(calls).toHaveLength(2);
   });
 
   it('pauses for a fractional Retry-After in seconds', async () => {
     const { client, clock } = harness([() => err(429, 'r', { 'Retry-After': '1.5' })]);
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: true,
     });
     clock.t = T0 + 1499;
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({ kind: 'budget' });
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({ kind: 'budget' });
     clock.t = T0 + 1500;
-    expect(await client.submit('q', 'h', 'k', 'watcher', 5000)).toEqual({
+    expect(await client.submit('q', 'h', 'k', 'watcher', 5000, LOG)).toEqual({
       kind: 'unresolved',
       retryable: false,
     });
@@ -822,7 +828,7 @@ describe('OrchestraClient.history', () => {
           ],
         }),
     ]);
-    expect(await client.history('lnbc1 x&y', 400, 5000)).toEqual({
+    expect(await client.history('lnbc1 x&y', 400, 5000, LOG)).toEqual({
       ok: true,
       full: false,
       orders: [
@@ -858,15 +864,15 @@ describe('OrchestraClient.history', () => {
   it('reports a page of 200 entries as full', async () => {
     const orders = Array.from({ length: 200 }, (_, i) => ({ id: `o${i}`, status: 'completed' }));
     const { client } = harness([() => json({ orders })]);
-    const result = await client.history(BOLT11, 0, 5000);
+    const result = await client.history(BOLT11, 0, 5000, LOG);
     expect(result.ok && result.full).toBe(true);
   });
 
   it.each([400, 401, 403])('fails and alerts on HTTP %i', async (status) => {
     const { client } = harness([() => err(status, 'validation_error')]);
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'error' });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([
-      { endpoint: 'history', status, code: 'validation_error' },
+      { ...LOG, endpoint: 'history', status, code: 'validation_error' },
     ]);
   });
 
@@ -877,22 +883,22 @@ describe('OrchestraClient.history', () => {
     ['a timeout', () => Promise.reject(named('TimeoutError'))],
   ])('fails without an alert on %s', async (_label, responder) => {
     const { client } = harness([responder]);
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'error' });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([]);
   });
 
   it('shares 50 reads per minute with status', async () => {
     const { client, calls } = harness([], () => json({ orders: [], order: null }));
     for (let i = 0; i < 25; i += 1) {
-      expect((await client.history(BOLT11, 0, 5000)).ok).toBe(true);
-      expect((await client.status('ord', 5000)).ok).toBe(true);
+      expect((await client.history(BOLT11, 0, 5000, LOG)).ok).toBe(true);
+      expect((await client.status('ord', 5000, LOG)).ok).toBe(true);
     }
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'budget' });
-    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: false, reason: 'budget' });
     expect(calls).toHaveLength(ORCHESTRA_STATUS_READS_PER_MINUTE);
     expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([
-      { endpoint: 'history' },
-      { endpoint: 'status' },
+      { ...LOG, endpoint: 'history' },
+      { ...LOG, endpoint: 'status' },
     ]);
   });
 
@@ -902,15 +908,19 @@ describe('OrchestraClient.history', () => {
       () => json({ orders: [] }),
       () => json({ order: null }),
     ]);
-    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'error' });
-    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'budget' });
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: true, orders: [], full: false });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({
+      ok: true,
+      orders: [],
+      full: false,
+    });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/v1/orchestration/status',
       '/v1/orchestration/history',
     ]);
     clock.t = T0 + 30_000;
-    expect(await client.status('ord', 5000)).toEqual({ ok: true, order: null });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: true, order: null });
     expect(calls).toHaveLength(3);
   });
 
@@ -919,9 +929,9 @@ describe('OrchestraClient.history', () => {
       () => err(429, 'r', { 'Retry-After': '30' }),
       () => json({ order: null }),
     ]);
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'error' });
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'budget' });
-    expect(await client.status('ord', 5000)).toEqual({ ok: true, order: null });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: true, order: null });
     expect(calls.map((call) => new URL(call.url).pathname)).toEqual([
       '/v1/orchestration/history',
       '/v1/orchestration/status',
@@ -932,11 +942,11 @@ describe('OrchestraClient.history', () => {
     const { client, calls } = harness([() => err(429, 'r', { 'Retry-After': '30' })], () =>
       json({ orders: [] }),
     );
-    await client.status('ord', 5000);
+    await client.status('ord', 5000, LOG);
     for (let i = 1; i < ORCHESTRA_STATUS_READS_PER_MINUTE; i += 1) {
-      expect((await client.history(BOLT11, 0, 5000)).ok).toBe(true);
+      expect((await client.history(BOLT11, 0, 5000, LOG)).ok).toBe(true);
     }
-    expect(await client.history(BOLT11, 0, 5000)).toEqual({ ok: false, reason: 'budget' });
+    expect(await client.history(BOLT11, 0, 5000, LOG)).toEqual({ ok: false, reason: 'budget' });
     expect(calls).toHaveLength(ORCHESTRA_STATUS_READS_PER_MINUTE);
   });
 });
@@ -955,7 +965,7 @@ describe('OrchestraClient.status', () => {
           stages: [],
         }),
     ]);
-    expect(await client.status('ord_1', 5000)).toEqual({
+    expect(await client.status('ord_1', 5000, LOG)).toEqual({
       ok: true,
       order: {
         id: 'ord_1',
@@ -972,22 +982,22 @@ describe('OrchestraClient.status', () => {
 
   it('answers no order for 404 not_found without an error log', async () => {
     const { client } = harness([() => err(404, 'not_found')]);
-    expect(await client.status('ord_x', 5000)).toEqual({ ok: true, order: null });
+    expect(await client.status('ord_x', 5000, LOG)).toEqual({ ok: true, order: null });
     expect(events()).toEqual([]);
   });
 
   it('answers no order for a null order', async () => {
     const { client } = harness([() => json({ order: null, stages: [] })]);
-    expect(await client.status('ord_x', 5000)).toEqual({ ok: true, order: null });
+    expect(await client.status('ord_x', 5000, LOG)).toEqual({ ok: true, order: null });
   });
 
   it.each([401, 403, 400])('fails and alerts on HTTP %i', async (status) => {
     const { client } = harness([() => err(status, 'unauthorized')]);
-    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: false, reason: 'error' });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([
-      { endpoint: 'status', status, code: 'unauthorized' },
+      { ...LOG, endpoint: 'status', status, code: 'unauthorized' },
     ]);
-    expect(eventsNamed('shop.orchestra.error')).toEqual([{ endpoint: 'status', status }]);
+    expect(eventsNamed('shop.orchestra.error')).toEqual([{ ...LOG, endpoint: 'status', status }]);
   });
 
   it.each([
@@ -1008,23 +1018,72 @@ describe('OrchestraClient.status', () => {
     ['a thrown non-Error', () => Promise.reject('boom')],
   ])('fails on %s', async (_label, responder) => {
     const { client } = harness([responder]);
-    expect(await client.status('ord', 5000)).toEqual({ ok: false, reason: 'error' });
+    expect(await client.status('ord', 5000, LOG)).toEqual({ ok: false, reason: 'error' });
     expect(eventsNamed('shop.alert.orchestra_request')).toEqual([]);
   });
 
   it('logs a 404 with another code as an error', async () => {
     const { client } = harness([() => err(404, 'route_not_found')]);
-    await client.status('ord', 5000);
-    expect(eventsNamed('shop.orchestra.error')).toEqual([{ endpoint: 'status', status: 404 }]);
+    await client.status('ord', 5000, LOG);
+    expect(eventsNamed('shop.orchestra.error')).toEqual([
+      { ...LOG, endpoint: 'status', status: 404 },
+    ]);
   });
 
   it('logs neither the key nor the address', async () => {
     const { client } = harness([], () => err(401, 'unauthorized'));
-    await client.history(BOLT11, 0, 5000);
-    await client.submit('q', 'h', 'k', 'watcher', 5000);
+    await client.history(BOLT11, 0, 5000, LOG);
+    await client.submit('q', 'h', 'k', 'watcher', 5000, LOG);
     const lines = warn.mock.calls.map((args) => String(args[0])).join('\n');
     expect(lines).not.toContain(KEY);
     expect(lines).not.toContain(BOLT11);
     expect(lines).not.toContain(BASE);
+  });
+});
+
+describe('OrchestraClient log fields (Logging)', () => {
+  it('puts the caller ids on every log line of submit, status, history, and routes, and the quote tag as paymentId', async () => {
+    const proof = {
+      paymentId: 'pay_9',
+      proofId: 'proof_9',
+      offerId: 'offer_9',
+      quoteId: 'quote_9',
+      providerRef: 'oq_9',
+    };
+    const { client } = harness([], () => err(401, 'unauthorized'));
+    await client.submit('q', 'h', 'k', 'watcher', 5000, proof);
+    await client.status('ord_9', 5000, { ...proof, orderId: 'ord_9' });
+    await client.history(BOLT11, 0, 5000, { paymentId: 'pay_9' });
+    await client.routes(5000, { paymentId: 'pay_9' });
+    expect(eventsNamed('shop.alert.orchestra_request')).toEqual([
+      { ...proof, endpoint: 'submit', status: 401, code: 'unauthorized' },
+      { ...proof, orderId: 'ord_9', endpoint: 'status', status: 401, code: 'unauthorized' },
+      { paymentId: 'pay_9', endpoint: 'history', status: 401, code: 'unauthorized' },
+    ]);
+    expect(eventsNamed('shop.orchestra.error')).toEqual([
+      { ...proof, endpoint: 'submit', status: 401 },
+      { ...proof, orderId: 'ord_9', endpoint: 'status', status: 401 },
+      { paymentId: 'pay_9', endpoint: 'history', status: 401 },
+      { paymentId: 'pay_9', endpoint: 'routes', status: 401 },
+    ]);
+    const limited = harness([], () => json({}, 429, { 'retry-after': '5' }));
+    await limited.client.submit('q', 'h', 'k', 'watcher', 5000, proof);
+    expect(eventsNamed('shop.orchestra.rate_limited')).toEqual([{ ...proof, endpoint: 'submit' }]);
+    const busy = harness();
+    for (let i = 0; i < 51; i += 1) {
+      await busy.client.status('ord_9', 5000, { paymentId: 'pay_9', orderId: 'ord_9' });
+    }
+    expect(eventsNamed('shop.orchestra.budget_exhausted')).toEqual([
+      { paymentId: 'pay_9', orderId: 'ord_9', endpoint: 'status' },
+    ]);
+  });
+
+  it('logs a quote error with the request tag as paymentId', async () => {
+    const { client, clock } = harness([], () => json({}, 503));
+    await client.quote({ ...REQUEST, tag: 'pay_q' }, 'k', clock.t + 5000);
+    expect(eventsNamed('shop.orchestra.error')).toEqual([
+      { paymentId: 'pay_q', endpoint: 'quote', status: 503 },
+      { paymentId: 'pay_q', endpoint: 'quote', status: 503 },
+    ]);
   });
 });

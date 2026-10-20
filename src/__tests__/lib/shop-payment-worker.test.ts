@@ -1,17 +1,20 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 import {
+  SHOP_SUCCESSOR_HISTORY_INTERVAL_MS,
+  SHOP_SUCCESSOR_WAIT_MS,
   SHOP_WORKER_CALL_TIMEOUT_MS,
   SHOP_WORKER_INTERVAL_MS,
   runShopPaymentTick,
   startShopPaymentWorker,
 } from '@/lib/shop-payment-worker';
-import { retryStuckProof } from '@/lib/shop-proof';
+import { proofResponse, retryStuckProof } from '@/lib/shop-proof';
 import type { ShopProofLookup } from '@/lib/shop-payment-store';
 import {
   AMOUNT_IN,
   DEPOSIT_USDT,
   OFFER_ETH,
   OFFER_USDT,
+  OFFER_USDC,
   PAYMENT_HASH,
   PAYMENT_ID,
   POLYGON_USDT,
@@ -26,6 +29,7 @@ import {
   proofRow,
   proofsOf,
   receiptJson,
+  recordTxCalls,
   seed,
   transferLog,
   txHash,
@@ -251,6 +255,7 @@ describe('duty 3: orders', () => {
       'lnbc21u1test',
       0,
       SHOP_WORKER_CALL_TIMEOUT_MS,
+      { paymentId: PAYMENT_ID },
     );
     const detected = (await proofsOf(h)).find((row) => row.providerOrder === 'o-new');
     expect(detected).toMatchObject({
@@ -270,15 +275,14 @@ describe('duty 3: orders', () => {
     });
   });
 
-  it('moves a proof to the order recovered from its order', async () => {
+  it('stores an order recovered from an order a proof holds as its own proof; the proof keeps its order', async () => {
     const h = harness();
     await seed(h, { nextHistoryAt: new Date(T0) });
     await insertProofs(
       h,
       proofRow({
         providerOrder: 'o-old',
-        orderStatus: 'failed',
-        result: 'failed',
+        orderStatus: 'unfulfilled',
         orderFoundAt: new Date(T0 - 1_000),
       }),
     );
@@ -290,7 +294,7 @@ describe('duty 3: orders', () => {
           id: 'o-next',
           quoteId: 'q-usdt-pol',
           status: 'processing',
-          sourceTxHash: H1,
+          sourceTxHash: H2,
           recoveredFromOperationId: 'o-old',
           supersededByOperationId: null,
         },
@@ -300,9 +304,20 @@ describe('duty 3: orders', () => {
     expect(await proofsOf(h)).toEqual([
       expect.objectContaining({
         id: uid(0x401),
+        txHash: H1,
+        providerOrder: 'o-old',
+        orderStatus: 'unfulfilled',
+        result: null,
+      }),
+      expect.objectContaining({
+        source: 'detected',
+        offerId: OFFER_USDT,
+        txHash: H2,
+        logIndex: null,
         providerOrder: 'o-next',
         orderStatus: 'processing',
         nextStatusAt: new Date(T0 + 10_000),
+        nextReceiptAt: new Date(T0 + 30_000),
       }),
     ]);
     expect(await getPayment(h)).toMatchObject({
@@ -311,37 +326,23 @@ describe('duty 3: orders', () => {
     });
   });
 
-  it('merges a moved proof into the row that already holds the recovered order', async () => {
+  it('stores nothing more for an order a proof already holds, recovered or not', async () => {
     const h = harness();
-    await seed(h, { nextHistoryAt: new Date(T0), status: 'accepted', acceptedAt: new Date(T0) });
-    await insertProofs(
-      h,
-      proofRow({
-        txHash: H1,
-        providerOrder: 'o-old',
-        orderStatus: 'processing',
-        orderFoundAt: new Date(T0 - 1_000),
-        result: 'accepted',
-      }),
+    await seed(h, { nextHistoryAt: new Date(T0) });
+    const held = [
+      proofRow({ txHash: H1, providerOrder: 'o-old', orderStatus: 'unfulfilled' }),
       proofRow({
         id: uid(0x402),
         source: 'detected',
-        txHash: H1,
+        txHash: H2,
         logIndex: null,
         transferAmount: null,
         providerOrder: 'o-next',
         orderStatus: 'confirming',
-        orderFoundAt: new Date(T0 - 500),
         createdAt: new Date(T0 + 1),
       }),
-      proofRow({
-        id: uid(0x403),
-        txHash: H2,
-        providerOrder: 'o-self',
-        orderStatus: 'processing',
-        createdAt: new Date(T0 + 2),
-      }),
-    );
+    ];
+    await insertProofs(h, ...held);
     h.orchestra.history.mockResolvedValueOnce({
       ok: true,
       full: false,
@@ -350,36 +351,24 @@ describe('duty 3: orders', () => {
           id: 'o-next',
           quoteId: 'q-usdt-pol',
           status: 'swapping',
-          sourceTxHash: H1,
+          sourceTxHash: H2,
           recoveredFromOperationId: 'o-old',
           supersededByOperationId: null,
         },
         {
-          id: 'o-self',
+          id: 'o-old',
           quoteId: 'q-usdt-pol',
           status: 'refunded',
-          sourceTxHash: H2,
-          recoveredFromOperationId: 'o-self',
-          supersededByOperationId: null,
+          sourceTxHash: H1,
+          recoveredFromOperationId: 'o-old',
+          supersededByOperationId: 'o-next',
         },
       ],
     });
     await runShopPaymentTick(h.shop, 1);
-    expect(await proofsOf(h)).toEqual([
-      expect.objectContaining({
-        id: uid(0x401),
-        logIndex: 3,
-        providerOrder: 'o-next',
-        orderStatus: 'swapping',
-        result: 'accepted',
-      }),
-      expect.objectContaining({
-        id: uid(0x403),
-        providerOrder: 'o-self',
-        orderStatus: 'processing',
-      }),
-    ]);
-    expect((await getPayment(h))?.status).toBe('accepted');
+    // The history read changes no stored row; the order-status duty follows each order.
+    expect(await proofsOf(h)).toEqual(held);
+    expect(events()).not.toContain('shop.proof.detected');
   });
 
   it('stops after the order watch of the last detailed offer, waits on budget, and retries an error', async () => {
@@ -415,6 +404,107 @@ describe('duty 3: orders', () => {
     h.clock.now = ended + 20_000;
     await runShopPaymentTick(h.shop, 1);
     expect(await getPayment(h)).toMatchObject({ historyOffset: 0, nextHistoryAt: null });
+  });
+});
+
+describe('duty 3: the successor wait', () => {
+  const watchEnded = T0 + 120_000 + 30 * 60_000;
+  const replaced = {
+    providerOrder: 'o-a',
+    orderStatus: 'unfulfilled',
+    supersededByOrder: 'o-b',
+    orderFoundAt: new Date(T0),
+  };
+
+  async function waiting(h: Harness, payment: Parameters<typeof seed>[1] = {}): Promise<void> {
+    await seed(h, {
+      nextHistoryAt: new Date(watchEnded),
+      successorWaitUntil: new Date(watchEnded + 1),
+      ...payment,
+    });
+    await h.store.transaction((tx) => tx.markDetailIssued(OFFER_USDT, T0));
+    await insertProofs(h, proofRow({ ...replaced, result: 'accepted' }));
+    h.clock.now = watchEnded;
+  }
+
+  it('reads a payment whose order watch ended every 60 s while only the successor wait keeps it, paid ones included', async () => {
+    const h = harness();
+    await waiting(h, { status: 'paid', paidAt: new Date(T0) });
+    const calls = recordTxCalls(h);
+    await runShopPaymentTick(h.shop, 1);
+    expect(h.orchestra.history).toHaveBeenCalledTimes(1);
+    expect(await getPayment(h)).toMatchObject({
+      historyOffset: 0,
+      nextHistoryAt: new Date(watchEnded + SHOP_SUCCESSOR_HISTORY_INTERVAL_MS),
+      successorWaitUntil: new Date(watchEnded + 1),
+    });
+    expect(SHOP_SUCCESSOR_HISTORY_INTERVAL_MS).toBe(60_000);
+    // The decision runs under the payment row and its proof rows.
+    expect(calls).toEqual(['lockPayment', 'lockProofs', 'updatePayment']);
+    expect(events()).not.toContain('shop.alert.successor_missing');
+  });
+
+  it('keeps the 10 s cadence while the order watch runs or a page is full', async () => {
+    const h = harness();
+    await waiting(h);
+    h.orchestra.history.mockResolvedValueOnce({ ok: true, orders: [], full: true });
+    await runShopPaymentTick(h.shop, 1);
+    expect((await getPayment(h))?.nextHistoryAt).toEqual(new Date(watchEnded + 10_000));
+  });
+
+  it('ends the wait once the successor is stored as its own proof, which takes the place when its order completes', async () => {
+    const h = harness();
+    await waiting(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    h.orchestra.history.mockResolvedValueOnce({
+      ok: true,
+      full: false,
+      orders: [
+        {
+          id: 'o-b',
+          quoteId: 'q-usdt-pol',
+          status: 'completed',
+          sourceTxHash: H2,
+          recoveredFromOperationId: 'o-a',
+          supersededByOperationId: null,
+        },
+      ],
+    });
+    await runShopPaymentTick(h.shop, 1);
+    const [a, b] = await proofsOf(h);
+    expect(a).toMatchObject({ id: uid(0x401), providerOrder: 'o-a', result: 'superseded' });
+    expect(b).toMatchObject({ providerOrder: 'o-b', txHash: H2, result: 'accepted' });
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', nextHistoryAt: null });
+    expect(events()).not.toContain('shop.alert.successor_missing');
+  });
+
+  it('logs shop.alert.successor_missing and clears both columns when the wait passes first', async () => {
+    const h = harness();
+    await waiting(h, { successorWaitUntil: new Date(watchEnded) });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({ nextHistoryAt: null, successorWaitUntil: null });
+    expect(
+      loggedEvents(warn)
+        .filter((line) => line['event'] === 'shop.alert.successor_missing')
+        .map(({ ts: _ts, event: _event, ...fields }) => fields),
+    ).toEqual([
+      {
+        paymentId: PAYMENT_ID,
+        proofId: uid(0x401),
+        offerId: OFFER_USDT,
+        quoteId: QUOTE_ID,
+        providerRef: 'q-usdt-pol',
+        orderId: 'o-a',
+        successorOrderId: 'o-b',
+      },
+    ]);
+  });
+
+  it('clears next_history_at without an alert when no wait is set', async () => {
+    const h = harness();
+    await waiting(h, { successorWaitUntil: null });
+    await runShopPaymentTick(h.shop, 1);
+    expect(await getPayment(h)).toMatchObject({ nextHistoryAt: null, successorWaitUntil: null });
+    expect(events()).not.toContain('shop.alert.successor_missing');
   });
 });
 
@@ -632,11 +722,13 @@ describe('duty 5: receipts', () => {
           ? { error: 'intrinsic gas too low' }
           : 'transport';
     await runShopPaymentTick(h.shop, 2);
+    // Sent, but not submitted until its receipt fills the log index.
     expect(await getProof(h, uid(0x401))).toMatchObject({
       sentAt: new Date(T0),
       nextReceiptAt: new Date(T0 + 30_000),
-      nextSubmitAt: new Date(T0 + 10_000),
+      nextSubmitAt: null,
     });
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
     expect(await getProof(h, uid(0x402))).toMatchObject({ result: 'refused', nextReceiptAt: null });
     expect(await getProof(h, uid(0x403))).toMatchObject({
       sentAt: null,
@@ -670,62 +762,122 @@ describe('duty 5: receipts', () => {
     });
   });
 
-  it('resends a hex transaction without a receipt and refuses it once unknown for 10 minutes', async () => {
+  it('resends a hex transaction without a receipt every 2 min however long the node does not know it, and refuses a rejected resend', async () => {
     const h = harness();
     await seed(h);
     const sent = { ...due, source: 'hex' as const, logIndex: null };
     await insertProofs(
       h,
-      proofRow({ ...sent, rawHex: 'ab', sentAt: new Date(T0 - 60_000) }),
+      proofRow({ ...sent, rawHex: 'ab', sentAt: new Date(T0 - 11 * 60_000) }),
       proofRow({
         ...sent,
         id: uid(0x402),
         txHash: H2,
         rawHex: 'cd',
         sentAt: new Date(T0 - 60_000),
-      }),
-      proofRow({
-        ...sent,
-        id: uid(0x403),
-        txHash: txHash('a3'),
-        rawHex: 'ef',
-        sentAt: new Date(T0 - 600_000),
-      }),
-      proofRow({
-        ...sent,
-        id: uid(0x404),
-        txHash: txHash('a4'),
-        rawHex: 'ef',
-        sentAt: new Date(T0 - 600_000),
+        createdAt: new Date(T0 + 1),
       }),
     );
     h.rpc['eth_sendRawTransaction'] = (params) =>
       params[0] === '0xcd' ? { error: 'invalid sender' } : { error: 'already known' };
-    h.rpc['eth_getTransactionByHash'] = (params) => ({
-      result: params[0] === txHash('a4') ? { hash: params[0] } : null,
-    });
+    // The node does not know the first transaction 11 minutes after its first send.
+    h.rpc['eth_getTransactionByHash'] = () => ({ result: null });
     // A sent row may take 3 calls, so each tick takes one row within its 4 calls.
-    const perTick: number[] = [];
-    for (let tick = 0; tick < 4; tick += 1) {
-      const before = h.rpcCalls.length;
-      await runShopPaymentTick(h.shop, 2);
-      perTick.push(h.rpcCalls.length - before);
-    }
-    expect([...perTick].sort()).toEqual([2, 2, 2, 3]);
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls.map((call) => call.method)).toEqual([
+      'eth_getTransactionReceipt',
+      'eth_sendRawTransaction',
+      'eth_getTransactionByHash',
+    ]);
+    await runShopPaymentTick(h.shop, 2);
     expect(await getProof(h, uid(0x401))).toMatchObject({
       result: null,
+      refusal: null,
       nextReceiptAt: new Date(T0 + 120_000),
     });
-    expect(await getProof(h, uid(0x402))).toMatchObject({ result: 'refused', nextReceiptAt: null });
-    expect(await getProof(h, uid(0x403))).toMatchObject({
+    expect(await getProof(h, uid(0x402))).toMatchObject({
       result: 'refused',
       refusal: 'hex_rejected',
       nextReceiptAt: null,
     });
-    expect(await getProof(h, uid(0x404))).toMatchObject({
-      result: null,
-      nextReceiptAt: new Date(T0 + 120_000),
+    expect(h.orchestra.submit).not.toHaveBeenCalled();
+  });
+
+  it('fills a hex transaction mined 30 min after its first send and the submits duty submits it in the same tick', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({
+        ...due,
+        source: 'hex',
+        rawHex: 'ab',
+        logIndex: null,
+        sentAt: new Date(T0 - 30 * 60_000),
+      }),
+    );
+    h.rpc['eth_getTransactionReceipt'] = () => ({ result: receiptJson(H1, '0x1', [usdtLog()]) });
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls.map((call) => call.method)).toEqual(['eth_getTransactionReceipt']);
+    expect(h.orchestra.submit).toHaveBeenCalledTimes(1);
+    expect(h.orchestra.submit.mock.calls[0]?.slice(0, 4)).toEqual([
+      'q-usdt-pol',
+      H1,
+      uid(0x402),
+      'watcher',
+    ]);
+    // The submits duty's 10 s, 30 s, 60 s count from the fill.
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      logIndex: 3,
+      nextReceiptAt: null,
+      tries: 1,
+      nextSubmitAt: new Date(T0 + 20_000),
     });
+  });
+
+  it('reads an unknown hex transaction until give_up_at; then the stuck duty marks it stuck', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({
+        ...due,
+        source: 'hex',
+        rawHex: 'ab',
+        logIndex: null,
+        sentAt: new Date(T0 - 86_000_000),
+        giveUpAt: new Date(T0),
+      }),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls).toEqual([]);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      result: 'stuck',
+      nextReceiptAt: null,
+    });
+    expect(events()).toContain('shop.alert.proof_stuck');
+  });
+
+  it('stops reading a hex proof that has a result or an order, without a call', async () => {
+    const h = harness();
+    await seed(h);
+    const hex = { ...due, source: 'hex' as const, rawHex: 'ab', logIndex: null };
+    await insertProofs(
+      h,
+      proofRow({ ...hex, sentAt: new Date(T0), result: 'refused', refusal: 'mismatch' }),
+      proofRow({
+        ...hex,
+        id: uid(0x402),
+        txHash: H2,
+        sentAt: new Date(T0),
+        providerOrder: 'o2',
+        orderStatus: 'processing',
+      }),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.rpcCalls).toEqual([]);
+    expect((await getProof(h, uid(0x401)))?.nextReceiptAt).toBeNull();
+    expect((await getProof(h, uid(0x402)))?.nextReceiptAt).toBeNull();
   });
 
   it('reads a detected proof again after a failed or empty read', async () => {
@@ -757,7 +909,20 @@ describe('duty 6: submits', () => {
     await seed(h);
     await insertProofs(h, proofRow({ nextSubmitAt: new Date(T0) }));
     await runShopPaymentTick(h.shop, 2);
-    expect(h.orchestra.submit).toHaveBeenCalledWith('q-usdt-pol', H1, uid(0x402), 'watcher', 5_000);
+    expect(h.orchestra.submit).toHaveBeenCalledWith(
+      'q-usdt-pol',
+      H1,
+      uid(0x402),
+      'watcher',
+      5_000,
+      {
+        paymentId: PAYMENT_ID,
+        proofId: uid(0x401),
+        offerId: OFFER_USDT,
+        quoteId: QUOTE_ID,
+        providerRef: 'q-usdt-pol',
+      },
+    );
     expect(await getProof(h, uid(0x401))).toMatchObject({
       tries: 1,
       nextSubmitAt: new Date(T0 + 20_000),
@@ -824,7 +989,16 @@ describe('duty 7: stuck proofs', () => {
       proofRow({ giveUpAt: new Date(T0), nextSubmitAt: new Date(T0 + 60_000) }),
       proofRow({ id: uid(0x402), txHash: H2, giveUpAt: new Date(T0), submitStopped: true }),
     );
+    const calls = recordTxCalls(h);
     await runShopPaymentTick(h.shop, 2);
+    // Each row: the payment row, then its proof rows, then the write; no account row.
+    expect(calls).toEqual([
+      'lockPayment',
+      'lockProofs',
+      'updateProof',
+      'lockPayment',
+      'lockProofs',
+    ]);
     expect(await getProof(h, uid(0x401))).toMatchObject({
       result: 'stuck',
       nextSubmitAt: null,
@@ -873,7 +1047,12 @@ describe('duty 8: order status', () => {
       order: { id: 'o1', status: 'swapping', supersededByOperationId: 'o1' },
     });
     await runShopPaymentTick(h.shop, 2);
-    expect(h.orchestra.status).toHaveBeenCalledWith('o1', 5_000);
+    expect(h.orchestra.status).toHaveBeenCalledWith('o1', 5_000, {
+      paymentId: PAYMENT_ID,
+      proofId: uid(0x401),
+      offerId: OFFER_USDT,
+      orderId: 'o1',
+    });
     expect(await getProof(h, uid(0x401))).toMatchObject({
       orderStatus: 'swapping',
       result: 'accepted',
@@ -940,7 +1119,7 @@ describe('duty 8: order status', () => {
     expect((await getProof(h, uid(0x403)))?.nextStatusAt?.getTime()).toBe(T0 + 10_001);
   });
 
-  it('waits on budget, retries an error, and follows a superseding order', async () => {
+  it('waits on budget, retries an error, and applies a final status that names a superseding order', async () => {
     const h = harness();
     await seed(h);
     await insertProofs(h, proofRow(ordered));
@@ -956,12 +1135,117 @@ describe('duty 8: order status', () => {
       order: { id: 'o1', status: 'failed', supersededByOperationId: 'o9' },
     });
     await runShopPaymentTick(h.shop, 2);
+    // Only an unfulfilled status with a successor is a replaced order.
     expect(await getProof(h, uid(0x401))).toMatchObject({
-      providerOrder: 'o9',
-      orderStatus: null,
-      result: null,
+      providerOrder: 'o1',
+      orderStatus: 'failed',
+      supersededByOrder: null,
+      result: 'failed',
+      nextStatusAt: null,
+    });
+  });
+
+  it('a replaced order: an accepted proof keeps its order and stays accepted, the duty stops without order_stuck, and the successor wait starts', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(h, proofRow({ ...ordered, result: 'accepted' }));
+    h.orchestra.status.mockResolvedValueOnce({
+      ok: true,
+      order: { id: 'o1', status: 'unfulfilled', supersededByOperationId: 'o9' },
+    });
+    const calls = recordTxCalls(h);
+    await runShopPaymentTick(h.shop, 2);
+    expect(calls.slice(0, 2)).toEqual(['lockPayment', 'lockProofs']);
+    expect(calls).not.toContain('lockAccount');
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      providerOrder: 'o1',
+      orderStatus: 'unfulfilled',
+      supersededByOrder: 'o9',
+      result: 'accepted',
+      nextStatusAt: null,
+    });
+    expect(await getPayment(h)).toMatchObject({
+      status: 'accepted',
+      successorWaitUntil: new Date(T0 + SHOP_SUCCESSOR_WAIT_MS),
+      nextHistoryAt: new Date(T0),
+    });
+    expect(SHOP_SUCCESSOR_WAIT_MS).toBe(86_400_000);
+    expect(events()).not.toContain('shop.alert.order_stuck');
+    // The duty no longer reads it.
+    h.clock.now = T0 + 86_400_000;
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.status).toHaveBeenCalledTimes(1);
+    expect(events()).not.toContain('shop.alert.order_stuck');
+  });
+
+  it('a replaced order: a proof never accepted stays held and answers 503; a later wait and a set next_history_at are kept', async () => {
+    const h = harness();
+    const later = new Date(T0 + 2 * SHOP_SUCCESSOR_WAIT_MS);
+    await seed(h, { successorWaitUntil: later, nextHistoryAt: new Date(T0 + 5_000) });
+    await insertProofs(h, proofRow(ordered));
+    h.orchestra.status.mockResolvedValueOnce({
+      ok: true,
+      order: { id: 'o1', status: 'unfulfilled', supersededByOperationId: 'o9' },
+    });
+    await runShopPaymentTick(h.shop, 2);
+    const proof = await getProof(h, uid(0x401));
+    expect(proof).toMatchObject({ result: null, supersededByOrder: 'o9', nextStatusAt: null });
+    expect(proofResponse(proof!).status).toBe(503);
+    expect(await getPayment(h)).toMatchObject({
+      successorWaitUntil: later,
+      nextHistoryAt: new Date(T0 + 5_000),
+    });
+    // A held proof is not marked stuck.
+    h.clock.now = T0 + 86_400_001;
+    await runShopPaymentTick(h.shop, 2);
+    expect((await getProof(h, uid(0x401)))?.result).toBeNull();
+  });
+
+  it('a replaced order moves an earlier successor wait 24 h ahead', async () => {
+    const h = harness();
+    await seed(h, { successorWaitUntil: new Date(T0 - 1) });
+    await insertProofs(h, proofRow(ordered));
+    h.orchestra.status.mockResolvedValueOnce({
+      ok: true,
+      order: { id: 'o1', status: 'unfulfilled', supersededByOperationId: 'o9' },
+    });
+    await runShopPaymentTick(h.shop, 2);
+    expect((await getPayment(h))?.successorWaitUntil).toEqual(
+      new Date(T0 + SHOP_SUCCESSOR_WAIT_MS),
+    );
+  });
+
+  it.each([
+    ['a progressing status with a successor', 'processing', 'o9'],
+    ['unfulfilled naming itself', 'unfulfilled', 'o1'],
+    ['unfulfilled without a successor', 'unfulfilled', null],
+  ])('treats %s as a status in progress', async (_name, status, successor) => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(h, proofRow(ordered));
+    h.orchestra.status.mockResolvedValueOnce({
+      ok: true,
+      order: { id: 'o1', status, supersededByOperationId: successor },
+    });
+    await runShopPaymentTick(h.shop, 2);
+    expect(await getProof(h, uid(0x401))).toMatchObject({
+      providerOrder: 'o1',
+      orderStatus: status,
+      supersededByOrder: null,
       nextStatusAt: new Date(T0 + 10_000),
     });
+    expect((await getPayment(h))?.successorWaitUntil).toBeNull();
+  });
+
+  it('stops following a proof refused as tx_used', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ ...ordered, offerId: OFFER_USDC, result: 'refused', refusal: 'tx_used' }),
+    );
+    await runShopPaymentTick(h.shop, 2);
+    expect(h.orchestra.status).not.toHaveBeenCalled();
   });
 
   it('ignores a read whose proof changed or disappeared meanwhile', async () => {

@@ -26,6 +26,7 @@ import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
+import { evaluateProof, lockPaymentForProofs, ShopPayments } from '@/lib/shop-payment';
 import {
   migrateShopPaymentSchema,
   PostgresShopPaymentStore,
@@ -3105,6 +3106,134 @@ describe('PostgresShopPaymentStore', () => {
       });
       await Promise.all([first, second]);
       expect(events).toEqual(['first:commit', 'second:tries=1']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a settlement and proof decisions on one payment run without a deadlock; two decisions serialize', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      await pos.create({
+        id: chargeId,
+        accountId,
+        amountSats: 2100,
+        status: 'pending',
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+      });
+      const payment = shopPayment(accountId, now, {
+        posChargeId: chargeId,
+        status: 'accepted',
+        acceptedAt: new Date(now),
+      });
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const accepted = shopProof(offer, payment.id, now, {
+        result: 'accepted',
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+      });
+      const superseded = shopProof(offer, payment.id, now + 1, {
+        result: 'superseded',
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'swapping',
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(accepted)).toBe(true);
+        expect(await tx.insertProof(superseded)).toBe(true);
+      });
+      const shop = new ShopPayments({
+        store,
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra: null,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      });
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const decisionLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      // A proof decision holds the payment row and its proof rows: the
+      // accepted proof is refunded and the superseded one takes its place.
+      const decision = store.transaction(async (tx) => {
+        expect((await lockPaymentForProofs(tx, payment.id))?.proofs).toHaveLength(2);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.updateProof(accepted.id, {}, { orderStatus: 'refunded' });
+        await evaluateProof(tx, accepted.id, Date.now());
+        events.push('decision:commit');
+      });
+      await decisionLocked;
+      // The settlement takes the account and the charge, then waits for the payment row.
+      const settlement = shop
+        .applySettlement(payment.id, true, Date.now())
+        .then(() => events.push('settlement:commit'));
+      // A second decision waits for the first.
+      const second = store.transaction(async (tx) => {
+        const again = await lockPaymentForProofs(tx, payment.id);
+        events.push(`second:${again?.proofs.map((row) => row.result).join(',')}`);
+      });
+      await Promise.all([decision, settlement, second]);
+      expect(events[0]).toBe('decision:commit');
+      expect(events).toContain('settlement:commit');
+      // The second decision saw the first one's results.
+      const seen = events.find((event) => event.startsWith('second:'));
+      expect(seen?.slice('second:'.length).split(',').sort()).toEqual(['accepted', 'refunded']);
+      const after = await store.transaction(async (tx) => ({
+        payment: await tx.getPayment(payment.id),
+        accepted: await tx.getProof(accepted.id),
+        superseded: await tx.getProof(superseded.id),
+      }));
+      expect(after.payment?.status).toBe('paid');
+      expect(after.accepted?.result).toBe('refunded');
+      expect(after.superseded?.result).toBe('accepted');
+      expect((await pos.findChargeForPayment({ chargeId }))?.status).toBe('paid');
+      // The other way round: the settlement holds account, charge, and payment
+      // rows while a proof decision waits only for the payment row.
+      const order: string[] = [];
+      let held = (): void => undefined;
+      const settlementHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        await tx.lockCharge(chargeId);
+        await tx.lockPayment(payment.id);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        order.push('settlement-order:commit');
+      });
+      await settlementHeld;
+      const waiting = store.transaction(async (tx) => {
+        await lockPaymentForProofs(tx, payment.id);
+        order.push('decision:locked');
+      });
+      await Promise.all([holder, waiting]);
+      expect(order).toEqual(['settlement-order:commit', 'decision:locked']);
     } finally {
       await closeIfPossible(sql);
     }

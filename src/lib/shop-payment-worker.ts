@@ -7,7 +7,6 @@
  * duty 8 (order status) on even ticks.
  */
 
-import { evmGetTransactionByHash } from '@/lib/evm-rpc';
 import type { FetchFn } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
 import {
@@ -21,7 +20,7 @@ import {
   SHOP_HISTORY_INTERVAL_MS,
   SHOP_ORDER_WATCH_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
-  lockAccountOf,
+  lockPaymentForProofs,
   shopMethodByName,
   type ShopPayments,
 } from '@/lib/shop-payment';
@@ -35,11 +34,8 @@ import type {
   ShopTx,
 } from '@/lib/shop-payment-store';
 import {
-  SHOP_HEX_UNKNOWN_MS,
   applyProofOrder,
-  followProofOrder,
   readProofReceipt,
-  refuseHexProof,
   sendHexProof,
   shopProofContext,
   storeProof,
@@ -77,6 +73,16 @@ const SLOW_READ_MS = 2 * 60_000;
 const SUBMIT_DELAYS_MS: readonly number[] = [20_000, 30_000];
 /** Submit cadence after the first three. */
 const SUBMIT_INTERVAL_MS = 5 * 60_000;
+/**
+ * The orders duty's cadence while only the successor wait keeps a payment
+ * whose order watch has ended (Watcher, duty 3).
+ */
+export const SHOP_SUCCESSOR_HISTORY_INTERVAL_MS = 60_000;
+/**
+ * How long the orders duty waits for the successor of a replaced order
+ * (`successor_wait_until`, set by the order-status duty; Calls › Status).
+ */
+export const SHOP_SUCCESSOR_WAIT_MS = 24 * 60 * 60_000;
 /** Status reads every 10 s for this long after the order was found, then every 60 s. */
 const STATUS_FAST_WINDOW_MS = 10 * 60_000;
 /** Slow status cadence. */
@@ -114,30 +120,8 @@ function callBudget(shop: ShopPayments, calls: number): CallBudget {
 }
 
 /**
- * Lock the account of a payment (`lockAccountOf`, which follows an account
- * merge that moved the payment) and run `run` in one transaction.
- *
- * @param shop - Service.
- * @param paymentId - Payment id.
- * @param run - Work inside the transaction.
- * @returns The work's result.
- */
-function underPaymentLock<T>(
-  shop: ShopPayments,
-  paymentId: string,
-  run: (tx: ShopTx) => Promise<T>,
-): Promise<T> {
-  return shop.store.transaction(async (tx) => {
-    const payment = await tx.getPayment(paymentId);
-    if (payment !== null) {
-      await lockAccountOf(tx, paymentId, payment.accountId);
-    }
-    return run(tx);
-  });
-}
-
-/**
- * Patch one proof under its payment's account lock.
+ * Patch the schedule of one proof (no result change) under its payment's
+ * `shop_payment` row lock; no account row is locked.
  *
  * @param shop - Service.
  * @param proof - The proof.
@@ -148,7 +132,8 @@ async function patchProof(
   proof: ShopProof,
   patch: ShopProofPatch,
 ): Promise<void> {
-  await underPaymentLock(shop, proof.paymentId, async (tx) => {
+  await shop.store.transaction(async (tx) => {
+    await tx.lockPayment(proof.paymentId);
     await tx.updateProof(proof.id, {}, patch);
   });
 }
@@ -235,12 +220,13 @@ function normalizeTxHash(value: string): string | null {
 }
 
 /**
- * One order of a history page: unknown orders become `detected` proofs; an
- * order recovered from one a proof holds moves that proof to it, and when
- * another row already holds the recovered order (stored as `detected` from an
- * earlier page) the two rows merge as in step 4 of Storing and submitting,
- * or the moved row is refused with `tx_used` when that row belongs to
- * another offer.
+ * One order of a history page: an order of one of the payment's offers that
+ * carries a `sourceTxHash` is stored through Storing and submitting as a
+ * `detected` proof with its order, unless a proof already holds it as
+ * `provider_order` (`storeProof` answers from that row). An order whose
+ * `recoveredFromOperationId` a proof holds is stored the same way, as its own
+ * proof, so every row keeps its own transaction and order. An order without
+ * `sourceTxHash` yet stores nothing and is read again.
  *
  * @param shop - Service.
  * @param payment - The payment read.
@@ -254,25 +240,7 @@ async function handleHistoryOrder(
   order: OrchestraOrder,
 ): Promise<void> {
   const offer = offers.find((row) => row.providerRef === order.quoteId);
-  if (offer === undefined) {
-    return;
-  }
-  const recovered = order.recoveredFromOperationId;
-  const handled = await underPaymentLock(shop, payment.id, async (tx) => {
-    const [holder] = await tx.findProofs({ providerOrder: order.id });
-    const [prior] =
-      recovered === null || recovered === order.id
-        ? []
-        : await tx.findProofs({ providerOrder: recovered });
-    if (prior === undefined) {
-      return holder !== undefined;
-    }
-    const nowMs = shop.deps.now();
-    await tx.updateProof(prior.id, {}, { nextStatusAt: new Date(nowMs + SHOP_FIRST_STATUS_MS) });
-    await applyProofOrder(tx, prior, { orderId: order.id, status: order.status }, nowMs);
-    return true;
-  });
-  if (handled || order.sourceTxHash === null) {
+  if (offer === undefined || order.sourceTxHash === null) {
     return;
   }
   const txHash = normalizeTxHash(order.sourceTxHash);
@@ -292,13 +260,51 @@ async function handleHistoryOrder(
   });
 }
 
+/** A proof whose replaced order waits for its successor. */
+interface SuccessorWait {
+  /** The proof of the replaced order. */
+  proof: ShopProof;
+  /** Its (replaced) order. */
+  orderId: string;
+  /** The successor order no proof holds yet. */
+  successorId: string;
+}
+
+/**
+ * The proof that waits for a successor: it holds a `superseded_by_order`
+ * that no proof of the payment holds as `provider_order`.
+ *
+ * @param proofs - Every proof of the payment.
+ * @returns The first such proof in the given order, or `null`.
+ */
+function waitingForSuccessor(proofs: readonly ShopProof[]): SuccessorWait | null {
+  for (const proof of proofs) {
+    const successorId = proof.supersededByOrder;
+    if (
+      successorId !== null &&
+      proof.providerOrder !== null &&
+      !proofs.some((other) => other.providerOrder === successorId)
+    ) {
+      return { proof, orderId: proof.providerOrder, successorId };
+    }
+  }
+  return null;
+}
+
 /**
  * Duty 3 (odd ticks): one history page of the payment whose
  * `next_history_at` is due. A failed read is retried at the cadence and
  * keeps the offset, also after the order watch ended; a budget refusal waits
- * for the next odd tick. The read stops at the first successful short page
- * once the order watch of the payment's last offer with an issued detail has
- * ended.
+ * for the next odd tick. Once the order watch of the payment's last offer
+ * with an issued detail has ended, the first successful short page decides
+ * `next_history_at` under the payment row and its proof rows
+ * (`lockPaymentForProofs`): while some proof waits for a successor (its
+ * `superseded_by_order` is held by no proof) and `successor_wait_until` has
+ * not passed, the payment is read again after
+ * {@link SHOP_SUCCESSOR_HISTORY_INTERVAL_MS}; when that wait has passed, the
+ * duty logs `shop.alert.successor_missing` and clears `next_history_at` and
+ * `successor_wait_until` together; otherwise it clears `next_history_at`.
+ * Paid and closed payments are read the same way.
  *
  * @param shop - Service.
  * @param nowMs - Clock.
@@ -327,6 +333,7 @@ async function readOrders(shop: ShopPayments, nowMs: number): Promise<void> {
     payment.bolt11,
     payment.historyOffset,
     SHOP_WORKER_CALL_TIMEOUT_MS,
+    { paymentId: payment.id },
   );
   if (!page.ok && page.reason === 'budget') {
     return;
@@ -344,20 +351,46 @@ async function readOrders(shop: ShopPayments, nowMs: number): Promise<void> {
       .map((offer) => offer.expiresAt.getTime() + SHOP_ORDER_WATCH_MS),
   );
   const full = page.ok && page.full;
-  const patch: ShopPaymentPatch = {
-    historyOffset: full
-      ? payment.historyOffset + ORCHESTRA_HISTORY_PAGE_SIZE
-      : page.ok
-        ? 0
-        : payment.historyOffset,
-    // Only a successful short page ends the watch: a failed read changes nothing.
-    nextHistoryAt:
-      page.ok && !full && watchEndMs <= afterMs
-        ? null
-        : new Date(afterMs + SHOP_HISTORY_INTERVAL_MS),
-  };
-  await underPaymentLock(shop, payment.id, async (tx) => {
-    await tx.updatePayment(payment.id, {}, patch);
+  const historyOffset = full
+    ? payment.historyOffset + ORCHESTRA_HISTORY_PAGE_SIZE
+    : page.ok
+      ? 0
+      : payment.historyOffset;
+  // Only a successful short page ends the watch: a failed read changes nothing.
+  const watchEnded = page.ok && !full && watchEndMs <= afterMs;
+  await shop.store.transaction(async (tx) => {
+    const locked = await lockPaymentForProofs(tx, payment.id);
+    /* v8 ignore next 3 -- no path deletes a payment */
+    if (locked === null) {
+      return;
+    }
+    const write = (patch: ShopPaymentPatch): Promise<unknown> =>
+      tx.updatePayment(payment.id, {}, { historyOffset, ...patch });
+    if (!watchEnded) {
+      await write({ nextHistoryAt: new Date(afterMs + SHOP_HISTORY_INTERVAL_MS) });
+      return;
+    }
+    const waiting = waitingForSuccessor(locked.proofs);
+    const waitUntil = locked.payment.successorWaitUntil;
+    if (waiting === null || waitUntil === null) {
+      await write({ nextHistoryAt: null });
+      return;
+    }
+    if (waitUntil.getTime() > afterMs) {
+      await write({ nextHistoryAt: new Date(afterMs + SHOP_SUCCESSOR_HISTORY_INTERVAL_MS) });
+      return;
+    }
+    await write({ nextHistoryAt: null, successorWaitUntil: null });
+    const offer = offers.find((row) => row.id === waiting.proof.offerId);
+    logEvent('shop.alert.successor_missing', {
+      paymentId: payment.id,
+      proofId: waiting.proof.id,
+      offerId: waiting.proof.offerId,
+      /* v8 ignore next -- a proof's offer is one of the payment's offers read before the page */
+      ...(offer === undefined ? {} : { quoteId: offer.quoteId, providerRef: offer.providerRef }),
+      orderId: waiting.orderId,
+      successorOrderId: waiting.successorId,
+    });
   });
 }
 
@@ -467,10 +500,16 @@ async function lookups(shop: ShopPayments, nowMs: number): Promise<void> {
 
 /**
  * One receipt row: send a `hex` transaction that was never sent, otherwise
- * read the receipt; a `hex` transaction without a receipt is sent again, and
- * refused when the node still does not know it 10 minutes after its first
- * send. Reading stops at `give_up_at`: 24 h after the proof was stored, or
- * 24 h after an operator retry moved it ahead.
+ * read the receipt. A receipt fills the log index and value (and a `hex`
+ * proof that may be submitted gets `next_submit_at` now) or refuses a failed
+ * `hex` transaction. A `hex` transaction without a receipt is sent again and
+ * read again after 2 min while it is unresolved, however long the node does
+ * not know it, so a transaction mined late is still submitted. Reading stops
+ * at `give_up_at` (24 h after the proof was stored, or after an operator
+ * retry moved it ahead; the stuck duty then marks an unresolved proof
+ * `stuck`), once the log index is filled, and for a `hex` proof once it has a
+ * result or an order. A `detected` proof is read for at most 24 h: its
+ * `give_up_at`, which is never moved.
  *
  * @param shop - Service.
  * @param proof - Proof with a due `next_receipt_at`.
@@ -485,7 +524,9 @@ async function readReceipt(
 ): Promise<void> {
   const later: ShopProofPatch = { nextReceiptAt: new Date(nowMs + SLOW_READ_MS) };
   const url = shop.deps.config?.evmRpc.get(proof.chainId);
-  if (nowMs >= proof.giveUpAt.getTime() || proof.logIndex !== null) {
+  const hexResolved =
+    proof.source === 'hex' && (proof.result !== null || proof.providerOrder !== null);
+  if (nowMs >= proof.giveUpAt.getTime() || proof.logIndex !== null || hexResolved) {
     await patchProof(shop, proof, { nextReceiptAt: null });
     return;
   }
@@ -505,25 +546,13 @@ async function readReceipt(
     await patchProof(shop, proof, { nextReceiptAt: null });
     return;
   }
-  if (outcome === 'pending' && proof.source === 'hex' && proof.sentAt !== null) {
-    if (nowMs - proof.sentAt.getTime() >= SHOP_HEX_UNKNOWN_MS) {
-      const known = await evmGetTransactionByHash(
-        url,
-        fetchImpl,
-        proof.txHash,
-        SHOP_WORKER_CALL_TIMEOUT_MS,
-      );
-      if (known.ok && !known.value) {
-        await refuseHexProof(shop, proof.id);
-        await patchProof(shop, proof, { nextReceiptAt: null });
-        return;
-      }
-    } else if (
-      (await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl)) === 'rejected'
-    ) {
-      await patchProof(shop, proof, { nextReceiptAt: null });
-      return;
-    }
+  if (
+    outcome === 'pending' &&
+    proof.source === 'hex' &&
+    (await sendHexProof(shop, proof, url, SHOP_WORKER_CALL_TIMEOUT_MS, fetchImpl)) === 'rejected'
+  ) {
+    await patchProof(shop, proof, { nextReceiptAt: null });
+    return;
   }
   await patchProof(shop, proof, later);
 }
@@ -531,7 +560,7 @@ async function readReceipt(
 /**
  * Most RPC calls one receipt row makes: a `detected` proof only reads its
  * receipt; a `hex` proof never sent makes a send and its hash check; a sent
- * one reads its receipt, then resends with a hash check or checks the hash.
+ * one reads its receipt, then resends with a hash check.
  *
  * @param proof - Receipt row.
  * @returns The calls to keep free before the row is taken.
@@ -614,7 +643,8 @@ async function submits(shop: ShopPayments, nowMs: number): Promise<void> {
 async function markStuck(shop: ShopPayments, nowMs: number): Promise<void> {
   const rows = await shop.store.transaction((tx) => tx.dueProofs('stuck', nowMs, STUCK_PER_TICK));
   for (const row of rows) {
-    const stuck = await underPaymentLock(shop, row.paymentId, async (tx) => {
+    const stuck = await shop.store.transaction(async (tx) => {
+      await lockPaymentForProofs(tx, row.paymentId);
       const current = await tx.getProof(row.id);
       if (current === null || current.providerOrder !== null || current.submitStopped) {
         return null;
@@ -653,7 +683,52 @@ function nextStatusAt(proof: ShopProof, nowMs: number): Date {
 }
 
 /**
- * One status read of a proof's order, applied under the account lock.
+ * The order-status duty's step for a replaced order (Calls › Status): an
+ * `unfulfilled` status with `supersededByOperationId`. The proof keeps its
+ * order with that status (held, or still `accepted`), the duty stops for it
+ * (`next_status_at` cleared, no `shop.alert.order_stuck`), the successor's id
+ * becomes its `superseded_by_order`, and the payment's
+ * `successor_wait_until` moves 24 h ahead when it is empty or earlier and its
+ * `next_history_at` is set to now when it is empty, so the orders duty
+ * stores the successor as its own proof. The caller holds the payment row
+ * and its proof rows.
+ *
+ * @param tx - Transaction.
+ * @param payment - The payment as locked.
+ * @param proof - The proof whose order was replaced.
+ * @param orderId - Its order id.
+ * @param successorId - `supersededByOperationId`.
+ * @param nowMs - Clock.
+ */
+async function stopReplacedOrder(
+  tx: ShopTx,
+  payment: ShopPayment,
+  proof: ShopProof,
+  orderId: string,
+  successorId: string,
+  nowMs: number,
+): Promise<void> {
+  const after = await applyProofOrder(tx, proof, { orderId, status: 'unfulfilled' }, nowMs);
+  await tx.updateProof(after.id, {}, { nextStatusAt: null, supersededByOrder: successorId });
+  const waitUntilMs = nowMs + SHOP_SUCCESSOR_WAIT_MS;
+  const current = payment.successorWaitUntil;
+  await tx.updatePayment(
+    payment.id,
+    {},
+    {
+      successorWaitUntil:
+        current !== null && current.getTime() >= waitUntilMs ? current : new Date(waitUntilMs),
+      nextHistoryAt: payment.nextHistoryAt ?? new Date(nowMs),
+    },
+  );
+}
+
+/**
+ * One status read of a proof's order, applied under the payment row and its
+ * proof rows (`lockPaymentForProofs`). An `unfulfilled` status with a
+ * `supersededByOperationId` of another order is a replaced order
+ * ({@link stopReplacedOrder}); every other status, a superseding id with
+ * another status included, is applied as a status.
  *
  * @param shop - Service.
  * @param proof - Proof with an order that is not final.
@@ -665,14 +740,20 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
   if (orchestra === null) {
     return;
   }
-  const read = await orchestra.status(orderId, SHOP_WORKER_CALL_TIMEOUT_MS);
+  const read = await orchestra.status(orderId, SHOP_WORKER_CALL_TIMEOUT_MS, {
+    paymentId: proof.paymentId,
+    proofId: proof.id,
+    offerId: proof.offerId,
+    orderId,
+  });
   if (!read.ok && read.reason === 'budget') {
     return;
   }
-  await underPaymentLock(shop, proof.paymentId, async (tx) => {
+  await shop.store.transaction(async (tx) => {
+    const locked = await lockPaymentForProofs(tx, proof.paymentId);
     const nowMs = shop.deps.now();
     const current = await tx.getProof(proof.id);
-    if (current === null || current.providerOrder !== orderId) {
+    if (locked === null || current === null || current.providerOrder !== orderId) {
       return;
     }
     const order = read.ok ? read.order : null;
@@ -680,8 +761,9 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
       await tx.updateProof(current.id, {}, { nextStatusAt: nextStatusAt(current, nowMs) });
       return;
     }
-    if (order.supersededByOperationId !== null && order.supersededByOperationId !== orderId) {
-      await followProofOrder(tx, current, order.supersededByOperationId, nowMs);
+    const successor = order.supersededByOperationId;
+    if (order.status === 'unfulfilled' && successor !== null && successor !== orderId) {
+      await stopReplacedOrder(tx, locked.payment, current, orderId, successor, nowMs);
       return;
     }
     const after = await applyProofOrder(tx, current, { orderId, status: order.status }, nowMs);

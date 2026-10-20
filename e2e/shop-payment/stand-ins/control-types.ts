@@ -23,6 +23,12 @@ export interface ShopBehaviour {
   quoteTtlMs: number;
   /** Pairs whose quote answers 400 `unsupported_route`, as `<sourceChain>:<asset>`. */
   refusePairs: string[];
+  /**
+   * A raw transaction the api broadcasts to one of this shop's deposit
+   * addresses is mined (gets its receipt) this many milliseconds after its
+   * first broadcast; `null` mines it at once.
+   */
+  mineAfterMs: number | null;
 }
 
 /** Body of `POST /__control/transfer`: one ERC-20 transfer through the payer's bundler. */
@@ -52,6 +58,14 @@ export interface TransferResult {
   receipt: { transactionHash?: string };
   /** Order Orchestra created by detection, when any. */
   orderId: string | null;
+}
+
+/** Answer of `POST /__control/orders/:id/replace`. */
+export interface ReplaceResult {
+  /** The successor order, `processing`, recovered from the replaced one. */
+  successorId: string;
+  /** The successor's own source transaction (mined, one transfer to the same deposit). */
+  successorTxHash: string;
 }
 
 /** One Orchestra order as the control endpoint reports it. */

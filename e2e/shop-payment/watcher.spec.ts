@@ -3,7 +3,9 @@
  * (`docs/shop-stablecoin-payment.md`, Implementation › Tests, and Watcher):
  * an order created without a submit makes the payment `accepted`; a second
  * completed order moves acceptance to it; a dust transfer to the deposit
- * address does not take acceptance from the payer.
+ * address does not take acceptance from the payer; a replaced order's
+ * successor is stored as its own proof and takes the place once it
+ * completes, while the replaced order's proof is no longer followed.
  */
 
 import { expect, test } from '@playwright/test';
@@ -164,4 +166,66 @@ test('a dust transfer to the deposit address does not take acceptance from the p
     status: 503,
     message: 'Payment is being confirmed',
   });
+});
+
+test('a replaced order: the successor is stored as its own proof and takes the place once it completes', async ({
+  request,
+}) => {
+  test.setTimeout(WATCHER_TIMEOUT_MS + 60_000);
+  const control = new Control(request);
+  const shop = await verifiedShop(request, 'replaced');
+  await control.behave(shop.username, { submit: 'accept', completeAfterMs: null });
+  const opened = await openPayerPayment(request, shop.username, 3_300);
+  const run = await tetherWallet(request, control).pay(sticker(shop.username), {
+    railId: 'polygon-usdt',
+  });
+  expect(run.outcome, describeRun(run)).toBe('OPEN_CRYPTO_PAY_SETTLED');
+  const rail = run.rail;
+  if (rail?.kind !== 'transfer' || run.sentHash === undefined) {
+    throw new Error('the payer did not pay');
+  }
+  expect((await paymentStatus(request, opened.payment)).paymentStatus).toBe('accepted');
+  const orderA = (await control.state(shop.username)).orders.find(
+    (order) => order.sourceTxHash === run.sentHash,
+  );
+  if (orderA === undefined) {
+    throw new Error('no order for the payer');
+  }
+  // Orchestra replaces A: A stays unfulfilled for good, B carries its own transaction.
+  const { successorId, successorTxHash } = await control.replaceOrder(orderA.id);
+  // The orders duty stores B as its own proof, and the order-status duty reads it.
+  await expect
+    .poll(async () => (await control.state(shop.username)).statusReads[successorId] ?? 0, {
+      timeout: WATCHER_TIMEOUT_MS,
+      intervals: [2_000],
+    })
+    .toBeGreaterThan(0);
+  // A stays accepted while B is in flight; the till keeps "on its way".
+  expect((await paymentStatus(request, opened.payment)).paymentStatus).toBe('accepted');
+  expect(await proofAnswer(request, rail.proof, run.sentHash)).toEqual({
+    status: 200,
+    message: run.sentHash,
+  });
+  await control.setOrderStatus(successorId, 'completed');
+  await expect
+    .poll(async () => (await paymentStatus(request, opened.payment)).paymentStatus, {
+      timeout: WATCHER_TIMEOUT_MS,
+      intervals: [2_000],
+    })
+    .toBe('paid');
+  // B's proof took the place; A's proof kept its own order and is superseded.
+  await expect
+    .poll(async () => await proofAnswer(request, rail.proof, successorTxHash), {
+      timeout: 60_000,
+      intervals: [2_000],
+    })
+    .toEqual({ status: 200, message: successorTxHash });
+  const superseded = { status: 400, message: 'Another transfer is paying this payment' };
+  expect(await proofAnswer(request, rail.proof, run.sentHash)).toEqual(superseded);
+  // Orchestra then fails A with duplicate_lightning_invoice, but the api no
+  // longer reads A's status, so A's proof stays superseded.
+  const readsA = (await control.state(shop.username)).statusReads[orderA.id] ?? 0;
+  await new Promise((resolve) => setTimeout(resolve, 15_000));
+  expect((await control.state(shop.username)).statusReads[orderA.id] ?? 0).toBe(readsA);
+  expect(await proofAnswer(request, rail.proof, run.sentHash)).toEqual(superseded);
 });

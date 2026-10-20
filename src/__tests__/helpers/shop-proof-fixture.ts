@@ -13,6 +13,7 @@ import {
   type ShopPayment,
   type ShopProof,
   type ShopQuote,
+  type ShopTx,
 } from '@/lib/shop-payment-store';
 import { LNURL_SERVER } from './wallet-lnurl';
 
@@ -550,4 +551,50 @@ export async function signedTransfer(
  */
 export function loggedEvents(warn: { mock: { calls: unknown[][] } }): Record<string, unknown>[] {
   return warn.mock.calls.map((call) => JSON.parse(String(call[0])) as Record<string, unknown>);
+}
+
+/** `ShopTx` calls {@link recordTxCalls} records. */
+const RECORDED_TX_CALLS = new Set([
+  'lockAccount',
+  'lockCharge',
+  'lockPayment',
+  'lockProofs',
+  'updateProof',
+  'updatePayment',
+  'deleteProof',
+]);
+
+/**
+ * Record, in order, the lock and write calls of every store transaction from
+ * now on (`lockAccount`, `lockCharge`, `lockPayment`, `lockProofs`,
+ * `updateProof`, `updatePayment`, `deleteProof`). `vi.restoreAllMocks` ends
+ * the recording.
+ *
+ * @param h - Harness.
+ * @returns The calls, filled as transactions run.
+ */
+export function recordTxCalls(h: Harness): string[] {
+  const calls: string[] = [];
+  const original = h.store.transaction.bind(h.store);
+  const recording = <T>(run: (tx: ShopTx) => Promise<T>): Promise<T> =>
+    original((tx) =>
+      run(
+        new Proxy(tx, {
+          get: (target, prop) => {
+            const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+            if (typeof value !== 'function') {
+              return value;
+            }
+            return (...args: unknown[]) => {
+              if (RECORDED_TX_CALLS.has(String(prop))) {
+                calls.push(String(prop));
+              }
+              return (value as (...a: unknown[]) => unknown).apply(target, args);
+            };
+          },
+        }),
+      ),
+    );
+  vi.spyOn(h.store, 'transaction').mockImplementation(recording as never);
+  return calls;
 }

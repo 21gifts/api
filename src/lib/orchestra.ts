@@ -1,5 +1,5 @@
 import { IP_RATE_WINDOW_MS } from '@/lib/ip-rate-limit';
-import { logEvent } from '@/lib/log';
+import { logEvent, type LogFields } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
 
 /** Status and history reads per sliding minute, shared by both endpoints. */
@@ -327,8 +327,10 @@ function pauseUntil(headers: Headers, now: number): number | null {
  * `shop.orchestra.rate_limited`; a 429 with neither header does not pause.
  * Every non-2xx answer and every transport error logs `shop.orchestra.error`
  * with `endpoint` and `status` (`timeout` or `transport` without an answer),
- * except the 404 `not_found` of a status read. No log carries the key, a
- * URL, or a body.
+ * except the 404 `not_found` of a status read. Every log line of a call also
+ * carries the ids the caller passes (`paymentId`, and `proofId`, `offerId`,
+ * `quoteId`, `providerRef`, or `orderId` where they apply; Logging). No log
+ * carries the key, a URL, or a body.
  *
  * Submit budget: proof requests (`proof-first`, `proof-repeat`) together use
  * at most {@link ORCHESTRA_PROOF_SUBMITS_PER_MINUTE} of the window, and the
@@ -380,10 +382,11 @@ export class OrchestraClient {
    * is left out.
    *
    * @param timeoutMs - Timeout of the call.
+   * @param log - Ids of the payment the list is read for, on every log line.
    * @returns The assets and `validForMs`, or `{ ok: false }` on any failure.
    */
-  async routes(timeoutMs: number): Promise<OrchestraRoutesResult> {
-    if (this.gate('routes', null) !== 'ok') {
+  async routes(timeoutMs: number, log: LogFields): Promise<OrchestraRoutesResult> {
+    if (this.gate('routes', null, log) !== 'ok') {
       return { ok: false };
     }
     const sent = await this.send(
@@ -393,6 +396,7 @@ export class OrchestraClient {
       null,
       null,
       timeoutMs,
+      log,
     );
     if (sent.kind !== 'answer' || sent.status < 200 || sent.status > 299) {
       return { ok: false };
@@ -421,7 +425,8 @@ export class OrchestraClient {
    * key and body while `deadlineMs` has not passed; each attempt's timeout
    * is the time left. When a 429 paused the endpoint, the retry waits for
    * the pause to end if it ends before `deadlineMs`, and is not sent
-   * otherwise. A retry that the budget blocks is not sent.
+   * otherwise. A retry that the budget blocks is not sent. Log lines carry
+   * the request's `tag` as `paymentId`.
    *
    * @param request - Pair, sat amount, BOLT11, tag, and refund address.
    * @param idempotencyKey - `X-Idempotency-Key`, kept for the retry.
@@ -447,6 +452,7 @@ export class OrchestraClient {
       refundAddress: request.refundAddress,
       includeCalldata: true,
     };
+    const log: LogFields = { paymentId: request.tag };
     for (let attempt = 0; attempt < 2; attempt += 1) {
       const resumeAtMs = this.pausedUntil.quote;
       if (attempt > 0 && resumeAtMs > this.deps.now()) {
@@ -459,7 +465,7 @@ export class OrchestraClient {
       if (left <= 0) {
         break;
       }
-      const gate = this.gate('quote', null);
+      const gate = this.gate('quote', null, log);
       if (gate !== 'ok') {
         return { ok: false, reason: gate };
       }
@@ -470,6 +476,7 @@ export class OrchestraClient {
         body,
         idempotencyKey,
         left,
+        log,
       );
       if (sent.kind === 'transport') {
         continue;
@@ -513,6 +520,8 @@ export class OrchestraClient {
    * @param idempotencyKey - `X-Idempotency-Key`.
    * @param caller - Which part of the submit budget the call uses.
    * @param timeoutMs - Timeout of the call.
+   * @param log - Ids of the proof (`paymentId`, `proofId`, `offerId`,
+   *   `quoteId`, `providerRef`), on every log line.
    * @returns `order` for a 200 with a string `orderId` (`status` `''` when
    *   missing), `mismatch` for 400 `xchain_deposit_mismatch`,
    *   `quote_expired` for 409 `quote_expired`, `budget` when not sent, and
@@ -524,8 +533,9 @@ export class OrchestraClient {
     idempotencyKey: string,
     caller: OrchestraSubmitCaller,
     timeoutMs: number,
+    log: LogFields,
   ): Promise<OrchestraSubmitResult> {
-    if (this.gate('submit', caller) !== 'ok') {
+    if (this.gate('submit', caller, log) !== 'ok') {
       return { kind: 'budget' };
     }
     const sent = await this.send(
@@ -535,6 +545,7 @@ export class OrchestraClient {
       { quoteId, txHash },
       idempotencyKey,
       timeoutMs,
+      log,
       caller !== 'watcher',
     );
     if (sent.kind === 'transport') {
@@ -554,7 +565,7 @@ export class OrchestraClient {
     if (sent.status === 409 && sent.code === 'quote_expired') {
       return { kind: 'quote_expired' };
     }
-    this.alertOnRequestProblem('submit', sent);
+    this.alertOnRequestProblem('submit', sent, log);
     return {
       kind: 'unresolved',
       retryable:
@@ -574,14 +585,16 @@ export class OrchestraClient {
    * @param bolt11 - The payment's BOLT11, sent as `address`.
    * @param offset - Paging offset; `limit` is always 200.
    * @param timeoutMs - Timeout of the call.
+   * @param log - Ids of the payment read (`paymentId`), on every log line.
    * @returns The orders and whether the page was full, or a failure reason.
    */
   async history(
     bolt11: string,
     offset: number,
     timeoutMs: number,
+    log: LogFields,
   ): Promise<OrchestraHistoryResult> {
-    if (this.gate('history', null) !== 'ok') {
+    if (this.gate('history', null, log) !== 'ok') {
       return { ok: false, reason: 'budget' };
     }
     const query = new URLSearchParams({
@@ -596,12 +609,13 @@ export class OrchestraClient {
       null,
       null,
       timeoutMs,
+      log,
     );
     if (sent.kind === 'transport') {
       return { ok: false, reason: 'error' };
     }
     if (sent.status < 200 || sent.status > 299) {
-      this.alertOnRequestProblem('history', sent);
+      this.alertOnRequestProblem('history', sent, log);
       return { ok: false, reason: 'error' };
     }
     const raw = asRecord(sent.body)?.['orders'];
@@ -625,11 +639,13 @@ export class OrchestraClient {
    *
    * @param orderId - Orchestra order id.
    * @param timeoutMs - Timeout of the call.
+   * @param log - Ids of the proof whose order is read (`paymentId`,
+   *   `proofId`, `offerId`, `orderId`), on every log line.
    * @returns The order; `order: null` for 404 `not_found` or a `null`
    *   order; `budget` when not sent; `error` for every other failure.
    */
-  async status(orderId: string, timeoutMs: number): Promise<OrchestraStatusResult> {
-    if (this.gate('status', null) !== 'ok') {
+  async status(orderId: string, timeoutMs: number, log: LogFields): Promise<OrchestraStatusResult> {
+    if (this.gate('status', null, log) !== 'ok') {
       return { ok: false, reason: 'budget' };
     }
     const query = new URLSearchParams({ id: orderId });
@@ -640,6 +656,7 @@ export class OrchestraClient {
       null,
       null,
       timeoutMs,
+      log,
     );
     if (sent.kind === 'transport') {
       return { ok: false, reason: 'error' };
@@ -648,7 +665,7 @@ export class OrchestraClient {
       return { ok: true, order: null };
     }
     if (sent.status < 200 || sent.status > 299) {
-      this.alertOnRequestProblem('status', sent);
+      this.alertOnRequestProblem('status', sent, log);
       return { ok: false, reason: 'error' };
     }
     const body = asRecord(sent.body);
@@ -669,8 +686,8 @@ export class OrchestraClient {
     return kept;
   }
 
-  /** Whether a call of `endpoint` may be sent now; logs a budget refusal. */
-  private gate(endpoint: Endpoint, caller: OrchestraSubmitCaller | null): Gate {
+  /** Whether a call of `endpoint` may be sent now; logs a budget refusal with the caller's ids. */
+  private gate(endpoint: Endpoint, caller: OrchestraSubmitCaller | null, log: LogFields): Gate {
     const group = GROUP_OF[endpoint];
     const now = this.deps.now();
     if (now < this.pausedUntil[endpoint]) {
@@ -693,20 +710,29 @@ export class OrchestraClient {
         (caller === 'watcher' || proof + reserve < ORCHESTRA_PROOF_SUBMITS_PER_MINUTE);
     }
     if (!allowed) {
-      logEvent('shop.orchestra.budget_exhausted', { endpoint });
+      logEvent('shop.orchestra.budget_exhausted', { ...log, endpoint });
       return 'budget';
     }
     return 'ok';
   }
 
-  /** Log `shop.alert.orchestra_request` for HTTP 400, 401, and 403. */
-  private alertOnRequestProblem(endpoint: Endpoint, sent: { status: number; code: string }): void {
+  /** Log `shop.alert.orchestra_request` for HTTP 400, 401, and 403, with the caller's ids. */
+  private alertOnRequestProblem(
+    endpoint: Endpoint,
+    sent: { status: number; code: string },
+    log: LogFields,
+  ): void {
     if (sent.status === 400 || sent.status === 401 || sent.status === 403) {
-      logEvent('shop.alert.orchestra_request', { endpoint, status: sent.status, code: sent.code });
+      logEvent('shop.alert.orchestra_request', {
+        ...log,
+        endpoint,
+        status: sent.status,
+        code: sent.code,
+      });
     }
   }
 
-  /** Send one attempt, count it, and log errors and rate limits. */
+  /** Send one attempt, count it, and log errors and rate limits with the caller's ids. */
   private async send(
     endpoint: Endpoint,
     method: 'GET' | 'POST',
@@ -714,6 +740,7 @@ export class OrchestraClient {
     body: Record<string, unknown> | null,
     idempotencyKey: string | null,
     timeoutMs: number,
+    log: LogFields,
     proof = false,
   ): Promise<Sent> {
     const group = GROUP_OF[endpoint];
@@ -743,7 +770,7 @@ export class OrchestraClient {
     } catch (error) {
       const name = error instanceof Error ? error.name : '';
       const status = name === 'TimeoutError' || name === 'AbortError' ? 'timeout' : 'transport';
-      logEvent('shop.orchestra.error', { endpoint, status });
+      logEvent('shop.orchestra.error', { ...log, endpoint, status });
       return { kind: 'transport' };
     }
     const code = errorCode(parsed);
@@ -751,14 +778,14 @@ export class OrchestraClient {
       return { kind: 'answer', status: response.status, body: parsed, code };
     }
     if (response.status < 200 || response.status > 299) {
-      logEvent('shop.orchestra.error', { endpoint, status: response.status });
+      logEvent('shop.orchestra.error', { ...log, endpoint, status: response.status });
     }
     if (response.status === 429) {
       const until = pauseUntil(response.headers, this.deps.now());
       if (until !== null) {
         this.pausedUntil[endpoint] = Math.max(this.pausedUntil[endpoint], until);
       }
-      logEvent('shop.orchestra.rate_limited', { endpoint });
+      logEvent('shop.orchestra.rate_limited', { ...log, endpoint });
     }
     return { kind: 'answer', status: response.status, body: parsed, code };
   }
