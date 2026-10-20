@@ -774,6 +774,30 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  test('a worker rename from an older note snapshot does not overwrite a newer one', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note();
+      await ctx.messages.create(row);
+      await ctx.shops.ensureListed(row.id, KEK);
+      const older = (await ctx.messages.getById(row.id))!;
+      await ctx.messages.setPlace(row.id, { ...PLACE, label: 'Roastery' });
+      const newer = (await ctx.messages.getById(row.id))!;
+      // The tick that read the renamed note writes the new name.
+      await ctx.shops.renameIfListed(newer);
+      expect((await ctx.shops.getByMessageId(row.id))?.profileName).toBe('Roastery');
+      // An overlapping tick that read the note before the rename writes last.
+      await ctx.shops.renameIfListed(older);
+      expect((await ctx.shops.getByMessageId(row.id))?.profileName).toBe('Roastery');
+      // Unlisted before the next tick: the stored name is still the newest.
+      await ctx.messages.setShopAccount(row.id, null);
+      await ctx.shops.renameIfListed(older);
+      expect((await ctx.shops.getByMessageId(row.id))?.profileName).toBe('Roastery');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test('runs both outboxes against the real statements', async () => {
     const ctx = await setup();
     try {
@@ -788,9 +812,8 @@ describe('shop identity on Postgres', () => {
         created_at: 1,
       });
       expect(signed.pubkey).toBe(identity.nostrPubkey);
-      await ctx.shops.setProfileName(row.id, 'Other');
       expect((await ctx.shops.listAll()).find((r) => r.messageId === row.id)?.profileName).toBe(
-        'Other',
+        'Coffee Lab',
       );
 
       const answers: Array<{ status: number; body: string }> = [];

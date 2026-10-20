@@ -210,9 +210,49 @@ describe('InMemoryShopIdentityStore key creation', () => {
     await messages.markDeleted(ID_A, new Date(0), 'staff');
     await messages.setPlace(ID_A, { ...shopRow(ID_A).place!, label: 'Hidden Name' });
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Roastery');
-    await store.setProfileName(ID_A, 'Manual');
-    await store.setProfileName(ID_B, 'Missing');
-    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Manual');
+  });
+
+  it('renames from a snapshot only while the note still shows it', async () => {
+    const { messages, store } = setup();
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    const older = (await messages.getById(ID_A))!;
+    await messages.setPlace(ID_A, { ...shopRow(ID_A).place!, label: 'Roastery' });
+    const newer = (await messages.getById(ID_A))!;
+    await store.renameIfListed(newer);
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+    // A tick that read the note before the rename comes last.
+    await store.renameIfListed(older);
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+    // No key, and an unlisted snapshot: nothing to write.
+    await store.renameIfListed(shopRow(ID_B, { place: { ...newer.place!, label: 'Other' } }));
+    expect(await store.getByMessageId(ID_B)).toBeUndefined();
+    await store.renameIfListed({
+      ...newer,
+      deletedAt: new Date(0),
+      place: { ...newer.place!, label: 'Gone' },
+    });
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+    // The note was unlisted after the read: the old snapshot does not rename it.
+    await messages.markDeleted(ID_A, new Date(0), 'staff');
+    await store.renameIfListed({ ...newer, place: { ...newer.place!, label: 'Late' } });
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+  });
+
+  it('does not rename when the note is gone', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    let gone = false;
+    const wrapped = {
+      getById: (id: string) => (gone ? Promise.resolve(undefined) : messages.getById(id)),
+      getPhoto: (id: string) => messages.getPhoto(id),
+      listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    gone = true;
+    await store.renameIfListed(
+      shopRow(ID_A, { place: { ...shopRow(ID_A).place!, label: 'Late' } }),
+    );
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Coffee Lab');
   });
 
   it('works with a message store that is not the in-memory class', async () => {
@@ -787,7 +827,7 @@ describe('PostgresShopIdentityStore', () => {
     await store.clearPhotoHash(claim);
     await store.finishPhotos(claim, 'hash');
     await store.missingPhotoPlace(claim, true);
-    await store.setProfileName(ID_A, 'Name');
+    await store.renameIfListed(shopRow(ID_A));
     await store.deferPhotos(claim, false);
     await store.deferPhotos(claim, true);
     expect(calls[0]?.text).toContain('ocp_place_claimed_until = NULL');
@@ -800,6 +840,12 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[7]?.params).toEqual([ID_A, 6]);
     expect(calls[8]?.params).toEqual([ID_A, 6, 4, 'hash']);
     expect(calls[9]?.params).toEqual([ID_A, 6, 4, true]);
+    expect(calls).toHaveLength(12);
+    expect(calls[10]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
+    expect(calls[10]?.text).toContain('FOR UPDATE');
+    expect(calls[10]?.params).toEqual([ID_A, ...SNAPSHOT]);
+    // An unlisted snapshot sends nothing.
+    await store.renameIfListed(shopRow(ID_B, { text: 'No tag in this text at all here.' }));
     expect(calls).toHaveLength(12);
     expect(calls[11]?.text).toContain(
       'GREATEST(ocp_place_claimed_until, ocp_photos_claimed_until)',

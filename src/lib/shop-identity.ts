@@ -132,13 +132,17 @@ export interface ShopIdentityStore {
    */
   listAll(): Promise<ShopIdentityRow[]>;
   /**
-   * Write `profile_name` when it differs.
+   * Write `profile_name` from a note snapshot, only while that snapshot is
+   * listed and the stored note still shows it (the same note lock and
+   * unchanged-columns condition as the rename in {@link ensureListed}). A
+   * caller holding an older snapshot than a committed rename changes
+   * nothing, so it cannot put an older name back.
    *
-   * @param messageId - Shop note id.
-   * @param name - Current shop name.
-   * @returns Resolves when written (a missing row is a no-op).
+   * @param note - The note as the caller read it.
+   * @returns Resolves when done (no key, an unlisted snapshot, a changed note
+   *   or an unchanged name is a no-op).
    */
-  setProfileName(messageId: string, name: string): Promise<void>;
+  renameIfListed(note: MessageRow): Promise<void>;
   /**
    * Live top-level pinned `#21GiftsShop` notes with a till account and no key.
    *
@@ -576,10 +580,14 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       .map(copyIdentity);
   }
 
-  setProfileName(messageId: string, name: string): Promise<void> {
-    const row = this.#rows.get(messageId);
-    if (row !== undefined) row.profileName = name;
-    return Promise.resolve();
+  async renameIfListed(note: MessageRow): Promise<void> {
+    const row = this.#rows.get(note.id);
+    const shop = listedSnapshot(note);
+    if (row === undefined || shop === null) return;
+    const latest = await this.#messages.getById(note.id);
+    const current = latest === undefined ? null : listedSnapshot(latest);
+    if (current === null || JSON.stringify(current.params) !== JSON.stringify(shop.params)) return;
+    row.profileName = shop.name;
   }
 
   async listCandidates(
@@ -841,7 +849,8 @@ function mapIdentity(row: IdentitySqlRow): ShopIdentityRow {
  * check in code read is unchanged: top-level, live, a till account, the
  * text `$3` and the complete pin (`$2` is the label, which is the shop
  * name; `$4`–`$5` are the coordinates and `$6`–`$10` the address). Shared
- * by the key insert and the rename in `PostgresShopIdentityStore.ensureListed`.
+ * by the key insert and the rename (`ensureListed`, `renameIfListed`) in
+ * `PostgresShopIdentityStore`.
  */
 const LOCK_LISTED_NOTE_SQL = `SELECT id FROM message
          WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
@@ -907,19 +916,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     const existing = await this.getByMessageId(messageId);
     if (existing !== undefined) {
       if (shop === null || shop.name === existing.profileName) return existing;
-      // Rename only while the note still shows this snapshot, under the same
-      // note lock as the insert: an older snapshot read before a newer
-      // rename committed matches nothing and cannot overwrite it.
-      const renamed = await this.#sql.query<IdentitySqlRow>(
-        `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
-         UPDATE shop_identity SET profile_name = $2
-         FROM locked
-         WHERE shop_identity.message_id = locked.id
-           AND shop_identity.profile_name IS DISTINCT FROM $2
-         RETURNING ${IDENTITY_COLUMNS}`,
-        [messageId, ...shop.params],
-      );
-      return renamed[0] === undefined ? existing : mapIdentity(renamed[0]);
+      return (await this.#renameLocked(messageId, shop)) ?? existing;
     }
     if (shop === null) return undefined;
     const generated = await freshIdentity(messageId, shop.name, kek, keygen, new Date());
@@ -950,6 +947,29 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     );
     const inserted = rows[0];
     return inserted === undefined ? this.getByMessageId(messageId) : mapIdentity(inserted);
+  }
+
+  /**
+   * Rename only while the note still shows this snapshot, under the same
+   * note lock as the insert: an older snapshot read before a newer rename
+   * committed matches nothing and cannot overwrite it.
+   *
+   * @returns The renamed identity, or `undefined` when nothing changed.
+   */
+  async #renameLocked(
+    messageId: string,
+    shop: { name: string; params: unknown[] },
+  ): Promise<ShopIdentityRow | undefined> {
+    const renamed = await this.#sql.query<IdentitySqlRow>(
+      `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
+       UPDATE shop_identity SET profile_name = $2
+       FROM locked
+       WHERE shop_identity.message_id = locked.id
+         AND shop_identity.profile_name IS DISTINCT FROM $2
+       RETURNING ${IDENTITY_COLUMNS}`,
+      [messageId, ...shop.params],
+    );
+    return renamed[0] === undefined ? undefined : mapIdentity(renamed[0]);
   }
 
   async getByMessageId(messageId: string): Promise<ShopIdentityRow | undefined> {
@@ -984,12 +1004,9 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     return rows.map(mapIdentity);
   }
 
-  async setProfileName(messageId: string, name: string): Promise<void> {
-    await this.#sql.execute(
-      `UPDATE shop_identity SET profile_name = $2
-       WHERE message_id = $1 AND profile_name IS DISTINCT FROM $2`,
-      [messageId, name],
-    );
+  async renameIfListed(note: MessageRow): Promise<void> {
+    const shop = listedSnapshot(note);
+    if (shop !== null) await this.#renameLocked(note.id, shop);
   }
 
   async listCandidates(

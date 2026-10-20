@@ -126,7 +126,11 @@ New table `shop_identity`. The key columns have the same names as on
 
 (1) Written on insert, by every write path that calls `ensureListed` while
 the note is listed, and by the worker before it publishes a listed shop's
-kind 0.
+kind 0. The worker writes through `renameIfListed` with the note it read,
+under the same note lock and unchanged-columns condition as `ensureListed`,
+so a tick that read the note before a newer rename committed cannot put the
+older name back (which the kind 0 of a shop that is later unlisted would
+otherwise keep).
 
 The operator dump (`GET /debug/dump/shop_identity`) shows every column
 except `nostr_nsec_ciphertext`; the encrypted secret is never dumped.

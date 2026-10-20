@@ -924,7 +924,8 @@ export function serializeDebugMessage(
  *   stored value is a positive integer on a top-level note (omitted
  *   otherwise). Optional currency-ask keys when `goalCurrency` is stored
  *   (omitted on legacy rows). Optional `place` when stored (omitted when unset).
- *   Optional `shopAccount` when stored (omitted when unset).
+ *   Optional `shopAccount` when stored (omitted when unset or when the till
+ *   account has no username).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(

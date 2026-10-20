@@ -263,6 +263,31 @@ describe('shop kind 0', () => {
     expect(identity.profileName).toBe('Roastery');
   });
 
+  it('does not put an older name back over a rename that committed during the tick', async () => {
+    const ctx = await context([{ row: shopNote(uuid(1)) }]);
+    await tick(ctx);
+    await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+    const seen: string[] = [];
+    const racing = override<ShopIdentityStore>(ctx.shops, {
+      renameIfListed: async (note) => {
+        seen.push(note.place!.label!);
+        // A newer rename commits after this tick read the note.
+        await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Bakery' });
+        await ctx.shops.ensureListed(uuid(1), KEK);
+        return ctx.shops.renameIfListed(note);
+      },
+    });
+    await tick(ctx, ENV, { shopIdentities: racing });
+    expect(seen).toEqual(['Roastery']);
+    expect((await ctx.shops.getByMessageId(uuid(1)))?.profileName).toBe('Bakery');
+    // Unlisted before the next tick: the kind 0 keeps the newest name.
+    await ctx.messages.setShopAccount(uuid(1), null);
+    await tick(ctx);
+    const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+    const events = shopEvents(ctx, identity, 0);
+    expect(content(events.at(-1))).toMatchObject({ name: 'Bakery' });
+  });
+
   it('keeps the last listed name for an unlisted shop and uses Shop once it is hidden', async () => {
     const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
     await tick(ctx);

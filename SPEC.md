@@ -5050,7 +5050,7 @@ a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
 when a pin is stored; `address` is the structured postal address or JSON `null`;
 omitted when unset), optional `shopAccount`
 (`{ id, username, name }`) when a shop account is stored (omitted when
-unset), always-present `parentId` (JSON `null`
+unset or when the till account has no username), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from

@@ -1429,7 +1429,9 @@ async function shopKind0Args(
     };
   }
   if (shop.name !== identity.profileName) {
-    await shops.setProfileName(identity.messageId, shop.name);
+    // Conditional on this tick's snapshot: a newer rename that committed
+    // after the read above is not overwritten (S2 of docs/shop-identity.md).
+    await shops.renameIfListed(note);
   }
   const till = await deps.auth.getAccount(shop.tillAccountId);
   const lud16 =

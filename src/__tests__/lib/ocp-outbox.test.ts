@@ -85,7 +85,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     getByPubkey: vi.fn(),
     getNostrCiphertext: vi.fn(),
     listAll: vi.fn(),
-    setProfileName: vi.fn(),
+    renameIfListed: vi.fn(),
     listCandidates: vi.fn(),
     queueAllPlacePage: vi.fn(),
     claimPlaces: vi.fn(() => Promise.resolve([CLAIM])),
