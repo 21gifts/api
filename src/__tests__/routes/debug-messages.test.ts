@@ -919,8 +919,23 @@ describe('debugMessagesRoutes', () => {
 
   it('puts a restored live top-level shop pin', async () => {
     const store = new InMemoryMessageStore();
-    await store.create(forumRow({ text: 'Open #21GiftsShop' }));
-    await store.setPlace(HIDDEN_ID, { lat: 47.3, lng: 8.5, label: 'Stall' });
+    await store.create(
+      forumRow({
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+      }),
+    );
+    await store.setPlace(HIDDEN_ID, {
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
     const calls: Array<{ method: string; body: string }> = [];
     const mapPush: MapPush = {
@@ -948,8 +963,23 @@ describe('debugMessagesRoutes', () => {
 
   it('returns 204 on shop restore when mapPush is omitted', async () => {
     const store = new InMemoryMessageStore();
-    await store.create(forumRow({ text: 'Open #21GiftsShop' }));
-    await store.setPlace(HIDDEN_ID, { lat: 47.3, lng: 8.5, label: 'Stall' });
+    await store.create(
+      forumRow({
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+      }),
+    );
+    await store.setPlace(HIDDEN_ID, {
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
     const app = mount(store, 'secret');
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {

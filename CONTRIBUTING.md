@@ -111,6 +111,7 @@ api/
 │   │   ├── mention.ts        # @username marks stored on a note at send time
 │   │   ├── mention-query.ts  # normalised @ prefix for GET /mentions (does not store marks)
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
+│   │   ├── shop-place.ts     # Shop pin completeness (name, address, description)
 │   │   ├── ocp-place.ts      # Shop pin put, updated, and removed on the OpenCryptoPay map
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
@@ -272,6 +273,7 @@ api/
 │       │   ├── funding-reviewed-by-name.test.ts
 │       │   ├── push-mention.test.ts
 │       │   ├── video.test.ts
+│       │   ├── shop-place.test.ts
 │       │   ├── ocp-place.test.ts
 │       │   ├── nip05.test.ts
 │       │   ├── about-me.test.ts

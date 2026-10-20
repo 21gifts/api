@@ -3116,10 +3116,19 @@ test('Function: normalizePlace — PATCH /messages/:id/place refuses a bad place
   expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
   const pinned = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
-    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: ZURICH_SHOP_ADDRESS } },
   });
   expect(pinned.status()).toBe(200);
 });
+
+/** A complete shop address for pins in Zürich; a shop pin needs one. */
+const ZURICH_SHOP_ADDRESS = {
+  street: 'Bahnhofstrasse',
+  houseNumber: '1',
+  postalCode: '8001',
+  city: 'Zürich',
+  country: 'CH',
+};
 
 /**
  * A moderator whose About-me note is a shop note (`#21GiftsShop`). Saving About
@@ -3136,7 +3145,7 @@ async function moderatorShopNote(
   const { auth, id } = await pinSession(request, stamp, 'moderator');
   const saved = await request.put('/me/about', {
     headers: auth,
-    data: { text: 'My shop #21GiftsShop' },
+    data: { text: 'My shop sells coffee and bread for sats #21GiftsShop' },
   });
   expect(saved.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
@@ -3200,7 +3209,7 @@ test('Function: placesMatch — PATCH /messages/:id/place with the same place tw
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await request.patch(`/messages/${noteId}/place`, {
       headers: auth,
-      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: ZURICH_SHOP_ADDRESS } },
     });
     expect(res.status()).toBe(200);
   }
@@ -3220,7 +3229,20 @@ test('Function: placeCountryCode — a shop pinned in Manila is PH on the map an
   const { auth, noteId } = await moderatorShopNote(request, stamp);
   const pinned = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
-    data: { place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street' } },
+    data: {
+      place: {
+        lat: 14.5995,
+        lng: 120.9842,
+        label: 'Kenya Street',
+        address: {
+          street: 'Roxas Boulevard',
+          houseNumber: '1',
+          postalCode: '1000',
+          city: 'Manila',
+          country: 'PH',
+        },
+      },
+    },
   });
   expect(pinned.status()).toBe(200);
   const places = await request.get('/messages/places', { headers: auth });
