@@ -3809,9 +3809,11 @@ payment's open amount. Both refusals are checked under the locks of both
 account rows, before any write. When the survivor has a pending till
 charge (expired or not), the source's pending charges are deleted (below)
 and the merge goes on. The source's paid and closed shop payments move like
-every other row. Those charge rows are locked first
-(`SELECT id … ORDER BY id FOR UPDATE`), then their `pos_charge_invoice`
-rows and the charges are deleted by the locked ids; a concurrent
+every other row. All of the source's charge rows are locked first, then
+its shop payment rows, each in the order of their ids
+(`SELECT id … ORDER BY id FOR UPDATE`); then the pending charges are read
+and their `pos_charge_invoice` rows and the charges are deleted by those
+ids; a concurrent
 `recordInvoice` for such a charge waits on the lock and then fails, which
 the invoice routes log as `pos.invoice.record_failed`, and a later one
 records nothing (`not_open`). A database that

@@ -1785,8 +1785,9 @@ The implementing change adds:
   `other_payment`, and the in-process hash map that the two in-memory
   stores share on a memory boot;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
-  result, and the lock (`SELECT … FOR UPDATE`) and delete of a deleted
-  charge's row and its `pos_charge_invoice` rows;
+  result, the lock of all of the merged account's charge rows and then
+  its payment rows (`SELECT … ORDER BY id FOR UPDATE`), and the delete
+  of a deleted charge's row and its `pos_charge_invoice` rows;
 - the trimming of `canonicalGoalAmount` moved to a shared helper for
   the canonical decimal form, with the decimals as a parameter;
 - the `UUID` pattern of `src/lib/pos-store.ts` moved to a shared helper
