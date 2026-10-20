@@ -195,7 +195,8 @@ not, in the same loop and with the same rules as account profiles
   identities after it per pass (`ShopIdentityStore.listRound`, a keyset
   read on the index `shop_identity_key_order_idx`); when fewer rows follow
   the cursor, the store wraps with a second bounded read from the first
-  row. The worker never reads the whole table for a pass. The cursor moves
+  row. The round-robin page never reads the whole table; only the NIP-05
+  allocation below reads every identity. The cursor moves
   to every shop of the page before its visit, so up to 20 shops that keep
   failing cannot hold back the shops behind them. Every row of the page
   uses a slot, also a shop whose reads throw or whose content is unchanged
