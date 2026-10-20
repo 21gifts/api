@@ -26,7 +26,7 @@ import {
   type MessageInvoiceAttempt,
   type MessageStore,
 } from '@/lib/message-store';
-import { buildNostrJson } from '@/lib/nip05';
+import { buildNostrJson, listShopNip05Entries } from '@/lib/nip05';
 import { KIND0_BANNER_URL, KIND0_PICTURE_URL } from '@/lib/nostr/event';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -55,6 +55,12 @@ import { removeForumVideo } from '@/lib/video';
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
+
+// Pass-through spy: the shop kind 0 tests count and fail the NIP-05 allocation.
+vi.mock('@/lib/nip05', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nip05')>();
+  return { ...actual, listShopNip05Entries: vi.fn(actual.listShopNip05Entries) };
+});
 
 const mockedDecode = vi.mocked(decodeBolt11);
 
@@ -8156,6 +8162,76 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(local).toBe(`coffee-lab-${uuid(1).replace(/-/g, '').slice(0, 8)}`);
       expect(json.names[local]).toBe(identity.nostrPubkey);
       expect(json.names['coffee-lab']).not.toBe(identity.nostrPubkey);
+    });
+
+    it('allocates NIP-05 once per tick, only for a visited listed shop with a domain', async () => {
+      const allocate = vi.mocked(listShopNip05Entries);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      allocate.mockClear();
+      await tick(ctx);
+      expect(allocate).toHaveBeenCalledTimes(1);
+      const identity = (await ctx.shops.getByMessageId(uuid(2)))!;
+      expect(content(shopEvents(ctx, identity, 0)[0])['nip05']).toMatch(
+        /^coffee-lab-.+@21\.gifts$/,
+      );
+
+      allocate.mockClear();
+      const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+      const noDomain = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(noDomain, env);
+      expect(shopEvents(noDomain, (await noDomain.shops.getByMessageId(uuid(1)))!, 0)).toHaveLength(
+        1,
+      );
+
+      const unlisted = await context([{ row: shopNote(uuid(1)) }]);
+      await unlisted.shops.ensureListed(uuid(1), KEK);
+      await unlisted.messages.updateText(uuid(1), 'Only coffee here, no tag at all.');
+      await tick(unlisted);
+      const gone = (await unlisted.shops.getByMessageId(uuid(1)))!;
+      expect(content(shopEvents(unlisted, gone, 0)[0])['nip05']).toBeUndefined();
+      expect(allocate).not.toHaveBeenCalled();
+    });
+
+    it('skips shop kind 0 for a tick whose NIP-05 allocation fails, and the tick goes on', async () => {
+      const allocate = vi.mocked(listShopNip05Entries);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      const later: string[] = [];
+      const messages = override<InMemoryMessageStore>(ctx.messages, {
+        claimUnpublished: (limit, nowMs, leaseMs) => {
+          later.push('kind 1');
+          return ctx.messages.claimUnpublished(limit, nowMs, leaseMs);
+        },
+      });
+      const store = new InMemoryConversationStore();
+      const conversations = override<InMemoryConversationStore>(store, {
+        claimUnpublished: (limit, nowMs, leaseMs) => {
+          later.push('conversations');
+          return store.claimUnpublished(limit, nowMs, leaseMs);
+        },
+      });
+      allocate.mockClear();
+      allocate.mockRejectedValueOnce(new Error('db'));
+      await tick(ctx, ENV, { messages, conversations });
+      expect(allocate).toHaveBeenCalledTimes(1);
+      const shops = await ctx.shops.listAll();
+      for (const identity of shops) {
+        expect(shopEvents(ctx, identity, 0)).toHaveLength(0);
+        expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+      }
+      expect(later).toEqual(['kind 1', 'conversations']);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'nip05',
+        },
+      ]);
+      await tick(ctx);
+      for (const identity of shops) {
+        expect(String(content(shopEvents(ctx, identity, 0)[0])['nip05'])).toMatch(/@21\.gifts$/);
+      }
     });
 
     it('clears the cache on a nack and retries on the next tick', async () => {

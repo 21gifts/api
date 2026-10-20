@@ -90,11 +90,11 @@ function jsonError(text: string): string | null {
  * Whether a 400 is the answer of an OpenCryptoPay API that does not run
  * openCryptoPay/api#26 yet (`nostrPubkey` or `revision` not allowed).
  *
- * @param response - The 400 answer; its body is read.
+ * @param text - Body of the 400 answer.
  * @returns The fixed error text when it is such an answer, otherwise null.
  */
-async function oldApiError(response: Response): Promise<string | null> {
-  const error = jsonError(await bodyText(response));
+function oldApiError(text: string): string | null {
+  const error = jsonError(text);
   return error !== null && OCP_OLD_API_ERRORS.has(error) ? error : null;
 }
 
@@ -181,13 +181,17 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
       return;
     }
     if (response.status === 400) {
-      const error = await oldApiError(response);
+      const text = await bodyText(response);
+      const error = oldApiError(text);
       if (error !== null) {
         logEvent('ocp.place.deferred', { messageId, status: 400, error });
         return;
       }
-    }
-    if (response.status === 400) {
+      if (text === '') {
+        // As for 409: no readable answer is no verdict, retry at lease end.
+        logEvent('ocp.place.failed', { messageId, status: 400 });
+        return;
+      }
       logEvent('ocp.place.rejected', { messageId, status: 400 });
       await identities.finishPlace(claim, 'reject');
       return;
@@ -208,8 +212,10 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  * attempt follows when the lease ends; a 400 whose error says the field
  * `nostrPubkey` or `revision` is not allowed (an OpenCryptoPay API without
  * openCryptoPay/api#26) logs `ocp.place.deferred` and keeps the flag and the
- * claim, so the place is sent again when the lease ends; any other 400 or
- * another 409 logs `ocp.place.rejected` and clears the flag; anything else logs
+ * claim, so the place is sent again when the lease ends; a 400 whose body
+ * is empty or cannot be read logs `ocp.place.failed` and keeps the flag and
+ * the claim, like the empty 409; any other 400 or another 409 logs
+ * `ocp.place.rejected` and clears the flag; anything else logs
  * `ocp.place.failed` and keeps the flag until the lease ends.
  *
  * @param deps - Identities, messages and the map target.

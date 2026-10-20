@@ -1457,13 +1457,14 @@ interface ShopKind0Args {
  * account's `lud16` (only when the till account has a name, a username and a
  * non-empty Lightning address); a shop that is no longer listed keeps `profile_name`
  * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
- * and the `website`, without images, NIP-05 or `lud16`.
+ * and the `website`, without images, NIP-05 or `lud16`. `nip05Local` is
+ * only called for a listed shop and only when `domain` is set.
  */
 async function shopKind0Args(
   deps: NostrWorkerDeps,
   shops: ShopIdentityStore,
   identity: ShopIdentityRow,
-  nip05Locals: ReadonlyMap<string, string>,
+  nip05Local: (messageId: string) => Promise<string | undefined>,
   domain: string | null,
 ): Promise<ShopKind0Args> {
   const note = await deps.messages.getById(identity.messageId);
@@ -1481,6 +1482,8 @@ async function shopKind0Args(
       listed: false,
     };
   }
+  // Before any write, so a failing allocation leaves no side effect.
+  const local = domain === null ? undefined : await nip05Local(note.id);
   if (shop.name !== identity.profileName) {
     // Conditional on this tick's snapshot: a newer rename that committed
     // after the read above is not overwritten (S2 of docs/shop-identity.md).
@@ -1509,7 +1512,6 @@ async function shopKind0Args(
       }
     }
   }
-  const local = nip05Locals.get(note.id);
   return {
     name: shop.name,
     lud16,
@@ -1526,7 +1528,13 @@ async function shopKind0Args(
  * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
  * The `WORKER_BATCH` attempts per tick go round robin ({@link shopRound});
  * every visited shop counts, also one whose content is unchanged or whose
- * reads throw, so a tick reads at most `WORKER_BATCH` shops.
+ * reads throw, so a tick reads at most `WORKER_BATCH` shops, plus the NIP-05
+ * allocation ({@link listShopNip05Entries}, the same listed names as
+ * `/.well-known/nostr.json`). That allocation runs at most once per tick and
+ * only when a visited shop is listed and the NIP-05 domain is set. When it
+ * throws, the tick logs `nostr.profile.nack` with `reason: 'nip05'` for that
+ * shop and publishes no shop kind 0 until the next tick (never one without
+ * its NIP-05); the rest of the tick still runs.
  *
  * @param deps - Worker deps.
  * @param writeSet - Resolved write relays.
@@ -1541,13 +1549,19 @@ async function publishShopProfiles(
   const watermarks = shopCache(shopProfileWatermarks, shops);
   const urls = writeRelayUrls(writeSet);
   const domain = nip05Domain(deps.env);
-  const nip05Locals = new Map(
-    domain === null
-      ? []
-      : (await listShopNip05Entries(deps.auth, shops, deps.messages)).map(
-          (row) => [row.messageId, row.local] as const,
-        ),
-  );
+  let nip05Locals: Promise<ReadonlyMap<string, string>> | undefined;
+  let nip05Failed = false;
+  const nip05Local = async (messageId: string): Promise<string | undefined> => {
+    nip05Locals ??= listShopNip05Entries(deps.auth, shops, deps.messages).then(
+      (rows) => new Map(rows.map((row) => [row.messageId, row.local] as const)),
+    );
+    try {
+      return (await nip05Locals).get(messageId);
+    } catch (error) {
+      nip05Failed = true;
+      throw error;
+    }
+  };
   let attempted = 0;
   for (const identity of shopRound(await shops.listAll(), shopProfileCursors.get(shops))) {
     if (attempted >= WORKER_BATCH) break;
@@ -1558,7 +1572,7 @@ async function publishShopProfiles(
     advanceShopRound(shopProfileCursors, shops, identity);
     let reservation: Kind0Reservation | undefined;
     try {
-      const args = await shopKind0Args(deps, shops, identity, nip05Locals, domain);
+      const args = await shopKind0Args(deps, shops, identity, nip05Local, domain);
       const content = buildKind0Content(
         args.name,
         args.lud16,
@@ -1614,6 +1628,11 @@ async function publishShopProfiles(
       }
     } catch {
       if (cache.get(id) === reservation) cache.delete(id);
+      if (nip05Failed) {
+        // Every listed shop needs the allocation: stop kind 0 for this tick.
+        logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05' });
+        return;
+      }
       logEvent('nostr.profile.nack', { messageId: id });
     }
   }

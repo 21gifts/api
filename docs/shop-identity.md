@@ -195,7 +195,13 @@ not, in the same loop and with the same rules as account profiles
   wraps at the end, so up to 20 shops that keep failing cannot hold back the
   shops behind them. Kind 0 counts a shop before it reads the shop's fields,
   so a shop whose reads throw or whose content is unchanged uses a slot too
-  and a tick reads at most `WORKER_BATCH` shops, also during an outage;
+  and a tick reads at most `WORKER_BATCH` shops, also during an outage,
+  plus the NIP-05 allocation: the same listed names as
+  `/.well-known/nostr.json` (every account and every shop note), read at
+  most once per tick and only once a visited shop is listed and the NIP-05
+  domain is set. When that read fails, the tick logs `nostr.profile.nack`
+  with `reason: "nip05"`, publishes no shop kind 0 (never one without its
+  NIP-05) and goes on with kind 10002, kind 1 and conversations;
 - same `NOSTR_PUBLISH` and
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
   `wss://purplepag.es`;
@@ -518,7 +524,7 @@ Rules for every claim:
     before sending.
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker only releases the claim.
-  - 409 whose body is empty or cannot be read: no verdict. Log
+  - 400 or 409 whose body is empty or cannot be read: no verdict. Log
     `ocp.place.failed` with the message id and status, keep the flag and
     do not release the claim; the next attempt follows when the lease
     (`WORKER_LEASE_MS`) ends.
@@ -529,7 +535,7 @@ Rules for every claim:
     is sent again when the lease (`WORKER_LEASE_MS`, 60 s) ends, about once
     a minute. Its `DELETE` ignores unknown fields, so a `DELETE` succeeds
     there; should it answer the same 400, it is deferred the same way.
-  - Any other 400, or any other 409 with a readable body: log
+  - Any other 400 or 409 with a readable body: log
     `ocp.place.rejected` with the message id and clear the flag. It is sent
     again only after the next change.
   - Any other answer, a network error or a timeout (401 and 5xx included):

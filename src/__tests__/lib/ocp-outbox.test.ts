@@ -342,6 +342,30 @@ describe('runOcpPlaceOutboxPass', () => {
     expect(logged('ocp.place.rejected')).toEqual([]);
   });
 
+  it('keeps the flag and the claim until the lease ends when a 400 body is empty or cannot be read', async () => {
+    const broken = {
+      ok: false,
+      status: 400,
+      text: () => Promise.reject(new Error('stream')),
+    } as unknown as Response;
+    for (const answer of [() => broken, () => new Response('', { status: 400 })]) {
+      const messages = await messagesWith(shopNote());
+      const { push } = mapPush(answer);
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      // No verdict: no finish, no release, so the retry waits for the lease.
+      expect(ids.release).not.toHaveBeenCalled();
+      expect(ids.finishPlace).not.toHaveBeenCalled();
+      expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.place.failed')).toEqual([
+      expect.objectContaining({ messageId: ID, status: 400 }),
+      expect.objectContaining({ messageId: ID, status: 400 }),
+    ]);
+    expect(logged('ocp.place.rejected')).toEqual([]);
+    expect(logged('ocp.place.deferred')).toEqual([]);
+  });
+
   it('keeps the flag and logs ocp.place.failed on any other answer or error', async () => {
     const messages = await messagesWith(shopNote());
     for (const answer of [
