@@ -56,6 +56,11 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 | `received_fiat_eur`      | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
 | `received_fiat_php`      | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
 | `first_post_free`        | Boolean            | `boolean`                  | Yes      | –         | –                            |
+| `place_street`           | Free text          | `text`                     | Yes      | –         | –                            |
+| `place_house_number`     | Free text          | `text`                     | Yes      | –         | –                            |
+| `place_postal_code`      | Free text          | `text`                     | Yes      | –         | –                            |
+| `place_city`             | Free text          | `text`                     | Yes      | –         | –                            |
+| `place_country`          | Free text          | `text`                     | Yes      | –         | –                            |
 
 ## Indexes
 
