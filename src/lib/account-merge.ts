@@ -131,6 +131,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
          )`,
       accountParams,
     );
+    await tx.query(
+      `UPDATE message AS src
+       SET first_post_free = NULL
+       WHERE src.account_id = $1
+         AND src.first_post_free IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM message AS dst
+           WHERE dst.account_id = $2
+             AND dst.first_post_free IS TRUE
+         )`,
+      accountParams,
+    );
 
     const directMemberPair = `
       SELECT id FROM conversation
@@ -364,6 +376,21 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        )`,
       accountParams,
     );
+    await tx.query(
+      `DELETE FROM wallet_payment AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_payment AS dst
+           WHERE dst.account_id = $2 AND dst.payment_id = src.payment_id
+         )`,
+      accountParams,
+    );
+    // A payment between the two accounts would point at its own account after the merge.
+    await tx.query(
+      `UPDATE wallet_payment SET counterparty_account_id = NULL
+       WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
+      accountParams,
+    );
     await tx.query('DELETE FROM auth_session WHERE account_id = $1', [input.from]);
 
     const composite = await tx.query<{ constraint_name: string }>(
@@ -437,6 +464,7 @@ SET
     ELSE LEAST(survivor.wallet_backup_seen_at, source.wallet_backup_seen_at)
   END,
   forum_laws_dismissed = survivor.forum_laws_dismissed OR source.forum_laws_dismissed,
+  wallet_intro_seen = survivor.wallet_intro_seen OR source.wallet_intro_seen,
   locale = COALESCE(survivor.locale, source.locale),
   fiat = COALESCE(survivor.fiat, source.fiat)
 FROM account AS source

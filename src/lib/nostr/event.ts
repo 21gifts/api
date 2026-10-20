@@ -403,7 +403,7 @@ export interface Kind0ProfileContent {
   banner: string;
   /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
   picture: string;
-  /** LUD-16 when the account has a linked address. */
+  /** LUD-16 receiving address (verified in-app wallet) when the account has one. */
   lud16?: string;
   /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
   nip05?: string;
@@ -414,7 +414,7 @@ export interface Kind0ProfileContent {
 /**
  * Build kind:0 `content` JSON (no extra whitespace).
  *
- * Omit `lud16` when the account has no Lightning Address. `picture` is only
+ * Omit `lud16` when the account has no receiving address. `picture` is only
  * the profile-photo slot and `banner` is only the wide-image slot. Blank
  * values fall back to {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
  * The About me note photo is neither. `about` defaults to `21.gifts` and is
@@ -422,7 +422,7 @@ export interface Kind0ProfileContent {
  * host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
- * @param lightningAddress - Linked LUD-16, or `null`.
+ * @param lightningAddress - Address published as `lud16` (the account's receiving address), or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
@@ -468,7 +468,7 @@ export interface UnsignedKind0 {
  * Build an unsigned replaceable kind:0 profile event.
  *
  * @param name - Non-null display name.
- * @param lightningAddress - Linked LUD-16, or `null`.
+ * @param lightningAddress - Address published as `lud16` (the account's receiving address), or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
  * @param about - Kind:0 about text (profile note, or default `21.gifts`).

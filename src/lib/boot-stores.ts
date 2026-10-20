@@ -1,4 +1,5 @@
 import { openAuthStore } from '@/lib/auth/open-store';
+import type { MergeDb } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -22,6 +23,12 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import {
+  InMemoryFxSpotStore,
+  PostgresFxSpotStore,
+  migrateFxSpotSchema,
+  type FxSpotStore,
+} from '@/lib/fx-spot-store';
 import { migrateBannerSchema, PostgresBannerStore, type BannerStore } from '@/lib/banner-store';
 import { mapGiftQueryRow } from '@/lib/gift';
 import {
@@ -70,9 +77,27 @@ import {
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
   migrateDailyRosterSchema,
+  moveDailyRosterToWalletAddresses,
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
+import { resolveLnurlServerConfig, type LnurlServerConfig } from '@/lib/config';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
+import {
+  migrateSparkInvoiceSchema,
+  PostgresSparkInvoiceStore,
+  type SparkInvoiceStore,
+} from '@/lib/spark-invoice-store';
+import { migrateWalletSchema, PostgresWalletStore, type WalletStore } from '@/lib/wallet-store';
+import {
+  migrateLoginGateSchema,
+  PostgresLoginGateStore,
+  type LoginGateStore,
+} from '@/lib/login-gate-store';
+import {
+  migrateMemberEventSchema,
+  PostgresMemberEventStore,
+  type MemberEventStore,
+} from '@/lib/member-event-store';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -92,6 +117,8 @@ export interface BootStores {
   btcUsdRates: BtcUsdRateBook;
   /** USD→CHF/EUR/PHP rate book (memory when no SQL; Postgres otherwise). */
   fiatRates: FiatRateBook;
+  /** Last good BTC spot quote for `GET /fx/spot` (memory when no SQL; `btc_fiat_spot` otherwise). */
+  fxSpotStore: FxSpotStore;
   /**
    * Postgres-backed forum store, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -174,6 +201,28 @@ export interface BootStores {
    * The About me photo is neither slot.
    */
   bannerStore: BannerStore | undefined;
+  /**
+   * Postgres-backed issued Spark invoices, or `undefined` on a memory boot so
+   * the entry point keeps one in-memory store shared by HTTP and the Spark
+   * invoice worker.
+   */
+  sparkInvoiceStore: SparkInvoiceStore | undefined;
+  /**
+   * Postgres-backed wallet reports, or `undefined` when no SQL client was
+   * opened so `createApp` keeps the empty in-memory default.
+   */
+  walletStore: WalletStore | undefined;
+  /**
+   * Postgres-backed member interaction-log events, or `undefined` when no
+   * SQL client was opened so `createApp` keeps the empty in-memory default.
+   */
+  memberEventStore: MemberEventStore | undefined;
+  /**
+   * Postgres-backed login switch and allowlist (`app_setting`,
+   * `login_allowlist`), or `undefined` when no SQL client was opened so
+   * `createApp` keeps the empty in-memory default.
+   */
+  loginGateStore: LoginGateStore | undefined;
 }
 
 /** Optional boot wiring so tests never hit the network. */
@@ -192,6 +241,11 @@ export interface BootFxOptions {
   zapRelayUrls?: readonly string[];
   /** Per-relay timeout for the external-zapper backfill. */
   nostrRelayTimeoutMs?: number;
+  /**
+   * LNURL server config for the roster wallet move, or `null` when off
+   * (default: `resolveLnurlServerConfig(process.env)`).
+   */
+  lnurlServer?: LnurlServerConfig | null;
 }
 
 /**
@@ -211,24 +265,31 @@ export interface BootFxOptions {
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, a fresh
  * {@link InMemoryDailyRosterStore} as `rosterStore`, `bannerStore: undefined`,
+ * `sparkInvoiceStore: undefined`,
+ * `walletStore: undefined`,
+ * `memberEventStore: undefined`,
+ * `loginGateStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `nostrKek: undefined`,
- * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
+ * an empty {@link InMemoryBtcUsdStore}, an empty {@link InMemoryFiatStore}, and an
+ * empty {@link InMemoryFxSpotStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
- * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
+ * `openAuthStore`) then the FX tables (`btc_usd_daily`, `usd_fiat_daily`, then
+ * `btc_fiat_spot`, served by {@link PostgresFxSpotStore}),
  * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
- * `pos_charge` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, and `db_change` schemas (notification after push, trust
+ * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
+ * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
- * `migrateBannerSchema`, then `diagnostic_event` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
+ * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
  * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore},
- * {@link PostgresDailyRosterStore}, and
- * {@link PostgresBannerStore}, parses
+ * {@link PostgresDailyRosterStore}, {@link PostgresBannerStore},
+ * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
+ * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
  * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
@@ -242,7 +303,9 @@ export interface BootFxOptions {
  * undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
- * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore}, and {@link PostgresDebugDbStore}.
+ * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
+ * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
+ * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` then
  * `migrateDailyRosterSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
@@ -250,13 +313,20 @@ export interface BootFxOptions {
  * and `daily_roster_entry`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
- * `migrateDbChangeSchema`, so `diagnostic_event` is migrated between
- * `account_image` and `db_change` and `trg_db_change` attaches to `api_log`,
- * `account_image`, and `diagnostic_event`.
+ * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
+ * `migrateMemberEventSchema`, then `migrateLoginGateSchema`, then `migrateDbChangeSchema`, so
+ * `diagnostic_event`, `spark_invoice`, wallet tables, `member_event`,
+ * `app_setting`, and `login_allowlist` are migrated between `account_image`
+ * and `db_change` and `trg_db_change` attaches to `api_log`,
+ * `account_image`, `diagnostic_event`, `spark_invoice`,
+ * `wallet_balance_snapshot`, `wallet_payment`, `member_event`,
+ * `app_setting`, and `login_allowlist`.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional network, URL, timeout, and clock overrides for tests.
+ * @param transactions - Optional transaction port; the SQL funding store uses
+ *   it for the locked admission count (`admitWithinPlaces`).
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
  *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
@@ -266,6 +336,7 @@ export async function openBootStores(
   databaseUrl: string | undefined,
   createClient?: (url: string) => SqlClient,
   fx?: BootFxOptions,
+  transactions?: MergeDb,
 ): Promise<BootStores> {
   let sqlClient: SqlClient | undefined;
   const authStore = await openAuthStore(
@@ -284,6 +355,7 @@ export async function openBootStores(
       giftRecorder: undefined,
       btcUsdRates: new InMemoryBtcUsdStore(),
       fiatRates: new InMemoryFiatStore(),
+      fxSpotStore: new InMemoryFxSpotStore(),
       messageStore: undefined,
       translationStore: undefined,
       conversationTranslationStore: undefined,
@@ -302,6 +374,10 @@ export async function openBootStores(
       listDbChange: undefined,
       debugDbStore: undefined,
       bannerStore: undefined,
+      sparkInvoiceStore: undefined,
+      walletStore: undefined,
+      memberEventStore: undefined,
+      loginGateStore: undefined,
     };
   }
   const sql: SqlClient = sqlClient;
@@ -310,6 +386,7 @@ export async function openBootStores(
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateFiatSchema(sqlClient);
+  await migrateFxSpotSchema(sqlClient);
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
   await migrateContactSchema(sqlClient);
@@ -329,6 +406,10 @@ export async function openBootStores(
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
+  await migrateSparkInvoiceSchema(sqlClient);
+  await migrateWalletSchema(sqlClient);
+  await migrateMemberEventSchema(sqlClient);
+  await migrateLoginGateSchema(sqlClient);
   const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
@@ -347,6 +428,12 @@ export async function openBootStores(
   });
   await migrateDbChangeSchema(sqlClient);
   await repairGiftKind(sqlClient);
+  const rosterLnurlServer =
+    fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
+  if (rosterLnurlServer !== null) {
+    const move = await moveDailyRosterToWalletAddresses(sqlClient, rosterLnurlServer.host);
+    logEvent('daily_roster.wallet_move', { moved: move.moved, removed: move.removed });
+  }
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
@@ -375,12 +462,13 @@ export async function openBootStores(
         amount_sats: number | string | bigint;
         recipient_wos_user: string;
         kind: string;
+        description: string;
         fiat_usd: string | number | null;
         fiat_chf: string | number | null;
         fiat_eur: string | number | null;
         fiat_php: string | number | null;
       }>(
-        `SELECT paid_at, amount_sats, recipient_wos_user, kind,
+        `SELECT paid_at, amount_sats, recipient_wos_user, kind, description,
                 fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf,
                 fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php
              FROM gift
@@ -488,7 +576,7 @@ export async function openBootStores(
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);
-  const fundingStore = new PostgresFundingStore(sqlClient);
+  const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient);
   return {
     authStore,
@@ -496,6 +584,7 @@ export async function openBootStores(
     giftRecorder,
     btcUsdRates,
     fiatRates,
+    fxSpotStore: new PostgresFxSpotStore(sqlClient),
     messageStore,
     translationStore,
     conversationTranslationStore,
@@ -514,5 +603,9 @@ export async function openBootStores(
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
     bannerStore: new PostgresBannerStore(sqlClient),
+    sparkInvoiceStore: new PostgresSparkInvoiceStore(sqlClient),
+    walletStore: new PostgresWalletStore(sqlClient),
+    memberEventStore: new PostgresMemberEventStore(sqlClient),
+    loginGateStore: new PostgresLoginGateStore(sqlClient),
   };
 }

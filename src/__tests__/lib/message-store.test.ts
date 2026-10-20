@@ -96,7 +96,19 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(114);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(118);
+    expect(MESSAGE_SCHEMA_SQL.at(-7)).toMatch(
+      /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.at(-8)).toMatch(
+      /CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx\s+ON message_invoice \(payment_hash, created_at DESC, id DESC\)\s+WHERE result = 'ok'/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean/,
+    );
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx\s+ON message \(account_id\)\s+WHERE first_post_free IS TRUE/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lat double precision/i,
     );
@@ -179,6 +191,9 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(zapPaymentDdl).toMatch(/created_at timestamptz NOT NULL/);
     expect(zapPaymentDdl).not.toMatch(/REFERENCES message/);
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(/CREATE TABLE IF NOT EXISTS message_invoice/i);
+    expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
+      /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
+    );
     expect(MESSAGE_SCHEMA_SQL.join('\n')).toMatch(
       /CREATE TABLE IF NOT EXISTS message_translation/i,
     );
@@ -418,6 +433,53 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore([EARLY]).accountHasLivePost('other', null)).toBe(false);
   });
 
+  it('accountHasTopLevelPost counts live and hidden top-level rows but not replies or the profile note', async () => {
+    expect(await new InMemoryMessageStore().accountHasTopLevelPost('acc', null)).toBe(false);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('acc', null)).toBe(true);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('acc', 'a')).toBe(false);
+    expect(await new InMemoryMessageStore([EARLY]).accountHasTopLevelPost('other', null)).toBe(
+      false,
+    );
+    const replyOnly = new InMemoryMessageStore([{ ...EARLY, parentId: 'parent' }]);
+    expect(await replyOnly.accountHasTopLevelPost('acc', null)).toBe(false);
+    const hidden = new InMemoryMessageStore([EARLY]);
+    await hidden.markDeleted('a', new Date('2026-08-05T00:00:00.000Z'), 'mod');
+    expect(await hidden.accountHasTopLevelPost('acc', null)).toBe(true);
+  });
+
+  it('createFirstPost stores the first top-level note and refuses the next', async () => {
+    const store = new InMemoryMessageStore();
+    const created = await store.createFirstPost(EARLY, null);
+    expect(created?.id).toBe('a');
+    expect(await store.createFirstPost(LATE, null)).toBeUndefined();
+    expect(await store.getById('b')).toBeUndefined();
+  });
+
+  it('createFirstPost ignores the excluded profile note', async () => {
+    const store = new InMemoryMessageStore([EARLY]);
+    expect((await store.createFirstPost(LATE, 'a'))?.id).toBe('b');
+  });
+
+  it('createFirstPost lets one of two concurrent calls through', async () => {
+    const store = new InMemoryMessageStore();
+    const results = await Promise.all([
+      store.createFirstPost(EARLY, null),
+      store.createFirstPost(LATE, null),
+    ]);
+    expect(results.filter((row) => row !== undefined)).toHaveLength(1);
+    expect(await store.createFirstPost({ ...LATE, id: 'c' }, null)).toBeUndefined();
+  });
+
+  it('createFirstPost rejects a reply or a row without an account', async () => {
+    const store = new InMemoryMessageStore();
+    await expect(store.createFirstPost({ ...EARLY, parentId: 'p' }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+    await expect(store.createFirstPost({ ...EARLY, accountId: null }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+  });
+
   it('accountHasLiveTopLevelPost is false on an empty store', async () => {
     expect(await new InMemoryMessageStore().accountHasLiveTopLevelPost('acc', null)).toBe(false);
   });
@@ -466,6 +528,46 @@ describe('InMemoryMessageStore', () => {
     expect(await new InMemoryMessageStore([EARLY]).accountHasLiveTopLevelPost('other', null)).toBe(
       false,
     );
+  });
+
+  it('accountHasWelcomeGift finds a platform Welcome reply under the account notes', async () => {
+    const store = new InMemoryMessageStore();
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    await store.create({ ...EARLY, id: 'note', accountId: 'acc' });
+    await store.create({ ...EARLY, id: 'other-note', accountId: 'other' });
+    await store.create({
+      ...EARLY,
+      id: 'daily',
+      accountId: 'plat',
+      parentId: 'note',
+      text: 'daily',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'stranger',
+      accountId: 'x',
+      parentId: 'note',
+      text: 'Welcome',
+    });
+    await store.create({
+      ...EARLY,
+      id: 'elsewhere',
+      accountId: 'plat',
+      parentId: 'other-note',
+      text: 'Welcome',
+    });
+    await store.create({ ...EARLY, id: 'top', accountId: 'plat', text: 'Welcome' });
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    await store.create({
+      ...EARLY,
+      id: 'welcome',
+      accountId: 'plat',
+      parentId: 'note',
+      text: ' Welcome ',
+    });
+    await store.markDeleted('welcome', new Date(9), 'plat');
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(true);
+    expect(await store.accountHasWelcomeGift('other', 'plat')).toBe(true);
   });
 
   it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
@@ -791,6 +893,247 @@ describe('InMemoryMessageStore', () => {
     expect(listed[0]?.replyCount).toBe(2);
   });
 
+  it('assigns a member shop to the assignee and not to its author', async () => {
+    const assigned = {
+      ...EARLY,
+      id: 'shop-assigned',
+      accountId: 'author',
+      text: 'Visit #21GiftsShop',
+      shopAccount: { id: 'assignee', username: 'ada', name: 'Ada' },
+    };
+    const store = new InMemoryMessageStore([assigned]);
+    expect(await store.countShopsByAccount('assignee')).toBe(1);
+    expect(await store.countShopsByAccount('author')).toBe(0);
+    expect((await store.listShopsByAccount('assignee', 10)).map((row) => row.id)).toEqual([
+      'shop-assigned',
+    ]);
+    expect(await store.listShopsByAccount('author', 10)).toEqual([]);
+  });
+
+  it('assigns null and omitted shop accounts to the author only', async () => {
+    const store = new InMemoryMessageStore([
+      { ...LATE, id: 'shop-null', accountId: 'author', text: '#21GiftsShop!', shopAccount: null },
+      { ...TIE_LOW, id: 'shop-omitted', accountId: 'author', text: '#21giftsshop' },
+    ]);
+    expect(await store.countShopsByAccount('author')).toBe(2);
+    expect(await store.countShopsByAccount('assignee')).toBe(0);
+    expect((await store.listShopsByAccount('author', 10)).map((row) => row.id)).toEqual([
+      'shop-omitted',
+      'shop-null',
+    ]);
+    expect(await store.listShopsByAccount('assignee', 10)).toEqual([]);
+  });
+
+  it('member shops enforce live top-level hashtag-token matching', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-end', text: 'Open #21GiftsShop' },
+      { ...LATE, id: 'shop-punctuation', text: '#21GiftsShop.' },
+      { ...TIE_LOW, id: 'shop-case', text: '#21giftsshop' },
+      {
+        ...TIE_HIGH,
+        id: 'shop-deleted',
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...TIE_HIGH, id: 'shop-reply', text: '#21GiftsShop', parentId: 'shop-end' },
+      { ...TIE_HIGH, id: 'shop-prefix', text: '#21GiftsShopper' },
+      { ...TIE_HIGH, id: 'shop-no-hash', text: '21GiftsShop' },
+    ]);
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+    expect((await store.listShopsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'shop-case',
+      'shop-punctuation',
+      'shop-end',
+    ]);
+  });
+
+  it('lists member shops newest-first with an id tie, limit, and attributed replyCount', async () => {
+    const zapper = 'ab'.repeat(32);
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'shop-early', text: '#21GiftsShop' },
+      { ...LATE, id: 'shop-late', text: '#21GiftsShop' },
+      { ...TIE_LOW, id: 'shop-m', text: '#21GiftsShop' },
+      { ...TIE_HIGH, id: 'shop-z', text: '#21GiftsShop' },
+      { ...LATE, id: 'reply-member', parentId: 'shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'reply-zapper',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'reply-external',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: 'cd'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'reply-orphan',
+        parentId: 'shop-z',
+        accountId: null,
+        authorPubkey: null,
+        text: 'orphan child',
+      },
+      {
+        ...LATE,
+        id: 'reply-deleted',
+        parentId: 'shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-shop', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listShopsByAccount('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual(['shop-z', 'shop-m', 'shop-late', 'shop-early']);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByAccount('acc', 1)).map((row) => row.id)).toEqual(['shop-z']);
+  });
+
+  it('counts member credits only for the author and ignores non-exact repayable flags', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-own', goalRepayable: true },
+      {
+        ...LATE,
+        id: 'credit-other',
+        accountId: 'other',
+        goalRepayable: true,
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...TIE_LOW,
+        id: 'credit-assigned',
+        goalRepayable: true,
+        shopAccount: { id: 'assignee', username: 'bob', name: 'Bob' },
+      },
+      { ...TIE_HIGH, id: 'ask-not-repayable', goalSats: 100 },
+      {
+        ...TIE_HIGH,
+        id: 'ask-string-true',
+        goalSats: 50,
+        goalRepayable: 'true' as unknown as true,
+      },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(2);
+    expect(await store.countCreditsByAccount('other')).toBe(1);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-assigned',
+      'credit-own',
+    ]);
+    expect(await store.listCreditsByAccount('assignee', 10)).toEqual([]);
+  });
+
+  it('member credits exclude deleted notes and replies even when repayable', async () => {
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-live', goalRepayable: true },
+      {
+        ...LATE,
+        id: 'credit-deleted',
+        goalRepayable: true,
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      { ...TIE_HIGH, id: 'credit-reply', parentId: 'credit-live', goalRepayable: true },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(1);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-live',
+    ]);
+  });
+
+  it('member credits include unfunded and still-live repaid notes', async () => {
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'credit-unfunded',
+        goalRepayable: true,
+        goalSats: 100,
+        sats: 0,
+        goalFundedAt: null,
+      },
+      {
+        ...LATE,
+        id: 'credit-repaid-funded-at',
+        goalRepayable: true,
+        goalSats: 100,
+        sats: 40,
+        goalFundedAt: new Date('2026-09-01T00:00:00.000Z'),
+      },
+      {
+        ...TIE_LOW,
+        id: 'credit-repaid-sats',
+        goalRepayable: true,
+        goalSats: 50,
+        sats: 50,
+      },
+    ]);
+    expect(await store.countCreditsByAccount('acc')).toBe(3);
+    expect((await store.listCreditsByAccount('acc', 10)).map((row) => row.id)).toEqual([
+      'credit-repaid-sats',
+      'credit-repaid-funded-at',
+      'credit-unfunded',
+    ]);
+  });
+
+  it('lists member credits newest-first with an id tie, limit, and attributed replyCount', async () => {
+    const zapper = 'ab'.repeat(32);
+    const store = new InMemoryMessageStore([
+      { ...EARLY, id: 'credit-early', goalRepayable: true },
+      { ...LATE, id: 'credit-late', goalRepayable: true },
+      { ...TIE_LOW, id: 'credit-m', goalRepayable: true },
+      { ...TIE_HIGH, id: 'credit-z', goalRepayable: true },
+      { ...LATE, id: 'reply-member', parentId: 'credit-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'reply-zapper',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'reply-external',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: 'cd'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'reply-orphan',
+        parentId: 'credit-z',
+        accountId: null,
+        authorPubkey: null,
+        text: 'orphan child',
+      },
+      {
+        ...LATE,
+        id: 'reply-deleted',
+        parentId: 'credit-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-credit', new Date('2026-09-18T10:00:00Z'));
+    const listed = await store.listCreditsByAccount('acc', 10);
+    expect(listed.map((row) => row.id)).toEqual([
+      'credit-z',
+      'credit-m',
+      'credit-late',
+      'credit-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listCreditsByAccount('acc', 1)).map((row) => row.id)).toEqual(['credit-z']);
+  });
+
   it('listPostsByPubkey is case-insensitive and excludes account and deleted rows', async () => {
     const pubkey = 'aa'.repeat(32);
     const store = new InMemoryMessageStore();
@@ -917,6 +1260,240 @@ describe('InMemoryMessageStore', () => {
     const listed = await store.listPostsByPubkey(pubkey, 10);
     expect(listed).toHaveLength(1);
     expect(listed[0]?.replyCount).toBe(2);
+  });
+
+  it('counts and lists only unassigned external shops for a case-insensitive pubkey', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const zapper = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external-shop-early',
+        accountId: null,
+        authorPubkey: pubkey.toUpperCase(),
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-late',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21giftsshop!',
+        shopAccount: null,
+      },
+      {
+        ...TIE_LOW,
+        id: 'external-shop-m',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      {
+        ...TIE_HIGH,
+        id: 'external-shop-z',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-shop', authorPubkey: pubkey, text: '#21GiftsShop' },
+      {
+        ...LATE,
+        id: 'assigned-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...LATE,
+        id: 'null-pubkey-shop',
+        accountId: null,
+        authorPubkey: null,
+        text: '#21GiftsShop',
+      },
+      {
+        ...LATE,
+        id: 'deleted-external-shop',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-reply',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShop',
+        parentId: 'external-shop-early',
+      },
+      {
+        ...LATE,
+        id: 'external-shop-prefix',
+        accountId: null,
+        authorPubkey: pubkey,
+        text: '#21GiftsShopper',
+      },
+      {
+        ...LATE,
+        id: 'other-pubkey-shop',
+        accountId: null,
+        authorPubkey: 'dd'.repeat(32),
+        text: '#21GiftsShop',
+      },
+      { ...LATE, id: 'member-child', parentId: 'external-shop-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'zapper-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'external-child',
+        parentId: 'external-shop-z',
+        accountId: null,
+        authorPubkey: 'cc'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'deleted-child',
+        parentId: 'external-shop-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-external-shop', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(4);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 10);
+    expect(listed.map((item) => item.id)).toEqual([
+      'external-shop-z',
+      'external-shop-m',
+      'external-shop-late',
+      'external-shop-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listShopsByPubkey(pubkey, 1)).map((item) => item.id)).toEqual([
+      'external-shop-z',
+    ]);
+  });
+
+  it('counts and lists external credits for a case-insensitive pubkey without shop assignment', async () => {
+    const pubkey = 'aa'.repeat(32);
+    const zapper = 'bb'.repeat(32);
+    const store = new InMemoryMessageStore([
+      {
+        ...EARLY,
+        id: 'external-credit-early',
+        accountId: null,
+        authorPubkey: pubkey.toUpperCase(),
+        goalRepayable: true,
+      },
+      {
+        ...LATE,
+        id: 'external-credit-late',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        shopAccount: { id: 'acc', username: 'ada', name: 'Ada' },
+      },
+      {
+        ...TIE_LOW,
+        id: 'external-credit-m',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      },
+      {
+        ...TIE_HIGH,
+        id: 'external-credit-z',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+      },
+      { ...LATE, id: 'member-credit', authorPubkey: pubkey, goalRepayable: true },
+      {
+        ...LATE,
+        id: 'null-pubkey-credit',
+        accountId: null,
+        authorPubkey: null,
+        goalRepayable: true,
+      },
+      {
+        ...LATE,
+        id: 'deleted-external-credit',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+      {
+        ...LATE,
+        id: 'external-credit-reply',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalRepayable: true,
+        parentId: 'external-credit-early',
+      },
+      {
+        ...LATE,
+        id: 'external-ask',
+        accountId: null,
+        authorPubkey: pubkey,
+        goalSats: 100,
+      },
+      {
+        ...LATE,
+        id: 'other-pubkey-credit',
+        accountId: null,
+        authorPubkey: 'dd'.repeat(32),
+        goalRepayable: true,
+      },
+      { ...LATE, id: 'member-child', parentId: 'external-credit-z', text: 'member child' },
+      {
+        ...LATE,
+        id: 'zapper-child',
+        parentId: 'external-credit-z',
+        accountId: null,
+        authorPubkey: zapper.toUpperCase(),
+        text: 'zapper child',
+      },
+      {
+        ...LATE,
+        id: 'external-child',
+        parentId: 'external-credit-z',
+        accountId: null,
+        authorPubkey: 'cc'.repeat(32),
+        text: 'external child',
+      },
+      {
+        ...LATE,
+        id: 'deleted-child',
+        parentId: 'external-credit-z',
+        text: 'deleted child',
+        deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+        deletedBy: 'staff',
+      },
+    ]);
+    await store.recordZapper(zapper, 'receipt-external-credit', new Date('2026-09-18T10:00:00Z'));
+    expect(await store.countCreditsByPubkey(pubkey.toUpperCase())).toBe(4);
+    const listed = await store.listCreditsByPubkey(pubkey.toUpperCase(), 10);
+    expect(listed.map((item) => item.id)).toEqual([
+      'external-credit-z',
+      'external-credit-m',
+      'external-credit-late',
+      'external-credit-early',
+    ]);
+    expect(listed[0]?.replyCount).toBe(2);
+    expect((await store.listCreditsByPubkey(pubkey, 1)).map((item) => item.id)).toEqual([
+      'external-credit-z',
+    ]);
   });
 
   it('listRepliesByPubkey is empty until the pubkey is a recorded zapper', async () => {
@@ -2105,6 +2682,69 @@ describe('InMemoryMessageStore', () => {
     expect(unpaidTagged.map((row) => row.id)).toEqual(['shop', 'shop-case']);
   });
 
+  it('listFeed filters by the country of the pin and pages only matches', async () => {
+    const manila = {
+      ...EARLY,
+      id: 'manila',
+      text: 'Manila #21GiftsShop',
+      createdAt: new Date('2026-08-10T00:00:00.000Z'),
+      place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street', address: null },
+    };
+    const nairobi = {
+      ...EARLY,
+      id: 'nairobi',
+      text: 'Nairobi #21GiftsShop',
+      createdAt: new Date('2026-08-09T00:00:00.000Z'),
+      place: { lat: -1.2921, lng: 36.8219, label: null, address: null },
+    };
+    const cebu = {
+      ...EARLY,
+      id: 'cebu',
+      text: 'Cebu #21GiftsShop',
+      createdAt: new Date('2026-08-08T00:00:00.000Z'),
+      place: { lat: 10.293, lng: 123.902, label: null, address: null },
+    };
+    const sea = {
+      ...EARLY,
+      id: 'sea',
+      text: 'Boat #21GiftsShop',
+      createdAt: new Date('2026-08-07T00:00:00.000Z'),
+      place: { lat: 30, lng: -40, label: null, address: null },
+    };
+    const unpinned = {
+      ...EARLY,
+      id: 'unpinned',
+      text: 'No pin #21GiftsShop',
+      createdAt: new Date('2026-08-06T00:00:00.000Z'),
+      place: null,
+    };
+    const store = new InMemoryMessageStore([manila, nairobi, cebu, sea, unpinned]);
+    const emptyStaff = new Set<string>();
+    const query = { limit: 10, mode: 'all' as const, cursor: null, staffAccountIds: emptyStaff };
+    expect((await store.listFeed({ ...query, country: 'PH' })).map((row) => row.id)).toEqual([
+      'manila',
+      'cebu',
+    ]);
+    expect((await store.listFeed({ ...query, country: 'KE' })).map((row) => row.id)).toEqual([
+      'nairobi',
+    ]);
+    expect((await store.listFeed({ ...query, country: 'CH' })).map((row) => row.id)).toEqual([]);
+    expect(
+      (await store.listFeed({ ...query, country: '', hashtag: '21GiftsShop' })).map(
+        (row) => row.id,
+      ),
+    ).toEqual(['manila', 'nairobi', 'cebu', 'sea', 'unpinned']);
+    const firstPage = await store.listFeed({ ...query, limit: 1, country: 'PH' });
+    expect(firstPage.map((row) => row.id)).toEqual(['manila']);
+    const secondPage = await store.listFeed({
+      ...query,
+      limit: 1,
+      country: 'PH',
+      cursor: { k: 't', c: manila.createdAt, i: 'manila' },
+    });
+    expect(secondPage.map((row) => row.id)).toEqual(['cebu']);
+  });
+
   it('listFeed replyCount includes zapper children like listLatest', async () => {
     const store = new InMemoryMessageStore([EARLY]);
     await store.create({
@@ -3287,6 +3927,14 @@ describe('InMemoryMessageStore', () => {
     expect(await store.claimZapPayment(paymentHash.toLowerCase(), 'receipt-b', at)).toBe(false);
   });
 
+  it('zapPaymentReceiptId reads the claim owner without claiming', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = 'CD'.repeat(32);
+    expect(await store.zapPaymentReceiptId(paymentHash)).toBeUndefined();
+    expect(await store.claimZapPayment(paymentHash, 'receipt-a', new Date(0))).toBe(true);
+    expect(await store.zapPaymentReceiptId(paymentHash.toLowerCase())).toBe('receipt-a');
+  });
+
   it('lists zap receipts by event id descending', async () => {
     const store = new InMemoryMessageStore();
     await store.create(EARLY);
@@ -3363,6 +4011,7 @@ describe('InMemoryMessageStore', () => {
       ...invoice,
       id: 'inv-newer',
       createdAt: new Date('2026-08-29T12:00:00.000Z'),
+      heart: true,
     });
     await store.recordInvoiceAttempt(invoice);
     const olderSameTime: MessageInvoiceAttempt = {
@@ -3374,6 +4023,7 @@ describe('InMemoryMessageStore', () => {
     };
     await store.recordInvoiceAttempt(olderSameTime);
     expect((await store.findOkInvoiceByPaymentHash('11'.repeat(32)))?.id).toBe('inv-newer');
+    expect((await store.findOkInvoiceByPaymentHash('11'.repeat(32)))?.heart).toBe(true);
     expect((await store.findOkInvoiceByPr('lnbc21'))?.id).toBe('inv-newer');
     expect(await store.findOkInvoiceByPaymentHash('22'.repeat(32))).toBeUndefined();
     expect(await store.findOkInvoiceByPr('lnbc-miss')).toBeUndefined();
@@ -4717,6 +5367,7 @@ describe('InMemoryMessageStore', () => {
     await store.recordInvoiceAttempt(tieHigh);
     const listed = await store.listInvoiceAttempts(2);
     expect(listed.map((row) => row.id)).toEqual(['inv-z', 'inv-b']);
+    expect(listed[0]?.heart).toBe(false);
     if (listed[0] !== undefined) {
       listed[0].result = 'bad_body';
       listed[0].zapRequest = { mutated: true };
@@ -4986,6 +5637,36 @@ describe('InMemoryMessageStore', () => {
     expect(listed.find((row) => row.id === 'hidden')?.deletedAt).not.toBeNull();
     expect(listed.some((row) => row.accountId === 'other')).toBe(false);
   });
+
+  it('heartStats skips a claimed heart whose message id is not requested', async () => {
+    const store = new InMemoryMessageStore();
+    const paymentHash = '44'.repeat(32);
+    await store.claimZapPayment(
+      paymentHash,
+      'receipt-heart-note-a',
+      new Date('2026-08-28T12:00:00.000Z'),
+    );
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart-note-a',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      messageId: 'note-a',
+      payerAccountId: 'payer',
+      authorAccountId: 'a',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'hi' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc21',
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    expect(await store.heartStats(['note-b'], null)).toEqual(new Map());
+  });
 });
 
 describe('PostgresMessageStore', () => {
@@ -5177,6 +5858,131 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[2]?.params).toEqual(['acc', 'prof']);
   });
 
+  it('accountHasTopLevelPost queries live and hidden top-level rows for the account', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasTopLevelPost('acc', null)).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+    expect(sql.queries[0]?.text).toMatch(/\$2::uuid IS NULL OR id <> \$2::uuid/);
+    expect(sql.queries[0]?.params).toEqual(['acc', null]);
+    sql.nextRows = [{ '?column?': 1 }];
+    expect(await store.accountHasTopLevelPost('acc', 'prof')).toBe(true);
+    expect(sql.queries[1]?.params).toEqual(['acc', 'prof']);
+  });
+
+  it('createFirstPost inserts a flagged row only when the account has no top-level note', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [{ id: 'a' }];
+    const created = await store.createFirstPost(EARLY, 'prof');
+    expect(created).toMatchObject({ id: 'a', accountId: 'acc', place: null, photoCount: 0 });
+    const insert = sql.queries[0];
+    expect(insert?.text).toMatch(/INSERT INTO message/);
+    expect(insert?.text).toMatch(/first_post_free/);
+    expect(insert?.text).toMatch(/TRUE\s+WHERE NOT EXISTS/);
+    expect(insert?.text).not.toMatch(/deleted_at/);
+    expect(insert?.text).toMatch(/\$25::uuid IS NULL OR id <> \$25::uuid/);
+    expect(insert?.text).toMatch(/ON CONFLICT DO NOTHING/);
+    expect(insert?.params).toEqual([
+      'a',
+      'acc',
+      'Ada',
+      'first',
+      EARLY.createdAt,
+      'pending',
+      0,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      '[]',
+      'prof',
+    ]);
+    sql.nextRows = [];
+    expect(await store.createFirstPost(LATE, null)).toBeUndefined();
+  });
+
+  it('createFirstPost binds goal, place, shop, and mentions', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [{ id: 'a' }];
+    await store.createFirstPost(
+      {
+        ...EARLY,
+        goalSats: 2100,
+        goalCurrency: 'USD',
+        goalAmount: '10',
+        goalAmountUsd: '10.00',
+        goalAmountChf: '9.00',
+        goalAmountEur: '9.50',
+        goalAmountPhp: '560.00',
+        goalRepayable: true,
+        goalTermDays: 30,
+        place: { lat: 1, lng: 2, label: 'Here', address: null },
+        shopAccount: { id: 'shop', username: 'luna', name: 'Luna' },
+        mentions: [{ accountId: 'bob', username: 'bob' }],
+      },
+      null,
+    );
+    expect(sql.queries[0]?.params.slice(10, 25)).toEqual([
+      2100,
+      1,
+      2,
+      'Here',
+      'USD',
+      '10',
+      '10.00',
+      '9.00',
+      '9.50',
+      '560.00',
+      true,
+      30,
+      'shop',
+      JSON.stringify([{ accountId: 'bob', username: 'bob' }]),
+      null,
+    ]);
+  });
+
+  it('createFirstPost rejects a reply or a row without an account', async () => {
+    const store = new PostgresMessageStore(new MockSql());
+    await expect(store.createFirstPost({ ...EARLY, parentId: 'p' }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+    await expect(store.createFirstPost({ ...EARLY, accountId: null }, null)).rejects.toThrow(
+      'first post must be a top-level note of an account',
+    );
+  });
+
+  it('accountHasWelcomeGift joins platform Welcome replies to the account notes', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    sql.nextRows = [];
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(false);
+    expect(sql.queries[0]?.text).toMatch(/JOIN message parent ON parent\.id = reply\.parent_id/);
+    expect(sql.queries[0]?.text).toMatch(/reply\.account_id = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/parent\.account_id = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/trim\(reply\.text\) = 'Welcome'/);
+    expect(sql.queries[0]?.text).not.toMatch(/deleted_at/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'plat']);
+    sql.nextRows = [{ found: 1 }];
+    expect(await store.accountHasWelcomeGift('acc', 'plat')).toBe(true);
+  });
+
   it('latestLiveTopLevelMediaId returns the newest live top-level media id', async () => {
     const sql = new MockSql();
     const store = new PostgresMessageStore(sql);
@@ -5287,6 +6093,127 @@ describe('PostgresMessageStore', () => {
     expect(listedNull[0]?.replyCount).toBe(0);
   });
 
+  it('countShopsByAccount selects live owned hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByAccount('acc')).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByAccount('acc')).toBe(3);
+  });
+
+  it('listShopsByAccount selects live owned hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /shop_account_id = \$1 OR \(shop_account_id IS NULL AND account_id = \$1\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual(['acc', '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByAccount('acc', 10))[0]?.replyCount).toBe(0);
+  });
+
+  it('countCreditsByAccount selects live authored repayable notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    expect(sql.queries[0]?.text).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual(['acc']);
+    sql.nextRows = [{ credit_count: null }];
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countCreditsByAccount('acc')).toBe(0);
+    sql.nextRows = [{ credit_count: '3' }];
+    expect(await store.countCreditsByAccount('acc')).toBe(3);
+  });
+
+  it('listCreditsByAccount selects live authored repayable notes with replyCount', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'credit-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listCreditsByAccount('acc', 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id = \$1/);
+    const creditWhere = sql.queries[0]?.text.split(/FROM message\s+WHERE/)[1] ?? '';
+    expect(creditWhere).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'credit-2',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listCreditsByAccount('acc', 10))[0]?.replyCount).toBe(0);
+  });
+
   it('listRepliesByAccount selects live replies for the account newest-first', async () => {
     const sql = new MockSql();
     sql.nextRows = [
@@ -5379,6 +6306,137 @@ describe('PostgresMessageStore', () => {
     ];
     const listedNull = await store.listPostsByPubkey(pubkey, 10);
     expect(listedNull[0]?.replyCount).toBe(0);
+  });
+
+  it('countShopsByPubkey selects live unassigned external hashtag-token notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    expect(await store.countShopsByPubkey(pubkey.toUpperCase())).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)']);
+    sql.nextRows = [{ shop_count: null }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{ shop_count: '3' }];
+    expect(await store.countShopsByPubkey(pubkey)).toBe(3);
+  });
+
+  it('listShopsByPubkey selects live unassigned external hashtag-token notes with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listShopsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/shop_account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\* \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$3/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, '#21giftsshop([^a-z0-9_]|$)', 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'shop-2',
+        account_id: null,
+        name: 'Ada',
+        text: '#21GiftsShop',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listShopsByPubkey(pubkey, 10))[0]?.replyCount).toBe(0);
+  });
+
+  it('countCreditsByPubkey selects live external repayable notes and maps empty counts', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    const pubkey = 'aa'.repeat(32);
+    expect(await store.countCreditsByPubkey(pubkey.toUpperCase())).toBe(0);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    expect(sql.queries[0]?.text).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual([pubkey]);
+    sql.nextRows = [{ credit_count: null }];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{}];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(0);
+    sql.nextRows = [{ credit_count: '3' }];
+    expect(await store.countCreditsByPubkey(pubkey)).toBe(3);
+  });
+
+  it('listCreditsByPubkey selects live external repayable notes with replyCount', async () => {
+    const sql = new MockSql();
+    const pubkey = 'aa'.repeat(32);
+    sql.nextRows = [
+      {
+        id: 'credit-1',
+        account_id: null,
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        reply_count: '2',
+      },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const listed = await store.listCreditsByPubkey(pubkey.toUpperCase(), 50);
+    expect(sql.queries[0]?.text).toMatch(/parent_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/deleted_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/goal_repayable IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/account_id IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/author_pubkey IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(author_pubkey\) = \$1/);
+    const creditWhere = sql.queries[0]?.text.split(/FROM message\s+WHERE/)[1] ?? '';
+    expect(creditWhere).not.toMatch(/shop_account_id/);
+    expect(sql.queries[0]?.text).not.toMatch(/text ~\*/);
+    expect(sql.queries[0]?.text).toMatch(
+      /child\.account_id IS NOT NULL\s+OR \(child\.author_pubkey IS NOT NULL\s+AND EXISTS \(\s+SELECT 1 FROM nostr_zapper z\s+WHERE z\.pubkey = lower\(child\.author_pubkey\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC/);
+    expect(sql.queries[0]?.text).toMatch(/LIMIT \$2/);
+    expect(sql.queries[0]?.params).toEqual([pubkey, 50]);
+    expect(listed[0]?.replyCount).toBe(2);
+    sql.nextRows = [
+      {
+        id: 'credit-2',
+        account_id: null,
+        name: 'Ada',
+        text: 'loan',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+      },
+    ];
+    expect((await store.listCreditsByPubkey(pubkey, 10))[0]?.replyCount).toBe(0);
   });
 
   it('listRepliesByPubkey selects live zapper replies for the pubkey newest-first', async () => {
@@ -7187,6 +8245,102 @@ describe('PostgresMessageStore', () => {
     expect(mapped[0]?.replyCount).toBe(0);
   });
 
+  it('listFeed SQL reads pinned rows in batches of 200 and keeps those in the country', async () => {
+    const sql = new MockSql();
+    const at = new Date('2026-08-10T00:00:00.000Z');
+    const row = (id: string, lat: number | string, lng: number | string, sats = 0) => ({
+      id,
+      account_id: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      created_at: at,
+      has_photo: false,
+      event_id: null,
+      nostr_publish_state: 'pending',
+      sats,
+      place_lat: lat,
+      place_lng: lng,
+      place_label: null,
+      reply_count: 0,
+    });
+    // A full batch of 199 Kenyan pins and one in Manila, then a short batch with Cebu.
+    const kenya = Array.from({ length: 199 }, (_, index) => row(`ke-${index}`, -1.2921, 36.8219));
+    sql.queryQueue = [
+      [row('manila', '14.5995', '120.9842'), ...kenya],
+      [row('sea', 30, -40), row('cebu', 10.293, 123.902)],
+    ];
+    const store = new PostgresMessageStore(sql);
+    const staff = new Set<string>();
+    const page = await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      hashtag: '21GiftsShop',
+      country: 'PH',
+    });
+    expect(page.map((item) => item.id)).toEqual(['manila', 'cebu']);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[0]?.text).toMatch(/place_lat IS NOT NULL AND place_lng IS NOT NULL/);
+    expect(sql.queries[0]?.text).toMatch(/text ~\*/);
+    expect(sql.queries[0]?.params).toEqual([200, '#21giftsshop([^a-z0-9_]|$)']);
+    // The second batch continues after the last row of the first one.
+    expect(sql.queries[1]?.text).toMatch(/\(created_at, id\) < \(\$3, \$4\)/);
+    expect(sql.queries[1]?.params.slice(2)).toEqual([at, 'ke-198']);
+
+    // A page that fills inside a batch stops reading.
+    sql.queryQueue = [[row('nairobi', -1.2921, 36.8219, 7), row('lamu', -2.27, 40.9, 5)]];
+    const before = sql.queries.length;
+    const popular = await store.listFeed({
+      limit: 1,
+      mode: 'popular',
+      cursor: null,
+      staffAccountIds: staff,
+      country: 'KE',
+    });
+    expect(popular.map((item) => item.id)).toEqual(['nairobi']);
+    expect(sql.queries).toHaveLength(before + 1);
+
+    // A popular batch continues with the sats of its last row; an empty batch ends the page.
+    const manilaSats = Array.from({ length: 200 }, (_, index) =>
+      row(`ph-${index}`, 14.5995, 120.9842, 5),
+    );
+    sql.queryQueue = [manilaSats, []];
+    expect(
+      await store.listFeed({
+        limit: 2,
+        mode: 'popular',
+        cursor: null,
+        staffAccountIds: staff,
+        country: 'KE',
+      }),
+    ).toEqual([]);
+    const last = sql.queries[sql.queries.length - 1];
+    expect(last?.text).toMatch(/\(sats, created_at, id\) < \(\$2, \$3, \$4\)/);
+    expect(last?.params.slice(1)).toEqual([5, at, 'ph-199']);
+
+    sql.queryQueue = [[row('unpinned', '', '')]];
+    expect(
+      await store.listFeed({
+        limit: 2,
+        mode: 'all',
+        cursor: null,
+        staffAccountIds: staff,
+        country: 'PH',
+      }),
+    ).toEqual([]);
+    await store.listFeed({
+      limit: 2,
+      mode: 'all',
+      cursor: null,
+      staffAccountIds: staff,
+      country: '',
+    });
+    const plain = sql.queries[sql.queries.length - 1];
+    expect(plain?.text).not.toMatch(/place_lat IS NOT NULL/);
+    expect(plain?.params).toEqual([2]);
+  });
+
   it('listFeed SQL filters by hashtag token', async () => {
     const sql = new MockSql();
     sql.nextRows = [];
@@ -7915,6 +9069,17 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual([paymentHash.toLowerCase()]);
   });
 
+  it('zapPaymentReceiptId selects the owner of the lowercased hash', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.zapPaymentReceiptId('CD'.repeat(32))).toBeUndefined();
+    sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
+    expect(await store.zapPaymentReceiptId('CD'.repeat(32))).toBe('receipt-a');
+    expect(sql.executes).toEqual([]);
+    expect(sql.queries[0]?.text).toMatch(/SELECT receipt_event_id\s+FROM nostr_zap_payment/);
+    expect(sql.queries[0]?.params).toEqual(['cd'.repeat(32)]);
+  });
+
   it('claimZapPayment rejects a receipt id that does not own the hash', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ receipt_event_id: 'receipt-a' }];
@@ -8514,6 +9679,33 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes[0]?.params[14]).toBe(true);
     expect(typeof sql.executes[0]?.params[15]).not.toBe('string');
     expect(sql.executes[0]?.params[15]).toStrictEqual(row.lnurlResponse);
+    expect(sql.executes[0]?.text).toMatch(/heart/);
+    expect(sql.executes[0]?.params[23]).toBe(false);
+  });
+
+  it('recordInvoiceAttempt binds heart true', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    await store.recordInvoiceAttempt({
+      id: 'inv-heart',
+      createdAt: new Date('2026-08-28T00:00:00.000Z'),
+      messageId: 'm1',
+      payerAccountId: 'payer',
+      authorAccountId: 'author',
+      amountSats: 1,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc1',
+      paymentHash: 'aa'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+      heart: true,
+    });
+    expect(sql.executes[0]?.params[23]).toBe(true);
   });
 
   it('recordInvoiceAttempt binds null zap_request when the attempt has none', async () => {
@@ -8571,7 +9763,14 @@ describe('PostgresMessageStore', () => {
       amountPhp: '280.00',
     };
     await store.recordInvoiceAttempt(row);
-    expect(sql.executes[0]?.params.slice(18)).toEqual([true, '5.00', '4.00', '4.50', '280.00']);
+    expect(sql.executes[0]?.params.slice(18)).toEqual([
+      true,
+      '5.00',
+      '4.00',
+      '4.50',
+      '280.00',
+      false,
+    ]);
   });
 
   it('listInvoiceAttempts maps Date/string created_at, numeric amount, and JSON zap_request', async () => {
@@ -8909,7 +10108,34 @@ describe('PostgresMessageStore', () => {
     const store = new PostgresMessageStore(sql);
     const found = await store.findOkInvoiceByPaymentHash('11'.repeat(32));
     expect(sql.queries[0]?.text).toMatch(/payment_hash = \$1 AND result = 'ok'/);
+    expect(sql.queries[0]?.text).toMatch(/heart/);
     expect(found?.id).toBe('inv-1');
+    expect(found?.heart).toBe(false);
+    const heartSql = new MockSql();
+    heartSql.nextRows = [
+      {
+        id: 'inv-1',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        message_id: 'm1',
+        payer_account_id: 'payer',
+        author_account_id: 'auth',
+        amount_sats: 21,
+        lightning_address: null,
+        zap_request: null,
+        result: 'ok',
+        http_status: 200,
+        pr: 'lnbc',
+        payment_hash: '11'.repeat(32),
+        description: null,
+        description_hash: null,
+        is_nip57_invoice: true,
+        lnurl_response: null,
+        heart: true,
+      },
+    ];
+    const heartStore = new PostgresMessageStore(heartSql);
+    const foundHeart = await heartStore.findOkInvoiceByPaymentHash('11'.repeat(32));
+    expect(foundHeart?.heart).toBe(true);
     expect(
       await new PostgresMessageStore(new MockSql()).findOkInvoiceByPaymentHash('x'),
     ).toBeUndefined();
@@ -9647,6 +10873,49 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toContain('WHERE account_id = $1');
     expect(sql.queries[0]?.text).not.toContain('LIMIT');
     expect(sql.queries[0]?.params).toEqual(['acc']);
+  });
+
+  it('heartStats returns an empty map without querying for an empty id list', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.heartStats([], null)).toEqual(new Map());
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('heartStats returns an empty map without querying when no id is a uuid', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.heartStats(['not-a-uuid'], null)).toEqual(new Map());
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('heartStats maps heart_count and hearted from query rows', async () => {
+    const sql = new MockSql();
+    const first = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const second = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const third = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
+    const fourth = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    sql.nextRows = [
+      { message_id: first, heart_count: '2', hearted: 't' },
+      { message_id: second, heart_count: 1, hearted: true },
+      { message_id: third, heart_count: 1, hearted: false },
+      { message_id: fourth, heart_count: 1, hearted: null },
+    ];
+    const store = new PostgresMessageStore(sql);
+    const stats = await store.heartStats([first, second, third, fourth], 'acc');
+    expect(stats).toEqual(
+      new Map([
+        [first, { heartCount: 2, hearted: true }],
+        [second, { heartCount: 1, hearted: true }],
+        [third, { heartCount: 1, hearted: false }],
+        [fourth, { heartCount: 1, hearted: false }],
+      ]),
+    );
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/message_invoice/);
+    expect(sql.queries[0]?.text).toMatch(/nostr_zap_payment/);
+    expect(sql.queries[0]?.params[0]).not.toBeUndefined();
+    expect(sql.queries[0]?.params[1]).toBe('acc');
   });
 });
 

@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   DAILY_ROSTER_ADDRESS_LISTED,
@@ -13,7 +14,11 @@ import {
   DAILY_ROSTER_SCHEMA_SQL,
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
+  DAILY_ROSTER_WALLET_MOVE_SQL,
+  DAILY_ROSTER_RENAME_SQL,
   migrateDailyRosterSchema,
+  moveDailyRosterToWalletAddresses,
+  setUsernameWithRoster,
 } from '@/lib/daily-roster-store';
 
 class MockSql implements SqlClient {
@@ -68,6 +73,242 @@ describe('migrateDailyRosterSchema', () => {
     const sql = new MockSql();
     await migrateDailyRosterSchema(sql);
     expect(sql.executes.map((item) => item.text)).toEqual([...DAILY_ROSTER_SCHEMA_SQL]);
+  });
+});
+
+describe('moveDailyRosterToWalletAddresses', () => {
+  it('runs the move as one statement with the lower-cased host and returns its counts', async () => {
+    const sql = new MockSql();
+    sql.queryResults.push([{ moved: 2, removed: '4' }]);
+
+    expect(await moveDailyRosterToWalletAddresses(sql, '21.Gifts')).toEqual({
+      moved: 2,
+      removed: 4,
+    });
+    expect(sql.queries).toEqual([{ text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] }]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('reads zero counts when the statement returns no row', async () => {
+    const sql = new MockSql();
+
+    expect(await moveDailyRosterToWalletAddresses(sql, '21.gifts')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('keeps the move in one statement that joins the legacy address and ranks per bucket', () => {
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/^WITH src AS \(/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(
+      /LEFT JOIN account a\s+ON lower\(btrim\(a\.lightning_address\)\) = lower\(btrim\(e\.address\)\)/,
+    );
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/PARTITION BY bucket, target/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/DELETE FROM daily_roster_entry d/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).toMatch(/UPDATE daily_roster_entry u/);
+    expect(DAILY_ROSTER_WALLET_MOVE_SQL).not.toMatch(/;/);
+  });
+});
+
+interface UsernameRosterLock {
+  username: string | null;
+  spark_pubkey_verified_at: Date | string | null;
+}
+
+interface UsernameRosterFake {
+  lock?: UsernameRosterLock | null;
+  taken?: boolean;
+  rename?: { moved: number | string; removed: number | string };
+  beginError?: unknown;
+  queryError?: unknown;
+  renameError?: unknown;
+}
+
+function usernameRosterDb(options: UsernameRosterFake = {}): {
+  db: MergeDb;
+  queries: { text: string; params: readonly unknown[] }[];
+} {
+  const queries: { text: string; params: readonly unknown[] }[] = [];
+  const db: MergeDb = {
+    async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
+      if (options.beginError !== undefined) {
+        throw options.beginError;
+      }
+      return run({
+        async query<R>(text: string, params: readonly unknown[] = []): Promise<R[]> {
+          queries.push({ text, params });
+          if (options.queryError !== undefined && text.includes('UPDATE account SET username')) {
+            throw options.queryError;
+          }
+          if (text.includes('FOR UPDATE')) {
+            if (options.lock === null || options.lock === undefined) {
+              return [] as unknown as R[];
+            }
+            return [options.lock] as unknown as R[];
+          }
+          if (text.includes('id <> $1')) {
+            return (options.taken === true ? [{ 1: 1 }] : []) as unknown as R[];
+          }
+          if (text.includes('UPDATE account SET username')) {
+            return [] as unknown as R[];
+          }
+          if (text === DAILY_ROSTER_RENAME_SQL) {
+            if (options.renameError !== undefined) {
+              throw options.renameError;
+            }
+            return (options.rename === undefined ? [] : [options.rename]) as unknown as R[];
+          }
+          throw new Error(`unexpected query: ${text}`);
+        },
+      });
+    },
+  };
+  return { db, queries };
+}
+
+describe('setUsernameWithRoster', () => {
+  const accountId = 'acc-1';
+  const host = 'Example.TEST';
+
+  it('rethrows a unique violation that does not come from the username write', async () => {
+    const { db } = usernameRosterDb({ beginError: uniqueError() });
+    await expect(setUsernameWithRoster(db, accountId, 'ada', host)).rejects.toMatchObject({
+      code: '23505',
+    });
+  });
+
+  it('rethrows a roster unique violation instead of reporting the username taken', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      renameError: uniqueError(),
+    });
+    await expect(setUsernameWithRoster(db, accountId, 'newname', host)).rejects.toMatchObject({
+      code: '23505',
+    });
+  });
+
+  it('rethrows a non-unique error from the username write', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      queryError: new Error('write failed'),
+    });
+    await expect(setUsernameWithRoster(db, accountId, 'newname', host)).rejects.toThrow(
+      'write failed',
+    );
+  });
+
+  it('rethrows a non-unique begin error', async () => {
+    const { db } = usernameRosterDb({ beginError: new Error('connection lost') });
+    await expect(setUsernameWithRoster(db, accountId, 'ada', host)).rejects.toThrow(
+      'connection lost',
+    );
+  });
+
+  it('maps a unique-violation from the username UPDATE to taken', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      queryError: uniqueError(),
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+    expect(queries.some((item) => item.text.includes('UPDATE account SET username'))).toBe(true);
+  });
+
+  it('returns missing when the locked account row is absent', async () => {
+    const { db, queries } = usernameRosterDb({ lock: null });
+    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+    expect(queries).toHaveLength(1);
+    expect(queries[0]?.text).toMatch(/FOR UPDATE/);
+  });
+
+  it('returns frozen when spark_pubkey_verified_at is set', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'ada', spark_pubkey_verified_at: '2026-01-01T00:00:00.000Z' },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'ada2', host)).toEqual({
+      ok: false,
+      reason: 'frozen',
+    });
+    expect(queries).toHaveLength(1);
+  });
+
+  it('returns taken when another account already holds the username', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+      taken: true,
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'takenname', host)).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+    expect(queries).toHaveLength(2);
+    expect(queries[1]?.params).toEqual([accountId, 'takenname']);
+  });
+
+  it('updates the username and moves roster rows in separate statements', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: 'OldName', spark_pubkey_verified_at: null },
+      rename: { moved: '2', removed: '1' },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: 'OldName',
+      moved: 2,
+      removed: 1,
+    });
+    expect(queries.map((item) => item.text)).toEqual([
+      'SELECT username, spark_pubkey_verified_at FROM account WHERE id = $1 FOR UPDATE',
+      `SELECT 1 FROM account WHERE id <> $1 AND username IS NOT NULL
+          AND lower(trim(username)) = lower(trim($2)) LIMIT 1`,
+      'UPDATE account SET username = $2 WHERE id = $1',
+      DAILY_ROSTER_RENAME_SQL,
+    ]);
+    expect(queries[3]?.params).toEqual(['oldname@example.test', 'newname@example.test']);
+  });
+
+  it('reads zero rename counts when the rename statement returns no row', async () => {
+    const { db } = usernameRosterDb({
+      lock: { username: 'oldname', spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: 'oldname',
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('skips the roster move when the previous username is null', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: null, spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'newname', host)).toEqual({
+      ok: true,
+      previous: null,
+      moved: 0,
+      removed: 0,
+    });
+    expect(queries).toHaveLength(3);
+    expect(queries.some((item) => item.text === DAILY_ROSTER_RENAME_SQL)).toBe(false);
+  });
+
+  it('skips the roster move when the username is unchanged after normalize', async () => {
+    const { db, queries } = usernameRosterDb({
+      lock: { username: '  Ada  ', spark_pubkey_verified_at: null },
+    });
+    expect(await setUsernameWithRoster(db, accountId, 'ada', host)).toEqual({
+      ok: true,
+      previous: '  Ada  ',
+      moved: 0,
+      removed: 0,
+    });
+    expect(queries).toHaveLength(3);
+    expect(queries.some((item) => item.text === DAILY_ROSTER_RENAME_SQL)).toBe(false);
   });
 });
 
@@ -266,6 +507,90 @@ describe('InMemoryDailyRosterStore', () => {
       }),
     ).rejects.toMatchObject({ status: 400, error: DAILY_ROSTER_ADDRESS_LISTED });
     expect(await other.get()).toEqual(EMPTY);
+  });
+
+  it('renames a row in both buckets', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    await store.addModerator('old@example.com', 3);
+    expect(await store.hasBeenWritten()).toBe(true);
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 2,
+      removed: 0,
+    });
+    expect(await store.get()).toMatchObject({
+      recipients: [{ address: 'new@example.com', amountUsd: 2 }],
+      moderators: [{ address: 'new@example.com', amountUsd: 3 }],
+    });
+    expect(await store.hasBeenWritten()).toBe(true);
+  });
+
+  it('deletes the old row when the target is already in a bucket and moves the other', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    await store.addRecipient('new@example.com', 9);
+    await store.addModerator('old@example.com', 3);
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 1,
+      removed: 1,
+    });
+    expect(await store.get()).toMatchObject({
+      recipients: [{ address: 'new@example.com', amountUsd: 9 }],
+      moderators: [{ address: 'new@example.com', amountUsd: 3 }],
+    });
+  });
+
+  it('returns zeros and leaves the document when no row matches', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('kept@example.com', 2);
+    const before = await store.get();
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.get()).toEqual(before);
+  });
+
+  it('returns zeros for the same address after normalization', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('ada@example.com', 2);
+    const before = await store.get();
+    expect(await store.renameAddress(' ADA@Example.COM ', 'ada@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.get()).toEqual(before);
+  });
+
+  it('refuses a blank from or to', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await expect(store.renameAddress('   ', 'new@example.com')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    await expect(store.renameAddress('old@example.com', ' \t ')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+  });
+
+  it('normalizes case and whitespace on both addresses', async () => {
+    const store = new InMemoryDailyRosterStore();
+    await store.addRecipient('old@example.com', 2);
+    expect(await store.renameAddress('  OLD@Example.COM  ', '  New@Example.COM  ')).toEqual({
+      moved: 1,
+      removed: 0,
+    });
+    expect((await store.get()).recipients).toEqual([{ address: 'new@example.com', amountUsd: 2 }]);
+  });
+
+  it('does not mark a never-written store written when renaming misses', async () => {
+    const store = new InMemoryDailyRosterStore();
+    expect(await store.renameAddress('old@example.com', 'new@example.com')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(await store.hasBeenWritten()).toBe(false);
   });
 });
 
@@ -509,5 +834,61 @@ describe('PostgresDailyRosterStore', () => {
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO daily_roster_entry/);
     expect(sql.executes[0]?.params).toEqual(['mod@example.com', 3, 'moderator']);
+  });
+
+  it('runs renameAddress as one statement with normalized addresses and parses counts', async () => {
+    const sql = new MockSql();
+    sql.queryResults.push([{ moved: 2, removed: '1' }]);
+    const store = new PostgresDailyRosterStore(sql);
+
+    expect(await store.renameAddress('  OLD@Example.COM  ', ' New@Example.COM ')).toEqual({
+      moved: 2,
+      removed: 1,
+    });
+    expect(sql.queries).toEqual([
+      { text: DAILY_ROSTER_RENAME_SQL, params: ['old@example.com', 'new@example.com'] },
+    ]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('reads zero rename counts when the statement returns no row', async () => {
+    const sql = new MockSql();
+    expect(await new PostgresDailyRosterStore(sql).renameAddress('old@a', 'new@a')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+  });
+
+  it('skips the rename statement when the addresses match after normalization', async () => {
+    const sql = new MockSql();
+    const store = new PostgresDailyRosterStore(sql);
+    expect(await store.renameAddress(' ADA@Host ', 'ada@host')).toEqual({
+      moved: 0,
+      removed: 0,
+    });
+    expect(sql.queries).toEqual([]);
+    expect(sql.executes).toEqual([]);
+  });
+
+  it('refuses a blank from or to before querying', async () => {
+    const sql = new MockSql();
+    const store = new PostgresDailyRosterStore(sql);
+    await expect(store.renameAddress('  ', 'new@a')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    await expect(store.renameAddress('old@a', '')).rejects.toMatchObject({
+      status: 400,
+      error: DAILY_ROSTER_INVALID_ADDRESS,
+    });
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('keeps the rename in one statement that deletes conflicts then rewrites', () => {
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/^WITH removed AS \(/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/DELETE FROM daily_roster_entry d/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/UPDATE daily_roster_entry u/);
+    expect(DAILY_ROSTER_RENAME_SQL).toMatch(/SET address = \$2/);
+    expect(DAILY_ROSTER_RENAME_SQL).not.toMatch(/;/);
   });
 });

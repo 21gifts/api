@@ -184,7 +184,7 @@ describe('GET /gifts/stats', () => {
         '2026-06-01': '100000',
         '2026-06-03': '100000',
       }),
-    }).request('/gifts/stats?recipient=alice@walletofsatoshi.com');
+    }).request('/gifts/stats?recipient=alice@example.com');
     expect(res.status).toBe(200);
     const body = (await res.json()) as { giftCount: number; totalSats: number };
     expect(body.giftCount).toBe(1);

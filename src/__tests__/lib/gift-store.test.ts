@@ -44,8 +44,17 @@ describe('InMemoryGiftStore', () => {
         direction: 'outbound',
         recipientWosUser: 'b',
         paidAt: EARLY.paidAt.toISOString(),
+        description: null,
       }),
     );
+  });
+
+  it('dumps the stored description when the row carries it', async () => {
+    const welcome = { ...EARLY, kind: 'welcome' as const, description: '21gifts welcome' };
+    const [listed] = await new InMemoryGiftStore([welcome]).listDebug(10);
+    expect(listed?.description).toBe('21gifts welcome');
+    const [queried] = await new QueryGiftStore(async () => [welcome]).listDebug(10);
+    expect(queried?.description).toBe('21gifts welcome');
   });
 });
 
@@ -54,7 +63,9 @@ describe('QueryGiftStore', () => {
     const store = new QueryGiftStore(async () => [LATE]);
     expect(await store.listOutbound()).toEqual([LATE]);
     const dumped = await store.listDebug(10);
-    expect(dumped[0]).toEqual(expect.objectContaining({ amountSats: 1, direction: 'outbound' }));
+    expect(dumped[0]).toEqual(
+      expect.objectContaining({ amountSats: 1, direction: 'outbound', description: null }),
+    );
   });
 
   it('uses the injected full-column debug query', async () => {

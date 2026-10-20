@@ -4,23 +4,28 @@ import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
 import {
-  applicationPauseExempt,
+  countRoundAdmissions,
+  CURRENT_GRANT_ROUND,
   effectiveStatus,
+  grantPlaces,
   serializeOwnerFunding,
   utcDayKey,
   type FundingGrant,
+  type GrantRound,
   type OwnerFundingJson,
 } from '@/lib/funding';
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
 import { isOperatorBearer } from '@/lib/debug-token';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
+import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
+import type { LnurlServerConfig } from '@/lib/config';
 import {
   DAILY_ROSTER_INVALID_ADDRESS,
   DAILY_ROSTER_INVALID_COMMENT,
@@ -33,25 +38,22 @@ import {
   DailyRosterRequestError,
   normalizeDailyRosterComment,
   withRecipientIdentities,
-  type DailyRoster,
   type DailyRosterDocument,
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
-import {
-  DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-  InMemoryDailyRosterStore,
-  type DailyRosterStore,
-} from '@/lib/daily-roster-store';
+import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
+import { accountByReceivingAddress, receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
- * Member apply (paused: 403, no write, except joey-rosima, vincent, and
- * jewel-bacolbas), staff review, and the initiator/founder daily payout roster.
- * Bearer session required. Grant routes are independent of `account.role`
+ * Member apply (open), staff review with a per-round admission limit, the
+ * public places count, and the initiator/founder daily payout roster.
+ * Bearer session required except the public `GET /funding/places`. Grant
+ * routes are independent of `account.role`
  * except `basis` cannot apply or be granted. Roster routes use
  * {@link canEditDailyPayoutRoster} (initiator or founder only).
  */
@@ -64,6 +66,8 @@ export interface FundingRouteDeps {
   fundingStore: FundingStore;
   /** Forum persistence for staff application detail. */
   messageStore: MessageStore;
+  /** LNURL server; omitted when off. A verified wallet makes an applicant's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
   /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
@@ -79,17 +83,16 @@ export interface FundingRouteDeps {
   spendApiToken?: string;
   /** Outbound gifts. Daily rows mark a payout day collected. */
   gifts: GiftStore;
-  /**
-   * When omitted or true, new applications are paused except joey-rosima,
-   * vincent, and jewel-bacolbas. Pass false to run the stored apply walk
-   * for every caller.
-   */
-  applicationsPaused?: boolean;
+  /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
+  grantRound?: GrantRound;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
   debugToken?: string;
   /** Operator read-only token. Unset → no operator read on the staff GET routes. */
   debugReadToken?: string;
 }
+
+/** 409 body when every place of the round is taken. */
+export const GRANT_PLACES_FULL_ERROR = 'All grant places are taken';
 
 /** Body schema for staff POSTs that target one account. */
 const accountIdBody = z.object({ accountId: z.string() });
@@ -134,7 +137,16 @@ function rawAddressIsString(raw: unknown): boolean {
 
 /** Logged roster action. Never a comment or a Lightning address. */
 type DailyRosterAction =
-  'read' | 'comment' | 'payments' | 'recipient-add' | 'recipient-update' | 'recipient-delete';
+  | 'read'
+  | 'comment'
+  | 'payments'
+  | 'recipient-add'
+  | 'recipient-update'
+  | 'recipient-delete'
+  | 'moderator-add'
+  | 'moderator-update'
+  | 'moderator-delete'
+  | 'moderator-payments';
 
 type RosterStop = { error: string; status: 401 | 403 };
 
@@ -245,17 +257,18 @@ async function requireStaff(
  *
  * @param deps - Route collaborators (operator tokens and auth store).
  * @param header - Raw `Authorization` header.
- * @returns `null` when the caller may read, otherwise the 401/403 error.
+ * @returns The reading account id (`null` for an operator token), otherwise
+ *   the 401/403 error.
  */
 async function staffOrOperatorRead(
   deps: FundingRouteDeps,
   header: string | undefined,
-): Promise<{ error: string; status: 401 | 403 } | null> {
+): Promise<{ viewerAccountId: string | null } | { error: string; status: 401 | 403 }> {
   if (isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
-    return null;
+    return { viewerAccountId: null };
   }
   const staff = await requireStaff(deps, header);
-  return 'status' in staff ? staff : null;
+  return 'status' in staff ? staff : { viewerAccountId: staff.caller.id };
 }
 
 /** Parse `{ accountId }` or a 400/404. */
@@ -291,8 +304,8 @@ async function pingTodayMedia(
   if (deps.spendPing === undefined) {
     return;
   }
-  const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-  if (address === '') {
+  const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+  if (address === null) {
     return;
   }
   try {
@@ -333,21 +346,6 @@ async function openDailyRoster(
     return { error: 'Forbidden', status: 403 };
   }
   return { caller };
-}
-
-/**
- * Public daily list from the stored document. Moderators stay off this shape.
- *
- * @param doc - Full stored document.
- * @returns Recipients-only roster for {@link withRecipientIdentities}.
- */
-function publicDailyRoster(doc: DailyRosterDocument): DailyRoster {
-  return {
-    comment: doc.comment,
-    paymentsEnabled: doc.paymentsEnabled,
-    defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-    recipients: doc.recipients,
-  };
 }
 
 /**
@@ -418,7 +416,7 @@ function rosterLogFields(caller: Account | null, action: DailyRosterAction): Ros
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
- * @param deps - Route collaborators (auth store for recipient identity).
+ * @param deps - Route collaborators (auth store and LNURL server for recipient identity).
  * @param caller - Initiator or founder, or `null` for an operator-token read.
  * @param action - Stable action name.
  * @param call - Client method.
@@ -431,13 +429,13 @@ async function callRoster(
   call: () => Promise<DailyRosterDocument>,
 ): Promise<RosterReply> {
   try {
-    const roster = publicDailyRoster(await call());
+    const roster = await call();
     const body = await withRecipientIdentities(roster, async (address) => {
-      const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined) {
+      const found = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (found === undefined) {
         return undefined;
       }
-      return { id: account.id, name: account.name };
+      return { id: found.account.id, name: found.account.name };
     });
     logEvent('funding.daily_roster', rosterLogFields(caller, action));
     return { status: 200, body };
@@ -476,6 +474,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * Build the `/funding` route group.
  *
  * Mounted at `/funding` so the public paths are `POST /funding/apply`,
+ * `GET /funding/places`,
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * `GET /funding/payout-days`, `GET /funding/daily-roster`,
@@ -483,6 +482,10 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `POST /funding/daily-roster/recipients`,
  * `POST /funding/daily-roster/recipients/update`,
  * `POST /funding/daily-roster/recipients/delete`,
+ * `POST /funding/daily-roster/moderators`,
+ * `POST /funding/daily-roster/moderators/update`,
+ * `POST /funding/daily-roster/moderators/delete`,
+ * `POST /funding/daily-roster/moderators/payments`,
  * `GET /funding/daily-roster/document`,
  * `POST /funding/daily-roster/document`,
  * `POST /funding/daily-roster/worker/comment`,
@@ -495,11 +498,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `POST /funding/daily-roster/worker/moderators/delete`, and
  * `POST /funding/daily-roster/worker/moderators/payments`.
  *
- * `POST /apply` is paused unless `deps.applicationsPaused` is false.
- * While paused, authenticated `verified` and above receive 403
- * `{ error: 'Applications are paused' }` with no grant write, except
- * `joey-rosima`, `vincent`, and `jewel-bacolbas`. Those three, and every
- * caller when `applicationsPaused` is false, still run the About-me,
+ * `POST /apply` is open to `verified` and above. It runs the About-me,
  * photo, location, and grant write. That walk returns 400
  * `{ error: 'About me is required' }`, 400
  * `{ error: 'About me photo is required' }`, 400
@@ -507,10 +506,16 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * 200 `{ funding }` (log `funding.applied`), or 503
  * `{ error: 'Funding is unavailable' }`. `basis` is 403 Forbidden.
  *
+ * `GET /places` needs no session and returns the current round's places
+ * count, or 503 `{ error: 'Funding is unavailable' }`. `POST /admit` admits
+ * only while the round has a free place and otherwise answers 409
+ * `{ error: 'All grant places are taken' }`.
+ *
  * @param deps - Auth store, funding store, message store, gift store, clock,
- *   optional spend ping, optional roster store, optional spend token, and
- *   optional applicationsPaused flag.
- * @returns A Hono app with member apply, staff review, and daily roster routes.
+ *   optional spend ping, optional roster store, optional spend token,
+ *   optional LNURL server, and optional admission round.
+ * @returns A Hono app with member apply, staff review, the public places
+ *   count, and daily roster routes.
  */
 export function fundingRoutes(deps: FundingRouteDeps): Hono {
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
@@ -522,10 +527,6 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       if (!roleAtLeast(caller.role, 'verified')) {
         return c.json({ error: 'Forbidden' }, 403);
-      }
-      if (deps.applicationsPaused !== false && !applicationPauseExempt(caller.username)) {
-        logEvent('funding.apply.paused', { accountId: caller.id });
-        return c.json({ error: 'Applications are paused' }, 403);
       }
       const nowMs = deps.now();
       try {
@@ -571,10 +572,20 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return c.json({ error: 'Funding is unavailable' }, 503);
       }
     })
+    .get('/places', async (c) => {
+      const round = deps.grantRound ?? CURRENT_GRANT_ROUND;
+      try {
+        const admitted = countRoundAdmissions(await deps.fundingStore.listGrants(), round);
+        return c.json(grantPlaces(round, admitted), 200);
+      } catch {
+        logEvent('funding.places.failed');
+        return c.json({ error: 'Funding is unavailable' }, 503);
+      }
+    })
     .get('/applications', async (c) => {
-      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
-      if (denied !== null) {
-        return c.json({ error: denied.error }, denied.status);
+      const reader = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if ('status' in reader) {
+        return c.json({ error: reader.error }, reader.status);
       }
       const nowMs = deps.now();
       try {
@@ -609,9 +620,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/applications/:accountId', async (c) => {
-      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
-      if (denied !== null) {
-        return c.json({ error: denied.error }, denied.status);
+      const reader = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if ('status' in reader) {
+        return c.json({ error: reader.error }, reader.status);
       }
       const accountId = c.req.param('accountId');
       if (accountId === undefined || !MESSAGE_ID_RE.test(accountId)) {
@@ -639,15 +650,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               dropped += 1;
             }
           }
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
+          const pay = messagePay(kept, account, deps.lnurlServer);
           messages.push(
             serializeMessage(
               kept,
-              payable,
+              pay,
               account.role,
               Math.max(0, row.replyCount - dropped),
               true,
@@ -662,7 +669,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               id: account.id,
               name: account.name,
               role: account.role,
-              lightningAddress: account.lightningAddress,
+              lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             },
             grant: {
               status: effectiveStatus(grant, nowMs),
@@ -671,7 +678,11 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
               admittedAt: grant.admittedAt,
               decidedAt: grant.decidedAt,
             },
-            messages,
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
+              reader.viewerAccountId,
+              messages,
+            ),
           },
           200,
         );
@@ -759,7 +770,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         const appliedAt = observed.appliedAt;
-        const grant = await deps.fundingStore.transition(
+        const grant = await deps.fundingStore.admitWithinPlaces(
           {
             accountId: subject.id,
             status: 'admitted',
@@ -771,7 +782,12 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             note: observed.note,
           },
           ['pending', 'trial'],
+          deps.grantRound ?? CURRENT_GRANT_ROUND,
         );
+        if (grant === 'full') {
+          logEvent('funding.admit.full', { accountId: subject.id, actorId: staff.caller.id });
+          return c.json({ error: GRANT_PLACES_FULL_ERROR }, 409);
+        }
         if (grant === undefined) {
           return c.json({ error: 'Conflict' }, 409);
         }
@@ -834,9 +850,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
     })
     .get('/payout-days', async (c) => {
-      const denied = await staffOrOperatorRead(deps, c.req.header('authorization'));
-      if (denied !== null) {
-        return c.json({ error: denied.error }, denied.status);
+      const reader = await staffOrOperatorRead(deps, c.req.header('authorization'));
+      if ('status' in reader) {
+        return c.json({ error: reader.error }, reader.status);
       }
       const nowMs = deps.now();
       try {
@@ -851,7 +867,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
             id: account.id,
             name: account.name,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
           })),
           grants,
           gifts: giftRows,
@@ -1059,8 +1075,8 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
       }
-      const address = account.lightningAddress === null ? '' : account.lightningAddress.trim();
-      if (address === '') {
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
         return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
       }
       const result = await callRoster(deps, opened.caller, 'recipient-add', () =>
@@ -1104,6 +1120,92 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       const address = parsed.data.address;
       const result = await callRoster(deps, opened.caller, 'recipient-delete', () =>
         rosterStore.deleteRecipient(address),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/moderators', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterRecipientAddBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success || !MESSAGE_ID_RE.test(parsed.data.accountId)) {
+        return c.json({ error: DAILY_ROSTER_INVALID_PERSON }, 400);
+      }
+      const amountUsd = parsed.data.amountUsd;
+      let account: Account | undefined;
+      try {
+        account = await deps.authStore.getAccount(parsed.data.accountId);
+      } catch {
+        logEvent('funding.daily_roster.failed', {
+          accountId: opened.caller.id,
+          action: 'moderator-add',
+        });
+        return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
+      }
+      if (account === undefined) {
+        return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
+      }
+      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
+      if (address === null) {
+        return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
+      }
+      const result = await callRoster(deps, opened.caller, 'moderator-add', () =>
+        rosterStore.addModerator(address, amountUsd),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/moderators/update', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const raw = await c.req.json().catch(() => null);
+      const parsed = rosterRecipientBody.safeParse(raw);
+      if (!parsed.success) {
+        return c.json(
+          {
+            error: rawAddressIsString(raw)
+              ? DAILY_ROSTER_INVALID_ADDRESS
+              : DAILY_ROSTER_UNKNOWN_ADDRESS,
+          },
+          400,
+        );
+      }
+      const address = parsed.data.address;
+      const amountUsd = parsed.data.amountUsd;
+      const result = await callRoster(deps, opened.caller, 'moderator-update', () =>
+        rosterStore.updateModerator(address, amountUsd),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/moderators/delete', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_UNKNOWN_ADDRESS }, 400);
+      }
+      const address = parsed.data.address;
+      const result = await callRoster(deps, opened.caller, 'moderator-delete', () =>
+        rosterStore.deleteModerator(address),
+      );
+      return answerRoster(c, result);
+    })
+    .post('/daily-roster/moderators/payments', async (c) => {
+      const opened = await openDailyRoster(deps, c.req.header('authorization'));
+      if ('status' in opened) {
+        return stopRoster(c, opened);
+      }
+      const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: DAILY_ROSTER_INVALID_PAYMENTS }, 400);
+      }
+      const enabled = parsed.data.enabled;
+      const result = await callRoster(deps, opened.caller, 'moderator-payments', () =>
+        rosterStore.setModeratorPaymentsEnabled(enabled),
       );
       return answerRoster(c, result);
     });

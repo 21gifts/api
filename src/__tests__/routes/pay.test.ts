@@ -1,12 +1,34 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
+import { Hono } from 'hono';
+import { payRoutes } from '@/routes/pay';
+import { decodeBolt11 } from '@/lib/bolt11';
+import type { PosCharge } from '@/lib/pos-charge';
+import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
+import {
+  LNURL_SERVER,
+  WALLET_PUBKEY,
+  allInternal,
+  createWalletAccount,
+  walletLnurlFetch,
+  type SeenRequest,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 const ADA_ID = '00000000-0000-4000-8000-000000000001';
 const WIDE_MAX_SENDABLE = 100_000_000_000;
-const CALLBACK = 'https://walletofsatoshi.com/lnurlp/callback';
-const WELL_KNOWN_URL = 'https://walletofsatoshi.com/.well-known/lnurlp/alice';
+/** Public callback; the api fetches it from the LNURL server. */
+const CALLBACK = `${LNURL_SERVER.publicBaseUrl}/lnurlp/ada/invoice`;
+/** Internal LNURL server URL of `ada@example.test`'s payRequest. */
+const WELL_KNOWN_URL = `${LNURL_SERVER.baseUrl}/.well-known/lnurlp/ada`;
+/** Internal LNURL server URL the public callback is fetched from. */
+const INTERNAL_CALLBACK = `${LNURL_SERVER.baseUrl}/lnurlp/ada/invoice`;
+/** Env that resolves the LNURL server. */
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
 /** BOLT11 for 2500 uBTC = 250_000 sats = 250_000_000 msat. */
 const PR =
   'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
@@ -15,7 +37,6 @@ const PR_SATS = 250_000;
 function createAccount(
   overrides: {
     name?: string | null;
-    lightningAddress?: string | null;
   } = {},
 ) {
   return {
@@ -24,11 +45,7 @@ function createAccount(
     role: 'basis' as const,
     name: overrides.name === undefined ? 'Ada' : overrides.name,
     username: 'ada',
-    lightningAddress:
-      overrides.lightningAddress === undefined
-        ? 'alice@walletofsatoshi.com'
-        : overrides.lightningAddress,
-    lightningAddressVerified: false,
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'cd'.repeat(32),
@@ -37,12 +54,17 @@ function createAccount(
   };
 }
 
-function metadataResponse(minSendable: number, maxSendable: number): Response {
+function metadataResponse(
+  minSendable: number,
+  maxSendable: number,
+  commentAllowed?: number,
+): Response {
   return new Response(
     JSON.stringify({
       callback: CALLBACK,
       minSendable,
       maxSendable,
+      ...(commentAllowed === undefined ? {} : { commentAllowed }),
     }),
     { status: 200, headers: { 'content-type': 'application/json' } },
   );
@@ -58,13 +80,15 @@ function invoiceResponse(): Response {
 async function seededApp(
   overrides: {
     name?: string | null;
-    lightningAddress?: string | null;
+    /** `false` leaves the wallet unverified (the member cannot receive). */
+    wallet?: boolean;
     minSendable?: number;
     maxSendable?: number;
     fetchImpl?: (input: string | URL | Request) => Promise<Response>;
     throwOnLookup?: boolean;
     posStore?: PosStore;
     now?: () => number;
+    env?: Record<string, string>;
   } = {},
 ) {
   const authStore = new InMemoryAuthStore();
@@ -74,6 +98,10 @@ async function seededApp(
     };
   } else {
     await authStore.createAccount(createAccount(overrides));
+    if (overrides.wallet !== false) {
+      await authStore.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+      await authStore.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    }
   }
   const minSendable = overrides.minSendable ?? 1000;
   const maxSendable = overrides.maxSendable ?? WIDE_MAX_SENDABLE;
@@ -93,7 +121,12 @@ async function seededApp(
     fetchImpl: (input: string | URL | Request) => Promise<Response>;
     posStore?: PosStore;
     now?: () => number;
-  } = { authStore, fetchImpl };
+    env: Record<string, string | undefined>;
+  } = {
+    authStore,
+    fetchImpl,
+    env: { ...process.env, ...LNURL_ENV, ...(overrides.env ?? {}) },
+  };
   if (overrides.posStore !== undefined) {
     appOpts.posStore = overrides.posStore;
   }
@@ -104,7 +137,7 @@ async function seededApp(
 }
 
 describe('GET /pay/:username', () => {
-  it('returns name and satoshi bounds from the linked Wallet of Satoshi address', async () => {
+  it('returns name and satoshi bounds from the verified wallet', async () => {
     const { app, urls } = await seededApp();
     const res = await app.request('/pay/Ada');
     expect(res.status).toBe(200);
@@ -118,7 +151,7 @@ describe('GET /pay/:username', () => {
     });
     expect(Object.keys(body).sort()).toEqual(['charge', 'maxSats', 'minSats', 'name', 'username']);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
-    expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
+    expect(urls.every((url) => url.startsWith(`${LNURL_SERVER.baseUrl}/`))).toBe(true);
   });
 
   it('trims the display name', async () => {
@@ -174,32 +207,23 @@ describe('GET /pay/:username', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns 404 when lightningAddress is null', async () => {
-    const { app } = await seededApp({ lightningAddress: null });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
-  });
-
-  it('returns 404 when lightningAddress is blank', async () => {
-    const { app } = await seededApp({ lightningAddress: '   ' });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(404);
-    expect(await res.json()).toEqual({ error: 'Not found' });
-  });
-
-  it('returns 502 when the stored address is not LUD-16', async () => {
+  it('returns 404 without a verified wallet and never fetches', async () => {
     let called = false;
     const { app } = await seededApp({
-      lightningAddress: 'not-an-address',
+      wallet: false,
       fetchImpl: async () => {
         called = true;
         return metadataResponse(1000, WIDE_MAX_SENDABLE);
       },
     });
-    const res = await app.request('/pay/ada');
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+    expect((await app.request('/pay/ada')).status).toBe(404);
+    const res = await app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
     expect(called).toBe(false);
   });
 
@@ -240,6 +264,8 @@ describe('GET /pay/:username', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt,
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -269,6 +295,8 @@ describe('GET /pay/:username', () => {
       status: 'pending',
       createdAt: new Date(nowMs - 1),
       expiresAt: new Date(nowMs),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -293,6 +321,8 @@ describe('GET /pay/:username', () => {
       status: 'cancelled',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -319,7 +349,7 @@ describe('GET /pay/:username', () => {
 });
 
 describe('POST /pay/:username/invoice', () => {
-  it('mints a BOLT11 for an exact satoshi amount on the linked address', async () => {
+  it('mints a BOLT11 for an exact satoshi amount on the wallet address', async () => {
     const { app, urls } = await seededApp();
     const res = await app.request('/pay/ada/invoice', {
       method: 'POST',
@@ -328,16 +358,17 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({ pr: PR, amountSats: PR_SATS });
-    expect(Object.keys(body).sort()).toEqual(['amountSats', 'pr']);
+    expect(body).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(Object.keys(body).sort()).toEqual(['amountSats', 'pr', 'sparkInvoice']);
     expect(urls.length).toBeGreaterThan(1);
     expect(urls[0]).toBe(WELL_KNOWN_URL);
     expect(urls[1]).toBe(WELL_KNOWN_URL);
     const callback = urls[2] ?? '';
+    expect(callback.startsWith(`${INTERNAL_CALLBACK}?`)).toBe(true);
     const callbackUrl = new URL(callback);
     expect(callbackUrl.searchParams.get('amount')).toBe(String(PR_SATS * 1000));
     expect(callbackUrl.searchParams.has('comment')).toBe(false);
-    expect(urls.some((url) => url.includes('21.gifts'))).toBe(false);
+    expect(urls.every((url) => url.startsWith(`${LNURL_SERVER.baseUrl}/`))).toBe(true);
   });
 
   it('returns 400 when the amount is below the window', async () => {
@@ -537,6 +568,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app, urls } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -546,7 +579,7 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Enter a whole number of sats' });
-    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+    expect(urls.some((url) => url.startsWith(INTERNAL_CALLBACK))).toBe(false);
   });
 
   it('mints the open charge amount of 250000 sats', async () => {
@@ -560,6 +593,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -568,7 +603,7 @@ describe('POST /pay/:username/invoice', () => {
       body: JSON.stringify({ amountSats: PR_SATS }),
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS });
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
   });
 
   it('pins GET to a charge outside the provider window and rejects that POST amount', async () => {
@@ -582,6 +617,8 @@ describe('POST /pay/:username/invoice', () => {
       status: 'pending',
       createdAt: new Date(nowMs),
       expiresAt: new Date(nowMs + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
     });
     const { app, urls } = await seededApp({ posStore, now, maxSendable: 5000 });
     const getRes = await app.request('/pay/ada');
@@ -600,6 +637,385 @@ describe('POST /pay/:username/invoice', () => {
     });
     expect(postRes.status).toBe(400);
     expect(await postRes.json()).toEqual({ error: 'Enter a whole number of sats' });
-    expect(urls.some((url) => url.includes(CALLBACK))).toBe(false);
+    expect(urls.some((url) => url.startsWith(INTERNAL_CALLBACK))).toBe(false);
+  });
+});
+
+describe('wallet-backed pay link', () => {
+  async function walletPayApp(lnurlServer: boolean): Promise<{
+    app: Hono;
+    seen: SeenRequest[];
+  }> {
+    const auth = new InMemoryAuthStore();
+    await createWalletAccount(auth, ADA_ID, 'wally');
+    const { fetchImpl, seen } = walletLnurlFetch('wally', PR);
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: new InMemoryPosStore(),
+        now: () => 1,
+        ...(lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
+      }),
+    );
+    return { app, seen };
+  }
+
+  it('resolves the wallet internally for the card and the invoice', async () => {
+    const { app, seen } = await walletPayApp(true);
+    const card = await app.request('/pay/wally');
+    expect(card.status).toBe(200);
+    expect(await card.json()).toMatchObject({ username: 'wally', minSats: 1, maxSats: 1_000_000 });
+    const invoice = await app.request('/pay/wally/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS }),
+    });
+    expect(invoice.status).toBe(200);
+    expect(await invoice.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(allInternal(seen)).toBe(true);
+    expect(seen.some((request) => request.url.includes('/lnurlp/wally/invoice?'))).toBe(true);
+  });
+
+  it('is not found for a wallet-only member when the LNURL server is off', async () => {
+    const { app, seen } = await walletPayApp(false);
+    expect((await app.request('/pay/wally')).status).toBe(404);
+    expect(seen).toEqual([]);
+  });
+});
+
+describe('till payments on POST /pay/:username/invoice', () => {
+  const NOW_MS = 1_700_000_000_000;
+  const CHARGE_ID = '77777777-7777-4777-8777-777777777777';
+  const PAYMENT_HASH = decodeBolt11(PR)?.paymentHash ?? '';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function events(): string[] {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => (JSON.parse(arg) as { event: string }).event);
+  }
+
+  function pendingCharge(): PosCharge {
+    return {
+      id: CHARGE_ID,
+      accountId: ADA_ID,
+      amountSats: PR_SATS,
+      status: 'pending',
+      createdAt: new Date(NOW_MS),
+      expiresAt: new Date(NOW_MS + 60_000),
+      paidAt: null,
+      sparkInvoice: null,
+    };
+  }
+
+  async function tillApp(opts: {
+    posStore: PosStore;
+    freePayments?: boolean;
+    randomBytes?: (length: number) => Uint8Array;
+    commentAllowed?: number;
+  }): Promise<Hono> {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
+      String(input).includes('/.well-known/lnurlp/')
+        ? metadataResponse(1000, WIDE_MAX_SENDABLE, opts.commentAllowed)
+        : invoiceResponse();
+    return new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: opts.posStore,
+        now: () => NOW_MS,
+        lnurlServer: LNURL_SERVER,
+        ...(opts.freePayments === undefined ? {} : { freePayments: opts.freePayments }),
+        ...(opts.randomBytes === undefined ? {} : { randomBytes: opts.randomBytes }),
+      }),
+    );
+  }
+
+  async function mint(app: Hono, extra: Record<string, unknown> = {}): Promise<Response> {
+    return app.request('/pay/ada/invoice', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ amountSats: PR_SATS, ...extra }),
+    });
+  }
+
+  /** The Spark invoice a member send returns for `memo` with id bytes all 1. */
+  function memberInvoice(memo?: string): string {
+    return encodeSparkInvoice({
+      identityPublicKey: WALLET_PUBKEY,
+      id: uuidV7(NOW_MS, new Uint8Array(10).fill(1)),
+      ...(memo === undefined ? {} : { memo }),
+      amountSats: PR_SATS,
+    });
+  }
+
+  const ONES = (length: number): Uint8Array => new Uint8Array(length).fill(1);
+
+  it('returns one Spark invoice per charge and records the BOLT11 against it', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    let fill = 0;
+    const app = await tillApp({
+      posStore,
+      freePayments: true,
+      randomBytes: (length) => new Uint8Array(length).fill((fill += 1)),
+    });
+    const expected = encodeSparkInvoice({
+      identityPublicKey: WALLET_PUBKEY,
+      id: uuidV7(NOW_MS, new Uint8Array(10).fill(1)),
+      memo: `pos:${CHARGE_ID}`,
+      amountSats: PR_SATS,
+    });
+    const first = await mint(app);
+    expect(first.status).toBe(200);
+    expect(await first.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: expected });
+    const second = await mint(app);
+    expect(await second.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: expected });
+    expect(fill).toBe(1);
+    const watched = await posStore.listWatched(NOW_MS);
+    expect(watched).toEqual([
+      {
+        charge: expect.objectContaining({ id: CHARGE_ID, sparkInvoice: expected }),
+        paymentHashes: [PAYMENT_HASH],
+      },
+    ]);
+  });
+
+  it('uses the issue time before the mint, so a mint that ends after expiry still counts', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    let clock = NOW_MS;
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      if (String(input).includes('/.well-known/lnurlp/')) {
+        return metadataResponse(1000, WIDE_MAX_SENDABLE);
+      }
+      clock = NOW_MS + 120_000;
+      return invoiceResponse();
+    };
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore,
+        now: () => clock,
+        lnurlServer: LNURL_SERVER,
+        freePayments: true,
+      }),
+    );
+    const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
+    expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
+    expect((await posStore.listWatched(0))[0]?.paymentHashes).toEqual([PAYMENT_HASH]);
+  });
+
+  it('records the BOLT11 but returns no Spark invoice when free in-app payments are off', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const res = await mint(await tillApp({ posStore }));
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect((await posStore.listWatched(NOW_MS))[0]?.paymentHashes).toEqual([PAYMENT_HASH]);
+    expect((await posStore.listWatched(NOW_MS))[0]?.charge.sparkInvoice).toBeNull();
+  });
+
+  it('returns a Spark invoice for the posted amount without an open charge and records nothing', async () => {
+    const posStore = new InMemoryPosStore();
+    const res = await mint(await tillApp({ posStore, freePayments: true, randomBytes: ONES }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      pr: PR,
+      amountSats: PR_SATS,
+      sparkInvoice: memberInvoice(),
+    });
+    expect(await posStore.listWatched(0)).toEqual([]);
+    expect(events()).toEqual(['pay.invoice']);
+  });
+
+  it('returns no Spark invoice without an open charge when free in-app payments are off', async () => {
+    const posStore = new InMemoryPosStore();
+    const res = await mint(await tillApp({ posStore, commentAllowed: 100 }), { comment: 'hi' });
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+  });
+
+  it('puts the trimmed comment into the memo without an open charge', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 100,
+    });
+    const body = (await (await mint(app, { comment: '  Thanks for lunch  ' })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice('Thanks for lunch'));
+  });
+
+  it('cuts the memo to commentAllowed characters', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 3,
+    });
+    const body = (await (await mint(app, { comment: '🍕🍕🍕🍕' })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice('🍕🍕🍕'));
+  });
+
+  it('cuts the memo to 120 UTF-8 bytes without splitting a character', async () => {
+    const app = await tillApp({
+      posStore: new InMemoryPosStore(),
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 500,
+    });
+    const body = (await (await mint(app, { comment: `a${'🍕'.repeat(40)}` })).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice).toBe(memberInvoice(`a${'🍕'.repeat(29)}`));
+  });
+
+  it('leaves the memo out for a blank, non-string, or not-allowed comment', async () => {
+    const cases: Array<{ commentAllowed?: number; comment: unknown }> = [
+      { commentAllowed: 100, comment: '   ' },
+      { commentAllowed: 100, comment: 42 },
+      { commentAllowed: 100, comment: null },
+      { commentAllowed: 0, comment: 'hi' },
+      { commentAllowed: -1, comment: 'hi' },
+      { comment: 'hi' },
+    ];
+    for (const { commentAllowed, comment } of cases) {
+      const app = await tillApp({
+        posStore: new InMemoryPosStore(),
+        freePayments: true,
+        randomBytes: ONES,
+        ...(commentAllowed === undefined ? {} : { commentAllowed }),
+      });
+      const res = await mint(app, { comment });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        pr: PR,
+        amountSats: PR_SATS,
+        sparkInvoice: memberInvoice(),
+      });
+    }
+  });
+
+  it('keeps the charge memo and ignores the comment while a charge is open', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const app = await tillApp({
+      posStore,
+      freePayments: true,
+      randomBytes: ONES,
+      commentAllowed: 100,
+    });
+    const body = (await (await mint(app, { comment: 'hi' })).json()) as { sparkInvoice: string };
+    expect(body.sparkInvoice).toBe(
+      encodeSparkInvoice({
+        identityPublicKey: WALLET_PUBKEY,
+        id: uuidV7(NOW_MS, ONES(10)),
+        memo: `pos:${CHARGE_ID}`,
+        amountSats: PR_SATS,
+      }),
+    );
+  });
+
+  it('returns no Spark invoice when the BOLT11 mint fails without an open charge', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(createAccount());
+    await auth.claimSparkPubkey(ADA_ID, WALLET_PUBKEY);
+    await auth.markSparkPubkeyVerified(ADA_ID, WALLET_PUBKEY, 'ada', 2);
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> =>
+      String(input).includes('/.well-known/lnurlp/')
+        ? metadataResponse(1000, WIDE_MAX_SENDABLE)
+        : new Response('down', { status: 500 });
+    const app = new Hono().route(
+      '/pay',
+      payRoutes({
+        auth,
+        fetchImpl,
+        posStore: new InMemoryPosStore(),
+        now: () => NOW_MS,
+        lnurlServer: LNURL_SERVER,
+        freePayments: true,
+      }),
+    );
+    const res = await mint(app);
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+  });
+
+  it('draws the member Spark invoice id from crypto randomness by default', async () => {
+    const body = (await (
+      await mint(await tillApp({ posStore: new InMemoryPosStore(), freePayments: true }))
+    ).json()) as { sparkInvoice: string };
+    expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+  });
+
+  it('draws the Spark invoice id from crypto randomness by default', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+      sparkInvoice: string;
+    };
+    expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+  });
+
+  it('still answers with the Spark invoice when recording the BOLT11 fails', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.recordInvoice = async () => {
+      throw new Error('db');
+    };
+    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+      sparkInvoice: string | null;
+    };
+    expect(body.sparkInvoice).not.toBeNull();
+    expect(events()).toContain('pos.invoice.record_failed');
+  });
+
+  it('answers with the BOLT11 and no Spark invoice when storing it fails', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    posStore.issueSparkInvoice = async () => {
+      throw new Error('db');
+    };
+    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
+    expect(events()).toContain('pos.spark_invoice.issue_failed');
+  });
+
+  it('turns Spark invoices on in createApp when free in-app payments resolve', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const { app } = await seededApp({
+      posStore,
+      now: () => NOW_MS,
+      env: { LNURL_ZAP_NSEC_HEX: 'ab'.repeat(32), SPARK_OPERATOR_URL: '' },
+    });
+    const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
+    expect(body.sparkInvoice?.startsWith('spark1')).toBe(true);
   });
 });

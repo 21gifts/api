@@ -16,7 +16,8 @@
           "env": { "CI": "true" },
           "steps": [
             ["bun", "install", "--frozen-lockfile"],
-            ["bun", "run", "lint"]
+            ["bun", "run", "lint"],
+            ["node", "--test", "scripts/db-change-notice.test.mjs"]
           ]
         }
       }
@@ -37,6 +38,11 @@
       "workflow": ".github/workflows/deploy-staging.yaml",
       "job": "build-and-deploy",
       "reason": "This job builds and pushes a production Docker image and dispatches a deploy to the staging environment, a production-credential path that is not an author-measured test."
+    },
+    {
+      "workflow": ".github/workflows/publish-spend-staging.yaml",
+      "job": "publish",
+      "reason": "This job builds and pushes the spend staging Docker image with production registry credentials, a production-credential path that is not an author-measured test."
     },
     {
       "workflow": ".github/workflows/deploy-prd.yaml",
@@ -62,6 +68,11 @@
       "workflow": ".github/workflows/loan-e2e.yml",
       "job": "screens",
       "reason": "Manual live loan through the app screens. It pays real Spark invoices, can run for hours, and is not a pull-request check, so the author does not run it as a local test."
+    },
+    {
+      "workflow": ".github/workflows/db-change-notice.yaml",
+      "job": "notice",
+      "reason": "GitHub-only PR description check (reads the PR body and file list from the GitHub API). Not a local code test."
     }
   ]
 }

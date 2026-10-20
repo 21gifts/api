@@ -10,6 +10,8 @@ import {
   encodeMessageFeedCursor,
   forumContentFingerprint,
   forumPhotoResponse,
+  messagePay,
+  NOT_PAYABLE,
   normalizeForumText,
   normalizePhotoTakenAt,
   serializeDebugMessage,
@@ -19,6 +21,9 @@ import {
   unsignedNostrDefaults,
   type MessageRow,
 } from '@/lib/message';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+
+const PAYABLE = { payable: true, authorCanReceive: true };
 
 describe('normalizeForumText', () => {
   it('trims surrounding whitespace', () => {
@@ -163,6 +168,41 @@ describe('forumContentFingerprint', () => {
   });
 });
 
+describe('messagePay', () => {
+  const author = {
+    username: 'ada',
+    sparkPubkey: `02${'a'.repeat(64)}`,
+    sparkPubkeyVerifiedAt: 1,
+  };
+
+  it('is payable when the note is signed and the author can receive', () => {
+    expect(messagePay({ eventId: 'e'.repeat(64) }, author, LNURL_SERVER)).toEqual({
+      payable: true,
+      authorCanReceive: true,
+    });
+  });
+
+  it('keeps authorCanReceive on an unsigned note', () => {
+    expect(messagePay({ eventId: null }, author, LNURL_SERVER)).toEqual({
+      payable: false,
+      authorCanReceive: true,
+    });
+    expect(messagePay({ eventId: '' }, author, LNURL_SERVER)).toEqual({
+      payable: false,
+      authorCanReceive: true,
+    });
+  });
+
+  it('is false for both without a verified wallet, an author, or the LNURL server', () => {
+    const signed = { eventId: 'e'.repeat(64) };
+    expect(messagePay(signed, { ...author, sparkPubkeyVerifiedAt: null }, LNURL_SERVER)).toEqual(
+      NOT_PAYABLE,
+    );
+    expect(messagePay(signed, undefined, LNURL_SERVER)).toEqual(NOT_PAYABLE);
+    expect(messagePay(signed, author, undefined)).toEqual(NOT_PAYABLE);
+  });
+});
+
 describe('serializeMessage', () => {
   it('emits ISO createdAt, hasPhoto false, and omits accountId', () => {
     const row: MessageRow = {
@@ -174,7 +214,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, true, 'moderator')).toEqual({
+    expect(serializeMessage(row, PAYABLE, 'moderator')).toEqual({
       id: 'msg-1',
       name: 'Ada',
       text: 'hi',
@@ -185,6 +225,7 @@ describe('serializeMessage', () => {
       amountEur: null,
       amountPhp: null,
       payable: true,
+      authorCanReceive: true,
       hasPhoto: false,
       photoCount: 0,
       photoTakenAts: [],
@@ -192,7 +233,7 @@ describe('serializeMessage', () => {
       videoContentType: null,
       role: 'moderator',
     });
-    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis')).not.toHaveProperty('accountId');
   });
 
   it('includes hasPhoto true', () => {
@@ -205,7 +246,7 @@ describe('serializeMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').hasPhoto).toBe(true);
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').hasPhoto).toBe(true);
   });
 
   it('includes hasVideo and videoContentType', () => {
@@ -220,7 +261,7 @@ describe('serializeMessage', () => {
       videoContentType: 'video/mp4',
       ...unsignedNostrDefaults(),
     };
-    const publicMsg = serializeMessage(row, false, 'basis');
+    const publicMsg = serializeMessage(row, NOT_PAYABLE, 'basis');
     expect(publicMsg.hasVideo).toBe(true);
     expect(publicMsg.videoContentType).toBe('video/mp4');
   });
@@ -235,10 +276,10 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    const withCount = serializeMessage(row, false, undefined, 2);
+    const withCount = serializeMessage(row, NOT_PAYABLE, undefined, 2);
     expect(withCount.replyCount).toBe(2);
     expect(withCount).not.toHaveProperty('role');
-    const withoutCount = serializeMessage(row, false, undefined);
+    const withoutCount = serializeMessage(row, NOT_PAYABLE, undefined);
     expect(withoutCount).not.toHaveProperty('replyCount');
   });
 
@@ -252,7 +293,9 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(withAuthor, false, 'basis', undefined, true).accountId).toBe('acc-1');
+    expect(serializeMessage(withAuthor, NOT_PAYABLE, 'basis', undefined, true).accountId).toBe(
+      'acc-1',
+    );
     const damusOnly: MessageRow = {
       id: 'msg-6',
       accountId: null,
@@ -262,7 +305,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(damusOnly, false, undefined, undefined, true)).not.toHaveProperty(
+    expect(serializeMessage(damusOnly, NOT_PAYABLE, undefined, undefined, true)).not.toHaveProperty(
       'accountId',
     );
   });
@@ -278,7 +321,9 @@ describe('serializeMessage', () => {
       contentFp: 'ab'.repeat(32),
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis', undefined, true)).not.toHaveProperty('contentFp');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis', undefined, true)).not.toHaveProperty(
+      'contentFp',
+    );
   });
 
   it('coerces an empty name to a truncated author pubkey', () => {
@@ -293,7 +338,9 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       authorPubkey,
     };
-    expect(serializeMessage(row, false, 'basis').name).toBe(truncatePubkeyDisplay(authorPubkey));
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').name).toBe(
+      truncatePubkeyDisplay(authorPubkey),
+    );
   });
 
   it('coerces an empty name to npub when authorPubkey is null', () => {
@@ -306,7 +353,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').name).toBe('npub');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').name).toBe('npub');
   });
 
   it('leaves a non-empty name unchanged', () => {
@@ -319,7 +366,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis').name).toBe('Ada');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').name).toBe('Ada');
   });
 
   it('includes parentId on replies and omits the key on top-level notes', () => {
@@ -332,7 +379,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(top, false, 'basis')).not.toHaveProperty('parentId');
+    expect(serializeMessage(top, NOT_PAYABLE, 'basis')).not.toHaveProperty('parentId');
     const reply: MessageRow = {
       id: 'msg-reply',
       accountId: 'acc-1',
@@ -343,7 +390,7 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       parentId: 'msg-top',
     };
-    expect(serializeMessage(reply, false, 'basis').parentId).toBe('msg-top');
+    expect(serializeMessage(reply, NOT_PAYABLE, 'basis').parentId).toBe('msg-top');
   });
 
   it('omits received keys on notes and includes zeros and nulls on replies', () => {
@@ -356,7 +403,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    const note = serializeMessage(top, false, 'basis');
+    const note = serializeMessage(top, NOT_PAYABLE, 'basis');
     expect(note).not.toHaveProperty('receivedSats');
     expect(note).not.toHaveProperty('receivedAmountUsd');
     expect(note).not.toHaveProperty('receivedAmountChf');
@@ -372,7 +419,7 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       parentId: 'msg-top',
     };
-    const body = serializeMessage(reply, false, 'basis');
+    const body = serializeMessage(reply, NOT_PAYABLE, 'basis');
     expect(body.receivedSats).toBe(0);
     expect(body.receivedAmountUsd).toBeNull();
     expect(body.receivedAmountChf).toBeNull();
@@ -387,7 +434,7 @@ describe('serializeMessage', () => {
         receivedAmountEur: '0.09',
         receivedAmountPhp: null,
       },
-      false,
+      NOT_PAYABLE,
       'basis',
     );
     expect(credited.sats).toBe(0);
@@ -410,7 +457,7 @@ describe('serializeMessage', () => {
       parentId: 'msg-top',
     };
     delete (reply as { receivedSats?: number }).receivedSats;
-    expect(serializeMessage(reply, false, 'basis').receivedSats).toBe(0);
+    expect(serializeMessage(reply, NOT_PAYABLE, 'basis').receivedSats).toBe(0);
   });
 
   it('emits photoCount 0 when the row omits photoCount and hasPhoto is false', () => {
@@ -423,7 +470,7 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    const body = serializeMessage(row, false, 'basis');
+    const body = serializeMessage(row, NOT_PAYABLE, 'basis');
     expect(body.photoCount).toBe(0);
     expect(body.photoTakenAts).toEqual([]);
     expect(body).not.toHaveProperty('photoTakenAt');
@@ -439,7 +486,7 @@ describe('serializeMessage', () => {
       hasPhoto: true,
       ...unsignedNostrDefaults(),
     };
-    const body = serializeMessage(row, false, 'basis');
+    const body = serializeMessage(row, NOT_PAYABLE, 'basis');
     expect(body.photoCount).toBe(1);
     expect(body.photoTakenAts).toEqual([null]);
     expect(body.photoTakenAt).toBeNull();
@@ -457,7 +504,7 @@ describe('serializeMessage', () => {
       photoTakenAts: ['2025-06-07T08:09:10', null, '2025-06-07T10:09:10+02:00'],
       ...unsignedNostrDefaults(),
     };
-    const body = serializeMessage(row, false, 'basis');
+    const body = serializeMessage(row, NOT_PAYABLE, 'basis');
     expect(body.photoCount).toBe(3);
     expect(body.photoTakenAts).toEqual(['2025-06-07T08:09:10', null, '2025-06-07T10:09:10+02:00']);
     expect(body).not.toHaveProperty('photoTakenAt');
@@ -474,9 +521,9 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       goalSats: 21000,
     };
-    expect(serializeMessage(row, false, 'basis').goalSats).toBe(21000);
-    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalRepayable');
-    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('goalTermDays');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').goalSats).toBe(21000);
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis')).not.toHaveProperty('goalRepayable');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis')).not.toHaveProperty('goalTermDays');
   });
 
   it('includes goalRepayable only when the stored column is true', () => {
@@ -491,10 +538,10 @@ describe('serializeMessage', () => {
       goalSats: 21000,
       goalRepayable: true,
     };
-    expect(serializeMessage(row, false, 'basis').goalRepayable).toBe(true);
-    expect(serializeMessage({ ...row, goalRepayable: null }, false, 'basis')).not.toHaveProperty(
-      'goalRepayable',
-    );
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').goalRepayable).toBe(true);
+    expect(
+      serializeMessage({ ...row, goalRepayable: null }, NOT_PAYABLE, 'basis'),
+    ).not.toHaveProperty('goalRepayable');
     expect(serializeDebugMessage(row)['goalRepayable']).toBe(true);
     expect(serializeDebugMessage({ ...row, goalRepayable: null })).not.toHaveProperty(
       'goalRepayable',
@@ -523,10 +570,10 @@ describe('serializeMessage', () => {
       goalRepayable: true,
       goalTermDays: 30,
     };
-    expect(serializeMessage(row, false, 'basis').goalTermDays).toBe(30);
-    expect(serializeMessage({ ...row, goalTermDays: null }, false, 'basis')).not.toHaveProperty(
-      'goalTermDays',
-    );
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').goalTermDays).toBe(30);
+    expect(
+      serializeMessage({ ...row, goalTermDays: null }, NOT_PAYABLE, 'basis'),
+    ).not.toHaveProperty('goalTermDays');
     expect(serializeDebugMessage(row)['goalTermDays']).toBe(30);
     expect(serializeDebugMessage({ ...row, goalTermDays: null })).not.toHaveProperty(
       'goalTermDays',
@@ -552,15 +599,15 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(base, false, 'basis')).not.toHaveProperty('goalSats');
-    expect(serializeMessage({ ...base, goalSats: null }, false, 'basis')).not.toHaveProperty(
+    expect(serializeMessage(base, NOT_PAYABLE, 'basis')).not.toHaveProperty('goalSats');
+    expect(serializeMessage({ ...base, goalSats: null }, NOT_PAYABLE, 'basis')).not.toHaveProperty(
       'goalSats',
     );
-    expect(serializeMessage({ ...base, goalSats: 0 }, false, 'basis')).not.toHaveProperty(
+    expect(serializeMessage({ ...base, goalSats: 0 }, NOT_PAYABLE, 'basis')).not.toHaveProperty(
       'goalSats',
     );
     expect(
-      serializeMessage({ ...base, parentId: 'msg-top', goalSats: 21000 }, false, 'basis'),
+      serializeMessage({ ...base, parentId: 'msg-top', goalSats: 21000 }, NOT_PAYABLE, 'basis'),
     ).not.toHaveProperty('goalSats');
   });
 
@@ -575,11 +622,11 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       goalSats: 21000,
     };
-    expect(serializeMessage(base, false, 'basis')).not.toHaveProperty('goalCurrency');
-    expect(serializeMessage(base, false, 'basis').goalSats).toBe(21000);
+    expect(serializeMessage(base, NOT_PAYABLE, 'basis')).not.toHaveProperty('goalCurrency');
+    expect(serializeMessage(base, NOT_PAYABLE, 'basis').goalSats).toBe(21000);
     const missingAmount = serializeMessage(
       { ...base, goalCurrency: 'USD', goalAmount: null },
-      false,
+      NOT_PAYABLE,
       'basis',
     );
     expect(missingAmount).not.toHaveProperty('goalCurrency');
@@ -606,7 +653,7 @@ describe('serializeMessage', () => {
       goalAmountEur: '1.40',
       goalAmountPhp: null,
     };
-    const body = serializeMessage(row, false, 'basis');
+    const body = serializeMessage(row, NOT_PAYABLE, 'basis');
     expect(body.goalCurrency).toBe('USD');
     expect(body.goalAmount).toBe('1.5');
     expect(body.goalSats).toBe(2000);
@@ -634,8 +681,10 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('place');
-    expect(serializeMessage({ ...row, place: null }, false, 'basis')).not.toHaveProperty('place');
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis')).not.toHaveProperty('place');
+    expect(serializeMessage({ ...row, place: null }, NOT_PAYABLE, 'basis')).not.toHaveProperty(
+      'place',
+    );
   });
 
   it('includes place when set, including a null label', () => {
@@ -649,7 +698,7 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
     };
-    expect(serializeMessage(row, false, 'basis').place).toEqual({
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis').place).toEqual({
       lat: 47.3,
       lng: 8.5,
       label: 'Zürich',
@@ -658,7 +707,7 @@ describe('serializeMessage', () => {
     expect(
       serializeMessage(
         { ...row, place: { lat: 1, lng: 2, label: null, address: null } },
-        false,
+        NOT_PAYABLE,
         'basis',
       ).place,
     ).toEqual({ lat: 1, lng: 2, label: null, address: null });
@@ -679,7 +728,7 @@ describe('serializeMessage', () => {
             },
           },
         },
-        false,
+        NOT_PAYABLE,
         'basis',
       ).place,
     ).toEqual({
@@ -706,11 +755,11 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, false, 'basis', undefined, false)).not.toHaveProperty(
+    expect(serializeMessage(row, NOT_PAYABLE, 'basis', undefined, false)).not.toHaveProperty(
       'shopAccount',
     );
     expect(
-      serializeMessage({ ...row, shopAccount: null }, false, 'basis', undefined, false),
+      serializeMessage({ ...row, shopAccount: null }, NOT_PAYABLE, 'basis', undefined, false),
     ).not.toHaveProperty('shopAccount');
   });
 
@@ -725,13 +774,13 @@ describe('serializeMessage', () => {
       ...unsignedNostrDefaults(),
       shopAccount: { id: 'shop-acc', username: 'ada', name: 'Ada' },
     };
-    const body = serializeMessage(row, false, 'basis', undefined, false);
+    const body = serializeMessage(row, NOT_PAYABLE, 'basis', undefined, false);
     expect(body.shopAccount).toEqual({ id: 'shop-acc', username: 'ada', name: 'Ada' });
     expect(body).not.toHaveProperty('accountId');
     expect(
       serializeMessage(
         { ...row, shopAccount: { id: 'shop-acc', username: 'ada', name: '' } },
-        false,
+        NOT_PAYABLE,
         'basis',
         undefined,
         true,
@@ -751,13 +800,14 @@ describe('serializeMessage', () => {
     };
     const deletedAt = new Date('2026-09-01T12:00:00.000Z');
     const deletedBy = { id: 'staff-1', name: 'Ada', role: 'moderator' as const };
-    const body = serializeMessage(row, true, 'basis', undefined, true, {
+    const body = serializeMessage(row, PAYABLE, 'basis', undefined, true, {
       deletedAt,
       deletedBy,
     });
     expect(body.deletedAt).toBe('2026-09-01T12:00:00.000Z');
     expect(body.deletedBy).toEqual(deletedBy);
     expect(body.payable).toBe(false);
+    expect(body.authorCanReceive).toBe(false);
   });
 
   it('omits deletedAt and deletedBy when hidden is not passed', () => {
@@ -770,10 +820,26 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    const body = serializeMessage(row, true, 'basis');
+    const body = serializeMessage(row, PAYABLE, 'basis');
     expect(body).not.toHaveProperty('deletedAt');
     expect(body).not.toHaveProperty('deletedBy');
     expect(body.payable).toBe(true);
+    expect(body.authorCanReceive).toBe(true);
+  });
+
+  it('keeps authorCanReceive true on an unsigned note that is not payable yet', () => {
+    const row: MessageRow = {
+      id: 'msg-unsigned',
+      accountId: 'acc-1',
+      name: 'Ada',
+      text: 'live',
+      createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    };
+    const body = serializeMessage(row, { payable: false, authorCanReceive: true }, 'basis');
+    expect(body.payable).toBe(false);
+    expect(body.authorCanReceive).toBe(true);
   });
 
   it('includes staffTag only when the last argument is software_developer', () => {
@@ -786,13 +852,13 @@ describe('serializeMessage', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     };
-    expect(serializeMessage(row, true, 'basis')).not.toHaveProperty('staffTag');
+    expect(serializeMessage(row, PAYABLE, 'basis')).not.toHaveProperty('staffTag');
     expect(
-      serializeMessage(row, true, 'basis', undefined, undefined, undefined, 'software_developer')
+      serializeMessage(row, PAYABLE, 'basis', undefined, undefined, undefined, 'software_developer')
         .staffTag,
     ).toBe('software_developer');
     expect(
-      serializeMessage(row, true, 'basis', undefined, undefined, undefined, null),
+      serializeMessage(row, PAYABLE, 'basis', undefined, undefined, undefined, null),
     ).not.toHaveProperty('staffTag');
   });
 });

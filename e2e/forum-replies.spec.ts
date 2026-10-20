@@ -2,318 +2,189 @@ import { expect, test, type APIRequestContext } from '@playwright/test';
 
 const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
-async function promoteVerified(request: APIRequestContext, accountId: string): Promise<void> {
+/**
+ * Provision one member through the debug route and mint a session.
+ *
+ * The default boot has no LNURL server, so the member has no verified wallet:
+ * reading the forum works, posting answers `missing: ['lightning-address']`.
+ */
+async function memberSession(
+  request: APIRequestContext,
+  prefix: string,
+): Promise<{ id: string; name: string; username: string; auth: { authorization: string } }> {
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const name = `${prefix}${stamp.slice(0, 8)}`;
+  const username = `${prefix.toLowerCase()}-${stamp}`.slice(0, 32);
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name, username }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const token = ((await session.json()) as { token: string }).token;
+  return { id: row!.id, name, username, auth: { authorization: `Bearer ${token}` } };
+}
+
+/**
+ * Promote an account through the debug route.
+ *
+ * @param request - Playwright request context.
+ * @param accountId - Account id.
+ * @param role - New role.
+ */
+async function promote(
+  request: APIRequestContext,
+  accountId: string,
+  role: 'verified' | 'moderator',
+): Promise<void> {
   const promoted = await request.patch(`/debug/accounts/${accountId}`, {
     headers: DEBUG,
-    data: { role: 'verified' },
+    data: { role },
   });
   expect(promoted.status()).toBe(200);
 }
 
 test.describe.configure({ mode: 'serial' });
 
-test('e2e: forum note, public read, reply, and replyCount against the booted API', async ({
+test('e2e: a member without a verified wallet reads the forum but cannot post', async ({
   request,
 }) => {
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: `E2eAda${stamp.slice(0, 8)}`,
-          lightningAddress: `e2e-ada-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
-  });
-  expect(provision.status()).toBe(200);
-
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const adaName = `E2eAda${stamp.slice(0, 8)}`;
-  const ada = accounts.find((row) => row.name === adaName);
-  expect(ada).toBeDefined();
-
-  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  const member = await memberSession(request, 'E2eAda');
+  const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
   expect(agreed.status()).toBe(200);
-  await promoteVerified(request, ada!.id);
+  await promote(request, member.id, 'verified');
+
+  const me = await request.get('/me', { headers: member.auth });
+  expect(me.status()).toBe(200);
+  const owner = (await me.json()) as {
+    lightningAddress: string | null;
+    lightningAddressVerified: boolean;
+    missing: string[];
+  };
+  expect(owner.lightningAddress).toBeNull();
+  expect(owner.lightningAddressVerified).toBe(false);
+  expect(owner.missing).toEqual(['lightning-address']);
 
   const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
+    headers: { ...member.auth, 'content-type': 'application/json' },
     data: { text: 'e2e parent note' },
   });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as { id: string; text: string; replyCount?: number };
-  expect(note.text).toBe('e2e parent note');
-
-  const publicRead = await request.get(`/messages/${note.id}`);
-  expect(publicRead.status()).toBe(200);
-  expect(((await publicRead.json()) as { text: string }).text).toBe('e2e parent note');
-
-  const sinceSatsInvalid = await request.get(`/messages/${note.id}?sinceSats=nope`);
-  expect(sinceSatsInvalid.status()).toBe(400);
-  expect(((await sinceSatsInvalid.json()) as { error: string }).error).toBe(
-    'Expected sinceSats to be a non-negative integer',
-  );
-
-  await new Promise((resolve) => {
-    setTimeout(resolve, 11_000);
+  expect(posted.status()).toBe(409);
+  expect(await posted.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
   });
 
-  const reply = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'e2e reply', inReplyTo: note.id },
-  });
-  expect(reply.status()).toBe(200);
-  expect(((await reply.json()) as { text: string }).text).toBe('e2e reply');
-
-  const replies = await request.get(`/messages/${note.id}/replies`, { headers: auth });
-  expect(replies.status()).toBe(200);
-  const body = (await replies.json()) as { messages: Array<{ text: string }> };
-  expect(body.messages.map((row) => row.text)).toEqual(['e2e reply']);
-  expect(body).not.toHaveProperty('replies');
-
-  const list = await request.get('/messages', { headers: auth });
+  const list = await request.get('/messages', { headers: member.auth });
   expect(list.status()).toBe(200);
-  const listedNotes = (
-    (await list.json()) as { messages: Array<{ id: string; replyCount?: number }> }
-  ).messages;
-  expect(listedNotes.find((row) => row.id === note.id)?.replyCount).toBe(1);
+
+  const pay = await request.get(`/pay/${member.username}`);
+  expect(pay.status()).toBe(404);
 });
 
 test('Function: issueSession — POST /debug/accounts/:id/session with the e2e token is 200', async ({
   request,
 }) => {
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const sessName = `E2eSess${stamp.slice(0, 8)}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: sessName,
-          lightningAddress: `e2e-sess-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
-  });
-  expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const row = accounts.find((item) => item.name === sessName);
-  expect(row).toBeDefined();
-  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const me = await request.get('/me', { headers: { authorization: `Bearer ${token}` } });
+  const member = await memberSession(request, 'E2eSess');
+  const me = await request.get('/me', { headers: member.auth });
   expect(me.status()).toBe(200);
 });
 
-test('Function: markDeleted — DELETE /messages/:id hides the note', async ({ request }) => {
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const hideName = `E2eHide${stamp.slice(0, 8)}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: hideName,
-          lightningAddress: `e2e-hide-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
+/**
+ * Save an About-me note for a member (no wallet needed) and return its id.
+ *
+ * @param request - Playwright request context.
+ * @param member - Member id and bearer.
+ * @returns The About-me note id.
+ */
+async function aboutMeNote(
+  request: APIRequestContext,
+  member: { id: string; auth: { authorization: string } },
+): Promise<string> {
+  const saved = await request.put('/me/about', {
+    headers: member.auth,
+    data: { text: 'About me, to be hidden' },
   });
-  expect(provision.status()).toBe(200);
-
+  expect(saved.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
   expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const account = accounts.find((row) => row.name === hideName);
-  expect(account).toBeDefined();
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === member.id);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return row!.profileMessageId!;
+}
 
-  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
-  expect(agreed.status()).toBe(200);
-  await promoteVerified(request, account!.id);
-
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'e2e hide me' },
-  });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as { id: string };
-
-  const beforeHide = await request.get(`/messages/${note.id}`);
-  expect(beforeHide.status()).toBe(200);
-
-  const basisDenied = await request.delete(`/messages/${note.id}`, { headers: auth });
-  expect(basisDenied.status()).toBe(403);
-  const stillVisible = await request.get(`/messages/${note.id}`);
-  expect(stillVisible.status()).toBe(200);
-
-  const promoted = await request.patch(`/debug/accounts/${account?.id}`, {
-    headers: DEBUG,
-    data: { role: 'moderator' },
-  });
-  expect(promoted.status()).toBe(200);
-
-  const hidden = await request.delete(`/messages/${note.id}`, { headers: auth });
-  expect(hidden.status()).toBe(204);
-  expect(await hidden.text()).toBe('');
-
-  const afterHide = await request.get(`/messages/${note.id}`);
-  expect(afterHide.status()).toBe(404);
-
-  const list = await request.get('/messages', { headers: auth });
-  expect(list.status()).toBe(200);
-  const listedNotes = ((await list.json()) as { messages: Array<{ id: string }> }).messages;
-  expect(listedNotes.some((row) => row.id === note.id)).toBe(false);
-
-  const photo = await request.get(`/messages/${note.id}/photo`);
-  expect(photo.status()).toBe(404);
-
-  const again = await request.delete(`/messages/${note.id}`, { headers: auth });
-  expect(again.status()).toBe(204);
-});
-
-test('Function: listHidden — GET /messages/hidden lists soft-hidden notes', async ({ request }) => {
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const hideName = `E2eHidden${stamp.slice(0, 8)}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: hideName,
-          lightningAddress: `e2e-hidden-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
-  });
-  expect(provision.status()).toBe(200);
-
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const account = accounts.find((row) => row.name === hideName);
-  expect(account).toBeDefined();
-
-  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
-  expect(agreed.status()).toBe(200);
-  await promoteVerified(request, account!.id);
-
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'e2e hidden log' },
-  });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as { id: string };
-
-  const promoted = await request.patch(`/debug/accounts/${account?.id}`, {
-    headers: DEBUG,
-    data: { role: 'moderator' },
-  });
-  expect(promoted.status()).toBe(200);
-
-  const hidden = await request.delete(`/messages/${note.id}`, { headers: auth });
-  expect(hidden.status()).toBe(204);
-
-  const afterHide = await request.get(`/messages/${note.id}`);
-  expect(afterHide.status()).toBe(404);
-
-  const staffList = await request.get('/messages/hidden', { headers: auth });
-  expect(staffList.status()).toBe(200);
-  const hiddenBody = (await staffList.json()) as {
-    messages: Array<{
-      id: string;
-      deletedAt: string;
-      deletedBy: { id: string | null; name: string | null; role: string | null };
-    }>;
-  };
-  const hiddenRow = hiddenBody.messages.find((row) => row.id === note.id);
-  expect(hiddenRow).toBeDefined();
-  expect(hiddenRow?.deletedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
-  expect(hiddenRow?.deletedBy).toEqual({
-    id: account?.id,
-    name: hideName,
-    role: 'moderator',
-  });
-});
-
-test('Function: markUndeleted — POST /debug/messages/:id/restore unhides the note', async ({
+test('Function: markDeleted — DELETE /messages/:id hides the note for a moderator', async ({
   request,
 }) => {
-  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const restoreName = `E2eRestore${stamp.slice(0, 8)}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: restoreName,
-          lightningAddress: `e2e-restore-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
-  });
-  expect(provision.status()).toBe(200);
-
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const account = accounts.find((row) => row.name === restoreName);
-  expect(account).toBeDefined();
-
-  const session = await request.post(`/debug/accounts/${account?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
+  const member = await memberSession(request, 'E2eHide');
+  const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
   expect(agreed.status()).toBe(200);
-  await promoteVerified(request, account!.id);
+  const noteId = await aboutMeNote(request, member);
 
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text: 'e2e restore me' },
+  const basisDenied = await request.delete(`/messages/${noteId}`, { headers: member.auth });
+  expect(basisDenied.status()).toBe(403);
+
+  await promote(request, member.id, 'moderator');
+  const unknown = await request.delete('/messages/00000000-0000-4000-8000-000000000000', {
+    headers: member.auth,
   });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as { id: string };
-
-  const promoted = await request.patch(`/debug/accounts/${account?.id}`, {
-    headers: DEBUG,
-    data: { role: 'moderator' },
-  });
-  expect(promoted.status()).toBe(200);
-
-  const hidden = await request.delete(`/messages/${note.id}`, { headers: auth });
+  expect(unknown.status()).toBe(404);
+  const hidden = await request.delete(`/messages/${noteId}`, { headers: member.auth });
   expect(hidden.status()).toBe(204);
-  expect(await hidden.text()).toBe('');
+  const staffList = await request.get('/messages/hidden', { headers: member.auth });
+  expect(staffList.status()).toBe(200);
+  const ids = ((await staffList.json()) as { messages: Array<{ id: string }> }).messages.map(
+    (message) => message.id,
+  );
+  expect(ids).toContain(noteId);
+});
 
-  const afterHide = await request.get(`/messages/${note.id}`);
-  expect(afterHide.status()).toBe(404);
+test('Function: listHidden — GET /messages/hidden is 200 for a moderator', async ({ request }) => {
+  const member = await memberSession(request, 'E2eHidden');
+  const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
+  expect(agreed.status()).toBe(200);
+  await promote(request, member.id, 'moderator');
 
-  const restored = await request.post(`/debug/messages/${note.id}/restore`, { headers: DEBUG });
+  const staffList = await request.get('/messages/hidden', { headers: member.auth });
+  expect(staffList.status()).toBe(200);
+  const hiddenBody = (await staffList.json()) as { messages: unknown[] };
+  expect(Array.isArray(hiddenBody.messages)).toBe(true);
+});
+
+test('Function: markUndeleted — POST /debug/messages/:id/restore restores a hidden note', async ({
+  request,
+}) => {
+  const member = await memberSession(request, 'E2eRestore');
+  const agreed = await request.post('/me/rules-agreement', { headers: member.auth });
+  expect(agreed.status()).toBe(200);
+  const noteId = await aboutMeNote(request, member);
+  await promote(request, member.id, 'moderator');
+  const hidden = await request.delete(`/messages/${noteId}`, { headers: member.auth });
+  expect(hidden.status()).toBe(204);
+  const hiddenIds = async (): Promise<string[]> => {
+    const list = await request.get('/messages/hidden', { headers: member.auth });
+    expect(list.status()).toBe(200);
+    return ((await list.json()) as { messages: Array<{ id: string }> }).messages.map(
+      (message) => message.id,
+    );
+  };
+  expect(await hiddenIds()).toContain(noteId);
+
+  const restored = await request.post(`/debug/messages/${noteId}/restore`, { headers: DEBUG });
   expect(restored.status()).toBe(204);
-  expect(await restored.text()).toBe('');
-
-  const afterRestore = await request.get(`/messages/${note.id}`);
-  expect(afterRestore.status()).toBe(200);
+  expect(await hiddenIds()).not.toContain(noteId);
+  const unknown = await request.post(
+    '/debug/messages/00000000-0000-4000-8000-000000000000/restore',
+    { headers: DEBUG },
+  );
+  expect(unknown.status()).toBe(404);
 });

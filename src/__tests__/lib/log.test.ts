@@ -3,7 +3,15 @@ import { Hono } from 'hono';
 import { InMemoryApiLogStore } from '@/lib/api-log';
 import { issueSession } from '@/lib/auth/service';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { errorLogFields, logEvent, requestLog, requestLogPath, setDiagnosticSink } from '@/lib/log';
+import {
+  errorLogFields,
+  logEvent,
+  requestLog,
+  requestLogPath,
+  setAddressRefKey,
+  setDiagnosticSink,
+} from '@/lib/log';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -23,6 +31,76 @@ describe('logEvent', () => {
   afterEach(() => {
     warn.mockRestore();
     setDiagnosticSink(null);
+    setAddressRefKey(null);
+  });
+
+  it('prints addressRef instead of address and hands the sink the address', () => {
+    const sink = vi.fn();
+    setDiagnosticSink(sink);
+    setAddressRefKey('  key-one  ');
+    logEvent('spend.ping.ok', { address: 'Ada@Example.com', reason: 'x' });
+    expect(parsedEvents(warn)[0]).toEqual({
+      ts: expect.any(String) as unknown,
+      event: 'spend.ping.ok',
+      addressRef: expectedAddressRef('ada@example.com', 'key-one'),
+      reason: 'x',
+    });
+    expect(String(warn.mock.calls[0]?.[0]).toLowerCase()).not.toContain('ada@example.com');
+    expect(sink).toHaveBeenCalledWith('spend.ping.ok', { address: 'Ada@Example.com', reason: 'x' });
+  });
+
+  it('derives a 12-hex addressRef that depends on the key', () => {
+    setAddressRefKey('key-one');
+    logEvent('e', { address: 'ada@example.com' });
+    setAddressRefKey('key-two');
+    logEvent('e', { address: 'ada@example.com' });
+    const [first, second] = parsedEvents(warn);
+    expect(first?.['addressRef']).toMatch(/^[0-9a-f]{12}$/);
+    expect(second?.['addressRef']).toMatch(/^[0-9a-f]{12}$/);
+    expect(first?.['addressRef']).not.toBe(second?.['addressRef']);
+  });
+
+  it.each([undefined, null, '', '   '])(
+    'prints the marker for address when the key is %j',
+    (key) => {
+      setAddressRefKey('key-one');
+      setAddressRefKey(key);
+      logEvent('e', { address: 'ada@example.com' });
+      expect(parsedEvents(warn)[0]?.['address']).toBe('[address]');
+      expect('addressRef' in (parsedEvents(warn)[0] ?? {})).toBe(false);
+    },
+  );
+
+  it('prints the marker for an email-shaped part of any other string field', () => {
+    const sink = vi.fn();
+    setDiagnosticSink(sink);
+    setAddressRefKey('key-one');
+    const fields = {
+      recipient: 'ada@example.com',
+      path: '/pay/ada@example.com/invoice',
+      note: 'ada@example.com, bob@example.org',
+      encoded: '/pay/ada%40example.com',
+      long: `${'a'.repeat(200)}@example.com`,
+      percent: '100%40 off',
+      plain: 'no at sign',
+      handle: 'user@localhost',
+      count: 2,
+      ok: true,
+    };
+    logEvent('e', fields);
+    const line = parsedEvents(warn)[0];
+    expect(line?.['recipient']).toBe('[address]');
+    expect(line?.['path']).toBe('/pay/[address]/invoice');
+    expect(line?.['note']).toBe('[address], [address]');
+    expect(line?.['encoded']).toBe('/pay/[address]');
+    expect(line?.['long']).toBe('[address]');
+    expect(line?.['percent']).toBe('100%40 off');
+    expect(line?.['plain']).toBe('no at sign');
+    expect(line?.['handle']).toBe('user@localhost');
+    expect(line?.['count']).toBe(2);
+    expect(line?.['ok']).toBe(true);
+    expect(String(warn.mock.calls[0]?.[0])).not.toContain('example.');
+    expect(sink).toHaveBeenCalledWith('e', fields);
   });
 
   it('writes ts and event with no extra fields', () => {
@@ -285,6 +363,14 @@ describe('requestLog', () => {
     expect(probe?.['clientIp']).toBe('192.0.2.1');
   });
 
+  it('prints request client fields unchanged, including an email-shaped user agent', async () => {
+    await appWithRequestLog().request('/probe', {
+      headers: { 'user-agent': 'crawler (ops@example.com)' },
+    });
+    const probe = parsedEvents(warn).find((event) => event['event'] === 'probe');
+    expect(probe?.['userAgent']).toBe('crawler (ops@example.com)');
+  });
+
   it('lets explicit logEvent fields override request client metadata', async () => {
     await appWithRequestLog().request('/probe-explicit', {
       headers: { 'cf-connecting-ip': '192.0.2.1' },
@@ -379,8 +465,6 @@ describe('requestLog', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'v'.repeat(64),

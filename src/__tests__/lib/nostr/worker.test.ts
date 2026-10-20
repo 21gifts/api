@@ -19,13 +19,15 @@ import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
-import { resolveZapReadRelays, resolveZapRelays } from '@/lib/nostr/relays';
+import { resolveZapRelays } from '@/lib/nostr/relays';
+import { createWalletAccount, LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import {
   HOT_ZAP_SINCE_SLACK_S,
   HOT_ZAP_WINDOW_MS,
   runNostrWorkerTick,
   startNostrWorker,
+  zapReceiptIngest,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
@@ -76,8 +78,6 @@ async function seed(): Promise<{
     linkingKey: null,
     role: 'basis',
     name: 'Ada',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
@@ -511,8 +511,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -525,8 +523,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -874,19 +870,33 @@ describe('runNostrWorkerTick', () => {
     expect(kinds).toContain(1);
   });
 
-  it('backfills a profile note for named accounts missing one', async () => {
+  it('backfills a profile note for named accounts with a verified wallet missing one', async () => {
     const auth = new InMemoryAuthStore();
     await auth.createAccount({
       id: 'acc2',
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob@walletofsatoshi.com',
-      lightningAddressVerified: false,
+      username: 'bob',
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
       createdAt: 2,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.claimSparkPubkey('acc2', `02${'ab'.repeat(32)}`);
+    expect(await auth.markSparkPubkeyVerified('acc2', `02${'ab'.repeat(32)}`, 'bob', 2)).toBe(true);
+    await auth.createAccount({
+      id: 'acc3',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Cleo',
+      username: 'cleo',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 3,
       rulesAgreedAt: null,
     });
     await ensureAccountNostrKey(auth, 'acc2', KEK);
@@ -904,6 +914,7 @@ describe('runNostrWorkerTick', () => {
     const stored = await auth.getAccount('acc2');
     expect(typeof stored?.profileMessageId).toBe('string');
     expect((await messages.getById(stored!.profileMessageId!))?.text).toBe('Bob');
+    expect((await auth.getAccount('acc3'))?.profileMessageId ?? null).toBeNull();
   });
 
   it('uses profile note text as kind:0 about', async () => {
@@ -1987,40 +1998,51 @@ describe('runNostrWorkerTick', () => {
     ).toBe(true);
   });
 
-  it('includes lud16 on kind:0 when the account has a Lightning Address', async () => {
+  it('publishes no lud16 on kind:0 for a member without a verified wallet', async () => {
     const { auth, messages } = await seed();
-    const acc = await auth.getAccount('acc');
-    expect(acc).toBeDefined();
-    await auth.updateAccount({ ...acc!, lightningAddress: 'ada@walletofsatoshi.com' });
     const publisher = new RecordingPublisher();
     const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
-    await runNostrWorkerTick(
-      deps({
-        messages,
-        auth,
-        kek: KEK,
-        publisher,
-        now: () => 1_700_000_000_000,
-        env,
-      }),
-    );
-    await runNostrWorkerTick(
-      deps({
-        messages,
-        auth,
-        kek: KEK,
-        publisher,
-        now: () => 1_700_000_060_000,
-        env,
-      }),
-    );
-    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
-    const profileJson = JSON.parse(String(profile?.event['content'])) as {
-      lud16: string;
-      picture: string;
+    const lnurlServer = {
+      baseUrl: 'http://lnurl.internal',
+      publicBaseUrl: 'https://21.gifts',
+      host: '21.gifts',
     };
-    expect(profileJson.lud16).toBe('ada@walletofsatoshi.com');
-    expect(profileJson.picture).toBe('https://21.gifts/apple-touch-icon.png');
+    for (const nowMs of [1_700_000_000_000, 1_700_000_060_000]) {
+      await runNostrWorkerTick(
+        deps({ messages, auth, kek: KEK, publisher, now: () => nowMs, env, lnurlServer }),
+      );
+    }
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const profileJson = JSON.parse(String(profile?.event['content'])) as Record<string, unknown>;
+    expect(profileJson).not.toHaveProperty('lud16');
+    expect(profileJson['picture']).toBe('https://21.gifts/apple-touch-icon.png');
+  });
+
+  it('publishes the wallet-backed address as lud16 when the account has a verified wallet', async () => {
+    const { auth, messages } = await seed();
+    const stored = await auth.getAccount('acc');
+    expect(stored).toBeDefined();
+    vi.spyOn(auth, 'getAccount').mockResolvedValue({
+      ...stored!,
+      username: 'ada',
+      sparkPubkey: `02${'ab'.repeat(32)}`,
+      sparkPubkeyVerifiedAt: 1,
+    });
+    const publisher = new RecordingPublisher();
+    const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+    const lnurlServer = {
+      baseUrl: 'http://lnurl.internal',
+      publicBaseUrl: 'https://21.gifts',
+      host: '21.gifts',
+    };
+    for (const nowMs of [1_700_000_000_000, 1_700_000_060_000]) {
+      await runNostrWorkerTick(
+        deps({ messages, auth, kek: KEK, publisher, now: () => nowMs, env, lnurlServer }),
+      );
+    }
+    const profile = publisher.calls.find((call) => call.event['kind'] === 0);
+    const profileJson = JSON.parse(String(profile?.event['content'])) as { lud16: string };
+    expect(profileJson.lud16).toBe('ada@21.gifts');
   });
 
   it('publishes a name that changed after listAccounts', async () => {
@@ -2222,8 +2244,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -2296,8 +2316,6 @@ describe('runNostrWorkerTick', () => {
         linkingKey: null,
         role: 'basis',
         name: `User${i}`,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: `${i.toString(16).padStart(2, '0')}`.repeat(32),
@@ -2330,8 +2348,6 @@ describe('runNostrWorkerTick', () => {
         linkingKey: null,
         role: 'basis',
         name: `User${i}`,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: `${i.toString(16).padStart(2, '0')}`.repeat(32),
@@ -3150,8 +3166,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3178,8 +3192,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -3204,19 +3216,7 @@ describe('runNostrWorkerTick', () => {
     const providerPubkey = 'cd'.repeat(32);
     const receiptId = 'ef'.repeat(32);
     const auth = new InMemoryAuthStore();
-    await auth.createAccount({
-      id: 'acc-zap',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'worker-zap-ok@example.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'd'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
+    await createWalletAccount(auth, 'acc-zap', 'ada');
     await ensureAccountNostrKey(auth, 'acc-zap', KEK);
     const messages = new InMemoryMessageStore();
     await messages.create({
@@ -3277,6 +3277,7 @@ describe('runNostrWorkerTick', () => {
         verifyReceipt: () => true,
         now: () => 1_700_000_000_000,
         env: {},
+        lnurlServer: LNURL_SERVER,
       }),
     );
     expect((await messages.getById('m-zap'))?.sats).toBe(21);
@@ -3307,15 +3308,13 @@ describe('runNostrWorkerTick', () => {
         env,
       }),
     );
-    expect(querier.calls[0]?.urls).toEqual(resolveZapReadRelays(env));
+    expect(querier.calls[0]?.urls).toEqual(resolveZapRelays(env));
     expect(querier.calls[0]?.filter['kinds']).toContain(9735);
     const kind1Call = querier.calls.find((call) => {
       const kinds = call.filter['kinds'];
       return Array.isArray(kinds) && kinds.includes(1);
     });
     expect(kind1Call?.urls).toEqual(resolveZapRelays(env));
-    expect(kind1Call?.urls).not.toContain('wss://nostr.wine');
-    expect(kind1Call?.urls).not.toContain('wss://nostr.bitcoiner.social');
   });
 
   it('skips private-message ingest when no conversation store is injected', async () => {
@@ -3399,8 +3398,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3450,8 +3447,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3509,8 +3504,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3624,8 +3617,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3686,8 +3677,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3747,8 +3736,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -3761,8 +3748,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3821,8 +3806,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3881,8 +3864,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3962,8 +3943,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4170,8 +4149,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4235,8 +4212,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4294,8 +4269,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -4436,8 +4409,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'p'.repeat(64),
@@ -4747,8 +4718,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'p'.repeat(64),
@@ -4834,8 +4803,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -5003,8 +4970,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '7'.repeat(64),
@@ -5073,8 +5038,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '6'.repeat(64),
@@ -5129,8 +5092,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '8'.repeat(64),
@@ -5615,8 +5576,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '9'.repeat(64),
@@ -5828,8 +5787,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -5886,8 +5843,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -5948,8 +5903,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -6274,8 +6227,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'NoKey',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -6287,8 +6238,6 @@ describe('runNostrWorkerTick', () => {
       linkingKey: null,
       role: 'basis',
       name: 'EmptyKey',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -6584,7 +6533,7 @@ describe('runNostrWorkerTick modes', () => {
       limit: 200,
       since: Math.floor(older.getTime() / 1000) - HOT_ZAP_SINCE_SLACK_S,
     });
-    expect(zapCalls[0]?.urls).toEqual(resolveZapReadRelays({ NOSTR_RELAY_SPACE: 'wss://space' }));
+    expect(zapCalls[0]?.urls).toEqual(resolveZapRelays({ NOSTR_RELAY_SPACE: 'wss://space' }));
     expect(
       querier.calls.some((call) => {
         const kinds = call.filter['kinds'];
@@ -6651,19 +6600,7 @@ describe('runNostrWorkerTick modes', () => {
     const providerPubkey = 'cd'.repeat(32);
     const receiptId = 'ef'.repeat(32);
     const auth = new InMemoryAuthStore();
-    await auth.createAccount({
-      id: 'acc-hot',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'hot-zap@example.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'e'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
+    await createWalletAccount(auth, 'acc-hot', 'ada');
     await ensureAccountNostrKey(auth, 'acc-hot', KEK);
     const messages = new InMemoryMessageStore();
     await messages.create({
@@ -6724,6 +6661,7 @@ describe('runNostrWorkerTick modes', () => {
         verifyReceipt: () => true,
         now: () => nowMs,
         env: {},
+        lnurlServer: LNURL_SERVER,
       }),
       'fast',
     );
@@ -6804,21 +6742,9 @@ describe('runNostrWorkerTick modes', () => {
         return Array.isArray(kinds) && (kinds.includes(4) || kinds.includes(1059));
       }),
     ).toBe(true);
-    const zapReadUrls = resolveZapReadRelays(env);
-    const replyUrls = resolveZapRelays(env);
+    // Receipts, replies, and direct messages are all read on the zap request relays.
     for (const call of querier.calls) {
-      const kinds = call.filter['kinds'];
-      if (!Array.isArray(kinds)) {
-        continue;
-      }
-      if (kinds.includes(9735)) {
-        expect(call.urls).toEqual(zapReadUrls);
-      }
-      if (kinds.includes(1) || kinds.includes(4) || kinds.includes(1059)) {
-        expect(call.urls).toEqual(replyUrls);
-        expect(call.urls).not.toContain('wss://nostr.wine');
-        expect(call.urls).not.toContain('wss://nostr.bitcoiner.social');
-      }
+      expect(call.urls).toEqual(resolveZapRelays(env));
     }
     expect((await messages.getById('m1'))?.eventId).toBeNull();
     expect(publisher.calls).toHaveLength(0);
@@ -7760,5 +7686,86 @@ describe('startNostrWorker', () => {
     expect(imeta?.some((part) => part.startsWith('size '))).toBe(true);
     expect(imeta?.some((part) => /^x [0-9a-f]{64}$/.test(part))).toBe(true);
     expect(imeta?.some((part) => part.startsWith('dim '))).toBe(false);
+  });
+});
+
+describe('zapReceiptIngest', () => {
+  it('ingests one receipt with the worker arguments and the LNURL server', async () => {
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    const owner = '0209cb7d2b5d3df3a0ac4ef86cfcfa229ffa52b687d797274c8669cbd5235eccd5';
+    const receiptPubkey = 'ab'.repeat(32);
+    await auth.createAccount({
+      id: 'acc-ingest',
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ingest-wallet',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'e'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await auth.claimSparkPubkey('acc-ingest', owner);
+    await auth.markSparkPubkeyVerified('acc-ingest', owner, 'ingest-wallet', 2);
+    const eventId = 'ef'.repeat(32);
+    await messages.create({
+      id: 'm-ingest',
+      accountId: 'acc-ingest',
+      name: 'Ada',
+      text: 'hi',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+    });
+    mockedDecode.mockReturnValue({ paymentHash: 'd4'.repeat(32), amountMsat: 21_000 });
+    const calls: string[] = [];
+    const fetchImpl: FetchFn = async (input) => {
+      const url = String(input);
+      calls.push(url);
+      if (url !== 'http://lnurl.internal/.well-known/lnurlp/ingest-wallet') {
+        return new Response('{}', { status: 500 });
+      }
+      return Response.json({
+        callback: 'https://gifts.test/lnurlp/ingest-wallet/invoice',
+        minSendable: 1000,
+        maxSendable: 10_000_000,
+        allowsNostr: true,
+        nostrPubkey: receiptPubkey,
+      });
+    };
+    const ingestOne = zapReceiptIngest(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => 1,
+        env: {},
+        fetchImpl,
+        verifyReceipt: () => true,
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://gifts.test',
+          host: 'gifts.test',
+        },
+      }),
+    );
+    const ok = await ingestOne({
+      id: 'r-ingest',
+      pubkey: receiptPubkey,
+      kind: 9735,
+      tags: [
+        ['e', eventId],
+        ['bolt11', 'lnbc-ingest'],
+      ],
+    });
+    expect(ok).toBe(true);
+    expect((await messages.getById('m-ingest'))?.sats).toBe(21);
+    expect(calls).toContain('http://lnurl.internal/.well-known/lnurlp/ingest-wallet');
+    expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
   });
 });

@@ -53,7 +53,9 @@ It handles everything that doesn't have to run client-side:
 
 It explicitly **does not** hold keys or sign events for the non-custodial
 target (v1 signs custodial identities server-side). Guest Donate LNURL-pay
-stays in the browser; the spend-worker path is the exception
+is paid in the browser; for a member's wallet address this api forwards the
+LNURL metadata and invoice callback, so it sees the amount and the invoice,
+but it never pays or holds funds. The spend-worker path is the exception
 (`POST /invoices` fetches a recipient BOLT11, this api still does not pay).
 
 ## Stack
@@ -102,19 +104,23 @@ bun run e2e             # Playwright against bun src/index.ts
 | `WEBAUTHN_RP_ID`       | For passkey login | WebAuthn RP ID (`21.gifts` / `dev.21.gifts` / `staging.21.gifts` / `localhost`). Missing → passkey routes return 500; process still boots. Not a secret. |
 | `WEBAUTHN_RP_NAME`     | no                | Human-readable RP name (default `21.gifts`).                                                                                                             |
 | `CORS_ALLOWED_ORIGINS` | no                | Comma-separated browser origins. Passkey finish allows those whose hostname is the RP ID or `app.<rpId>` only.                                           |
+| `LOGINS_OPEN_DEFAULT`  | no                | Login switch until an operator sets it: `open` (default) or `closed`. Any other value stops the boot. Not a secret.                                      |
+| `APP_BUILD_REQUIRED`   | no                | App build id that session-creating requests must send in `X-App-Build`. Unset or blank → no check. Not a secret.                                         |
 
 ## Documentation
 
-| Doc                                                          | Purpose                                                                                                                  |
-| ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------ |
-| [`CONCEPT.md`](./CONCEPT.md)                                 | Project vision, architecture, principles, decisions                                                                      |
-| [`SPEC.md`](./SPEC.md)                                       | Implemented HTTP surface (request/response contracts)                                                                    |
-| [`FLOWS.md`](./FLOWS.md)                                     | Core UI journeys (sign-in → profile → donate → recurring → message)                                                      |
-| [`docs/social-recovery.md`](./docs/social-recovery.md)       | Optional securing of the account by choosing two people (concept only, not implemented)                                  |
-| [`docs/shop-spark-payment.md`](./docs/shop-spark-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC pays out as bitcoin on the shop's Spark wallet (concept only, not implemented) |
-| [`docs/handbook/`](./docs/handbook/)                         | Mandatory: every function and HTTP endpoint                                                                              |
-| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                       | Dev setup, conventions, workflow                                                                                         |
-| [`SECURITY.md`](./SECURITY.md)                               | Reporting vulnerabilities                                                                                                |
+| Doc                                                                    | Purpose                                                                                                                                         |
+| ---------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`docs/shop-identity.md`](./docs/shop-identity.md)                     | Every shop gets its own NOSTR identity and page `/{npub}`, shared with OpenCryptoPay (concept only, not implemented)                            |
+| [`CONCEPT.md`](./CONCEPT.md)                                           | Project vision, architecture, principles, decisions                                                                                             |
+| [`SPEC.md`](./SPEC.md)                                                 | Implemented HTTP surface (request/response contracts)                                                                                           |
+| [`FLOWS.md`](./FLOWS.md)                                               | Core UI journeys (sign-in → profile → donate → recurring → message)                                                                             |
+| [`docs/social-recovery.md`](./docs/social-recovery.md)                 | Optional securing of the account by choosing two people (concept only, not implemented)                                                         |
+| [`docs/shop-stablecoin-payment.md`](./docs/shop-stablecoin-payment.md) | Shop QR stays OpenCryptoPay; USDT or USDC on fixed EVM chains goes to Orchestra, which pays one BOLT11 to the shop (specified, not implemented) |
+| [`docs/wallet-release-payouts.md`](./docs/wallet-release-payouts.md)   | Daily payouts across the in-app wallet release: who is paid today, why each keeps being paid on the wallet only, and what release day needs     |
+| [`docs/handbook/`](./docs/handbook/)                                   | Mandatory: every function and HTTP endpoint                                                                                                     |
+| [`CONTRIBUTING.md`](./CONTRIBUTING.md)                                 | Dev setup, conventions, workflow                                                                                                                |
+| [`SECURITY.md`](./SECURITY.md)                                         | Reporting vulnerabilities                                                                                                                       |
 
 ## License
 

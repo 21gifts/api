@@ -3,8 +3,8 @@ import { LN_ADDRESS_CACHE_TTL_MS } from '@/lib/config';
 import { InMemoryLnAddressCache, type CachedLnAddress } from '@/lib/ln-address-cache';
 
 const ENTRY: CachedLnAddress = {
-  address: 'alice@walletofsatoshi.com',
-  callback: 'https://walletofsatoshi.com/lnurlp/callback',
+  address: 'alice@example.com',
+  callback: 'https://example.com/lnurlp/callback',
   minSendable: 1000,
   maxSendable: 100_000_000_000,
   commentAllowed: 255,
@@ -44,7 +44,7 @@ describe('InMemoryLnAddressCache', () => {
     const updated: CachedLnAddress = {
       ...ENTRY,
       minSendable: 2000,
-      callback: 'https://walletofsatoshi.com/lnurlp/callback-v2',
+      callback: 'https://example.com/lnurlp/callback-v2',
     };
     cache.put(updated, 1_000_001);
     expect(cache.get(ENTRY.address, 1_000_001)).toEqual(updated);
@@ -54,8 +54,8 @@ describe('InMemoryLnAddressCache', () => {
     const cache = new InMemoryLnAddressCache();
     const other: CachedLnAddress = {
       ...ENTRY,
-      address: 'bob@walletofsatoshi.com',
-      callback: 'https://walletofsatoshi.com/lnurlp/bob',
+      address: 'bob@example.com',
+      callback: 'https://example.com/lnurlp/bob',
     };
     const t0 = 1_000_000;
     cache.put(ENTRY, t0);

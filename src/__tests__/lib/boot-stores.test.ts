@@ -7,6 +7,7 @@ import { PostgresAuthStore } from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { InMemoryBtcUsdStore, PostgresBtcUsdStore } from '@/lib/btc-usd-store';
 import { InMemoryFiatStore, PostgresFiatStore } from '@/lib/usd-fiat-store';
+import { InMemoryFxSpotStore, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { QueryGiftStore } from '@/lib/gift-store';
 import { SqlGiftRecorder } from '@/lib/gift-recorder';
 import { PostgresContactStore } from '@/lib/contact-store';
@@ -24,9 +25,16 @@ import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
-import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
+import {
+  DAILY_ROSTER_WALLET_MOVE_SQL,
+  InMemoryDailyRosterStore,
+  PostgresDailyRosterStore,
+} from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
+import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { PostgresWalletStore } from '@/lib/wallet-store';
+import { PostgresMemberEventStore } from '@/lib/member-event-store';
 
 function unusedClient(): SqlClient {
   return {
@@ -68,6 +76,7 @@ describe('openBootStores', () => {
       giftRecorder,
       btcUsdRates,
       fiatRates,
+      fxSpotStore,
       messageStore,
       translationStore,
       conversationTranslationStore,
@@ -84,6 +93,9 @@ describe('openBootStores', () => {
       bannerStore,
       listDbChange,
       debugDbStore,
+      sparkInvoiceStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -104,8 +116,12 @@ describe('openBootStores', () => {
     expect(bannerStore).toBeUndefined();
     expect(listDbChange).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
+    expect(sparkInvoiceStore).toBeUndefined();
+    expect(walletStore).toBeUndefined();
+    expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
+    expect(fxSpotStore).toBeInstanceOf(InMemoryFxSpotStore);
     expect(factory).not.toHaveBeenCalled();
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zap.backfill.done')).toBe(false);
     expect(parsedEvents(warn).some((e) => e['event'] === 'nostr.zapper.backfill.done')).toBe(false);
@@ -134,6 +150,8 @@ describe('openBootStores', () => {
       rosterStore,
       bannerStore,
       debugDbStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores('   ', factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
     expect(giftStore).toBeUndefined();
@@ -153,6 +171,8 @@ describe('openBootStores', () => {
     expect(rosterStore).toBeInstanceOf(InMemoryDailyRosterStore);
     expect(bannerStore).toBeUndefined();
     expect(debugDbStore).toBeUndefined();
+    expect(walletStore).toBeUndefined();
+    expect(memberEventStore).toBeUndefined();
     expect(btcUsdRates).toBeInstanceOf(InMemoryBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(InMemoryFiatStore);
     expect(factory).not.toHaveBeenCalled();
@@ -209,6 +229,7 @@ describe('openBootStores', () => {
       giftRecorder,
       btcUsdRates,
       fiatRates,
+      fxSpotStore,
       messageStore,
       translationStore,
       conversationTranslationStore,
@@ -224,6 +245,9 @@ describe('openBootStores', () => {
       rosterStore,
       bannerStore,
       debugDbStore,
+      sparkInvoiceStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -255,8 +279,12 @@ describe('openBootStores', () => {
     expect(rosterStore).toBeInstanceOf(PostgresDailyRosterStore);
     expect(bannerStore).toBeInstanceOf(PostgresBannerStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(sparkInvoiceStore).toBeInstanceOf(PostgresSparkInvoiceStore);
+    expect(walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
+    expect(fxSpotStore).toBeInstanceOf(PostgresFxSpotStore);
     expect(executes.length).toBeGreaterThan(0);
     expect(executes.some((q) => q.includes('message'))).toBe(true);
     expect(executes.some((q) => q.includes('contact'))).toBe(true);
@@ -283,7 +311,21 @@ describe('openBootStores', () => {
     const diagnosticIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS diagnostic_event/i.test(q),
     );
+    const sparkInvoiceIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS spark_invoice/i.test(q),
+    );
+    const walletIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS wallet_balance_snapshot/i.test(q),
+    );
+    const memberEventIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS member_event/i.test(q),
+    );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
+    expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
+    expect(walletIdx).toBeGreaterThan(sparkInvoiceIdx);
+    expect(memberEventIdx).toBeGreaterThan(walletIdx);
+    expect(dbChangeIdx).toBeGreaterThan(memberEventIdx);
+    expect(dbChangeIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(trustIdx).toBeGreaterThanOrEqual(0);
     expect(fundingIdx).toBeGreaterThan(trustIdx);
     expect(rosterIdx).toBeGreaterThan(fundingIdx);
@@ -299,6 +341,11 @@ describe('openBootStores', () => {
     expect(btcUsdIdx).toBeGreaterThanOrEqual(0);
     expect(fiatIdx).toBeGreaterThan(btcUsdIdx);
     expect(dbChangeIdx).toBeGreaterThan(fiatIdx);
+    const fxSpotIdx = executes.findIndex((q) =>
+      /CREATE TABLE IF NOT EXISTS btc_fiat_spot/i.test(q),
+    );
+    expect(fxSpotIdx).toBeGreaterThan(fiatIdx);
+    expect(dbChangeIdx).toBeGreaterThan(fxSpotIdx);
     const zapPaymentIdx = executes.findIndex((q) =>
       /CREATE TABLE IF NOT EXISTS nostr_zap_payment/i.test(q),
     );
@@ -453,6 +500,8 @@ describe('openBootStores', () => {
       fundingStore,
       listDbChange,
       debugDbStore,
+      walletStore,
+      memberEventStore,
     } = await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -474,6 +523,8 @@ describe('openBootStores', () => {
     expect(diagnosticStore).toBeInstanceOf(PostgresDiagnosticStore);
     expect(fundingStore).toBeInstanceOf(PostgresFundingStore);
     expect(debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(btcUsdRates).toBeInstanceOf(PostgresBtcUsdStore);
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(typeof listDbChange).toBe('function');
@@ -572,8 +623,97 @@ describe('openBootStores', () => {
     expect(stores.pushStore).toBeInstanceOf(PostgresPushStore);
     expect(stores.trustStore).toBeInstanceOf(PostgresTrustStore);
     expect(stores.debugDbStore).toBeInstanceOf(PostgresDebugDbStore);
+    expect(stores.walletStore).toBeInstanceOf(PostgresWalletStore);
+    expect(stores.memberEventStore).toBeInstanceOf(PostgresMemberEventStore);
     expect(parsedEvents(warn)).toContainEqual(
       expect.objectContaining({ event: 'nostr.zapper.backfill.failed' }),
+    );
+  });
+
+  it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
+    const operations: Array<{
+      kind: 'query' | 'execute';
+      text: string;
+      params: readonly unknown[] | undefined;
+    }> = [];
+    const client: SqlClient = {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        operations.push({ kind: 'query', text, params });
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        if (text === DAILY_ROSTER_WALLET_MOVE_SQL) {
+          return [{ moved: 1, removed: 1 }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string, params?: readonly unknown[]) => {
+        operations.push({ kind: 'execute', text, params });
+      },
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: {
+        baseUrl: 'http://lnurl.internal',
+        publicBaseUrl: 'https://21.gifts',
+        host: '21.Gifts',
+      },
+    });
+
+    const rosterIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS daily_roster_entry/i.test(o.text),
+    );
+    const dbChangeIdx = operations.findIndex((o) =>
+      /CREATE TABLE IF NOT EXISTS db_change/i.test(o.text),
+    );
+    const lastTriggerIdx = operations.reduce(
+      (last, o, i) => (o.text.includes('trg_db_change') ? i : last),
+      -1,
+    );
+    const moves = operations.filter((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    const moveIdx = operations.findIndex((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    expect(rosterIdx).toBeGreaterThanOrEqual(0);
+    expect(dbChangeIdx).toBeGreaterThan(rosterIdx);
+    expect(lastTriggerIdx).toBeGreaterThan(dbChangeIdx);
+    expect(moveIdx).toBeGreaterThan(lastTriggerIdx);
+    expect(moves).toEqual([
+      { kind: 'query', text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] },
+    ]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move', moved: 1, removed: 1 }),
+    );
+  });
+
+  it('skips the roster wallet move when the LNURL server is off', async () => {
+    const queries: string[] = [];
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> => {
+        queries.push(text);
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async () => undefined,
+    };
+
+    await openBootStores('postgres://gifts21@localhost/gifts21', () => client, {
+      fetchImpl: async () => new Response('[]', { status: 200 }),
+      candlesUrl: 'https://example.test/candles',
+      frankfurterUrl: 'https://example.test/frankfurter',
+      nostrQuerier: new RecordingQuerier(),
+      zapRelayUrls: ['wss://relay.example'],
+      lnurlServer: null,
+    });
+
+    expect(queries).not.toContain(DAILY_ROSTER_WALLET_MOVE_SQL);
+    expect(parsedEvents(warn)).not.toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.wallet_move' }),
     );
   });
 

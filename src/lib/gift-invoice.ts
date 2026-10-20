@@ -5,10 +5,8 @@ import { resolveLnurlp } from '@/lib/lnurlp';
 /**
  * LNURL-pay invoice fetch for gift amounts.
  *
- * Unlike verification's `requestPayInvoice`, this does not require a LUD-12
- * comment and does not apply the 10-sat verification cap. Amount must sit
- * inside the provider's minSendable/maxSendable — this function does not
- * raise the amount.
+ * The LUD-12 comment is optional. Amount must sit inside the provider's
+ * minSendable/maxSendable — this function does not raise the amount.
  */
 
 /** Successful gift invoice fetch, or a collapsed failure. */

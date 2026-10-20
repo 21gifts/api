@@ -1,8 +1,11 @@
 import { describe, it, expect } from 'vitest';
 import {
+  DEFAULT_SPARK_OPERATOR_URL,
   expectedOriginsForRpId,
   normalizeWebAuthnRpId,
   resolveAllowedOrigins,
+  resolveFreePaymentsConfig,
+  resolveLnurlServerConfig,
   resolveWebAuthnConfig,
 } from '@/lib/config';
 
@@ -116,5 +119,134 @@ describe('resolveWebAuthnConfig', () => {
       'http://localhost:3000',
     ]);
     expect(config?.rpName).toBe('21.gifts');
+  });
+});
+
+describe('resolveLnurlServerConfig', () => {
+  it('returns null when LNURL_SERVER_URL is unset or blank', () => {
+    expect(resolveLnurlServerConfig({})).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: '   ',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when either URL is invalid', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'not a url',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'not a url',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when PUBLIC_BASE_URL is missing or blank', () => {
+    expect(resolveLnurlServerConfig({ LNURL_SERVER_URL: 'http://lnurl.test' })).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: '   ',
+      }),
+    ).toBeNull();
+  });
+
+  it('returns null when either protocol is not http or https', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'ftp://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toBeNull();
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test',
+        PUBLIC_BASE_URL: 'ftp://example.test',
+      }),
+    ).toBeNull();
+  });
+
+  it('trims and removes one trailing slash from both URLs', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: '  http://lnurl.test/  ',
+        PUBLIC_BASE_URL: '  https://example.test/  ',
+      }),
+    ).toEqual({
+      baseUrl: 'http://lnurl.test',
+      publicBaseUrl: 'https://example.test',
+      host: 'example.test',
+    });
+  });
+
+  it('includes the port in host when PUBLIC_BASE_URL has one', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'http://lnurl.test:9090',
+        PUBLIC_BASE_URL: 'https://example.test:8443',
+      }),
+    ).toEqual({
+      baseUrl: 'http://lnurl.test:9090',
+      publicBaseUrl: 'https://example.test:8443',
+      host: 'example.test:8443',
+    });
+  });
+
+  it('resolves host without a port', () => {
+    expect(
+      resolveLnurlServerConfig({
+        LNURL_SERVER_URL: 'https://lnurl.test',
+        PUBLIC_BASE_URL: 'https://example.test',
+      }),
+    ).toEqual({
+      baseUrl: 'https://lnurl.test',
+      publicBaseUrl: 'https://example.test',
+      host: 'example.test',
+    });
+  });
+});
+
+describe('resolveFreePaymentsConfig', () => {
+  const NSEC = '11'.repeat(32);
+
+  it('is off when the nsec is unset, blank, short, or not hex', () => {
+    expect(resolveFreePaymentsConfig({})).toBeNull();
+    expect(resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: '  ' })).toBeNull();
+    expect(resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: '11'.repeat(31) })).toBeNull();
+    expect(resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: 'zz'.repeat(32) })).toBeNull();
+  });
+
+  it('accepts upper-case hex and uses the default operator URL when unset or blank', () => {
+    const config = resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: ` ${'AB'.repeat(32)} ` });
+    expect(config?.zapNsec).toEqual(new Uint8Array(32).fill(0xab));
+    expect(config?.operatorUrl).toBe(DEFAULT_SPARK_OPERATOR_URL);
+    expect(
+      resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: NSEC, SPARK_OPERATOR_URL: ' ' })?.operatorUrl,
+    ).toBe('https://0.spark.lightspark.com');
+  });
+
+  it('trims a custom operator URL and its trailing slash', () => {
+    expect(
+      resolveFreePaymentsConfig({
+        LNURL_ZAP_NSEC_HEX: NSEC,
+        SPARK_OPERATOR_URL: ' http://operator.test:8080/ ',
+      })?.operatorUrl,
+    ).toBe('http://operator.test:8080');
+  });
+
+  it('is off when the operator URL is not http(s) or does not parse', () => {
+    expect(
+      resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: NSEC, SPARK_OPERATOR_URL: 'ftp://op.test' }),
+    ).toBeNull();
+    expect(
+      resolveFreePaymentsConfig({ LNURL_ZAP_NSEC_HEX: NSEC, SPARK_OPERATOR_URL: 'not a url' }),
+    ).toBeNull();
   });
 });

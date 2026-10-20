@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# gifts-debug — operator listing, role assignment, Lightning Address unlink,
+# gifts-debug — operator listing, role assignment,
 #               forum-note debug reads, HTTP audit log, external-pubkey inspection,
 #               forum-video restore, forum-note unhide,
 #               spend live roster, trust-edge backfill, account-by-id,
@@ -21,7 +21,10 @@
 #               GET /funding/applications, GET /funding/applications/:accountId,
 #               GET /funding/daily-roster, GET /trust/proposals,
 #               GET /members/:accountId/activity, GET /messages/hidden,
-#               GET /messages/:id/edits). No raw SQL.
+#               GET /messages/:id/edits,
+#               GET/PUT /debug/logins, POST /debug/logins/allowlist,
+#               DELETE /debug/logins/allowlist/:accountId,
+#               DELETE /debug/sessions). No raw SQL.
 #
 # Credentials (never in this script, never printed):
 #   ~/.config/21gifts/debug.env  ->  DEBUG_TOKEN, DEBUG_API_URL,
@@ -33,12 +36,11 @@
 #   gifts-debug accounts [--raw]     # table (default) or JSON
 #   gifts-debug account <id>         # GET /debug/accounts/:id JSON
 #   gifts-debug dump [table] [--raw] # GET /debug/dump or /debug/dump/:table JSON
-#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, address_verification, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
+#                                    # tables: account, passkey_credential, passkey_challenge, auth_session, api_log, contact, conversation, conversation_message, conversation_read, message, message_extra_photo, message_invoice, nostr_zap_ingest, nostr_zap_receipt, nostr_zap_payment, nostr_zapper, nostr_blocked_pubkey, notification, push_subscription, push_outbox, trust_edge, gift, btc_usd_daily, usd_fiat_daily, db_change
 #   gifts-debug trust-edges [--raw]  # GET /debug/trust-edges JSON
 #   gifts-debug role <id> <role>     # set account.role; print updated account JSON
 #   gifts-debug refuse-session <id> [true|false]
 #                                    # set account.sessionRefused; print updated account JSON
-#   gifts-debug unlink <id>          # hard-delete Lightning Address; print updated account JSON
 #   gifts-debug messages [--raw]     # forum notes table (default) or JSON
 #   gifts-debug api-log [account-uuid] [--raw]
 #                                    # every HTTP audit page, table (default) or JSON
@@ -69,6 +71,12 @@
 #   gifts-debug trust-edge-delete <subject-id> <kind>
 #                                      # DELETE a stored trust edge; print edge JSON
 #                                      # Does not change account.role
+#   gifts-debug logins               # GET /debug/logins JSON (switch, source, allowlist)
+#   gifts-debug logins-open          # PUT /debug/logins {"open":true}
+#   gifts-debug logins-close         # PUT /debug/logins {"open":false}; sessions stay
+#   gifts-debug logins-allow <account-uuid>     # add to the login allowlist
+#   gifts-debug logins-disallow <account-uuid>  # remove from the login allowlist
+#   gifts-debug end-sessions yes     # DELETE /debug/sessions; every member is signed out
 #
 # Example:
 #   gifts-debug accounts
@@ -80,7 +88,6 @@
 #   gifts-debug role <account-id> moderator
 #   gifts-debug refuse-session <account-id>
 #   gifts-debug refuse-session <account-id> false
-#   gifts-debug unlink <account-id>
 #   gifts-debug messages
 #   gifts-debug api-log
 #   gifts-debug api-log <account-uuid>
@@ -252,6 +259,55 @@ cmd_refuse_session() {
   printf '%s\n' "$body"
 }
 
+# One debug request with an optional JSON body; prints the 200 body or dies.
+debug_json() {
+  local method="$1" path="$2" data="${3:-}" tmp status body
+  tmp=$(mktemp)
+  if [ -n "$data" ]; then
+    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+      -H "Content-Type: application/json" \
+      -d "$data" \
+      "${DEBUG_API_URL}${path}") || {
+      rm -f "$tmp"
+      die "request failed"
+    }
+  else
+    status=$(curl -sS -o "$tmp" -w '%{http_code}' -X "$method" \
+      -H "Authorization: Bearer ${DEBUG_TOKEN}" \
+      "${DEBUG_API_URL}${path}") || {
+      rm -f "$tmp"
+      die "request failed"
+    }
+  fi
+  body=$(cat "$tmp")
+  rm -f "$tmp"
+  if [ "$status" != "200" ]; then
+    die "HTTP ${status}: ${body}"
+  fi
+  printf '%s\n' "$body"
+}
+
+require_account_uuid() {
+  [[ "${1:-}" =~ ^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$ ]] \
+    || die "invalid account uuid"
+}
+
+cmd_logins_allow() {
+  require_account_uuid "${1:-}"
+  debug_json POST /debug/logins/allowlist "{\"accountId\":\"$1\"}"
+}
+
+cmd_logins_disallow() {
+  require_account_uuid "${1:-}"
+  debug_json DELETE "/debug/logins/allowlist/$1"
+}
+
+cmd_end_sessions() {
+  [ "${1:-}" = "yes" ] || die "usage: gifts-debug end-sessions yes   (signs every member out)"
+  debug_json DELETE /debug/sessions
+}
+
 cmd_passkey_renew_reopen() {
   local id="${1:-}" tmp status body
   [ -z "${2:-}" ] || die "usage: gifts-debug passkey-renew-reopen <account-uuid>"
@@ -286,27 +342,6 @@ cmd_role() {
     -H "Authorization: Bearer ${DEBUG_TOKEN}" \
     -H "Content-Type: application/json" \
     -d "{\"role\":\"${role}\"}" \
-    "${DEBUG_API_URL}/debug/accounts/${id}") || {
-    rm -f "$tmp"
-    die "request failed"
-  }
-  body=$(cat "$tmp")
-  rm -f "$tmp"
-  if [ "$status" != "200" ]; then
-    die "HTTP ${status}: ${body}"
-  fi
-  printf '%s\n' "$body"
-}
-
-cmd_unlink() {
-  local id="${1:-}" tmp status body
-  [ -n "$id" ] || die "usage: gifts-debug unlink <account-id>"
-  tmp=$(mktemp)
-  status=$(curl -sS -o "$tmp" -w '%{http_code}' \
-    -X PATCH \
-    -H "Authorization: Bearer ${DEBUG_TOKEN}" \
-    -H "Content-Type: application/json" \
-    -d '{"lightningAddress":null}' \
     "${DEBUG_API_URL}/debug/accounts/${id}") || {
     rm -f "$tmp"
     die "request failed"
@@ -792,7 +827,6 @@ case "${1:-}" in
   trust-edges) cmd_trust_edges ;;
   role) shift; cmd_role "$@" ;;
   refuse-session) shift; cmd_refuse_session "$@" ;;
-  unlink) shift; cmd_unlink "$@" ;;
   messages) cmd_messages ;;
   api-log) shift; cmd_api_log "$@" ;;
   passkey-renew-reopen) shift; cmd_passkey_renew_reopen "$@" ;;
@@ -813,6 +847,12 @@ case "${1:-}" in
   edits) shift; cmd_edits "$@" ;;
   trust-edge) shift; cmd_trust_edge "$@" ;;
   trust-edge-delete) shift; cmd_trust_edge_delete "$@" ;;
+  logins) debug_json GET /debug/logins ;;
+  logins-open) debug_json PUT /debug/logins '{"open":true}' ;;
+  logins-close) debug_json PUT /debug/logins '{"open":false}' ;;
+  logins-allow) shift; cmd_logins_allow "$@" ;;
+  logins-disallow) shift; cmd_logins_disallow "$@" ;;
+  end-sessions) shift; cmd_end_sessions "$@" ;;
   ""|-h|--help) usage 0 ;;
   *) die "unknown command: $1" ;;
 esac

@@ -127,8 +127,6 @@ describe('GET /links/:code', () => {
       linkingKey: `02${'a'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
