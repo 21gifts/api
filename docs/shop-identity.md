@@ -192,7 +192,7 @@ not, in the same loop and with the same rules as account profiles
   included), but as a round robin with bounded reads: each kind keeps an
   in-process cursor (by `nostr_key_created_at`, then `message_id`, the
   `listAll()` order) and reads one page of at most `WORKER_BATCH`
-  identities after it per tick (`ShopIdentityStore.listRound`, a keyset
+  identities after it per pass (`ShopIdentityStore.listRound`, a keyset
   read on the index `shop_identity_key_order_idx`); when fewer rows follow
   the cursor, the store wraps with a second bounded read from the first
   row. The worker never reads the whole table for a pass. The cursor moves
@@ -200,8 +200,8 @@ not, in the same loop and with the same rules as account profiles
   failing cannot hold back the shops behind them. Every row of the page
   uses a slot, also a shop whose reads throw or whose content is unchanged
   (for kind 10002 too, so a lap visits every shop within
-  ⌈shops / 20⌉ ticks), and a tick reads at most `WORKER_BATCH` shops per
-  kind, also during an outage, plus the NIP-05 allocation: the same listed names as
+  ⌈shops / 20⌉ passes), and a pass reads at most `WORKER_BATCH` shops per
+  kind (a tick whose previous pass of that kind is still running reads none), also during an outage, plus the NIP-05 allocation: the same listed names as
   `/.well-known/nostr.json` (every account and every shop note), read only
   once a visited shop is listed and the NIP-05 domain is set, at first once
   per tick. Each later shop reads its note fresh, so when the allocation has
