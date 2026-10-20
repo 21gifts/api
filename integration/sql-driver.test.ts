@@ -42,6 +42,8 @@ import { parseWalletReport } from '@/lib/wallet-report';
 import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
+import type { OrchestraClient } from '@/lib/orchestra';
+import { submitProofAttempt } from '@/lib/shop-proof';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -3234,6 +3236,126 @@ describe('PostgresShopPaymentStore', () => {
       });
       await Promise.all([holder, waiting]);
       expect(order).toEqual(['settlement-order:commit', 'decision:locked']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('two submit answers on crossed payments lock both payment rows by id and do not deadlock', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const now = Date.now();
+      // Two payments, each with an older proof being submitted and a newer
+      // row of another offer that holds the order Orchestra answers for the
+      // other payment's proof: each answer refuses a row of the other payment.
+      const sides = await Promise.all(
+        [0, 1].map(async () => {
+          const payment = shopPayment(await newAccount(), now);
+          const quoteId = crypto.randomUUID();
+          const offer = shopOffer(quoteId, now);
+          const older = shopProof(offer, payment.id, now - 1_000, {
+            nextSubmitAt: null,
+            lastSubmitAt: null,
+          });
+          const newer = shopProof(offer, payment.id, now, {
+            providerOrder: `o-${crypto.randomUUID()}`,
+            orderStatus: 'processing',
+            orderFoundAt: new Date(now),
+            nextSubmitAt: null,
+          });
+          return { payment, quoteId, offer, older, newer };
+        }),
+      );
+      const [a, b] = sides as [(typeof sides)[0], (typeof sides)[0]];
+      for (const side of [a, b]) {
+        await store.transaction(async (tx) => {
+          expect(await tx.insertPayment(side.payment)).toBe(true);
+          await tx.insertQuote({
+            id: side.quoteId,
+            paymentId: side.payment.id,
+            expiresAt: new Date(now + 120_000),
+            transferAmounts: [],
+            createdAt: new Date(now),
+          });
+          await tx.insertOffers([side.offer]);
+          expect(await tx.insertProof(side.older)).toBe(true);
+          expect(await tx.insertProof(side.newer)).toBe(true);
+        });
+      }
+      // a's older proof is answered with b's order, b's older proof with a's.
+      const answers = new Map([
+        [a.older.txHash, b.newer.providerOrder as string],
+        [b.older.txHash, a.newer.providerOrder as string],
+      ]);
+      const orchestra = {
+        submit: async (_quote: string, txHash: string) => ({
+          kind: 'order' as const,
+          orderId: answers.get(txHash) as string,
+          status: 'processing',
+        }),
+      } as unknown as OrchestraClient;
+      const shop = new ShopPayments({
+        store,
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      });
+      // Hold the lower payment row, so that both answers queue on it: taken
+      // in opposite order (a's own payment first, then b's, and b's the other
+      // way round) the two would deadlock once the holder lets go.
+      const [low] = [a.payment.id, b.payment.id].sort();
+      const order: string[] = [];
+      let held = (): void => undefined;
+      const lowHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockPayment(low as string);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        order.push('holder:commit');
+      });
+      await lowHeld;
+      const deadline = Date.now() + 10_000;
+      const [first, second] = await Promise.all([
+        submitProofAttempt(shop, a.older.id, 'watcher', deadline),
+        submitProofAttempt(shop, b.older.id, 'watcher', deadline),
+        holder,
+      ]);
+      expect(order).toEqual(['holder:commit']);
+      expect(first).toMatchObject({ sent: true });
+      expect(second).toMatchObject({ sent: true });
+      const after = await store.transaction(async (tx) => ({
+        aOlder: await tx.getProof(a.older.id),
+        aNewer: await tx.getProof(a.newer.id),
+        bOlder: await tx.getProof(b.older.id),
+        bNewer: await tx.getProof(b.newer.id),
+      }));
+      // Each older proof took the other payment's order; each newer holder
+      // was refused tx_used by the other payment's answer.
+      expect(after.aOlder?.providerOrder).toBe(b.newer.providerOrder);
+      expect(after.bOlder?.providerOrder).toBe(a.newer.providerOrder);
+      expect(after.aNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+      expect(after.bNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+      expect(after.aOlder?.result).toBe('accepted');
+      expect(after.bOlder?.result).toBe('accepted');
     } finally {
       await closeIfPossible(sql);
     }

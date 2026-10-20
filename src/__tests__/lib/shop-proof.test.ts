@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } fr
 import { decodeSignedEvmTransaction } from '@/lib/evm-transfer';
 import { lockPaymentForProofs, shopMethodByName } from '@/lib/shop-payment';
 import { runShopPaymentTick } from '@/lib/shop-payment-worker';
+import type { ShopProofSelector, ShopTx } from '@/lib/shop-payment-store';
 import {
   SHOP_PROOF_BUDGET_MS,
   SHOP_RPC_TIMEOUT_MS,
@@ -1725,9 +1726,106 @@ describe('merging two rows of one deposit', () => {
     },
   );
 
-  it('a newer holder of another payment is never changed: the submitted proof is refused tx_used', async () => {
+  /** A proof of the other payment (offer `OFFER_OTHER`). */
+  function otherProof(partial: Parameters<typeof proofRow>[0] = {}) {
+    return proofRow({
+      offerId: OFFER_OTHER,
+      paymentId: OTHER_PAYMENT_ID,
+      nextSubmitAt: new Date(T0 + 5_000),
+      ...partial,
+    });
+  }
+
+  /**
+   * Hide the order's holder from the first `findProofs` by order of the next
+   * `times` transactions that read one: the read without a lock that picks
+   * the payments to lock then sees no holder.
+   */
+  function hideHolder(h: Harness, times: number): void {
+    let left = times;
+    const original = h.store.transaction.bind(h.store);
+    const hiding = <T>(run: (tx: ShopTx) => Promise<T>): Promise<T> =>
+      original((tx) => {
+        let first = true;
+        return run(
+          new Proxy(tx, {
+            get: (target, prop) => {
+              const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+              if (prop !== 'findProofs') {
+                return typeof value === 'function' ? value.bind(target) : value;
+              }
+              return async (selector: ShopProofSelector) => {
+                if ('providerOrder' in selector && first && left > 0) {
+                  first = false;
+                  left -= 1;
+                  return [];
+                }
+                return target.findProofs(selector);
+              };
+            },
+          }),
+        );
+      });
+    vi.spyOn(h.store, 'transaction').mockImplementation(hiding as never);
+  }
+
+  it('an accepted newer holder of another payment is refused tx_used under both payment locks taken by id; its payment ends', async () => {
     const h = harness();
+    // The holder's payment has the lower id (PAYMENT_ID), the survivor's the
+    // higher one (OTHER_PAYMENT_ID): the holder's row is locked first.
     await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(h, otherProof({ id: uid(0x4e1), txHash: H1 }), acceptedHolder());
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    const calls = recordTxCalls(h, true);
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      paymentId: OTHER_PAYMENT_ID,
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'processing',
+      orderFoundAt: new Date(T0 + 1_000),
+      nextSubmitAt: null,
+    });
+    expect(calls.filter((call) => call.startsWith('lock'))).toEqual([
+      `lockPayment:${PAYMENT_ID}`,
+      `lockPayment:${OTHER_PAYMENT_ID}`,
+      `lockProofsOf:${PAYMENT_ID},${OTHER_PAYMENT_ID}`,
+    ]);
+    // Every write of the answer comes after both locks.
+    const answer = calls.slice(calls.indexOf(`lockPayment:${PAYMENT_ID}`));
+    expect(answer.slice(0, 3).every((call) => call.startsWith('lock'))).toBe(true);
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      paymentId: PAYMENT_ID,
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+      orderStatus: null,
+      nextStatusAt: null,
+    });
+    // Acceptance is never inherited across payments: the holder's payment
+    // loses its only accepted proof, the survivor's payment is accepted.
+    expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+    expect(await getPayment(h, OTHER_PAYMENT_ID)).toMatchObject({
+      status: 'accepted',
+      endReason: null,
+    });
+    expect(events()).toEqual(
+      expect.arrayContaining([
+        'shop.proof.refused',
+        'shop.proof.accepted',
+        'shop.payment.accepted',
+        'shop.payment.ended',
+      ]),
+    );
+  });
+
+  it("an accepted newer holder of another payment lets that payment's oldest qualifying superseded proof take the place", async () => {
+    const h = harness();
+    await seed(h);
     await h.store.transaction(async (tx) => {
       await tx.updatePayment(
         OTHER_PAYMENT_ID,
@@ -1739,6 +1837,17 @@ describe('merging two rows of one deposit', () => {
       h,
       proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
       acceptedHolder({ offerId: OFFER_OTHER, paymentId: OTHER_PAYMENT_ID }),
+      otherProof({
+        id: uid(0x4e3),
+        txHash: txHash('a3'),
+        result: 'superseded',
+        resolvedAt: new Date(T0 + 2_000),
+        providerOrder: 'o2',
+        orderStatus: 'processing',
+        orderFoundAt: new Date(T0 + 2_000),
+        nextSubmitAt: null,
+        createdAt: new Date(T0 + 2_000),
+      }),
     );
     h.orchestra.submit.mockResolvedValueOnce({
       kind: 'order',
@@ -1746,20 +1855,176 @@ describe('merging two rows of one deposit', () => {
       status: 'processing',
     });
     expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      paymentId: PAYMENT_ID,
+      result: 'accepted',
+      providerOrder: 'o1',
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({ result: 'refused', refusal: 'tx_used' });
+    expect((await getProof(h, uid(0x4e3)))?.result).toBe('accepted');
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+    expect(await getPayment(h, OTHER_PAYMENT_ID)).toMatchObject({
+      status: 'accepted',
+      endReason: null,
+    });
+    expect(events()).not.toContain('shop.payment.ended');
+  });
+
+  it('a held newer holder of another payment hands its order to the older survivor, which evaluates on its own', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      otherProof({
+        id: uid(0x4e2),
+        txHash: H2,
+        providerOrder: 'o1',
+        orderStatus: 'refunding',
+        orderFoundAt: new Date(T0 + 1_000),
+        nextSubmitAt: null,
+        nextStatusAt: new Date(T0 + 11_000),
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'refunding',
+    });
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      result: null,
+      providerOrder: 'o1',
+      orderStatus: 'refunding',
+      orderFoundAt: new Date(T0 + 1_000),
+      nextSubmitAt: null,
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+    });
+    expect((await getPayment(h))?.status).toBe('open');
+    expect((await getPayment(h, OTHER_PAYMENT_ID))?.status).toBe('open');
+  });
+
+  it('a newer holder of another payment that its order ended keeps the order; the survivor is refused tx_used', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      otherProof({
+        id: uid(0x4e2),
+        txHash: H2,
+        result: 'refunded',
+        resolvedAt: new Date(T0 + 2_000),
+        providerOrder: 'o1',
+        orderStatus: 'refunded',
+        orderFoundAt: new Date(T0 + 1_000),
+        nextSubmitAt: null,
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'refunded',
+    });
+    const calls = recordTxCalls(h, true);
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
       id: uid(0x4e1),
       result: 'refused',
       refusal: 'tx_used',
       providerOrder: null,
       nextSubmitAt: null,
     });
+    expect(calls).toContain(`lockProofsOf:${PAYMENT_ID},${OTHER_PAYMENT_ID}`);
     expect(await getProof(h, uid(0x4e2))).toMatchObject({
-      paymentId: OTHER_PAYMENT_ID,
-      result: 'accepted',
-      refusal: null,
+      result: 'refunded',
       providerOrder: 'o1',
-      orderStatus: 'processing',
+      orderStatus: 'refunded',
     });
-    expect((await getPayment(h, OTHER_PAYMENT_ID))?.status).toBe('accepted');
+    expect((await getPayment(h, OTHER_PAYMENT_ID))?.status).toBe('open');
+  });
+
+  it('an older holder of another payment is kept: the newer submitted proof is refused tx_used', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({
+        id: uid(0x4e1),
+        txHash: H1,
+        nextSubmitAt: new Date(T0 + 5_000),
+        createdAt: new Date(T0 + 2_000),
+      }),
+      otherProof({
+        id: uid(0x4e2),
+        txHash: H2,
+        providerOrder: 'o1',
+        orderStatus: 'processing',
+        result: 'accepted',
+        orderFoundAt: new Date(T0 + 1_000),
+        nextSubmitAt: null,
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      result: 'accepted',
+      providerOrder: 'o1',
+    });
+  });
+
+  it('a holder of another payment unseen before the locks applies the answer once more under both locks', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(h, otherProof({ id: uid(0x4e1), txHash: H1 }), acceptedHolder());
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    hideHolder(h, 1);
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      result: 'accepted',
+      providerOrder: 'o1',
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({ result: 'refused', refusal: 'tx_used' });
+    expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+  });
+
+  it('a holder of a payment not locked on the second run is left as it is, and the proof keeps no order', async () => {
+    const h = harness();
+    await seed(h, { status: 'accepted', acceptedAt: new Date(T0) });
+    await insertProofs(h, otherProof({ id: uid(0x4e1), txHash: H1 }), acceptedHolder());
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    hideHolder(h, 2);
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      result: null,
+      refusal: null,
+      providerOrder: null,
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      result: 'accepted',
+      providerOrder: 'o1',
+    });
+    expect(await getPayment(h)).toMatchObject({ status: 'accepted', endReason: null });
+    expect((await getPayment(h, OTHER_PAYMENT_ID))?.status).toBe('open');
   });
 
   it.each([

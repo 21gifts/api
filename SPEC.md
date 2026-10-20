@@ -1100,10 +1100,17 @@ two rows of one deposit, the order-status duty's step for a replaced
 order, and the orders duty's `next_history_at` decision first lock the
 payment's `shop_payment` row, then every proof row of the payment with one
 `SELECT … FOR UPDATE` ordered by id (`lockPaymentForProofs`); none of them
-locks an account row. The settlement step locks the account, `pos_charge`,
-and `shop_payment` rows (a payer's payment only its `shop_payment` row)
-and no proof row, so no two of these wait for each other in opposite
-order. The amount of a `hex` proof is the amount in its
+locks an account row. A submit answer whose order a row of another payment
+holds (step 3 below) reads that row's payment without a lock first, then
+locks both `shop_payment` rows in the order of their ids, then the proof
+rows of both payments with one `SELECT … FOR UPDATE` ordered by id
+(`lockPaymentsForProofs`), and reads the holder again under the locks; a
+holder that moved to a payment not locked applies the answer once more in
+a new transaction. Every other transaction locks or writes at most one
+existing `shop_payment` row. The settlement step locks the account,
+`pos_charge`, and `shop_payment` rows (a payer's payment only its
+`shop_payment` row) and no proof row, so no two of these wait for each
+other in opposite order. The amount of a `hex` proof is the amount in its
 verified transfer `data`; a `tx` or `detected` proof's is the value of its
 `Transfer` log.
 
@@ -1140,17 +1147,20 @@ that survives: the refused row gives up `provider_order` and
 status duty reads it) with the refused row's `order_found_at`, so the fast
 reads and the 24 h status limit do not restart, and with a final status the
 refused row stored rather than the submit's answer, and is evaluated. An
-`accepted` refused row hands its place to the survivor only when that
-evaluation accepts it (a progressing order or `completed`, as the States
-table states); otherwise the oldest qualifying `superseded` proof takes the
-place, or the payment ends with `proof_refused`. While the order is
+`accepted` refused row hands its place to a survivor of the same payment
+only when that evaluation accepts it (a progressing order or `completed`,
+as the States table states); otherwise, and always when the survivor
+belongs to another payment (it is evaluated on its own payment), the
+oldest qualifying `superseded` proof of the refused row's payment takes
+the place, or that payment ends with `proof_refused`. While the order is
 `refunding`, `unfulfilled`, or an unknown status the survivor is held, is
 not `accepted`, and answers 503 until the States table accepts it (a later
 `completed` moves it to `accepted` and an `ended` payment that is not
-closed back to `accepted`) or its order is final. Only rows of the locked payment change:
-when the newer row that holds the order belongs to another payment, the
-submitted row is recorded `refused` with `tx_used` instead, as in step 4,
-and the other payment is left as it is. When the newer row that
+closed back to `accepted`) or its order is final. The newer row that holds
+the order may belong to another payment: it is refused and hands the order
+over the same way, under both payment rows' locks, and every change to
+that payment (its proof's refusal, `shop.proof.refused`, and the loss of
+its accepted proof) happens under its row lock. When the newer row that
 holds the order was already ended by that order (`refunded`, `failed`,
 `refused` with `expired_order`, or a stored final status), it cannot be
 refused and keeps the order (Orchestra counted the deposit on its offer);

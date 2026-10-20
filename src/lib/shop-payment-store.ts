@@ -341,6 +341,13 @@ export interface ShopTx {
    * @returns The proofs, by `id`.
    */
   lockProofs(paymentId: string): Promise<ShopProof[]>;
+  /**
+   * Lock and read every proof row of several payments with one
+   * `SELECT … FOR UPDATE` ordered by id (after the payment row locks).
+   *
+   * @returns The proofs, by `id`.
+   */
+  lockProofsOf(paymentIds: readonly string[]): Promise<ShopProof[]>;
   /** Lock and read one quote, or `null`. */
   lockQuote(quoteId: string): Promise<ShopQuote | null>;
 
@@ -838,6 +845,15 @@ class InMemoryShopTx implements ShopTx {
     return structuredClone(
       this.#t.proofs
         .filter((row) => row.paymentId === paymentId)
+        .sort((a, b) => a.id.localeCompare(b.id)),
+    );
+  }
+
+  /** Copies of the payments' proofs, by `id`. */
+  async lockProofsOf(paymentIds: readonly string[]): Promise<ShopProof[]> {
+    return structuredClone(
+      this.#t.proofs
+        .filter((row) => paymentIds.includes(row.paymentId))
         .sort((a, b) => a.id.localeCompare(b.id)),
     );
   }
@@ -1731,6 +1747,23 @@ class PostgresShopTx implements ShopTx {
     const rows = await this.#tx.query<ProofSqlRow>(
       `SELECT ${PROOF_COLUMNS} FROM shop_proof WHERE payment_id = $1 ORDER BY id FOR UPDATE`,
       [paymentId],
+    );
+    return rows.map(mapProof);
+  }
+
+  /**
+   * The payments' proofs in one `SELECT … ORDER BY id FOR UPDATE`, the ids
+   * bound as one `uuid[]` literal; malformed ids are skipped, and none left
+   * locks nothing.
+   */
+  async lockProofsOf(paymentIds: readonly string[]): Promise<ShopProof[]> {
+    const ids = paymentIds.filter((id) => UUID_PATTERN.test(id));
+    if (ids.length === 0) {
+      return [];
+    }
+    const rows = await this.#tx.query<ProofSqlRow>(
+      `SELECT ${PROOF_COLUMNS} FROM shop_proof WHERE payment_id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
+      [postgresTextArrayLiteral(ids)],
     );
     return rows.map(mapProof);
   }

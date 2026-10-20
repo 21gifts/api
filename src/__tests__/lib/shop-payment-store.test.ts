@@ -403,6 +403,18 @@ describe('InMemoryShopPaymentStore', () => {
     });
   });
 
+  it('lockProofsOf returns copies of the proofs of several payments ordered by id', async () => {
+    await run(async (tx) => {
+      await tx.insertProof(proof({ id: uid(0x303), createdAt: new Date(T0) }));
+      await tx.insertProof(proof({ id: uid(0x301), logIndex: 1, paymentId: uid(2) }));
+      await tx.insertProof(proof({ id: uid(0x302), logIndex: 2, paymentId: uid(3) }));
+      const locked = await tx.lockProofsOf([uid(1), uid(2)]);
+      expect(locked.map((row) => row.id)).toEqual([uid(0x301), uid(0x303)]);
+      locked[0]!.tries = 9;
+      expect((await tx.getProof(uid(0x301)))?.tries).toBe(0);
+    });
+  });
+
   it('round-trips successorWaitUntil and supersededByOrder through inserts and patches', async () => {
     await run(async (tx) => {
       await tx.insertPayment(payment({ successorWaitUntil: new Date(T0 + 1) }));
@@ -1273,6 +1285,20 @@ describe('PostgresShopPaymentStore', () => {
     expect(tx.calls[0]?.params).toEqual([uid(1)]);
     expect(tx.calls[0]?.text).toMatch(
       /FROM shop_proof WHERE payment_id = \$1 ORDER BY id FOR UPDATE$/,
+    );
+  });
+
+  it('lockProofsOf locks the proofs of several payments in one statement ordered by id', async () => {
+    const { tx, store } = postgresStore();
+    tx.respond = () => [proofSqlRow()];
+    await store.transaction(async (t) => {
+      expect(await t.lockProofsOf([uid(1), 'nope', uid(2)])).toEqual([proof()]);
+      expect(await t.lockProofsOf(['nope'])).toEqual([]);
+    });
+    expect(tx.calls).toHaveLength(1);
+    expect(tx.calls[0]?.params).toEqual([`{"${uid(1)}","${uid(2)}"}`]);
+    expect(tx.calls[0]?.text).toMatch(
+      /FROM shop_proof WHERE payment_id = ANY\(\$1::uuid\[\]\) ORDER BY id FOR UPDATE$/,
     );
   });
 

@@ -7,8 +7,11 @@
  *
  * Every transaction that changes a proof's result or merges two proof rows
  * first locks the payment's `shop_payment` row, then every proof row of the
- * payment ordered by id (`lockPaymentForProofs`); no account row is locked.
- * No transaction is held across an RPC or Orchestra call.
+ * payment ordered by id (`lockPaymentForProofs`); a submit answer whose order
+ * a row of another payment holds locks both payment rows in the order of
+ * their ids, then their proof rows ordered by id (`lockPaymentsForProofs`).
+ * No account row is locked. No transaction is held across an RPC or
+ * Orchestra call.
  */
 
 import type { Account } from '@/lib/auth/store';
@@ -32,13 +35,18 @@ import {
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent, type LogFields } from '@/lib/log';
-import { ORCHESTRA_FINAL_STATUSES, type OrchestraSubmitCaller } from '@/lib/orchestra';
+import {
+  ORCHESTRA_FINAL_STATUSES,
+  type OrchestraSubmitCaller,
+  type OrchestraSubmitResult,
+} from '@/lib/orchestra';
 import { normalizeHex32 } from '@/lib/proof';
 import {
   SHOP_FIRST_STATUS_MS,
   SHOP_UNRESOLVED_LIMIT_MS,
   evaluateProof,
   lockPaymentForProofs,
+  lockPaymentsForProofs,
   recordProofOrder,
   refuseProof,
   shopError,
@@ -703,6 +711,9 @@ async function fillProof(
  *   (step 4, the storing step) refuses this proof; `newer` (step 3, a
  *   submit or status answer) refuses the newer of the two rows, and when
  *   that is the holder, this proof takes its order in the same transaction.
+ * @param lockedPayments - The payments whose rows the caller locked
+ *   (default: the proof's payment). A newer holder of another payment is
+ *   refused only when its payment is among them; otherwise nothing changes.
  * @returns The proof (or the row it merged into) after evaluation.
  */
 export async function applyProofOrder(
@@ -711,35 +722,38 @@ export async function applyProofOrder(
   order: { orderId: string; status: string },
   nowMs: number,
   collision: ShopOrderCollision,
+  lockedPayments: readonly string[] = [proof.paymentId],
 ): Promise<ShopProof> {
   const recorded = await recordProofOrder(tx, proof.id, order, nowMs);
   if (recorded !== 'conflict') {
     /* v8 ignore next -- the row was read in this transaction */
     return recorded ?? proof;
   }
-  return mergeOrderHolder(tx, proof, order.orderId, order.status, nowMs, collision);
+  return mergeOrderHolder(tx, proof, order.orderId, order.status, nowMs, collision, lockedPayments);
 }
 
 /**
  * Merge a proof with the row that already holds an order id. With
- * `collision` `newer`, another offer's holder of the same payment that is the
- * newer row (later `created_at`, then greater id) is refused `tx_used` and
- * gives the order to `proof`, which records it ({@link refuseProof} with an
- * heir) with the holder's final status if it stored one and the holder's
- * order found time. A holder whose order already ended it (`refunded`,
- * `failed`, `refused` with `expired_order`, or a stored final status) keeps
- * the order, and `proof` is refused `tx_used`; a holder `refused` for another
- * reason keeps its result and hands the order over. Only the payment of
- * `proof` is locked, so a holder of another payment is never changed: `proof`
- * is refused `tx_used` instead, as every other case through
- * {@link mergeDeposit}.
+ * `collision` `newer`, another offer's holder that is the newer row (later
+ * `created_at`, then greater id), of the same payment or of another one, is
+ * refused `tx_used` and gives the order to `proof`, which records it
+ * ({@link refuseProof} with an heir) with the holder's final status if it
+ * stored one and the holder's order found time. A holder whose order already
+ * ended it (`refunded`, `failed`, `refused` with `expired_order`, or a stored
+ * final status) keeps the order, and `proof` is refused `tx_used`; a holder
+ * `refused` for another reason keeps its result and hands the order over.
+ * The holder's payment must be among `lockedPayments`; a newer holder of a
+ * payment the caller did not lock is left as it is and `proof` stays without
+ * the order (the caller locks that payment and applies the answer again).
+ * Every other case goes through {@link mergeDeposit}.
  *
- * @param tx - Transaction (payment row and proof rows locked).
+ * @param tx - Transaction (payment rows and their proof rows locked).
  * @param proof - The proof that was to take the order.
  * @param orderId - Order id.
  * @param status - The order status to write.
  * @param nowMs - Clock.
  * @param collision - Which row another offer's collision refuses.
+ * @param lockedPayments - The payments whose rows the caller locked.
  * @returns The surviving row.
  */
 async function mergeOrderHolder(
@@ -749,6 +763,7 @@ async function mergeOrderHolder(
   status: string,
   nowMs: number,
   collision: ShopOrderCollision,
+  lockedPayments: readonly string[],
 ): Promise<ShopProof> {
   const holder = (await tx.findProofs({ providerOrder: orderId })).find(
     (row) => row.id !== proof.id,
@@ -760,16 +775,20 @@ async function mergeOrderHolder(
   if (
     collision === 'newer' &&
     holder.offerId !== proof.offerId &&
-    holder.paymentId === proof.paymentId &&
     newerOf(proof, holder) === holder
   ) {
-    // Step 3: the holder is the newer row and is refused `tx_used`. The
+    if (!lockedPayments.includes(holder.paymentId)) {
+      // The holder's payment row is not locked: nothing of it may change.
+      return proof;
+    }
+    // Step 3: the holder is the newer row and is refused `tx_used`, also
+    // when it belongs to another payment (both payment rows are locked). The
     // older row survives and takes the order Orchestra answered for it, in
     // this transaction: its submits stop, the order-status duty follows it,
-    // and it takes an `accepted` holder's place only when its evaluation
-    // accepts it (refuseProof's heir). Only this payment's rows are locked,
-    // so a holder of another payment falls through to mergeDeposit, which
-    // refuses this proof. A final status the holder stored is never older
+    // and it takes an `accepted` holder's place only when it belongs to the
+    // same payment and its evaluation accepts it (refuseProof's heir); the
+    // holder's payment otherwise loses its accepted proof. A final status
+    // the holder stored is never older
     // than the answer's (as in mergeDeposit), and the order keeps the time
     // it was found, so the fast reads and the order_stuck limit do not
     // restart. A holder the order already ended stays, and the survivor is
@@ -943,7 +962,14 @@ async function rotateKey(tx: ShopTx, shop: ShopPayments, proof: ShopProof): Prom
  * order conflict); when another step recorded an order meanwhile, only a
  * final status of that same order is applied; `xchain_deposit_mismatch` refuses; `409 quote_expired`
  * makes the proof `late` and stops submitting; a definitive unresolved
- * answer rotates the idempotency key.
+ * answer rotates the idempotency key. The answer is applied under the
+ * proof's payment row and its proof rows (`lockPaymentForProofs`); when a
+ * row of another payment holds the answered order (a read without a lock,
+ * as the first statement), under both payment rows in the order of their
+ * ids and their proof rows (`lockPaymentsForProofs`), so that step 3 can
+ * refuse that newer row. A holder that moved to a third payment before the
+ * locks applies the answer once more under new locks; on that second run it
+ * is left as it is, and the proof keeps no order until a later submit.
  *
  * @param shop - Service.
  * @param proofId - Proof id.
@@ -1008,68 +1034,143 @@ export async function submitProofAttempt(
     ...(answer.kind === 'order' ? { orderId: answer.orderId } : {}),
     answer: answer.kind,
   });
-  const proof = await shop.store.transaction(async (tx) => {
-    await lockPaymentForProofs(tx, claim.proof.paymentId);
-    const nowMs = shop.deps.now();
-    const current = await tx.getProof(proofId);
-    if (current === null) {
-      return null;
-    }
-    if (answer.kind === 'order') {
-      // Another step recorded an order meanwhile. Only a final status of
-      // that same order is applied; a status in flight may be older than
-      // the one that step stored.
-      if (current.providerOrder !== null) {
-        return current.providerOrder === answer.orderId &&
-          ORCHESTRA_FINAL_STATUSES.has(answer.status)
-          ? applyProofOrder(
-              tx,
-              current,
-              { orderId: answer.orderId, status: answer.status },
-              nowMs,
-              'newer',
-            )
-          : current;
+  const paymentId = claim.proof.paymentId;
+  // An order answer may be held by a row of another payment, which step 3
+  // then refuses: that payment's row is locked too. Its id comes from a read
+  // without a lock before the first lock, so that every transaction takes
+  // the payment rows in the order of their ids; a holder that moved to
+  // another payment before the locks applies the answer once more.
+  const orderId = answer.kind === 'order' ? answer.orderId : null;
+  const answerOnce = (recheck: boolean): Promise<ShopProof | null | 'relock'> =>
+    shop.store.transaction(async (tx) => {
+      const holderPayment =
+        orderId === null ? null : await orderHolderPayment(tx, orderId, proofId);
+      let locked: readonly string[] = [paymentId];
+      if (holderPayment === null || holderPayment === paymentId) {
+        await lockPaymentForProofs(tx, paymentId);
+      } else {
+        const both = await lockPaymentsForProofs(tx, [paymentId, holderPayment]);
+        locked = both.payments.map((payment) => payment.id);
       }
-      return applyProofOrder(
-        tx,
-        current,
-        { orderId: answer.orderId, status: answer.status },
-        nowMs,
-        'newer',
-      );
+      // Re-read under the locks: a holder that moved to a payment not locked
+      // here applies the answer once more; on that second run such a holder
+      // is left as it is and the proof keeps no order (mergeOrderHolder).
+      if (recheck && orderId !== null) {
+        const moved = await orderHolderPayment(tx, orderId, proofId);
+        if (!locked.includes(moved ?? paymentId)) {
+          return 'relock';
+        }
+      }
+      return applySubmitAnswer(tx, shop, proofId, answer, ids, locked);
+    });
+  const first = await answerOnce(true);
+  // The second run never answers 'relock' (recheck is off).
+  const proof = (first === 'relock' ? await answerOnce(false) : first) as ShopProof | null;
+  return { proof, sent: true };
+}
+
+/**
+ * The row other than `proofId` that holds an order, read without a lock:
+ * its payment id, or `null` when no other row holds the order.
+ *
+ * @param tx - Transaction.
+ * @param orderId - Order id.
+ * @param proofId - The submitted proof.
+ * @returns The holder's payment id, or `null`.
+ */
+async function orderHolderPayment(
+  tx: ShopTx,
+  orderId: string,
+  proofId: string,
+): Promise<string | null> {
+  const holder = (await tx.findProofs({ providerOrder: orderId })).find(
+    (row) => row.id !== proofId,
+  );
+  return holder?.paymentId ?? null;
+}
+
+/**
+ * Apply one Orchestra submit answer to a proof (Calls › Submit), under the
+ * locks {@link submitProofAttempt} took: an order is recorded (step 3 on a
+ * collision, across the locked payments); when another step recorded an
+ * order meanwhile, only a final status of that same order is applied;
+ * `xchain_deposit_mismatch` refuses; `409 quote_expired` makes the proof
+ * `late`; a definitive unresolved answer rotates the key.
+ *
+ * @param tx - Transaction (payment rows and their proof rows locked).
+ * @param shop - Service (ids, clock).
+ * @param proofId - Proof id.
+ * @param answer - The submit answer.
+ * @param ids - Log fields of the call.
+ * @param locked - The payments whose rows are locked.
+ * @returns The proof afterwards, or `null` when it does not exist.
+ */
+async function applySubmitAnswer(
+  tx: ShopTx,
+  shop: ShopPayments,
+  proofId: string,
+  answer: Exclude<OrchestraSubmitResult, { kind: 'budget' }>,
+  ids: LogFields,
+  locked: readonly string[],
+): Promise<ShopProof | null> {
+  const nowMs = shop.deps.now();
+  const current = await tx.getProof(proofId);
+  if (current === null) {
+    return null;
+  }
+  if (answer.kind === 'order') {
+    // Another step recorded an order meanwhile. Only a final status of
+    // that same order is applied; a status in flight may be older than
+    // the one that step stored.
+    if (current.providerOrder !== null) {
+      return current.providerOrder === answer.orderId && ORCHESTRA_FINAL_STATUSES.has(answer.status)
+        ? applyProofOrder(
+            tx,
+            current,
+            { orderId: answer.orderId, status: answer.status },
+            nowMs,
+            'newer',
+          )
+        : current;
     }
-    if (current.result !== null || current.providerOrder !== null) {
+    return applyProofOrder(
+      tx,
+      current,
+      { orderId: answer.orderId, status: answer.status },
+      nowMs,
+      'newer',
+      locked,
+    );
+  }
+  if (current.result !== null || current.providerOrder !== null) {
+    return current;
+  }
+  if (answer.kind === 'mismatch') {
+    await refuseProof(tx, proofId, 'mismatch', nowMs);
+    return rotateKey(tx, shop, current);
+  }
+  if (answer.kind === 'quote_expired') {
+    const late = await tx.updateProof(
+      proofId,
+      { results: [null] },
+      {
+        result: 'late',
+        submitStopped: true,
+        resolvedAt: new Date(nowMs),
+        nextSubmitAt: null,
+        idempotencyKey: shop.newId(),
+      },
+    );
+    /* v8 ignore next 3 -- checked unresolved above in this transaction */
+    if (late === null || late === 'conflict') {
       return current;
     }
-    if (answer.kind === 'mismatch') {
-      await refuseProof(tx, proofId, 'mismatch', nowMs);
-      return rotateKey(tx, shop, current);
-    }
-    if (answer.kind === 'quote_expired') {
-      const late = await tx.updateProof(
-        proofId,
-        { results: [null] },
-        {
-          result: 'late',
-          submitStopped: true,
-          resolvedAt: new Date(nowMs),
-          nextSubmitAt: null,
-          idempotencyKey: shop.newId(),
-        },
-      );
-      /* v8 ignore next 3 -- checked unresolved above in this transaction */
-      if (late === null || late === 'conflict') {
-        return current;
-      }
-      logEvent('shop.proof.late', ids);
-      logEvent('shop.alert.late_deposit', ids);
-      return late;
-    }
-    logEvent('shop.proof.unresolved', ids);
-    return answer.retryable ? current : rotateKey(tx, shop, current);
-  });
-  return { proof, sent: true };
+    logEvent('shop.proof.late', ids);
+    logEvent('shop.alert.late_deposit', ids);
+    return late;
+  }
+  logEvent('shop.proof.unresolved', ids);
+  return answer.retryable ? current : rotateKey(tx, shop, current);
 }
 
 /**

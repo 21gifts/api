@@ -900,6 +900,41 @@ export async function lockPaymentForProofs(
 }
 
 /**
+ * {@link lockPaymentForProofs} for a transaction that changes proofs of
+ * several payments (step 3 of Storing and submitting: a submit answered with
+ * an order a newer row of another payment holds): lock the payments'
+ * `shop_payment` rows one by one in the order of their ids, then every proof
+ * row of those payments with one `SELECT … FOR UPDATE` ordered by id. Two
+ * such transactions on the same payments therefore take the payment rows in
+ * the same order and never wait for each other in opposite order; a
+ * transaction that locks one payment waits for at most that payment row
+ * before its proof rows. No account row is locked.
+ *
+ * @param tx - Transaction.
+ * @param paymentIds - Payment ids (duplicates are locked once).
+ * @returns The locked payments by id and their proofs by id; a payment that
+ *   does not exist is left out, and its proof rows are not locked.
+ */
+export async function lockPaymentsForProofs(
+  tx: ShopTx,
+  paymentIds: readonly string[],
+): Promise<{ payments: ShopPayment[]; proofs: ShopProof[] }> {
+  const ids = [...new Set(paymentIds)].sort((a, b) => a.localeCompare(b));
+  const payments: ShopPayment[] = [];
+  for (const id of ids) {
+    const payment = await tx.lockPayment(id);
+    if (payment !== null) {
+      payments.push(payment);
+    }
+  }
+  return {
+    payments,
+    proofs:
+      payments.length === 0 ? [] : await tx.lockProofsOf(payments.map((payment) => payment.id)),
+  };
+}
+
+/**
  * Re-evaluate one proof after its order status, value, or payment changed
  * ([States] of the contract). Runs inside `tx`; the caller holds the payment
  * row and its proof rows ({@link lockPaymentForProofs}). A progressing order
@@ -1164,10 +1199,13 @@ function endedByOrder(proof: ShopProof): boolean {
  * `order_status`, the heir records the order through
  * {@link recordProofOrder} with the status and order found time the caller
  * passes (its submits stop, and the order-status duty reads it), and is
- * evaluated. When the refused proof was `accepted`, the heir takes the place
- * only when that evaluation accepts it (States row 1: a progressing order, or
- * `completed`); otherwise the payment loses its accepted proof as without an
- * heir (the oldest qualifying `superseded` proof takes the place, else the
+ * evaluated on its own payment. The heir may belong to another payment; the
+ * caller then holds both payment rows and their proof rows
+ * ({@link lockPaymentsForProofs}). When the refused proof was `accepted`, an
+ * heir of the same payment takes the place only when that evaluation accepts
+ * it (States row 1: a progressing order, or `completed`); otherwise, and
+ * always for an heir of another payment, the refused proof's payment loses
+ * its accepted proof as without an heir (the oldest qualifying `superseded` proof takes the place, else the
  * payment ends with `proof_refused`). A `refunding`, `unfulfilled`, or unknown
  * status holds the heir, which is not `accepted`, until the States table
  * accepts it or its order is final. When its order already ended
@@ -1262,7 +1300,12 @@ export async function refuseProof(
   if (taken === null || taken === 'conflict') {
     return refused;
   }
-  if (proof.result === 'accepted' && taken.result !== 'accepted') {
+  // The heir takes the refused row's place only on the same payment: an heir
+  // of another payment is accepted on its own payment, never on this one.
+  if (
+    proof.result === 'accepted' &&
+    (taken.result !== 'accepted' || taken.paymentId !== proof.paymentId)
+  ) {
     await paymentLostAcceptance(tx, proof.paymentId, proofId, 'refused', nowMs);
   }
   /* v8 ignore next -- the refused row is locked through its payment */

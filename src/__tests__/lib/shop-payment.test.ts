@@ -46,6 +46,7 @@ import {
   isExcludedShopUsername,
   lightningTransferAmount,
   lockPaymentForProofs,
+  lockPaymentsForProofs,
   markPaymentPaid,
   noPendingPaymentBody,
   offerDetail,
@@ -1222,6 +1223,97 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     ).toBeNull();
     // No proof row is locked for a payment that does not exist.
     expect(calls).toEqual(['lockPayment']);
+  });
+
+  it('lockPaymentsForProofs locks the payment rows in the order of their ids, then all their proof rows ordered by id', async () => {
+    const w = await world({ id: '00000000-0000-4000-8000-0000000000e2' });
+    const other = paymentRow({
+      id: '00000000-0000-4000-8000-0000000000e1',
+      accountId: crypto.randomUUID(),
+      status: 'accepted',
+      acceptedAt: new Date(T0),
+    });
+    await w.h.store.transaction(async (tx) => {
+      expect(await tx.insertPayment(other)).toBe(true);
+    });
+    await addProof(w, { id: '00000000-0000-4000-8000-0000000000f3' });
+    await addProof(w, { id: '00000000-0000-4000-8000-0000000000f1', paymentId: other.id });
+    await addProof(w, { id: '00000000-0000-4000-8000-0000000000f2' });
+    const calls: string[] = [];
+    for (const name of ['lockPayment', 'lockProofs', 'lockProofsOf', 'lockAccount'] as const) {
+      w.h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(`${name}:${String(args[0])}`);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    const missing = '00000000-0000-4000-8000-0000000000e3';
+    const locked = await w.h.store.transaction((tx) =>
+      lockPaymentsForProofs(tx, [missing, w.payment.id, other.id, w.payment.id]),
+    );
+    // The lower id first, whatever order the caller names them in; a
+    // payment named twice is locked once, and a missing one locks no proof.
+    expect(calls).toEqual([
+      `lockPayment:${other.id}`,
+      `lockPayment:${w.payment.id}`,
+      `lockPayment:${missing}`,
+      `lockProofsOf:${other.id},${w.payment.id}`,
+    ]);
+    expect(locked.payments.map((row) => row.id)).toEqual([other.id, w.payment.id]);
+    expect(locked.proofs.map((row) => row.id)).toEqual([
+      '00000000-0000-4000-8000-0000000000f1',
+      '00000000-0000-4000-8000-0000000000f2',
+      '00000000-0000-4000-8000-0000000000f3',
+    ]);
+    calls.length = 0;
+    expect(await w.h.store.transaction((tx) => lockPaymentsForProofs(tx, [missing]))).toEqual({
+      payments: [],
+      proofs: [],
+    });
+    expect(calls).toEqual([`lockPayment:${missing}`]);
+  });
+
+  it("refuseProof hands an order to an heir of another payment and ends the refused proof's accepted payment", async () => {
+    const w = await world({ status: 'accepted', acceptedAt: new Date(T0) });
+    const holder = await addProof(w, {
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'processing',
+      createdAt: new Date(T0 + 1_000),
+    });
+    const second = paymentRow({ accountId: crypto.randomUUID() });
+    const quote: ShopQuote = {
+      id: crypto.randomUUID(),
+      paymentId: second.id,
+      expiresAt: new Date(T0 + 90_000),
+      transferAmounts: [lightningTransferAmount(SATS)],
+      createdAt: new Date(T0),
+    };
+    const offer = offerRow(quote.id);
+    const heir = proofRow({ offerId: offer.id, paymentId: second.id });
+    await w.h.store.transaction(async (tx) => {
+      expect(await tx.insertPayment(second)).toBe(true);
+      await tx.insertQuote(quote);
+      await tx.insertOffers([offer]);
+      expect(await tx.insertProof(heir)).toBe(true);
+    });
+    await w.h.store.transaction(async (tx) => {
+      await lockPaymentsForProofs(tx, [w.payment.id, second.id]);
+      await refuseProof(tx, holder.id, 'tx_used', clock, {
+        proofId: heir.id,
+        order: { orderId: 'o1', status: 'processing' },
+        foundAt: new Date(T0 + 1_000),
+      });
+    });
+    // The heir is accepted on its own payment; the holder's payment does not
+    // inherit that acceptance and ends.
+    expect(await proof(w, heir.id)).toMatchObject({ result: 'accepted', providerOrder: 'o1' });
+    expect(await proof(w, holder.id)).toMatchObject({ result: 'refused', refusal: 'tx_used' });
+    const payments = await w.h.store.transaction(async (tx) => [
+      await tx.getPayment(w.payment.id),
+      await tx.getPayment(second.id),
+    ]);
+    expect(payments[0]).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
+    expect(payments[1]).toMatchObject({ status: 'accepted' });
   });
 
   it('evaluateProof, refuseProof, and recordProofOrder take no lock themselves (the caller holds them)', async () => {

@@ -559,6 +559,7 @@ const RECORDED_TX_CALLS = new Set([
   'lockCharge',
   'lockPayment',
   'lockProofs',
+  'lockProofsOf',
   'updateProof',
   'updatePayment',
   'deleteProof',
@@ -567,13 +568,15 @@ const RECORDED_TX_CALLS = new Set([
 /**
  * Record, in order, the lock and write calls of every store transaction from
  * now on (`lockAccount`, `lockCharge`, `lockPayment`, `lockProofs`,
- * `updateProof`, `updatePayment`, `deleteProof`). `vi.restoreAllMocks` ends
- * the recording.
+ * `lockProofsOf`, `updateProof`, `updatePayment`, `deleteProof`).
+ * `vi.restoreAllMocks` ends the recording.
  *
  * @param h - Harness.
+ * @param withIds - Record a lock call as `name:<first argument>` (an array
+ *   joined with commas), so that tests can assert which rows it locked.
  * @returns The calls, filled as transactions run.
  */
-export function recordTxCalls(h: Harness): string[] {
+export function recordTxCalls(h: Harness, withIds = false): string[] {
   const calls: string[] = [];
   const original = h.store.transaction.bind(h.store);
   const recording = <T>(run: (tx: ShopTx) => Promise<T>): Promise<T> =>
@@ -587,7 +590,11 @@ export function recordTxCalls(h: Harness): string[] {
             }
             return (...args: unknown[]) => {
               if (RECORDED_TX_CALLS.has(String(prop))) {
-                calls.push(String(prop));
+                calls.push(
+                  withIds && String(prop).startsWith('lock')
+                    ? `${String(prop)}:${String(args[0])}`
+                    : String(prop),
+                );
               }
               return (value as (...a: unknown[]) => unknown).apply(target, args);
             };
