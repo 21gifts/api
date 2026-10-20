@@ -3910,6 +3910,84 @@ describe('PostgresShopPaymentStore', () => {
       await closeIfPossible(sql);
     }
   });
+  test('a status read that another container overtook with expired keeps expired and stays stopped', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const now = Date.now();
+      // As above, the watchers' clock selects only this proof.
+      const clockMs = Date.UTC(2001, 0, 1);
+      const payment = shopPayment(await newAccount(), now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const orderId = `o-${crypto.randomUUID()}`;
+      const watched = shopProof(offer, payment.id, now, {
+        providerOrder: orderId,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(clockMs - 1_000),
+        nextSubmitAt: null,
+        nextStatusAt: new Date(clockMs - 1_000),
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(watched)).toBe(true);
+      });
+      const container = (status: () => Promise<unknown>): ShopPayments =>
+        new ShopPayments({
+          store,
+          posStore: pos,
+          auth: new PostgresAuthStore(client),
+          lnurlServer: {
+            baseUrl: 'http://lnurl.test',
+            publicBaseUrl: 'https://example.test',
+            host: 'example.test',
+          },
+          config: null,
+          orchestra: { status } as unknown as OrchestraClient,
+          fxSpot: new PostgresFxSpotStore(client),
+          fetchImpl: fetch,
+          now: () => clockMs,
+        });
+      const answer = (value: string): unknown => ({
+        ok: true,
+        order: { id: orderId, status: value, supersededByOperationId: null },
+      });
+      // Container A reads `expired` and commits while container B's read,
+      // which answers `processing`, is still in flight.
+      const first = container(async () => answer('expired'));
+      const second = container(async () => {
+        await runShopPaymentTick(first, 2);
+        return answer('processing');
+      });
+      await runShopPaymentTick(second, 2);
+      expect(await store.transaction((tx) => tx.getProof(watched.id))).toMatchObject({
+        orderStatus: 'expired',
+        result: 'refused',
+        refusal: 'expired_order',
+        nextStatusAt: null,
+      });
+      expect((await store.transaction((tx) => tx.getPayment(payment.id)))?.status).toBe('open');
+      const proofLines = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((text) => text.startsWith('{'))
+        .map((text) => JSON.parse(text) as Record<string, unknown>)
+        .filter((line) => line['proofId'] === watched.id)
+        .map((line) => String(line['event']))
+        .filter((event) => event.startsWith('shop.proof.') || event.startsWith('shop.alert.'));
+      expect(proofLines).toEqual(['shop.proof.refused']);
+    } finally {
+      warn.mockRestore();
+      await closeIfPossible(sql);
+    }
+  });
 });
 
 describe('mergeAccounts and the shop payment rows', () => {

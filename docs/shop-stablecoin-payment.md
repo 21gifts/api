@@ -1339,7 +1339,12 @@ one row log `shop.alert.order_stuck` once; its fields are read in the
 transaction that stops the row, and it is logged after that commit. A
 status read sets the next read only while `next_status_at` is still the
 one the duty selected, so a row the other container stopped meanwhile
-stays stopped; the status itself is still applied. `next_history_at` is
+stays stopped; the status itself is still applied, unless the proof,
+read again under its payment row and proof rows, holds a final status
+of that order by then. A final status is terminal: a status of the
+same order read before it, in progress or another final one, changes
+nothing, so the proof keeps its result and is not read again.
+`next_history_at` is
 set when the first detail of a payment is issued and cleared when the order watch of its
 last offer ends, except while some proof of the payment has a
 `superseded_by_order` that no proof holds as `provider_order` and

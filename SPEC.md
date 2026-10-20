@@ -1379,7 +1379,11 @@ rows by their own next-try column, oldest first:
    container whose transaction cleared it, with fields read in that
    transaction. A status read sets the next read only while
    `next_status_at` is still the one the duty selected, so a row another
-   container stopped meanwhile stays stopped; the status is still applied.
+   container stopped meanwhile stays stopped; the status is still applied,
+   unless the proof holds a final status of that order by then. A final
+   status is terminal: no later write of the same order replaces it (a
+   status in progress or another final one), re-evaluates the proof, or
+   restarts the reads, as the same-offer merge keeps a final status.
 
 A rejecting tick logs `shop.worker.tick.failed`.
 

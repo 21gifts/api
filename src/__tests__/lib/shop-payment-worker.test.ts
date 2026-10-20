@@ -1532,6 +1532,109 @@ describe('duty 8: order status', () => {
     await runShopPaymentTick(h.shop, 2);
     expect(await getProof(h, uid(0x402))).toBeNull();
   });
+  describe('a status read of an order another container finalised during the call', () => {
+    /**
+     * Run a status tick whose read answers `late`, while the other
+     * container's whole tick reads `meanwhile` for the same row and commits
+     * first (the overlap of a deploy).
+     */
+    async function overlap(h: Harness, meanwhile: string, late: string): Promise<void> {
+      h.orchestra.status.mockImplementationOnce(async () => {
+        h.orchestra.status.mockResolvedValueOnce({
+          ok: true,
+          order: { id: 'o1', status: meanwhile, supersededByOperationId: null },
+        });
+        await runShopPaymentTick(h.shop, 2);
+        return { ok: true, order: { id: 'o1', status: late, supersededByOperationId: null } };
+      });
+      await runShopPaymentTick(h.shop, 2);
+    }
+
+    function proofEvents(): string[] {
+      return events().filter(
+        (event) => event.startsWith('shop.proof.') || event.startsWith('shop.alert.'),
+      );
+    }
+
+    it('expired stays: the late processing read neither replaces it nor accepts the proof', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(ordered));
+      await overlap(h, 'expired', 'processing');
+      expect(await getProof(h, uid(0x401))).toMatchObject({
+        orderStatus: 'expired',
+        result: 'refused',
+        refusal: 'expired_order',
+        nextStatusAt: null,
+      });
+      expect(await getPayment(h)).toMatchObject({ status: 'open', acceptedAt: null });
+      expect(proofEvents()).toEqual(['shop.proof.refused']);
+      // The duty no longer reads it.
+      h.clock.now = T0 + 120_000;
+      await runShopPaymentTick(h.shop, 2);
+      expect(h.orchestra.status).toHaveBeenCalledTimes(2);
+      expect(proofEvents()).toEqual(['shop.proof.refused']);
+    });
+
+    it('completed stays: the late processing read does not replace it or restart the reads', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(ordered));
+      await overlap(h, 'completed', 'processing');
+      expect(await getProof(h, uid(0x401))).toMatchObject({
+        orderStatus: 'completed',
+        result: 'accepted',
+        nextStatusAt: null,
+      });
+      expect((await getPayment(h))?.status).toBe('accepted');
+      expect(proofEvents()).toEqual(['shop.proof.accepted']);
+      h.clock.now = T0 + 120_000;
+      await runShopPaymentTick(h.shop, 2);
+      expect(h.orchestra.status).toHaveBeenCalledTimes(2);
+    });
+
+    it('a final status still replaces a status in progress the other container stored', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(ordered));
+      await overlap(h, 'swapping', 'expired');
+      expect(await getProof(h, uid(0x401))).toMatchObject({
+        orderStatus: 'expired',
+        result: 'refused',
+        refusal: 'expired_order',
+        nextStatusAt: null,
+      });
+      expect(proofEvents()).toEqual(['shop.proof.accepted', 'shop.proof.refused']);
+    });
+
+    it('a proof that took another order meanwhile is left to that order', async () => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(h, proofRow(ordered));
+      h.orchestra.status.mockImplementationOnce(async () => {
+        await h.store.transaction((tx) =>
+          tx.updateProof(
+            uid(0x401),
+            {},
+            { providerOrder: 'o9', orderStatus: 'expired', nextStatusAt: null },
+          ),
+        );
+        return {
+          ok: true,
+          order: { id: 'o1', status: 'completed', supersededByOperationId: null },
+        };
+      });
+      await runShopPaymentTick(h.shop, 2);
+      expect(await getProof(h, uid(0x401))).toMatchObject({
+        providerOrder: 'o9',
+        orderStatus: 'expired',
+        result: null,
+        nextStatusAt: null,
+      });
+      expect(proofEvents()).toEqual([]);
+    });
+  });
+
   describe('a stop decided on the selection holds only while the proof is unchanged', () => {
     const lapsed = { ...ordered, orderFoundAt: new Date(T0 - 86_400_000) };
 

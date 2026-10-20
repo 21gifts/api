@@ -2032,6 +2032,44 @@ describe('proof state table (States: evaluateProof, recordProofOrder)', () => {
     });
   });
 
+  it.each([
+    ['expired', 'processing', { result: 'refused', refusal: 'expired_order' }],
+    ['expired', 'completed', { result: 'refused', refusal: 'expired_order' }],
+    ['completed', 'refunding', { result: 'accepted', refusal: null }],
+    ['completed', 'failed', { result: 'accepted', refusal: null }],
+  ])(
+    'a stored final %s of the same order is kept against a later %s, nothing re-evaluated',
+    async (stored, late, result) => {
+      const w = await world();
+      const p = await addProof(w);
+      await w.h.store.transaction((tx) =>
+        recordProofOrder(tx, p.id, { orderId: 'o1', status: stored }, clock),
+      );
+      const before = await proof(w, p.id);
+      const logged = events.length;
+      clock = T0 + 5_000;
+      const after = await w.h.store.transaction((tx) =>
+        recordProofOrder(tx, p.id, { orderId: 'o1', status: late }, clock),
+      );
+      expect(after).toEqual(before);
+      expect(await proof(w, p.id)).toMatchObject({
+        orderStatus: stored,
+        nextStatusAt: null,
+        ...result,
+      });
+      expect(events).toHaveLength(logged);
+    },
+  );
+
+  it('a proof whose stored order is final takes another order id as before', async () => {
+    const w = await world();
+    const p = await addProof(w, { providerOrder: 'o1', orderStatus: 'expired' });
+    const after = await w.h.store.transaction((tx) =>
+      recordProofOrder(tx, p.id, { orderId: 'o2', status: 'processing' }, clock),
+    );
+    expect(after).toMatchObject({ providerOrder: 'o2', orderStatus: 'processing' });
+  });
+
   it('returns conflict when another proof holds the order id, and null for an unknown proof', async () => {
     const w = await world();
     await addProof(w, { providerOrder: 'o1', orderStatus: 'refunding' });

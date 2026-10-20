@@ -806,9 +806,11 @@ async function stopReplacedOrder(
  * ids with its offer's `quoteId` and `providerRef` ({@link proofAlertFields}). An `unfulfilled` status with a
  * `supersededByOperationId` of another order is a replaced order
  * ({@link stopReplacedOrder}); every other status, a superseding id with
- * another status included, is applied as a status. The next read is set
- * only while `next_status_at` is still the selection's, so a row another
- * container stopped meanwhile stays stopped.
+ * another status included, is applied as a status. A proof whose order
+ * another container gave a final status meanwhile is left as it is: a final
+ * status is terminal. The next read is set only while `next_status_at` is
+ * still the selection's, so a row another container stopped meanwhile stays
+ * stopped.
  *
  * @param shop - Service.
  * @param proof - Proof with an order that is not final.
@@ -830,6 +832,11 @@ async function readStatus(shop: ShopPayments, proof: ShopProof, orderId: string)
     const nowMs = shop.deps.now();
     const current = await tx.getProof(proof.id);
     if (locked === null || current === null || current.providerOrder !== orderId) {
+      return;
+    }
+    // Another container stored a final status of this order meanwhile: it is
+    // terminal, so this read, made before it, changes nothing.
+    if (current.orderStatus !== null && ORCHESTRA_FINAL_STATUSES.has(current.orderStatus)) {
       return;
     }
     // The next read is scheduled only while `next_status_at` is still the

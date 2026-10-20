@@ -1313,7 +1313,9 @@ export async function refuseProof(
 }
 
 /**
- * Store an Orchestra order on a proof and re-evaluate it.
+ * Store an Orchestra order on a proof and re-evaluate it. A proof that
+ * already holds this order with a final status keeps it: a final status is
+ * terminal, so a later write of the same order changes nothing.
  *
  * @param tx - Transaction; the caller holds the payment row and its proof
  *   rows ({@link lockPaymentForProofs}).
@@ -1322,7 +1324,8 @@ export async function refuseProof(
  * @param nowMs - Clock.
  * @param foundAt - When the order was first found, for a proof that takes
  *   it from another row ({@link refuseProof}'s heir); `null` for now.
- * @returns The proof after evaluation, or `'conflict'` when another row
+ * @returns The proof after evaluation, the proof unchanged when it already
+ *   holds this order with a final status, or `'conflict'` when another row
  *   already holds that order id (nothing changed).
  */
 export async function recordProofOrder(
@@ -1335,6 +1338,17 @@ export async function recordProofOrder(
   const proof = await tx.getProof(proofId);
   if (proof === null) {
     return null;
+  }
+  // A final status is terminal (as in mergeDeposit): a status of the same
+  // order read before it was stored, by another container during a deploy
+  // or by a submit answer, is older, so it neither replaces the stored one
+  // nor re-evaluates the proof, and the status reads stay stopped.
+  if (
+    proof.providerOrder === order.orderId &&
+    proof.orderStatus !== null &&
+    ORCHESTRA_FINAL_STATUSES.has(proof.orderStatus)
+  ) {
+    return proof;
   }
   const patch: ShopProofPatch = {
     providerOrder: order.orderId,
