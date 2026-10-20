@@ -791,7 +791,11 @@ waits for the first:
 1. In one transaction, end a lapsed `open` payment of the account with
    `end_reason` `window`. For a charge, stop with its existing shop
    payment, or when the charge is no longer pending or has expired. For a
-   payer, stop with 409 `payment_open` when a charge is pending.
+   payer, stop with 409 `payment_open` when a charge is pending. The
+   transaction first takes the account row lock (`SELECT … FOR UPDATE`),
+   then the charge row lock for a charge, or for a payer the account's
+   overdue pending charges, which it expires, and only then ends the lapsed
+   payment, the order the settlement step and the charge watch take.
 2. Stop unless stablecoin rows are on for the username, unless the
    account's 60 s no-pair wait has passed, and unless the api-wide counter
    (60 creations per minute) and then the account counter (10 per minute)
@@ -1116,7 +1120,12 @@ charge row and before it moves them. Every other transaction locks or
 writes at most one existing `shop_payment` row. The settlement step locks the account,
 `pos_charge`, and `shop_payment` rows (a payer's payment only its
 `shop_payment` row) and no proof row, so no two of these wait for each
-other in opposite order. The amount of a `hex` proof is the amount in its
+other in opposite order. Every transaction that locks or writes both
+`pos_charge` and `shop_payment` rows takes the account row lock first, then
+the `pos_charge` rows, then the `shop_payment` rows: the settlement step,
+the charge watch, `POST /pos`, `DELETE /pos`, the creation's step 1
+re-check and its step 8 insert (after the payment hash claim), and the
+merge (both account rows, then the charge row, then the payment rows). The amount of a `hex` proof is the amount in its
 verified transfer `data`; a `tx` or `detected` proof's is the value of its
 `Transfer` log.
 

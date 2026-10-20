@@ -34,6 +34,7 @@ import {
   type ShopPayment,
   type ShopProof,
   type ShopProofLookup,
+  type ShopTx,
 } from '@/lib/shop-payment-store';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
@@ -3705,6 +3706,123 @@ describe('PostgresShopPaymentStore', () => {
       expect(await pos.recordInvoice(chargeId, own.paymentHash, now)).toEqual({
         outcome: 'this_charge',
       });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test("a payer creation's re-check beside the settlement of the lapsed charge payment takes the account first and does not deadlock", async () => {
+    const { client, mergeDb, sql, store, pos, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const account = await new PostgresAuthStore(client).getAccount(accountId);
+      if (account === undefined) {
+        throw new Error('account missing');
+      }
+      const now = Date.now();
+      // A charge whose expiry passed while it is still `pending` (no read has
+      // expired it yet), and its `open` payment, whose window was the charge's.
+      const charge: PosCharge = {
+        id: crypto.randomUUID(),
+        accountId,
+        amountSats: 2100,
+        status: 'pending',
+        createdAt: new Date(now - 400_000),
+        expiresAt: new Date(now - 10_000),
+        paidAt: null,
+        sparkInvoice: null,
+      };
+      await pos.create(charge);
+      const lapsed = shopPayment(accountId, now - 400_000, {
+        posChargeId: charge.id,
+        windowEndsAt: charge.expiresAt,
+      });
+      expect(await store.transaction((tx) => tx.insertPayment(lapsed))).toBe(true);
+      let ended = (): void => undefined;
+      const lapsedEnded = new Promise<void>((resolve) => {
+        ended = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      /** Holds the creation's re-check right after it ended the lapsed payment. */
+      class PausingStore extends PostgresShopPaymentStore {
+        #paused = false;
+        override transaction<T>(run: (tx: ShopTx) => Promise<T>): Promise<T> {
+          return super.transaction((tx) =>
+            run(
+              new Proxy(tx, {
+                get: (target, prop) => {
+                  const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+                  if (typeof value !== 'function') {
+                    return value;
+                  }
+                  if (prop === 'updatePayment' && !this.#paused) {
+                    this.#paused = true;
+                    return async (...args: unknown[]) => {
+                      const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(
+                        target,
+                        args,
+                      );
+                      ended();
+                      await released;
+                      return result;
+                    };
+                  }
+                  return (value as (...a: unknown[]) => unknown).bind(target);
+                },
+              }),
+            ),
+          );
+        }
+      }
+      const deps = {
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra: null,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      };
+      const creator = new ShopPayments({ ...deps, store: new PausingStore(client, mergeDb) });
+      const settler = new ShopPayments({ ...deps, store });
+      // The re-check holds the lapsed payment's row (and, in the account-first
+      // order, the account row and the charge row) when it pauses.
+      const creation = creator.createForPayer(account, account.username ?? '', 2100, Date.now());
+      await lapsedEnded;
+      // The settlement locks the account, then the charge, then the payment:
+      // it queues on the first row the paused re-check holds.
+      const settlement = settler.applySettlement(lapsed.id, true, Date.now());
+      for (let i = 0; ; i += 1) {
+        const rows = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        );
+        if ((rows[0]?.n ?? 0) >= 1) {
+          break;
+        }
+        if (i === 200) {
+          throw new Error('the settlement never waited for a lock');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      // Taking the payment row before the charge rows, the re-check would now
+      // wait for the charge the settlement holds while the settlement waits
+      // for the payment: a deadlock (40P01).
+      release();
+      const [created] = await Promise.all([creation, settlement]);
+      expect(created).toEqual({ kind: 'unavailable' });
+      const after = await store.transaction((tx) => tx.getPayment(lapsed.id));
+      expect(after?.endReason).toBeNull();
+      expect(after?.status).toBe('paid');
+      expect((await pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('paid');
     } finally {
       await closeIfPossible(sql);
     }

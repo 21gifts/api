@@ -2478,6 +2478,43 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     expect(h.net.issued).toHaveLength(0);
   });
 
+  /** Record the step-2 lock and write calls of every transaction from now on. */
+  function recordRecheck(h: Harness): string[] {
+    const calls: string[] = [];
+    for (const name of ['lockAccount', 'lockCharge', 'pendingCharge', 'updatePayment'] as const) {
+      h.store.hooks[name] = async (tx, ...args) => {
+        calls.push(name);
+        return (tx[name] as (...a: never[]) => Promise<unknown>).apply(tx, args);
+      };
+    }
+    return calls;
+  }
+
+  it('step 2 for a charge locks the account, then the charge, and only then ends the lapsed payment', async () => {
+    const h = await setup();
+    const old = await payerPayment(h);
+    clock = T0 + 300_000;
+    const charge = chargeRow();
+    await h.pos.create(charge);
+    const calls = recordRecheck(h);
+    expect((await h.svc.createForCharge(h.account, USER, charge, clock)).kind).toBe('payment');
+    expect(calls.slice(0, 3)).toEqual(['lockAccount', 'lockCharge', 'updatePayment']);
+    expect(await readPayment(h, old.id)).toMatchObject({ status: 'ended', endReason: 'window' });
+  });
+
+  it('step 2 for a payer locks the account, then expires the overdue charge, and only then ends the lapsed payment', async () => {
+    const h = await setup();
+    const old = await payerPayment(h);
+    const overdue = chargeRow({ expiresAt: new Date(T0 + 60_000) });
+    await h.pos.create(overdue);
+    clock = T0 + 300_000;
+    const calls = recordRecheck(h);
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    expect(calls.slice(0, 3)).toEqual(['lockAccount', 'pendingCharge', 'updatePayment']);
+    expect(await readPayment(h, old.id)).toMatchObject({ status: 'ended', endReason: 'window' });
+    expect((await h.pos.findChargeForPayment({ chargeId: overdue.id }))?.status).toBe('expired');
+  });
+
   it('order 6 runs again under the lock: no config, no Orchestra, or an excluded username', async () => {
     for (const options of [{ config: 'off' as const }, { orchestra: 'off' as const }]) {
       const h = await setup(options);

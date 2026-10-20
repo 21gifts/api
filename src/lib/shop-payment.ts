@@ -2113,8 +2113,14 @@ export class ShopPayments {
    */
   async #createLocked(input: ShopCreationInput, startMs: number): Promise<ShopCreation> {
     const { account } = input;
-    // Step 2: re-check under the lock.
+    // Step 2: re-check under the lock. Lock order (States): the account row,
+    // then the charge rows (the creation's charge, or the account's overdue
+    // pending charges `pendingCharge` expires), then the lapsed payment's
+    // row, as the settlement step and the charge watch take them.
     const recheck = await this.#deps.store.transaction(async (tx) => {
+      await tx.lockAccount(account.id);
+      const charge = input.kind === 'charge' ? await tx.lockCharge(input.charge.id) : null;
+      const pending = input.kind === 'payer' ? await tx.pendingCharge(account.id, startMs) : null;
       const open = await tx.openPayment(account.id);
       if (open !== null && open.windowEndsAt.getTime() <= startMs) {
         await endPayment(tx, open, 'window', startMs);
@@ -2124,7 +2130,6 @@ export class ShopPayments {
         if (existing !== null) {
           return { kind: 'payment', payment: existing } as const;
         }
-        const charge = await tx.lockCharge(input.charge.id);
         if (
           charge === null ||
           charge.status !== 'pending' ||
@@ -2134,7 +2139,6 @@ export class ShopPayments {
         }
         return null;
       }
-      const pending = await tx.pendingCharge(account.id, startMs);
       return pending === null ? null : ({ kind: 'pending_charge' } as const);
     });
     if (recheck !== null) {
