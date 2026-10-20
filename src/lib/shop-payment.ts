@@ -1144,10 +1144,14 @@ function isUnknownOrderStatus(status: string): boolean {
  * and this proof is the newer row), the order moves to the heir in the same
  * transaction: the refused proof gives up `provider_order` and
  * `order_status`, the heir records the order through
- * {@link recordProofOrder} (its submits stop, and the order-status duty
- * reads it), and is evaluated. When the refused proof was `accepted`, the
- * heir takes the place by that evaluation; only when it does not does the
- * payment lose its accepted proof as without an heir.
+ * {@link recordProofOrder} with the status and order found time the caller
+ * passes (its submits stop, and the order-status duty reads it), and is
+ * evaluated. When the refused proof was `accepted`, the heir takes the place
+ * by that evaluation; only when it does not does the payment lose its
+ * accepted proof as without an heir. When this proof cannot be refused (its
+ * order already ended it `refunded`, `failed`, or `refused`), it keeps the
+ * order, Orchestra counted the deposit on its offer, and the heir is refused
+ * `tx_used` instead, with its submits stopped.
  *
  * @param tx - Transaction.
  * @param proofId - Proof id.
@@ -1155,23 +1159,35 @@ function isUnknownOrderStatus(status: string): boolean {
  *   `tx_used`.
  * @param nowMs - Clock.
  * @param heir - The older row of the same deposit that takes the order
- *   (`tx_used` only), or `null`.
+ *   (`tx_used` only), the order with the status it records, and the order
+ *   found time it keeps (`null` for now); or `null`.
  * @returns The refused proof, or the unchanged proof when its result does
- *   not allow the move (the order stays then), or `null` when it does not
- *   exist.
+ *   not allow the move (the order stays then, and the heir is refused), or
+ *   `null` when it does not exist.
  */
 export async function refuseProof(
   tx: ShopTx,
   proofId: string,
   refusal: 'mismatch' | 'hex_rejected' | 'tx_used',
   nowMs: number,
-  heir: { proofId: string; order: { orderId: string; status: string } } | null = null,
+  heir: {
+    proofId: string;
+    order: { orderId: string; status: string };
+    foundAt: Date | null;
+  } | null = null,
 ): Promise<ShopProof | null> {
   const proof = await tx.getProof(proofId);
   if (proof === null) {
     return null;
   }
   if (!FINAL_FROM.refused.includes(proof.result)) {
+    if (heir !== null) {
+      // The order already ended this proof: Orchestra counted the deposit
+      // on its offer, so the heir is the row recorded `tx_used`. It is no
+      // longer submitted, whatever its result.
+      await tx.updateProof(heir.proofId, {}, { nextSubmitAt: null });
+      await refuseProof(tx, heir.proofId, 'tx_used', nowMs);
+    }
     return proof;
   }
   const refused = await tx.updateProof(
@@ -1202,7 +1218,7 @@ export async function refuseProof(
     { results: ['refused'] },
     { providerOrder: null, orderStatus: null },
   );
-  const taken = await recordProofOrder(tx, heir.proofId, heir.order, nowMs);
+  const taken = await recordProofOrder(tx, heir.proofId, heir.order, nowMs, heir.foundAt);
   /* v8 ignore next 3 -- the heir was read by the caller, and the refused row just gave up the order */
   if (taken === null || taken === 'conflict') {
     return refused;
@@ -1222,6 +1238,8 @@ export async function refuseProof(
  * @param proofId - Proof id.
  * @param order - Order id and status.
  * @param nowMs - Clock.
+ * @param foundAt - When the order was first found, for a proof that takes
+ *   it from another row ({@link refuseProof}'s heir); `null` for now.
  * @returns The proof after evaluation, or `'conflict'` when another row
  *   already holds that order id (nothing changed).
  */
@@ -1230,6 +1248,7 @@ export async function recordProofOrder(
   proofId: string,
   order: { orderId: string; status: string },
   nowMs: number,
+  foundAt: Date | null = null,
 ): Promise<ShopProof | null | 'conflict'> {
   const proof = await tx.getProof(proofId);
   if (proof === null) {
@@ -1241,7 +1260,7 @@ export async function recordProofOrder(
     nextSubmitAt: null,
   };
   if (proof.providerOrder === null) {
-    patch.orderFoundAt = new Date(nowMs);
+    patch.orderFoundAt = foundAt ?? new Date(nowMs);
     patch.nextStatusAt = new Date(nowMs + SHOP_FIRST_STATUS_MS);
   }
   if (ORCHESTRA_FINAL_STATUSES.has(order.status)) {

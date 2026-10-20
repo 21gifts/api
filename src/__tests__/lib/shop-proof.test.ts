@@ -1582,6 +1582,174 @@ describe('merging two rows of one deposit', () => {
     expect(await getPayment(h)).toMatchObject({ status: 'ended', endReason: 'proof_refused' });
   });
 
+  const endedHolders = [
+    ['refunded', { result: 'refunded' as const, orderStatus: 'refunded' }],
+    ['failed', { result: 'failed' as const, orderStatus: 'fallback_delivered' }],
+    [
+      'refused',
+      { result: 'refused' as const, refusal: 'expired_order' as const, orderStatus: 'expired' },
+    ],
+  ] as const;
+
+  it.each(endedHolders)(
+    'refuses the survivor tx_used on a watcher submit when the newer holder of another offer is already %s',
+    async (_name, ended) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(
+        h,
+        proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+        proofRow({
+          id: uid(0x4e2),
+          offerId: OFFER_USDC,
+          txHash: H2,
+          providerOrder: 'o1',
+          orderFoundAt: new Date(T0),
+          resolvedAt: new Date(T0 + 1_000),
+          createdAt: new Date(T0 + 1_000),
+          ...ended,
+        }),
+      );
+      h.orchestra.submit.mockResolvedValueOnce({
+        kind: 'order',
+        orderId: 'o1',
+        status: 'processing',
+      });
+      const survivor = await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000);
+      expect(survivor).toMatchObject({
+        id: uid(0x4e1),
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+        nextSubmitAt: null,
+        nextStatusAt: null,
+      });
+      expect((await answer(proofResponse(survivor!))).body['reason']).toBe(
+        'Transaction already used',
+      );
+      expect(await getProof(h, uid(0x4e2))).toMatchObject({ ...ended, providerOrder: 'o1' });
+      // Nothing is due for the survivor any more.
+      h.orchestra.submit.mockClear();
+      h.clock.now = T0 + 600_000;
+      await runShopPaymentTick(h.shop, 2);
+      expect(h.orchestra.submit).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(endedHolders)(
+    'answers Transaction already used on the route when the newer holder of another offer is already %s',
+    async (_name, ended) => {
+      const h = harness();
+      await seed(h);
+      await insertProofs(
+        h,
+        proofRow({
+          id: uid(0x4e2),
+          offerId: OFFER_USDC,
+          txHash: H2,
+          providerOrder: 'o1',
+          orderFoundAt: new Date(T0),
+          resolvedAt: new Date(T0 + 1_000),
+          createdAt: new Date(T0 + 1_000),
+          ...ended,
+        }),
+      );
+      h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [usdtLog()]);
+      h.orchestra.submit.mockResolvedValueOnce({
+        kind: 'order',
+        orderId: 'o1',
+        status: 'processing',
+      });
+      expect(await answer(await prove(h, { tx: H1 }))).toMatchObject({
+        status: 400,
+        body: { reason: 'Transaction already used' },
+      });
+      const survivor = (await proofsOf(h)).find((row) => row.txHash === H1);
+      expect(survivor).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+        nextSubmitAt: null,
+      });
+      expect(await getProof(h, uid(0x4e2))).toMatchObject({ ...ended, providerOrder: 'o1' });
+    },
+  );
+
+  it('the survivor takes the final status and the order found time of an accepted newer holder', async () => {
+    const h = harness();
+    await seed(h, { status: 'paid', acceptedAt: new Date(T0), paidAt: new Date(T0 + 2_000) });
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        result: 'accepted',
+        resolvedAt: new Date(T0 + 1_000),
+        providerOrder: 'o1',
+        orderStatus: 'completed',
+        orderFoundAt: new Date(T0 - 60_000),
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    // The in-flight submit answers a status read before the holder's.
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'processing',
+    });
+    const survivor = await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000);
+    expect(survivor).toMatchObject({
+      id: uid(0x4e1),
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'completed',
+      orderFoundAt: new Date(T0 - 60_000),
+      nextStatusAt: null,
+      nextSubmitAt: null,
+    });
+    expect(await answer(proofResponse(survivor!))).toEqual({
+      status: 200,
+      body: { txId: H1 },
+    });
+    expect(await getProof(h, uid(0x4e2))).toMatchObject({
+      result: 'refused',
+      refusal: 'tx_used',
+      providerOrder: null,
+    });
+    expect((await getPayment(h))?.status).toBe('paid');
+  });
+
+  it('the survivor takes the answered status and finds the order now when the newer holder stored neither', async () => {
+    const h = harness();
+    await seed(h);
+    await insertProofs(
+      h,
+      proofRow({ id: uid(0x4e1), txHash: H1, nextSubmitAt: new Date(T0 + 5_000) }),
+      proofRow({
+        id: uid(0x4e2),
+        offerId: OFFER_USDC,
+        txHash: H2,
+        providerOrder: 'o1',
+        createdAt: new Date(T0 + 1_000),
+      }),
+    );
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o1',
+      status: 'swapping',
+    });
+    h.clock.now = T0 + 2_000;
+    expect(await submitProof(h.shop, uid(0x4e1), 'watcher', T0 + 5_000)).toMatchObject({
+      id: uid(0x4e1),
+      result: 'accepted',
+      providerOrder: 'o1',
+      orderStatus: 'swapping',
+      orderFoundAt: new Date(T0 + 2_000),
+    });
+  });
+
   it('refuses the filled row on the storing path even when the holder of another offer is newer', async () => {
     const h = harness();
     await seed(h);

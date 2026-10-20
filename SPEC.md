@@ -1137,11 +1137,16 @@ step 3 refuses the row that held the order (it is the newer one), the
 order moves in the same transaction to the submitted proof, the older row
 that survives: the refused row gives up `provider_order` and
 `order_status`, the survivor records the order (its submits stop and the
-status duty reads it), and is evaluated. An `accepted` refused row hands
-acceptance to the survivor by that evaluation, so the payment stays
-`accepted`; only when the survivor does not become `accepted` does a
-`superseded` proof take the place or the payment end with
-`proof_refused`.
+status duty reads it) with the refused row's `order_found_at`, so the fast
+reads and the 24 h status limit do not restart, and with a final status the
+refused row stored rather than the submit's answer, and is evaluated. An
+`accepted` refused row hands acceptance to the survivor by that evaluation,
+so the payment stays `accepted`; only when the survivor does not become
+`accepted` does a `superseded` proof take the place or the payment end with
+`proof_refused`. When the newer row that holds the order is already
+`refunded`, `failed`, or `refused`, it cannot be refused and keeps the
+order (Orchestra counted the deposit on its offer); the submitted row is
+then recorded `refused` with `tx_used` instead, and its submits stop.
 
 **Replaced orders.** A status read that answers `unfulfilled` with a
 `supersededByOperationId` of another order does not move the proof: it

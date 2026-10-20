@@ -724,8 +724,11 @@ export async function applyProofOrder(
  * Merge a proof with the row that already holds an order id. With
  * `collision` `newer`, another offer's holder that is the newer row (later
  * `created_at`, then greater id) is refused `tx_used` and gives the order to
- * `proof`, which records it ({@link refuseProof} with an heir); every other
- * case is {@link mergeDeposit}.
+ * `proof`, which records it ({@link refuseProof} with an heir) with the
+ * holder's final status if it stored one and the holder's order found time;
+ * a holder whose order already ended it (`refunded`, `failed`, `refused`)
+ * keeps the order, and `proof` is refused `tx_used`. Every other case is
+ * {@link mergeDeposit}.
  *
  * @param tx - Transaction (payment row and proof rows locked).
  * @param proof - The proof that was to take the order.
@@ -759,10 +762,19 @@ async function mergeOrderHolder(
     // older row survives and takes the order Orchestra answered for it, in
     // this transaction: its submits stop, the order-status duty follows it,
     // and an `accepted` holder hands acceptance to it by its evaluation
-    // (refuseProof's heir).
+    // (refuseProof's heir). A final status the holder stored is never older
+    // than the answer's (as in mergeDeposit), and the order keeps the time
+    // it was found, so the fast reads and the order_stuck limit do not
+    // restart. A holder the order already ended stays, and the survivor is
+    // refused `tx_used` instead.
+    const stored = holder.orderStatus;
     await refuseProof(tx, holder.id, 'tx_used', nowMs, {
       proofId: proof.id,
-      order: { orderId, status },
+      order: {
+        orderId,
+        status: stored !== null && ORCHESTRA_FINAL_STATUSES.has(stored) ? stored : status,
+      },
+      foundAt: holder.orderFoundAt,
     });
     /* v8 ignore next -- the surviving row was read in this transaction */
     return (await tx.getProof(proof.id)) ?? proof;
