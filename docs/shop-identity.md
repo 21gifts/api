@@ -193,7 +193,9 @@ not, in the same loop and with the same rules as account profiles
   (by `nostr_key_created_at`, then `message_id`, the `listAll()` order)
   that moves to every shop it attempts; the next tick starts after it and
   wraps at the end, so up to 20 shops that keep failing cannot hold back the
-  shops behind them;
+  shops behind them. Kind 0 counts a shop before it reads the shop's fields,
+  so a shop whose reads throw or whose content is unchanged uses a slot too
+  and a tick reads at most `WORKER_BATCH` shops, also during an outage;
 - same `NOSTR_PUBLISH` and
   `NOSTR_PUBLISH_PUBLIC` switches, same relays, kind 0 and kind 10002 also to
   `wss://purplepag.es`;
@@ -517,8 +519,9 @@ Rules for every claim:
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker only releases the claim.
   - 409 whose body is empty or cannot be read: no verdict. Log
-    `ocp.place.failed` with the message id and status, and release the
-    claim, so the place is sent again.
+    `ocp.place.failed` with the message id and status, keep the flag and
+    do not release the claim; the next attempt follows when the lease
+    (`WORKER_LEASE_MS`) ends.
   - 400 `Place field is not allowed: nostrPubkey` or
     `Place field is not allowed: revision`: OpenCryptoPay does not run
     openCryptoPay/api#26 yet. Log `ocp.place.deferred` with the message id

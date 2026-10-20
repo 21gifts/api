@@ -171,9 +171,9 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
         return;
       }
       if (text === '') {
-        // An unreadable answer is not a verdict: release and send again.
+        // An unreadable answer is not a verdict: keep the flag and the
+        // claim, so the place is sent again when the lease ends.
         logEvent('ocp.place.failed', { messageId, status: 409 });
-        await identities.release('place', claim);
         return;
       }
       logEvent('ocp.place.rejected', { messageId, status: 409 });
@@ -204,7 +204,8 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  * Results: `PUT` 2xx clears the place flag (generation-checked) and queues
  * the photos; 201 also nulls the photo hash; `DELETE` 2xx clears the flag;
  * 409 `Stale revision` only releases; a 409 whose body is empty or cannot be
- * read logs `ocp.place.failed` and releases, so the place is sent again; a 400 whose error says the field
+ * read logs `ocp.place.failed` and keeps the flag and the claim, so the next
+ * attempt follows when the lease ends; a 400 whose error says the field
  * `nostrPubkey` or `revision` is not allowed (an OpenCryptoPay API without
  * openCryptoPay/api#26) logs `ocp.place.deferred` and keeps the flag and the
  * claim, so the place is sent again when the lease ends; any other 400 or

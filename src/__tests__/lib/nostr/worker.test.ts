@@ -8310,6 +8310,103 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(attempts('nostr.profile.nack').slice(40, 41)).toEqual([uuid(16)]);
       expect(new Set(attempts('nostr.relays.nack').slice(0, 40))).toEqual(new Set(order));
     });
+
+    /** Message ids of the shops each kind attempted so far, in order. */
+    function attemptsOf(event: string): string[] {
+      return logged(event)
+        .map((row) => row['messageId'])
+        .filter((id): id is string => typeof id === 'string');
+    }
+
+    /** `count` listed shops with keys, in `listAll()` order. */
+    async function listedShops(count: number): Promise<{ ctx: Ctx; order: string[] }> {
+      const notes = Array.from({ length: count }, (_, index) => ({
+        row: shopNote(uuid(index + 1)),
+      }));
+      const ctx = await context(notes);
+      for (const { row } of notes) await ctx.shops.ensureListed(row.id, KEK);
+      const order = (await ctx.shops.listAll()).map((row) => row.messageId);
+      expect(order).toEqual(notes.map(({ row }) => row.id));
+      return { ctx, order };
+    }
+
+    it('counts a shop whose kind 0 fields cannot be read and moves the cursor past it', async () => {
+      const { ctx, order } = await listedShops(25);
+      const shopIds = new Set(order);
+      const messages = override<MessageStore>(ctx.messages, {
+        getById: (id: string) =>
+          shopIds.has(id) ? Promise.reject(new Error('db down')) : ctx.messages.getById(id),
+      });
+      // Without `PUBLIC_BASE_URL` there is no NIP-05 list, so the first
+      // failing read is the shop's own note in its kind 0 fields.
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      await tick(ctx, env, { messages });
+      // Exactly 20 attempts, failures included, not a walk over every shop.
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
+      await tick(ctx, env, { messages });
+      // The next tick continues after shop 20 and wraps at the end.
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual([
+        ...order.slice(20),
+        ...order.slice(0, 15),
+      ]);
+      const keys = new Set((await ctx.shops.listAll()).map((row) => row.nostrPubkey));
+      const shopKind0 = ctx.publisher.calls.filter(
+        (call) => call.event['kind'] === 0 && keys.has(String(call.event['pubkey'])),
+      );
+      expect(shopKind0).toEqual([]);
+    });
+
+    it('starts after the removed shop the cursor pointed to', async () => {
+      const { ctx, order } = await listedShops(25);
+      ctx.publisher.ok = false;
+      const removed = new Set<string>();
+      const shops = override<ShopIdentityStore>(ctx.shops, {
+        listAll: async () =>
+          (await ctx.shops.listAll()).filter((row) => !removed.has(row.messageId)),
+      });
+      await tick(ctx, ENV, { shopIdentities: shops });
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
+      removed.add(uuid(20));
+      await tick(ctx, ENV, { shopIdentities: shops });
+      const next = [...order.slice(20), ...order.slice(0, 15)];
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(next);
+      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(next);
+    });
+
+    it('reaches a newer shop added after the cursor in the same lap', async () => {
+      const { ctx, order } = await listedShops(25);
+      ctx.publisher.ok = false;
+      await tick(ctx);
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
+      await ctx.messages.create(shopNote(uuid(26)));
+      await ctx.shops.ensureListed(uuid(26), KEK);
+      expect((await ctx.shops.listAll()).map((row) => row.messageId).at(-1)).toBe(uuid(26));
+      await tick(ctx);
+      const next = [...order.slice(20), uuid(26), ...order.slice(0, 14)];
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(next);
+      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(next);
+    });
+
+    it('wraps to the first shop when no row follows the cursor', async () => {
+      const { ctx, order } = await listedShops(20);
+      ctx.publisher.ok = false;
+      const removed = new Set<string>();
+      const shops = override<ShopIdentityStore>(ctx.shops, {
+        listAll: async () =>
+          (await ctx.shops.listAll()).filter((row) => !removed.has(row.messageId)),
+      });
+      // Tick 1 ends on the last row: the cursor is shop 20.
+      await tick(ctx, ENV, { shopIdentities: shops });
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order);
+      // Tick 2 finds no row after the cursor and starts at shop 1.
+      await tick(ctx, ENV, { shopIdentities: shops });
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(order);
+      // The last row is gone, so the cursor (shop 20) is past every row.
+      removed.add(uuid(20));
+      await tick(ctx, ENV, { shopIdentities: shops });
+      expect(attemptsOf('nostr.profile.nack').slice(40)).toEqual(order.slice(0, 19));
+      expect(attemptsOf('nostr.relays.nack').slice(40)).toEqual(order.slice(0, 19));
+    });
   });
 
   /** A promise held until `release`, plus one that settles when it is first awaited. */

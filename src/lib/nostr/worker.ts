@@ -1524,7 +1524,9 @@ async function shopKind0Args(
 /**
  * Publish kind 0 for every shop identity, listed or not, with the same
  * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
- * The `WORKER_BATCH` attempts per tick go round robin ({@link shopRound}).
+ * The `WORKER_BATCH` attempts per tick go round robin ({@link shopRound});
+ * every visited shop counts, also one whose content is unchanged or whose
+ * reads throw, so a tick reads at most `WORKER_BATCH` shops.
  *
  * @param deps - Worker deps.
  * @param writeSet - Resolved write relays.
@@ -1550,6 +1552,10 @@ async function publishShopProfiles(
   for (const identity of shopRound(await shops.listAll(), shopProfileCursors.get(shops))) {
     if (attempted >= WORKER_BATCH) break;
     const id = identity.messageId;
+    // Count the shop before reading its fields, so a shop whose reads fail
+    // (or whose content is unchanged) still uses a slot and moves the cursor.
+    attempted += 1;
+    advanceShopRound(shopProfileCursors, shops, identity);
     let reservation: Kind0Reservation | undefined;
     try {
       const args = await shopKind0Args(deps, shops, identity, nip05Locals, domain);
@@ -1569,8 +1575,6 @@ async function publishShopProfiles(
         createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
       };
       cache.set(id, reservation);
-      attempted += 1;
-      advanceShopRound(shopProfileCursors, shops, identity);
       reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
       watermarks.set(id, reservation.createdAt);
       const unsigned = buildKind0Event(

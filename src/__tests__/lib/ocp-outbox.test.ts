@@ -317,7 +317,7 @@ describe('runOcpPlaceOutboxPass', () => {
     expect(logged('ocp.place.deferred')).toEqual([]);
   });
 
-  it('releases the claim for a retry when a 409 body is empty or cannot be read', async () => {
+  it('keeps the flag and the claim until the lease ends when a 409 body is empty or cannot be read', async () => {
     const broken = {
       ok: false,
       status: 409,
@@ -328,8 +328,12 @@ describe('runOcpPlaceOutboxPass', () => {
       const { push } = mapPush(answer);
       const ids = stubIdentities();
       await runOcpPlaceOutboxPass(deps(ids, messages, push));
-      expect(ids.release).toHaveBeenCalledWith('place', CLAIM);
+      // The claim stays: nothing releases it, clears the flag or resets the
+      // photos, so the retry waits for the lease to end.
+      expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+      expect(ids.release).not.toHaveBeenCalled();
       expect(ids.finishPlace).not.toHaveBeenCalled();
+      expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
     }
     expect(logged('ocp.place.failed')).toEqual([
       expect.objectContaining({ messageId: ID, status: 409 }),
