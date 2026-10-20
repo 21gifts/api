@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AccountRole, StaffTag } from '@/lib/auth/store';
 import type { GoalCurrency } from '@/lib/goal-rate';
 import type { ForumPlace } from '@/lib/place';
+import { isListedShop } from '@/lib/shop-place';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
@@ -171,6 +172,11 @@ export interface MessageRow {
    * Omit or `null` means none.
    */
   shopAccount?: { id: string; username: string; name: string } | null;
+  /**
+   * npub of the note's shop identity (`shop_identity`), or `null`/omitted
+   * when it has none. Public JSON exposes it only while the note is listed.
+   */
+  shopNpub?: string | null;
   /** Stored signed event JSON, or `null` until signed. */
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or `null`. */
@@ -303,6 +309,8 @@ export interface PublicMessage {
    * Present even when `accountId` is omitted.
    */
   shopAccount?: { id: string; username: string; name: string };
+  /** npub of the listed shop, or `null` when the note is not a listed shop with a key. */
+  shopNpub: string | null;
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
@@ -698,6 +706,7 @@ export function serializeMessage(
     photoTakenAts: taken.photoTakenAts,
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
+    shopNpub: isListedShop(row) ? (row.shopNpub ?? null) : null,
   };
   if (taken.photoTakenAt !== undefined) {
     body.photoTakenAt = taken.photoTakenAt;

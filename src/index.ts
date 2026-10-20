@@ -16,9 +16,11 @@ import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
-import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { InMemoryMessageStore } from './lib/message-store';
 import { seedDevShopPlaces } from './lib/dev-shop-places';
-import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
+import { resolveMapPush } from './lib/ocp-place';
+import { InMemoryShopIdentityStore } from './lib/shop-identity';
+import { queueAllShopPlaces, startOcpOutboxWorker } from './lib/ocp-outbox';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
@@ -33,15 +35,27 @@ import { createApp, parseBindAddr, resolveBindAddr } from './server';
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
 function createBunDatabase(databaseUrl: string): { client: SqlClient; mergeDb: MergeDb } {
   const sql = new SQL(databaseUrl);
-  return {
-    client: {
-      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
-        return (await sql.unsafe(text, [...params])) as T[];
-      },
-      async execute(text: string, params: readonly unknown[] = []): Promise<void> {
-        await sql.unsafe(text, [...params]);
-      },
+  const client: SqlClient = {
+    async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+      return (await sql.unsafe(text, [...params])) as T[];
     },
+    async execute(text: string, params: readonly unknown[] = []): Promise<void> {
+      await sql.unsafe(text, [...params]);
+    },
+    async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+      return sql.begin(async (tx) =>
+        run({
+          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+            (await tx.unsafe(text, [...params])) as R[],
+          execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+            await tx.unsafe(text, [...params]);
+          },
+        }),
+      );
+    },
+  };
+  return {
+    client,
     mergeDb: {
       async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
         return sql.begin(async (tx) =>
@@ -79,6 +93,7 @@ if (import.meta.main) {
     btcUsdRates,
     fiatRates,
     messageStore,
+    shopIdentityStore,
     nostrKek,
     contactStore,
     memberHabitStore,
@@ -115,6 +130,7 @@ if (import.meta.main) {
   );
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
+  const shopIdentities = shopIdentityStore ?? new InMemoryShopIdentityStore(forumMessages);
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
   const app = createApp({
     authStore,
@@ -124,6 +140,7 @@ if (import.meta.main) {
     posStore,
     env: process.env,
     messageStore: forumMessages,
+    shopIdentityStore: shopIdentities,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
@@ -166,14 +183,12 @@ if (import.meta.main) {
     ...(bun === undefined ? {} : { sql: bun.client }),
   });
   const mapPush = resolveMapPush(process.env, globalThis.fetch);
-  void publishExistingShopPlaces({
-    ...(mapPush === undefined ? {} : { mapPush }),
-    listPlaces: (limit) => forumMessages.listPlaces(limit),
-    getById: (id) => forumMessages.getById(id),
-    textHasHashtagToken,
-  }).catch(() => {
-    console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
-  });
+  if (mapPush !== undefined) {
+    void queueAllShopPlaces(shopIdentities).catch(() => {
+      console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
+    });
+    startOcpOutboxWorker({ identities: shopIdentities, messages: forumMessages, mapPush });
+  }
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
@@ -198,6 +213,7 @@ if (import.meta.main) {
         ...(fundingStore === undefined ? {} : { fundingStore }),
         banners,
         fiatRates,
+        shopIdentities,
       },
       WORKER_INTERVAL_MS,
     );

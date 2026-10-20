@@ -1,0 +1,995 @@
+/**
+ * Durable Nostr identities and OpenCryptoPay outboxes for shop notes
+ * (`docs/shop-identity.md` S1 and S5).
+ *
+ * One random custodial key per listed shop note, stored in `shop_identity`
+ * and encrypted with the account KEK under the AAD `shop:<messageId>`. The
+ * same row carries the place and photo outboxes. On Postgres, the row
+ * triggers `trg_shop_identity_place`, `trg_shop_identity_cover` and
+ * `trg_shop_identity_extra_photo` queue every store write that changes a
+ * shop note, in the writing transaction and after its row lock; the
+ * in-memory adapter derives the same queue from note fingerprints before
+ * each call.
+ */
+
+import { createHash } from 'node:crypto';
+import { nip19 } from 'nostr-tools';
+import type { SqlClient } from '@/lib/auth/sql';
+import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import type { MessageRow } from '@/lib/message';
+import {
+  NOSTR_KEK_ID_V1,
+  defaultNostrKeygen,
+  encryptNostrSecret,
+  publicKeyHexFromSecret,
+  zeroizeSecret,
+  type NostrKeygen,
+} from '@/lib/nostr/keys';
+import { isListedShop, listedShopName } from '@/lib/shop-place';
+
+/** One persisted shop key and its two OpenCryptoPay outboxes. */
+export interface ShopIdentityRow {
+  /** Shop note id (`message.id`), also the AAD suffix and the OCP `externalId`. */
+  messageId: string;
+  /** 64 lowercase hex x-only public key. */
+  nostrPubkey: string;
+  /** AES-256-GCM envelope of the secret key. */
+  nostrNsecCiphertext: Uint8Array;
+  /** Key-encryption key id (only `1`). */
+  nostrKekId: number;
+  /** Custody of the key (`custodial` in v1). */
+  nostrKeyCustody: 'custodial' | 'user';
+  /** Insert time of the key. */
+  nostrKeyCreatedAt: Date;
+  /** Shop name while it was last listed. */
+  profileName: string;
+  /** SHA-256 of the photo set OpenCryptoPay last answered, or `null`. */
+  ocpPhotosHash: string | null;
+  /** A photo push is due. */
+  ocpPhotosPending: boolean;
+  /** Raised by every photo trigger. */
+  ocpPhotosGeneration: number;
+  /** Photo lease end, or `null`. */
+  ocpPhotosClaimedUntil: Date | null;
+  /** Photo claim token, raised by every photo claim. */
+  ocpPhotosClaim: number;
+  /** A place push is due. */
+  ocpPlacePending: boolean;
+  /** Raised by every place change. */
+  ocpPlaceGeneration: number;
+  /** Place lease end, or `null`. */
+  ocpPlaceClaimedUntil: Date | null;
+  /** Place claim token, raised by every place claim. */
+  ocpPlaceClaim: number;
+  /** Last revision sent to OpenCryptoPay (shared by place and photo requests). */
+  ocpRevision: number;
+}
+
+/** A claimed outbox row: claim token `claim` (c) and generation `generation` (g). */
+export interface ShopOcpClaim {
+  /** Shop note id. */
+  messageId: string;
+  /** Generation read by the claim. */
+  generation: number;
+  /** Claim token returned by the claim. */
+  claim: number;
+}
+
+/** Keyset cursor of the key backfill, by note `created_at` then `id`. */
+export interface ShopCandidateCursor {
+  /** Note creation time. */
+  createdAt: Date;
+  /** Note id. */
+  id: string;
+}
+
+/** Outbox lane: the place request or the photo request. */
+export type ShopOcpLane = 'place' | 'photos';
+
+/** Persistence port for shop identities and their OpenCryptoPay outboxes. */
+export interface ShopIdentityStore {
+  /**
+   * Create the key of a listed shop note once, or return the existing one.
+   * A new key queues the place push. An existing key gets its
+   * `profile_name` rewritten while the note is listed.
+   */
+  ensureListed(
+    messageId: string,
+    kek: Uint8Array,
+    keygen?: NostrKeygen,
+  ): Promise<ShopIdentityRow | undefined>;
+  /** Identity of one note, or `undefined`. */
+  getByMessageId(messageId: string): Promise<ShopIdentityRow | undefined>;
+  /** Identity by 64-hex public key, or `undefined`. */
+  getByPubkey(pubkey: string): Promise<ShopIdentityRow | undefined>;
+  /** Encrypted secret of one shop, or `undefined`. */
+  getNostrCiphertext(messageId: string): Promise<Uint8Array | undefined>;
+  /** Every identity, by `nostr_key_created_at` then `message_id`. */
+  listAll(): Promise<ShopIdentityRow[]>;
+  /** Write `profile_name` when it differs. */
+  setProfileName(messageId: string, name: string): Promise<void>;
+  /** Live top-level pinned `#21GiftsShop` notes with a till account and no key, after `cursor`. */
+  listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidateCursor[]>;
+  /** Queue the place push of one page of identities after `afterMessageId`; returns the page ids. */
+  queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
+  /** Claim up to `limit` pending places (lease by the database clock). */
+  claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
+  /** Claim one pending photo set whose place is not pending. */
+  claimPhoto(leaseMs: number): Promise<ShopOcpClaim | undefined>;
+  /** Whether the claim still holds and its lease has at least `minimumMs` left. */
+  leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean>;
+  /** Raise `ocp_revision` under the claim; `undefined` when the claim was taken over. */
+  nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined>;
+  /** Release the lease (conditional on the claim token). */
+  release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void>;
+  /** Before a place `DELETE`: null the hash, clear and raise the photo outbox. */
+  resetPhotosForDelete(claim: ShopOcpClaim): Promise<void>;
+  /** Record a place result and release the lease. */
+  finishPlace(claim: ShopOcpClaim, result: 'put' | 'created' | 'delete' | 'reject'): Promise<void>;
+  /** Clear the photo flag (generation-checked) without a request and release. */
+  clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void>;
+  /** Null the stored photo hash (claim-checked). */
+  clearPhotoHash(claim: ShopOcpClaim): Promise<void>;
+  /** Store the sent hash and clear the flag (generation-checked) and release. */
+  finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void>;
+  /** Photo 404: null the hash, clear the flag, queue the place when still listed, release. */
+  missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void>;
+}
+
+/**
+ * SQL condition of a listed shop that the database can check on a `message`
+ * row named `m`: everything except the completeness text rules of #478, which
+ * the code checks. Used only to narrow candidates and photo queueing.
+ */
+const LISTED_SHAPE_SQL = (m: string): string =>
+  `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
+   AND ${m}.place_lat IS NOT NULL AND ${m}.place_lng IS NOT NULL AND ${m}.place_label IS NOT NULL
+   AND ${m}.place_street IS NOT NULL AND ${m}.place_house_number IS NOT NULL
+   AND ${m}.place_postal_code IS NOT NULL AND ${m}.place_city IS NOT NULL
+   AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
+
+/** Idempotent SQL for `shop_identity` and its queue triggers (matches `docs/schema/shop_identity.sql`). */
+export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
+  `CREATE TABLE IF NOT EXISTS shop_identity (
+     message_id uuid PRIMARY KEY REFERENCES message (id),
+     nostr_pubkey text NOT NULL UNIQUE CHECK (nostr_pubkey ~ '^[0-9a-f]{64}$'),
+     nostr_nsec_ciphertext bytea NOT NULL,
+     nostr_kek_id integer NOT NULL CHECK (nostr_kek_id = 1),
+     nostr_key_custody text NOT NULL CHECK (nostr_key_custody IN ('custodial', 'user')),
+     nostr_key_created_at timestamptz NOT NULL,
+     profile_name text NOT NULL,
+     ocp_photos_hash text NULL,
+     ocp_photos_pending boolean NOT NULL DEFAULT false,
+     ocp_photos_generation integer NOT NULL DEFAULT 0,
+     ocp_photos_claimed_until timestamptz NULL,
+     ocp_photos_claim integer NOT NULL DEFAULT 0,
+     ocp_place_pending boolean NOT NULL DEFAULT false,
+     ocp_place_generation integer NOT NULL DEFAULT 0,
+     ocp_place_claimed_until timestamptz NULL,
+     ocp_place_claim integer NOT NULL DEFAULT 0,
+     ocp_revision bigint NOT NULL DEFAULT 0
+       CHECK (ocp_revision >= 0 AND ocp_revision <= 9007199254740991)
+   )`,
+  `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
+   BEGIN
+     UPDATE shop_identity SET ocp_place_pending = true,
+       ocp_place_generation = ocp_place_generation + 1
+     WHERE message_id = NEW.id;
+     RETURN NEW;
+   END
+   $$ LANGUAGE plpgsql`,
+  `DROP TRIGGER IF EXISTS trg_shop_identity_place ON message`,
+  `CREATE TRIGGER trg_shop_identity_place
+   AFTER UPDATE OF text, place_lat, place_lng, place_label, place_street, place_house_number,
+     place_postal_code, place_city, place_country, shop_account_id, deleted_at ON message
+   FOR EACH ROW WHEN (
+     OLD.text IS DISTINCT FROM NEW.text OR
+     OLD.place_lat IS DISTINCT FROM NEW.place_lat OR OLD.place_lng IS DISTINCT FROM NEW.place_lng OR
+     OLD.place_label IS DISTINCT FROM NEW.place_label OR
+     OLD.place_street IS DISTINCT FROM NEW.place_street OR
+     OLD.place_house_number IS DISTINCT FROM NEW.place_house_number OR
+     OLD.place_postal_code IS DISTINCT FROM NEW.place_postal_code OR
+     OLD.place_city IS DISTINCT FROM NEW.place_city OR
+     OLD.place_country IS DISTINCT FROM NEW.place_country OR
+     OLD.shop_account_id IS DISTINCT FROM NEW.shop_account_id OR
+     OLD.deleted_at IS DISTINCT FROM NEW.deleted_at
+   )
+   EXECUTE FUNCTION queue_shop_identity_place()`,
+  `CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
+   BEGIN
+     IF ${LISTED_SHAPE_SQL('NEW')} THEN
+       UPDATE shop_identity SET ocp_photos_pending = true,
+         ocp_photos_generation = ocp_photos_generation + 1
+       WHERE message_id = NEW.id;
+     END IF;
+     RETURN NEW;
+   END
+   $$ LANGUAGE plpgsql`,
+  `DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message`,
+  `CREATE TRIGGER trg_shop_identity_cover
+   AFTER UPDATE OF photo, photo_content_type ON message
+   FOR EACH ROW WHEN (
+     OLD.photo IS DISTINCT FROM NEW.photo OR
+     OLD.photo_content_type IS DISTINCT FROM NEW.photo_content_type
+   )
+   EXECUTE FUNCTION queue_shop_identity_cover()`,
+  `CREATE OR REPLACE FUNCTION queue_shop_identity_photo() RETURNS trigger AS $$
+   DECLARE target uuid;
+   BEGIN
+     IF TG_OP = 'DELETE' THEN
+       target := OLD.message_id;
+     ELSE
+       target := NEW.message_id;
+     END IF;
+     UPDATE shop_identity SET ocp_photos_pending = true,
+       ocp_photos_generation = ocp_photos_generation + 1
+     WHERE message_id = target AND EXISTS (
+       SELECT 1 FROM message m WHERE m.id = target AND ${LISTED_SHAPE_SQL('m')}
+     );
+     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+     RETURN NEW;
+   END
+   $$ LANGUAGE plpgsql`,
+  `DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo`,
+  `CREATE TRIGGER trg_shop_identity_extra_photo AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
+   FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo()`,
+];
+
+/**
+ * Apply {@link SHOP_IDENTITY_SCHEMA_SQL} in order. Idempotent.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @returns Resolves when every statement has run.
+ */
+export async function migrateShopIdentitySchema(sql: SqlClient): Promise<void> {
+  for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
+    await sql.execute(statement);
+  }
+}
+
+/**
+ * Canonical npub of one stored shop identity.
+ *
+ * @param identity - Row with the 64-hex public key.
+ * @returns NIP-19 `npub1…`.
+ */
+export function shopNpub(identity: Pick<ShopIdentityRow, 'nostrPubkey'>): string {
+  return nip19.npubEncode(identity.nostrPubkey);
+}
+
+function copyIdentity(row: ShopIdentityRow): ShopIdentityRow {
+  return {
+    ...row,
+    nostrNsecCiphertext: row.nostrNsecCiphertext.slice(),
+    nostrKeyCreatedAt: new Date(row.nostrKeyCreatedAt),
+    ocpPhotosClaimedUntil:
+      row.ocpPhotosClaimedUntil === null ? null : new Date(row.ocpPhotosClaimedUntil),
+    ocpPlaceClaimedUntil:
+      row.ocpPlaceClaimedUntil === null ? null : new Date(row.ocpPlaceClaimedUntil),
+  };
+}
+
+async function freshIdentity(
+  messageId: string,
+  profileName: string,
+  kek: Uint8Array,
+  keygen: NostrKeygen,
+  createdAt: Date,
+): Promise<ShopIdentityRow> {
+  const secret = keygen.generateSecretKey();
+  try {
+    return {
+      messageId,
+      nostrPubkey: publicKeyHexFromSecret(secret),
+      nostrNsecCiphertext: await encryptNostrSecret(secret, kek, `shop:${messageId}`),
+      nostrKekId: NOSTR_KEK_ID_V1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: createdAt,
+      profileName,
+      ocpPhotosHash: null,
+      ocpPhotosPending: false,
+      ocpPhotosGeneration: 0,
+      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaim: 0,
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 1,
+      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaim: 0,
+      ocpRevision: 0,
+    };
+  } finally {
+    zeroizeSecret(secret);
+  }
+}
+
+/** Fields the Postgres place trigger compares. */
+function placeFingerprint(note: MessageRow | undefined): string {
+  if (note === undefined) return 'missing';
+  return JSON.stringify([note.text, note.place, note.shopAccount?.id, note.deletedAt]);
+}
+
+async function photoFingerprint(messages: MessageStore, messageId: string): Promise<string> {
+  const first = await messages.getPhoto(messageId);
+  const extras = await messages.listExtraPhotos(messageId);
+  const hash = createHash('sha256');
+  for (const photo of first === null ? extras : [first, ...extras]) {
+    hash.update(`${photo.contentType}:${String(photo.bytes.byteLength)}:`);
+    hash.update(photo.bytes);
+  }
+  return hash.digest('hex');
+}
+
+/**
+ * In-memory shop identity and outbox adapter for memory boots and tests.
+ *
+ * Postgres queues through row triggers inside each writing transaction. This
+ * adapter has no transactions, so before every call it compares each
+ * identity's note (text, pin, till account, `deletedAt`) and photo set with
+ * the last fingerprint it saw and queues a change the same way the triggers
+ * do: a place change always, a photo change only while the note is listed.
+ * The lease clock is the process clock.
+ */
+export class InMemoryShopIdentityStore implements ShopIdentityStore {
+  readonly #messages: MessageStore;
+  readonly #now: () => number;
+  readonly #rows = new Map<string, ShopIdentityRow>();
+  readonly #seen = new Map<string, { place: string; photos: string }>();
+
+  /**
+   * @param messages - Forum store whose notes decide whether a shop is listed.
+   * @param now - Lease clock in epoch ms (default `Date.now`).
+   */
+  constructor(messages: MessageStore, now: () => number = Date.now) {
+    this.#messages = messages;
+    this.#now = now;
+  }
+
+  async #sync(): Promise<void> {
+    for (const row of this.#rows.values()) {
+      const note = await this.#messages.getById(row.messageId);
+      const seen = this.#seen.get(row.messageId) as { place: string; photos: string };
+      const place = placeFingerprint(note);
+      if (place !== seen.place) {
+        seen.place = place;
+        row.ocpPlacePending = true;
+        row.ocpPlaceGeneration += 1;
+      }
+      const photos = await photoFingerprint(this.#messages, row.messageId);
+      if (photos !== seen.photos) {
+        seen.photos = photos;
+        if (isListedShop(note)) {
+          row.ocpPhotosPending = true;
+          row.ocpPhotosGeneration += 1;
+        }
+      }
+    }
+  }
+
+  async ensureListed(
+    messageId: string,
+    kek: Uint8Array,
+    keygen: NostrKeygen = defaultNostrKeygen,
+  ): Promise<ShopIdentityRow | undefined> {
+    await this.#sync();
+    const note = await this.#messages.getById(messageId);
+    const name = listedShopName(note);
+    const existing = this.#rows.get(messageId);
+    if (existing !== undefined) {
+      if (name !== null) existing.profileName = name;
+      return copyIdentity(existing);
+    }
+    if (name === null) return undefined;
+    const created = await freshIdentity(messageId, name, kek, keygen, new Date(this.#now()));
+    const won = this.#rows.get(messageId);
+    if (won !== undefined) return copyIdentity(won);
+    if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    this.#rows.set(messageId, created);
+    this.#seen.set(messageId, {
+      place: placeFingerprint(note),
+      photos: await photoFingerprint(this.#messages, messageId),
+    });
+    if (this.#messages instanceof InMemoryMessageStore) {
+      this.#messages.setShopNpub(messageId, shopNpub(created));
+    }
+    return copyIdentity(created);
+  }
+
+  async getByMessageId(messageId: string): Promise<ShopIdentityRow | undefined> {
+    await this.#sync();
+    const row = this.#rows.get(messageId);
+    return row === undefined ? undefined : copyIdentity(row);
+  }
+
+  async getByPubkey(pubkey: string): Promise<ShopIdentityRow | undefined> {
+    await this.#sync();
+    const row = [...this.#rows.values()].find((item) => item.nostrPubkey === pubkey);
+    return row === undefined ? undefined : copyIdentity(row);
+  }
+
+  getNostrCiphertext(messageId: string): Promise<Uint8Array | undefined> {
+    return Promise.resolve(this.#rows.get(messageId)?.nostrNsecCiphertext.slice());
+  }
+
+  async listAll(): Promise<ShopIdentityRow[]> {
+    await this.#sync();
+    return [...this.#rows.values()]
+      .sort((a, b) => {
+        const time = a.nostrKeyCreatedAt.getTime() - b.nostrKeyCreatedAt.getTime();
+        return time !== 0 ? time : a.messageId.localeCompare(b.messageId);
+      })
+      .map(copyIdentity);
+  }
+
+  setProfileName(messageId: string, name: string): Promise<void> {
+    const row = this.#rows.get(messageId);
+    if (row !== undefined) row.profileName = name;
+    return Promise.resolve();
+  }
+
+  async listCandidates(
+    cursor: ShopCandidateCursor | null,
+    limit: number,
+  ): Promise<ShopCandidateCursor[]> {
+    const refs = await this.#messages.listLiveAssignedShops();
+    const notes = await Promise.all(refs.map((ref) => this.#messages.getById(ref.id)));
+    return notes
+      .filter((row): row is MessageRow => row !== undefined)
+      .filter(
+        (row) =>
+          !this.#rows.has(row.id) &&
+          row.place !== undefined &&
+          row.place !== null &&
+          /#21GiftsShop(?![A-Za-z0-9_])/i.test(row.text),
+      )
+      .filter(
+        (row) =>
+          cursor === null ||
+          row.createdAt.getTime() > cursor.createdAt.getTime() ||
+          (row.createdAt.getTime() === cursor.createdAt.getTime() && row.id > cursor.id),
+      )
+      .sort((a, b) => {
+        const time = a.createdAt.getTime() - b.createdAt.getTime();
+        return time !== 0 ? time : a.id < b.id ? -1 : 1;
+      })
+      .slice(0, limit)
+      .map((row) => ({ id: row.id, createdAt: new Date(row.createdAt) }));
+  }
+
+  async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {
+    await this.#sync();
+    const rows = this.#byMessageId()
+      .filter((row) => afterMessageId === null || row.messageId > afterMessageId)
+      .slice(0, limit);
+    for (const row of rows) {
+      row.ocpPlacePending = true;
+      row.ocpPlaceGeneration += 1;
+    }
+    return rows.map((row) => row.messageId);
+  }
+
+  async claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]> {
+    await this.#sync();
+    const nowMs = this.#now();
+    const claims: ShopOcpClaim[] = [];
+    for (const row of this.#byMessageId()) {
+      if (claims.length >= limit) break;
+      if (!row.ocpPlacePending || !leaseFree(row.ocpPlaceClaimedUntil, nowMs)) continue;
+      row.ocpPlaceClaim += 1;
+      row.ocpPlaceClaimedUntil = new Date(nowMs + leaseMs);
+      claims.push({
+        messageId: row.messageId,
+        generation: row.ocpPlaceGeneration,
+        claim: row.ocpPlaceClaim,
+      });
+    }
+    return claims;
+  }
+
+  async claimPhoto(leaseMs: number): Promise<ShopOcpClaim | undefined> {
+    await this.#sync();
+    const nowMs = this.#now();
+    const row = this.#byMessageId().find(
+      (item) =>
+        item.ocpPhotosPending &&
+        !item.ocpPlacePending &&
+        leaseFree(item.ocpPhotosClaimedUntil, nowMs),
+    );
+    if (row === undefined) return undefined;
+    row.ocpPhotosClaim += 1;
+    row.ocpPhotosClaimedUntil = new Date(nowMs + leaseMs);
+    return {
+      messageId: row.messageId,
+      generation: row.ocpPhotosGeneration,
+      claim: row.ocpPhotosClaim,
+    };
+  }
+
+  leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean> {
+    const row = this.#claimed(lane, claim);
+    if (row === undefined) return Promise.resolve(false);
+    const until = lane === 'place' ? row.ocpPlaceClaimedUntil : row.ocpPhotosClaimedUntil;
+    return Promise.resolve(until !== null && until.getTime() >= this.#now() + minimumMs);
+  }
+
+  nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
+    const row = this.#claimed(lane, claim);
+    if (row === undefined) {
+      return Promise.resolve(undefined);
+    }
+    row.ocpRevision += 1;
+    return Promise.resolve(row.ocpRevision);
+  }
+
+  release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void> {
+    const row = this.#claimed(lane, claim);
+    if (row !== undefined) {
+      if (lane === 'place') row.ocpPlaceClaimedUntil = null;
+      else row.ocpPhotosClaimedUntil = null;
+    }
+    return Promise.resolve();
+  }
+
+  async resetPhotosForDelete(claim: ShopOcpClaim): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('place', claim);
+    if (row !== undefined) {
+      row.ocpPhotosHash = null;
+      row.ocpPhotosPending = false;
+      row.ocpPhotosGeneration += 1;
+    }
+  }
+
+  async finishPlace(
+    claim: ShopOcpClaim,
+    result: 'put' | 'created' | 'delete' | 'reject',
+  ): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('place', claim);
+    if (row === undefined) return;
+    const current = row.ocpPlaceGeneration === claim.generation;
+    if (result === 'created') {
+      row.ocpPhotosHash = null;
+    }
+    if (result === 'created' || (result === 'put' && current)) {
+      row.ocpPhotosPending = true;
+      row.ocpPhotosGeneration += 1;
+    }
+    if (current) row.ocpPlacePending = false;
+    row.ocpPlaceClaimedUntil = null;
+  }
+
+  async clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('photos', claim);
+    if (row === undefined) return;
+    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosPending = false;
+    row.ocpPhotosClaimedUntil = null;
+  }
+
+  clearPhotoHash(claim: ShopOcpClaim): Promise<void> {
+    const row = this.#claimed('photos', claim);
+    if (row !== undefined) row.ocpPhotosHash = null;
+    return Promise.resolve();
+  }
+
+  async finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('photos', claim);
+    if (row === undefined) return;
+    if (row.ocpPhotosGeneration === claim.generation) {
+      row.ocpPhotosHash = hash;
+      row.ocpPhotosPending = false;
+    }
+    row.ocpPhotosClaimedUntil = null;
+  }
+
+  async missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void> {
+    await this.#sync();
+    const row = this.#claimed('photos', claim);
+    if (row === undefined) return;
+    row.ocpPhotosHash = null;
+    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosPending = false;
+    if (listed) {
+      row.ocpPlacePending = true;
+      row.ocpPlaceGeneration += 1;
+    }
+    row.ocpPhotosClaimedUntil = null;
+  }
+
+  #byMessageId(): ShopIdentityRow[] {
+    return [...this.#rows.values()].sort((a, b) => a.messageId.localeCompare(b.messageId));
+  }
+
+  #claimed(lane: ShopOcpLane, claim: ShopOcpClaim): ShopIdentityRow | undefined {
+    const row = this.#rows.get(claim.messageId);
+    if (row === undefined) return undefined;
+    return (lane === 'place' ? row.ocpPlaceClaim : row.ocpPhotosClaim) === claim.claim
+      ? row
+      : undefined;
+  }
+}
+
+function leaseFree(until: Date | null, nowMs: number): boolean {
+  return until === null || until.getTime() <= nowMs;
+}
+
+type IdentitySqlRow = {
+  message_id: string;
+  nostr_pubkey: string;
+  nostr_nsec_ciphertext: Uint8Array;
+  nostr_kek_id: number;
+  nostr_key_custody: 'custodial' | 'user';
+  nostr_key_created_at: Date | string;
+  profile_name: string;
+  ocp_photos_hash: string | null;
+  ocp_photos_pending: boolean;
+  ocp_photos_generation: number;
+  ocp_photos_claimed_until: Date | string | null;
+  ocp_photos_claim: number;
+  ocp_place_pending: boolean;
+  ocp_place_generation: number;
+  ocp_place_claimed_until: Date | string | null;
+  ocp_place_claim: number;
+  ocp_revision: number | string | bigint;
+};
+
+const IDENTITY_COLUMNS = `message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
+  nostr_key_custody, nostr_key_created_at, profile_name, ocp_photos_hash,
+  ocp_photos_pending, ocp_photos_generation, ocp_photos_claimed_until, ocp_photos_claim,
+  ocp_place_pending, ocp_place_generation, ocp_place_claimed_until, ocp_place_claim,
+  ocp_revision`;
+
+function sqlDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+function mapIdentity(row: IdentitySqlRow): ShopIdentityRow {
+  return {
+    messageId: row.message_id,
+    nostrPubkey: row.nostr_pubkey,
+    nostrNsecCiphertext: new Uint8Array(row.nostr_nsec_ciphertext),
+    nostrKekId: Number(row.nostr_kek_id),
+    nostrKeyCustody: row.nostr_key_custody,
+    nostrKeyCreatedAt: sqlDate(row.nostr_key_created_at),
+    profileName: row.profile_name,
+    ocpPhotosHash: row.ocp_photos_hash,
+    ocpPhotosPending: row.ocp_photos_pending,
+    ocpPhotosGeneration: Number(row.ocp_photos_generation),
+    ocpPhotosClaimedUntil:
+      row.ocp_photos_claimed_until === null ? null : sqlDate(row.ocp_photos_claimed_until),
+    ocpPhotosClaim: Number(row.ocp_photos_claim),
+    ocpPlacePending: row.ocp_place_pending,
+    ocpPlaceGeneration: Number(row.ocp_place_generation),
+    ocpPlaceClaimedUntil:
+      row.ocp_place_claimed_until === null ? null : sqlDate(row.ocp_place_claimed_until),
+    ocpPlaceClaim: Number(row.ocp_place_claim),
+    ocpRevision: Number(row.ocp_revision),
+  };
+}
+
+function lanePrefix(lane: ShopOcpLane): 'ocp_place' | 'ocp_photos' {
+  return lane === 'place' ? 'ocp_place' : 'ocp_photos';
+}
+
+/**
+ * Postgres shop identity and outbox adapter. Leases are set and compared
+ * with the database clock (`now()`), and every write after a claim is
+ * conditional on its token.
+ */
+export class PostgresShopIdentityStore implements ShopIdentityStore {
+  readonly #sql: SqlClient;
+  readonly #messages: MessageStore;
+
+  /**
+   * @param sql - Shared SQL client.
+   * @param messages - Forum store for the listed check in code.
+   */
+  constructor(sql: SqlClient, messages: MessageStore) {
+    this.#sql = sql;
+    this.#messages = messages;
+  }
+
+  async ensureListed(
+    messageId: string,
+    kek: Uint8Array,
+    keygen: NostrKeygen = defaultNostrKeygen,
+  ): Promise<ShopIdentityRow | undefined> {
+    const note = await this.#messages.getById(messageId);
+    const name = listedShopName(note);
+    const existing = await this.getByMessageId(messageId);
+    if (existing !== undefined) {
+      if (name !== null && name !== existing.profileName) {
+        await this.setProfileName(messageId, name);
+        existing.profileName = name;
+      }
+      return existing;
+    }
+    if (name === null || note?.place?.address === null || note?.place?.address === undefined) {
+      return undefined;
+    }
+    const address = note.place.address;
+    const generated = await freshIdentity(messageId, name, kek, keygen, new Date());
+    // One statement: lock the note (FOR UPDATE) and insert only while every
+    // column the listed check read above is unchanged. A concurrent edit
+    // either committed before the lock (the values differ, no key; the edit's
+    // own write path or the backfill mints it) or waits and then queues
+    // itself through the trigger, which sees the committed row.
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `WITH locked AS (
+         SELECT id FROM message
+         WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
+           AND shop_account_id IS NOT NULL
+           AND text = $8 AND place_lat = $9 AND place_lng = $10 AND place_label = $7
+           AND place_street = $11 AND place_house_number = $12 AND place_postal_code = $13
+           AND place_city = $14 AND place_country = $15
+         FOR UPDATE
+       )
+       INSERT INTO shop_identity (
+         message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
+         nostr_key_custody, nostr_key_created_at, profile_name,
+         ocp_place_pending, ocp_place_generation
+       )
+       SELECT $1, $2, $3, $4, $5, $6, $7, true, 1 FROM locked
+       ON CONFLICT (message_id) DO NOTHING
+       RETURNING ${IDENTITY_COLUMNS}`,
+      [
+        messageId,
+        generated.nostrPubkey,
+        generated.nostrNsecCiphertext,
+        generated.nostrKekId,
+        generated.nostrKeyCustody,
+        generated.nostrKeyCreatedAt,
+        name,
+        note.text,
+        note.place.lat,
+        note.place.lng,
+        address.street,
+        address.houseNumber,
+        address.postalCode,
+        address.city,
+        address.country,
+      ],
+    );
+    const inserted = rows[0];
+    return inserted === undefined ? this.getByMessageId(messageId) : mapIdentity(inserted);
+  }
+
+  async getByMessageId(messageId: string): Promise<ShopIdentityRow | undefined> {
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity WHERE message_id = $1`,
+      [messageId],
+    );
+    return rows[0] === undefined ? undefined : mapIdentity(rows[0]);
+  }
+
+  async getByPubkey(pubkey: string): Promise<ShopIdentityRow | undefined> {
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity WHERE nostr_pubkey = $1`,
+      [pubkey],
+    );
+    return rows[0] === undefined ? undefined : mapIdentity(rows[0]);
+  }
+
+  async getNostrCiphertext(messageId: string): Promise<Uint8Array | undefined> {
+    const rows = await this.#sql.query<{ nostr_nsec_ciphertext: Uint8Array }>(
+      `SELECT nostr_nsec_ciphertext FROM shop_identity WHERE message_id = $1`,
+      [messageId],
+    );
+    return rows[0] === undefined ? undefined : new Uint8Array(rows[0].nostr_nsec_ciphertext);
+  }
+
+  async listAll(): Promise<ShopIdentityRow[]> {
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
+       ORDER BY nostr_key_created_at ASC, message_id ASC`,
+    );
+    return rows.map(mapIdentity);
+  }
+
+  async setProfileName(messageId: string, name: string): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET profile_name = $2
+       WHERE message_id = $1 AND profile_name IS DISTINCT FROM $2`,
+      [messageId, name],
+    );
+  }
+
+  async listCandidates(
+    cursor: ShopCandidateCursor | null,
+    limit: number,
+  ): Promise<ShopCandidateCursor[]> {
+    const rows = await this.#sql.query<{ id: string; created_at: Date | string }>(
+      `SELECT m.id, m.created_at FROM message m
+       WHERE ${LISTED_SHAPE_SQL('m')}
+         AND NOT EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id)
+         AND ($1::timestamptz IS NULL OR (m.created_at, m.id) > ($1::timestamptz, $2::uuid))
+       ORDER BY m.created_at ASC, m.id ASC
+       LIMIT $3`,
+      [cursor?.createdAt ?? null, cursor?.id ?? null, limit],
+    );
+    return rows.map((row) => ({ id: row.id, createdAt: sqlDate(row.created_at) }));
+  }
+
+  async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {
+    const rows = await this.#sql.query<{ message_id: string }>(
+      `WITH page AS (
+         SELECT message_id FROM shop_identity
+         WHERE ($1::uuid IS NULL OR message_id > $1::uuid)
+         ORDER BY message_id LIMIT $2
+       )
+       UPDATE shop_identity s SET ocp_place_pending = true,
+         ocp_place_generation = s.ocp_place_generation + 1
+       FROM page WHERE s.message_id = page.message_id
+       RETURNING s.message_id`,
+      [afterMessageId, limit],
+    );
+    return rows.map((row) => row.message_id).sort();
+  }
+
+  async claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]> {
+    const rows = await this.#sql.query<{
+      message_id: string;
+      ocp_place_generation: number;
+      ocp_place_claim: number;
+    }>(
+      `WITH picked AS (
+         SELECT message_id FROM shop_identity
+         WHERE ocp_place_pending
+           AND (ocp_place_claimed_until IS NULL OR ocp_place_claimed_until <= now())
+         ORDER BY message_id
+         LIMIT $1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE shop_identity s SET
+         ocp_place_claimed_until = now() + ($2::bigint * interval '1 millisecond'),
+         ocp_place_claim = s.ocp_place_claim + 1
+       FROM picked WHERE s.message_id = picked.message_id
+       RETURNING s.message_id, s.ocp_place_generation, s.ocp_place_claim`,
+      [limit, leaseMs],
+    );
+    return rows.map((row) => ({
+      messageId: row.message_id,
+      generation: Number(row.ocp_place_generation),
+      claim: Number(row.ocp_place_claim),
+    }));
+  }
+
+  async claimPhoto(leaseMs: number): Promise<ShopOcpClaim | undefined> {
+    const rows = await this.#sql.query<{
+      message_id: string;
+      ocp_photos_generation: number;
+      ocp_photos_claim: number;
+    }>(
+      `WITH picked AS (
+         SELECT message_id FROM shop_identity
+         WHERE ocp_photos_pending AND NOT ocp_place_pending
+           AND (ocp_photos_claimed_until IS NULL OR ocp_photos_claimed_until <= now())
+         ORDER BY message_id
+         LIMIT 1
+         FOR UPDATE SKIP LOCKED
+       )
+       UPDATE shop_identity s SET
+         ocp_photos_claimed_until = now() + ($1::bigint * interval '1 millisecond'),
+         ocp_photos_claim = s.ocp_photos_claim + 1
+       FROM picked WHERE s.message_id = picked.message_id
+       RETURNING s.message_id, s.ocp_photos_generation, s.ocp_photos_claim`,
+      [leaseMs],
+    );
+    const row = rows[0];
+    return row === undefined
+      ? undefined
+      : {
+          messageId: row.message_id,
+          generation: Number(row.ocp_photos_generation),
+          claim: Number(row.ocp_photos_claim),
+        };
+  }
+
+  async leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean> {
+    const prefix = lanePrefix(lane);
+    const rows = await this.#sql.query<{ ok: number }>(
+      `SELECT 1 AS ok FROM shop_identity
+       WHERE message_id = $1 AND ${prefix}_claim = $2
+         AND ${prefix}_claimed_until >= now() + ($3::bigint * interval '1 millisecond')`,
+      [claim.messageId, claim.claim, minimumMs],
+    );
+    return rows.length > 0;
+  }
+
+  async nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
+    const prefix = lanePrefix(lane);
+    const rows = await this.#sql.query<{ ocp_revision: number | string | bigint }>(
+      `UPDATE shop_identity SET ocp_revision = ocp_revision + 1
+       WHERE message_id = $1 AND ${prefix}_claim = $2
+         AND ocp_revision < 9007199254740991
+       RETURNING ocp_revision`,
+      [claim.messageId, claim.claim],
+    );
+    return rows[0] === undefined ? undefined : Number(rows[0].ocp_revision);
+  }
+
+  async release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void> {
+    const prefix = lanePrefix(lane);
+    await this.#sql.execute(
+      `UPDATE shop_identity SET ${prefix}_claimed_until = NULL
+       WHERE message_id = $1 AND ${prefix}_claim = $2`,
+      [claim.messageId, claim.claim],
+    );
+  }
+
+  async resetPhotosForDelete(claim: ShopOcpClaim): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET ocp_photos_hash = NULL, ocp_photos_pending = false,
+         ocp_photos_generation = ocp_photos_generation + 1
+       WHERE message_id = $1 AND ocp_place_claim = $2`,
+      [claim.messageId, claim.claim],
+    );
+  }
+
+  async finishPlace(
+    claim: ShopOcpClaim,
+    result: 'put' | 'created' | 'delete' | 'reject',
+  ): Promise<void> {
+    const created = result === 'created';
+    const put = result === 'put';
+    await this.#sql.execute(
+      `UPDATE shop_identity SET
+         ocp_photos_hash = CASE WHEN $4::boolean THEN NULL ELSE ocp_photos_hash END,
+         ocp_photos_pending = CASE
+           WHEN $4::boolean OR ($5::boolean AND ocp_place_generation = $3) THEN true
+           ELSE ocp_photos_pending
+         END,
+         ocp_photos_generation = ocp_photos_generation + CASE
+           WHEN $4::boolean OR ($5::boolean AND ocp_place_generation = $3) THEN 1 ELSE 0
+         END,
+         ocp_place_pending = CASE WHEN ocp_place_generation = $3 THEN false ELSE ocp_place_pending END,
+         ocp_place_claimed_until = NULL
+       WHERE message_id = $1 AND ocp_place_claim = $2`,
+      [claim.messageId, claim.claim, claim.generation, created, put],
+    );
+  }
+
+  async clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET
+         ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
+         ocp_photos_claimed_until = NULL
+       WHERE message_id = $1 AND ocp_photos_claim = $2`,
+      [claim.messageId, claim.claim, claim.generation],
+    );
+  }
+
+  async clearPhotoHash(claim: ShopOcpClaim): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET ocp_photos_hash = NULL
+       WHERE message_id = $1 AND ocp_photos_claim = $2`,
+      [claim.messageId, claim.claim],
+    );
+  }
+
+  async finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET
+         ocp_photos_hash = CASE WHEN ocp_photos_generation = $3 THEN $4 ELSE ocp_photos_hash END,
+         ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
+         ocp_photos_claimed_until = NULL
+       WHERE message_id = $1 AND ocp_photos_claim = $2`,
+      [claim.messageId, claim.claim, claim.generation, hash],
+    );
+  }
+
+  async missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE shop_identity SET
+         ocp_photos_hash = NULL,
+         ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
+         ocp_photos_claimed_until = NULL,
+         ocp_place_pending = CASE WHEN $4::boolean THEN true ELSE ocp_place_pending END,
+         ocp_place_generation = ocp_place_generation + CASE WHEN $4::boolean THEN 1 ELSE 0 END
+       WHERE message_id = $1 AND ocp_photos_claim = $2`,
+      [claim.messageId, claim.claim, claim.generation, listed],
+    );
+  }
+}

@@ -190,6 +190,7 @@ describe('serializeMessage', () => {
       photoTakenAts: [],
       hasVideo: false,
       videoContentType: null,
+      shopNpub: null,
       role: 'moderator',
     });
     expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');

@@ -23,7 +23,6 @@ import { invoiceRoutes } from '@/routes/invoices';
 import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { messagesRoutes } from '@/routes/messages';
 import { resolveActivityPing } from '@/lib/ocp-activity';
-import { resolveMapPush, type MapPush } from '@/lib/ocp-place';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
@@ -95,6 +94,8 @@ import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
+import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
+import { shopRoutes } from '@/routes/shops';
 
 /**
  * Optional collaborators for {@link createApp}. All default to production
@@ -236,12 +237,8 @@ export interface AppDeps {
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
   messageStore?: MessageStore;
-  /**
-   * Optional push of a shop pin to `PUT /map/places` (and `DELETE` on
-   * clear or hide). Default: {@link resolveMapPush} on `env`. Off while
-   * `SHOP_PLACE_PUSH_ENABLED` is false, even when the URL and token are set.
-   */
-  mapPush?: MapPush;
+  /** Shop Nostr identities and durable OpenCryptoPay outboxes. */
+  shopIdentityStore?: ShopIdentityStore;
   /** Optional AES-256 KEK for custodial nsec (memory boots may omit). */
   nostrKek?: Uint8Array;
   /**
@@ -356,7 +353,6 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   equal to debugToken after trim throws before routes mount),
  *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
- *   mapPush (optional; default resolveMapPush on env),
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
  *   memberHabitStore (optional; default InMemoryMemberHabitStore; SQL boot
@@ -392,8 +388,9 @@ export function createApp(deps: AppDeps = {}): Hono {
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
+  const shopIdentityStore =
+    deps.shopIdentityStore ?? new InMemoryShopIdentityStore(messageStore, now);
   const env = deps.env ?? process.env;
-  const mapPush = deps.mapPush ?? resolveMapPush(env, fetchImpl);
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
     messageStore.useProfileNoteIds(async () => {
@@ -494,7 +491,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/healthz', healthRoute);
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
-  app.route('/.well-known', wellKnownRoutes({ auth: store, fetchImpl, posStore, now }));
+  app.route(
+    '/.well-known',
+    wellKnownRoutes({
+      auth: store,
+      fetchImpl,
+      posStore,
+      now,
+      shops: { identities: shopIdentityStore, messages: messageStore },
+    }),
+  );
   app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now }));
   app.route(
     '/auth',
@@ -527,6 +533,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
     }),
@@ -587,7 +594,8 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugMessagesRoutes({
       store: messageStore,
       debugToken,
-      ...(mapPush === undefined ? {} : { mapPush }),
+      shopIdentities: shopIdentityStore,
+      ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
   app.route('/debug/external-pubkeys', debugExternalRoutes({ store: messageStore, debugToken }));
@@ -627,6 +635,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugCatalogRoutes({
       auth: store,
       messages: messageStore,
+      shops: shopIdentityStore,
       contacts: contactStore,
       pos: posStore,
       conversations: conversationStore,
@@ -690,7 +699,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
-      ...(mapPush === undefined ? {} : { mapPush }),
+      shopIdentities: shopIdentityStore,
       goalRateDay: bindGoalRateDay({
         store: giftStore,
         rates: btcUsdRates,
@@ -737,6 +746,15 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
+  );
+  app.route(
+    '/shops',
+    shopRoutes({
+      authStore: store,
+      messages: messageStore,
+      identities: shopIdentityStore,
+      env,
+    }),
   );
   app.route(
     '/funding/goal',

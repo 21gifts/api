@@ -82,7 +82,7 @@ function admittedFunding(accountId = 'acc'): InMemoryFundingStore {
 function mount(
   authStore: InMemoryAuthStore,
   store: MessageStore = new InMemoryMessageStore(),
-  routeDeps: Partial<MessagesRouteDeps> = {},
+  routeDeps: Partial<MessagesRouteDeps> & { mapPush?: MapPush } = {},
 ): Hono {
   return new Hono().route(
     '/messages',
@@ -5979,6 +5979,7 @@ describe('GET /messages/places', () => {
       address: null,
       accountId: 'acc',
       shop: true,
+      shopNpub: null,
     });
     expect(body.places[1]).toMatchObject({ shop: false });
     expect(body.places[1]?.label).toBe('A');
@@ -6262,6 +6263,7 @@ describe('GET /messages/:id', () => {
       photoTakenAts: [],
       hasVideo: false,
       videoContentType: null,
+      shopNpub: null,
       via: 'nostr',
       replyCount: 0,
     });
@@ -11911,7 +11913,7 @@ function recordingMap(): {
   return { mapPush: { baseUrl: 'http://map.test', token: 'ingest', fetchImpl }, calls, meta };
 }
 
-describe('shop OCP place hook', () => {
+describe('removed direct shop OCP place hook', () => {
   const SHOP_ID = '66666666-6666-4666-8666-666666666666';
   const ADDRESS = {
     street: 'Bahnhofstrasse',
@@ -11957,8 +11959,8 @@ describe('shop OCP place hook', () => {
     });
   }
 
-  it('posts a shop pin to the map when a shop note is created with a pin', async () => {
-    const { mapPush, calls, meta } = recordingMap();
+  it('does not post directly when a shop note is created with a pin', async () => {
+    const { mapPush, calls } = recordingMap();
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), {
       mapPush,
     });
@@ -11971,28 +11973,7 @@ describe('shop OCP place hook', () => {
       }),
     });
     expect(post.status).toBe(200);
-    const body = (await post.json()) as { id: string };
-    expect(calls).toHaveLength(1);
-    expect(meta[0]?.method).toBe('PUT');
-    expect(meta[0]?.url).toBe('http://map.test/map/places');
-    expect(meta[0]?.authorization).toBe('Bearer ingest');
-    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
-      origin: '21gifts',
-      externalId: body.id,
-      name: 'Stall',
-      description: 'Coffee roasted on site and served at the bar every morning.',
-      lat: 47.3,
-      lon: 8.5,
-      category: 'shopping',
-      paymentMethods: 'lightning',
-      techProvider: '21.gifts',
-      shopType: 'Others',
-      street: 'Bahnhofstrasse',
-      houseNumber: '1',
-      postalCode: '8001',
-      city: 'Zürich',
-      country: 'CH',
-    });
+    expect(calls).toHaveLength(0);
   });
 
   it('does not post a non-shop pin', async () => {
@@ -12008,8 +11989,8 @@ describe('shop OCP place hook', () => {
     expect(calls).toEqual([]);
   });
 
-  it('puts every place write and deletes on clear', async () => {
-    const { mapPush, calls, meta } = recordingMap();
+  it('does not directly put or delete on place writes', async () => {
+    const { mapPush, calls } = recordingMap();
     const messages = new InMemoryMessageStore();
     await shopNote(messages);
     const app = mount(await staffStore('Ada'), messages, { mapPush });
@@ -12019,8 +12000,7 @@ describe('shop OCP place hook', () => {
       body: JSON.stringify({ place: PIN }),
     });
     expect(first.status).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(meta[0]?.method).toBe('PUT');
+    expect(calls).toHaveLength(0);
 
     const replace = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
@@ -12028,14 +12008,7 @@ describe('shop OCP place hook', () => {
       body: JSON.stringify({ place: { lat: 1, lng: 2, label: 'New', address: ADDRESS } }),
     });
     expect(replace.status).toBe(200);
-    expect(calls).toHaveLength(2);
-    expect(meta[1]?.method).toBe('PUT');
-    expect(JSON.parse(calls[1] ?? '{}')).toMatchObject({
-      lat: 1,
-      lon: 2,
-      name: 'New',
-      techProvider: '21.gifts',
-    });
+    expect(calls).toHaveLength(0);
 
     const clear = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
@@ -12043,13 +12016,7 @@ describe('shop OCP place hook', () => {
       body: JSON.stringify({ place: null }),
     });
     expect(clear.status).toBe(200);
-    expect(calls).toHaveLength(3);
-    expect(meta[2]?.method).toBe('DELETE');
-    expect(JSON.parse(calls[2] ?? '{}')).toEqual({
-      origin: '21gifts',
-      externalId: SHOP_ID,
-    });
-    expect(meta.filter((item) => item.method === 'PUT')).toHaveLength(2);
+    expect(calls).toHaveLength(0);
   });
 
   it('puts when a shop-account change has a place and skips when it does not', async () => {
@@ -12068,8 +12035,7 @@ describe('shop OCP place hook', () => {
       },
     );
     expect(placedRes.status).toBe(200);
-    expect(withPlace.calls).toHaveLength(1);
-    expect(withPlace.meta[0]?.method).toBe('PUT');
+    expect(withPlace.calls).toHaveLength(0);
 
     const withoutPlace = recordingMap();
     const authWithoutPlace = await staffStore('Ada');
@@ -12088,8 +12054,8 @@ describe('shop OCP place hook', () => {
     expect(withoutPlace.calls).toEqual([]);
   });
 
-  it('deletes the map pin when a top-level shop with a place is hidden', async () => {
-    const { mapPush, calls, meta } = recordingMap();
+  it('does not directly delete the map pin when a shop is hidden', async () => {
+    const { mapPush, calls } = recordingMap();
     const messages = new InMemoryMessageStore();
     await shopNote(messages);
     await messages.setPlace(SHOP_ID, PIN);
@@ -12098,12 +12064,7 @@ describe('shop OCP place hook', () => {
       { method: 'DELETE', headers: AUTH },
     );
     expect(res.status).toBe(204);
-    expect(calls).toHaveLength(1);
-    expect(meta[0]?.method).toBe('DELETE');
-    expect(JSON.parse(calls[0] ?? '{}')).toEqual({
-      origin: '21gifts',
-      externalId: SHOP_ID,
-    });
+    expect(calls).toHaveLength(0);
   });
 
   it('hides a shop pin when the map push is not configured', async () => {
@@ -12138,7 +12099,7 @@ describe('shop OCP place hook', () => {
   });
 
   it('does not map-call a media replay of the same shop pin', async () => {
-    const { mapPush, calls, meta } = recordingMap();
+    const { mapPush, calls } = recordingMap();
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), { mapPush });
     const body = JSON.stringify({
       text: SHOP_TEXT,
@@ -12152,8 +12113,7 @@ describe('shop OCP place hook', () => {
     });
     expect(first.status).toBe(200);
     const firstJson = (await first.json()) as { id: string };
-    expect(calls).toHaveLength(1);
-    expect(meta[0]?.method).toBe('PUT');
+    expect(calls).toHaveLength(0);
     const second = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -12162,10 +12122,10 @@ describe('shop OCP place hook', () => {
     expect(second.status).toBe(200);
     const secondJson = (await second.json()) as { id: string };
     expect(secondJson.id).toBe(firstJson.id);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(0);
   });
 
-  it('keeps the forum 200 when the map call throws', async () => {
+  it('keeps the forum 200 without invoking a legacy throwing map call', async () => {
     const mapPush: MapPush = {
       baseUrl: 'http://map.test',
       token: 'ingest',
@@ -12184,7 +12144,7 @@ describe('shop OCP place hook', () => {
       },
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(true);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'ocp.place.failed')).toBe(false);
   });
 });
 
@@ -12447,7 +12407,7 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
   });
 
-  it('puts the map pin after a real shop text write', async () => {
+  it('does not use the removed direct map hook after a real shop text write', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
@@ -12472,15 +12432,8 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       }),
     });
     expect(res.status).toBe(200);
-    expect(calls).toHaveLength(1);
-    expect(meta[0]?.method).toBe('PUT');
-    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
-      origin: '21gifts',
-      externalId: SHOP_ID,
-      name: 'Stall',
-      description: 'Coffee roasted on site and served at the bar every morning.',
-      shopType: 'Others',
-    });
+    expect(calls).toHaveLength(0);
+    expect(meta).toHaveLength(0);
     const again = await mount(auth, messages, { mapPush }).request(
       '/messages/' + SHOP_ID + '/text',
       {
@@ -12492,7 +12445,7 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       },
     );
     expect(again.status).toBe(200);
-    expect(calls).toHaveLength(1);
+    expect(calls).toHaveLength(0);
   });
 
   it('edits an external shop note and a note whose author account is gone', async () => {

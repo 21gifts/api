@@ -81,7 +81,7 @@ import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
 import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
-import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -270,11 +270,11 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * write, DELETE on clear or hide). Omitted → the forum write still
-   * succeeds and nothing is sent.
+   * Shop identities. With `nostrKek`, a write that makes a note a listed
+   * shop creates its key after the commit. The OpenCryptoPay outbox is
+   * queued by the store write itself. Omitted → no shop keys.
    */
-  mapPush?: MapPush;
+  shopIdentities?: ShopIdentityStore;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -340,6 +340,29 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+
+/**
+ * After a committed write that can make a note a listed shop: create its key
+ * once (S1). The OpenCryptoPay outbox is queued by the store write itself.
+ * A failure logs `shop.nostr_key.failed` and never fails the request.
+ *
+ * @param deps - Route deps (shop identities and KEK).
+ * @param messageId - Written note id.
+ * @returns The shop npub, or `undefined` when the note has no key.
+ */
+async function ensureShopIdentity(
+  deps: MessagesRouteDeps,
+  messageId: string,
+): Promise<string | undefined> {
+  if (deps.shopIdentities === undefined || deps.nostrKek === undefined) return undefined;
+  try {
+    const identity = await deps.shopIdentities.ensureListed(messageId, deps.nostrKek);
+    return identity === undefined ? undefined : shopNpub(identity);
+  } catch {
+    logEvent('shop.nostr_key.failed', { messageId });
+    return undefined;
+  }
+}
 
 /**
  * Whether a credit note still has money out. Once any sats arrived, the note
@@ -1202,14 +1225,8 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await syncShopOcpPlace({
-        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: published.id,
-        text: published.text,
-        parentId: published.parentId ?? null,
-        place: published.place ?? null,
-        textHasHashtagToken,
-      });
+      const npub = await ensureShopIdentity(deps, published.id);
+      if (npub !== undefined) published.shopNpub = npub;
     }
     return c.json(
       serializeMessage(
@@ -2153,17 +2170,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'An open credit cannot be deleted' }, 409);
           }
         }
-        if (
-          target.parentId === null &&
-          target.place !== null &&
-          target.place !== undefined &&
-          textHasHashtagToken(target.text, '21GiftsShop')
-        ) {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: target.id,
-          });
-        }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
@@ -2286,21 +2292,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (parsed.value !== null) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: parsed.value,
-            textHasHashtagToken,
-          });
-        } else {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2409,16 +2402,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (updated.place !== null && updated.place !== undefined) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place,
-            textHasHashtagToken,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2534,14 +2519,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        await syncShopOcpPlace({
-          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-          messageId: updated.id,
-          text: updated.text,
-          parentId: updated.parentId ?? null,
-          place: updated.place ?? null,
-          textHasHashtagToken,
-        });
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2762,6 +2741,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               label: row.label,
               address: row.address,
               shop: row.shop,
+              shopNpub: row.shopNpub,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },

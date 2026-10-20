@@ -73,6 +73,11 @@ import {
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
+import {
+  migrateShopIdentitySchema,
+  PostgresShopIdentityStore,
+  type ShopIdentityStore,
+} from '@/lib/shop-identity';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -97,6 +102,8 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
+  /** Postgres shop identities/outboxes, or `undefined` on memory boots. */
+  shopIdentityStore: ShopIdentityStore | undefined;
   /**
    * Postgres-backed translation cache, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -285,6 +292,7 @@ export async function openBootStores(
       btcUsdRates: new InMemoryBtcUsdStore(),
       fiatRates: new InMemoryFiatStore(),
       messageStore: undefined,
+      shopIdentityStore: undefined,
       translationStore: undefined,
       conversationTranslationStore: undefined,
       nostrKek: undefined,
@@ -312,6 +320,7 @@ export async function openBootStores(
   await migrateFiatSchema(sqlClient);
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
+  await migrateShopIdentitySchema(sqlClient);
   await migrateContactSchema(sqlClient);
   const habitSql = {
     query: async (text: string, params?: unknown[]) => ({
@@ -455,6 +464,7 @@ export async function openBootStores(
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
+  const shopIdentityStore = new PostgresShopIdentityStore(sqlClient, messageStore);
   const translationStore = new PostgresTranslationStore(sqlClient);
   const conversationTranslationStore = new PostgresTranslationStore(
     sqlClient,
@@ -497,6 +507,7 @@ export async function openBootStores(
     btcUsdRates,
     fiatRates,
     messageStore,
+    shopIdentityStore,
     translationStore,
     conversationTranslationStore,
     nostrKek,

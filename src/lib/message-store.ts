@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import { nip19 } from 'nostr-tools';
 import { fiatAmountToCents } from '@/lib/credit-repayment';
 import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
@@ -35,6 +36,7 @@ import {
   type NostrPublishState,
 } from '@/lib/message';
 import { placesMatch, type ForumPlace, type ForumPlaceAddress } from '@/lib/place';
+import { isListedShop } from '@/lib/shop-place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -428,6 +430,8 @@ export interface MessageStore {
       accountId: string | null;
       /** True when the note text contains the shop tag. */
       shop: boolean;
+      /** Listed shop identity, or null. */
+      shopNpub: string | null;
     }>
   >;
 
@@ -2277,6 +2281,12 @@ export class InMemoryMessageStore implements MessageStore {
     };
   }
 
+  /** Attach or clear the derived listed-shop npub on one in-memory row. */
+  setShopNpub(id: string, npub: string | null): void {
+    const row = this.#rows.find((item) => item.id === id);
+    if (row !== undefined) row.shopNpub = npub;
+  }
+
   /** Copy a row and set `hasPhoto` / `photoCount` from the photo maps. */
   #withListedMedia(row: MessageRow): MessageRow {
     const copy = copyRow(row);
@@ -2570,6 +2580,7 @@ export class InMemoryMessageStore implements MessageStore {
       address: ForumPlaceAddress | null;
       accountId: string | null;
       shop: boolean;
+      shopNpub: string | null;
     }>
   > {
     const pinned = this.#rows.filter((row) => {
@@ -2592,6 +2603,7 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(
       sorted.slice(0, limit).map((row) => {
         const place = row.place as ForumPlace;
+        const shop = textHasHashtagToken(row.text, '21GiftsShop');
         return {
           id: row.id,
           name: row.name,
@@ -2610,7 +2622,8 @@ export class InMemoryMessageStore implements MessageStore {
                   country: place.address.country,
                 },
           accountId: row.accountId,
-          shop: textHasHashtagToken(row.text, '21GiftsShop'),
+          shop,
+          shopNpub: isListedShop(row) ? (row.shopNpub ?? null) : null,
         };
       }),
     );
@@ -4077,7 +4090,11 @@ export class InMemoryMessageStore implements MessageStore {
 
   async deleteById(id: string): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined || (row.goalRepayable === true && row.sats > 0)) {
+    if (
+      row === undefined ||
+      (row.goalRepayable === true && row.sats > 0) ||
+      (row.shopNpub !== undefined && row.shopNpub !== null)
+    ) {
       return false;
     }
     const childIds = this.#rows.filter((item) => item.parentId === id).map((item) => item.id);
@@ -4318,6 +4335,7 @@ interface MessageSqlRow {
   shop_account_id?: string | null;
   shop_username?: string | null;
   shop_name?: string | null;
+  shop_nostr_pubkey?: string | null;
   mentions?: unknown;
   nostr_event?: Record<string, unknown> | string | null;
   claimed_until?: Date | string | null;
@@ -4568,6 +4586,8 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
       row.place_country,
     ),
     shopAccount: shopAccountFromSql(row),
+    shopNpub:
+      typeof row.shop_nostr_pubkey === 'string' ? nip19.npubEncode(row.shop_nostr_pubkey) : null,
     nostrEvent: normalizeSignedEvent(row.nostr_event) ?? null,
     claimedUntil: optionalDate(row.claimed_until),
     nostrFirstAttemptAt: optionalDate(row.nostr_first_attempt_at),
@@ -4621,6 +4641,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               shop_account_id,
               (SELECT username FROM account WHERE account.id = message.shop_account_id) AS shop_username,
               (SELECT name FROM account WHERE account.id = message.shop_account_id) AS shop_name,
+              (SELECT nostr_pubkey FROM shop_identity WHERE shop_identity.message_id = message.id) AS shop_nostr_pubkey,
               mentions,
               nostr_event, claimed_until, nostr_first_attempt_at, nostr_publish_epoch, nostr_attempts,
               content_fp, deleted_at, deleted_by,
@@ -4927,6 +4948,7 @@ export class PostgresMessageStore implements MessageStore {
       address: ForumPlaceAddress | null;
       accountId: string | null;
       shop: boolean;
+      shopNpub: string | null;
     }>
   > {
     const rows = await this.#sql.query<{
@@ -4942,12 +4964,16 @@ export class PostgresMessageStore implements MessageStore {
       place_city: string | null;
       place_country: string | null;
       account_id: string | null;
+      shop_account_id: string | null;
+      text: string;
       shop: boolean | null;
+      shop_nostr_pubkey: string | null;
     }>(
       `SELECT id, name, created_at, place_lat, place_lng, place_label,
               place_street, place_house_number, place_postal_code, place_city, place_country,
-              account_id,
-              (text ~* $2) AS shop
+              account_id, shop_account_id, text,
+              (text ~* $2) AS shop,
+              (SELECT nostr_pubkey FROM shop_identity s WHERE s.message_id = message.id) AS shop_nostr_pubkey
        FROM message
        WHERE parent_id IS NULL AND deleted_at IS NULL
          AND place_lat IS NOT NULL AND place_lng IS NOT NULL
@@ -4955,23 +4981,41 @@ export class PostgresMessageStore implements MessageStore {
        LIMIT $1`,
       [limit, posixHashtagTokenPattern('21GiftsShop')],
     );
-    return rows.map((row) => ({
-      id: row.id,
-      name: row.name,
-      createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
-      lat: Number(row.place_lat),
-      lng: Number(row.place_lng),
-      label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
-      address: placeAddressFromSql(
+    return rows.map((row) => {
+      const address = placeAddressFromSql(
         row.place_street,
         row.place_house_number,
         row.place_postal_code,
         row.place_city,
         row.place_country,
-      ),
-      accountId: row.account_id,
-      shop: row.shop === true,
-    }));
+      );
+      const place: ForumPlace = {
+        lat: Number(row.place_lat),
+        lng: Number(row.place_lng),
+        label: row.place_label,
+        address,
+      };
+      const listed = isListedShop({
+        parentId: null,
+        deletedAt: null,
+        text: row.text,
+        place,
+        shopAccount: row.shop_account_id === null ? null : { id: row.shop_account_id },
+      });
+      return {
+        id: row.id,
+        name: row.name,
+        createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+        lat: place.lat,
+        lng: place.lng,
+        label: row.place_label === null || row.place_label === undefined ? null : row.place_label,
+        address,
+        accountId: row.account_id,
+        shop: row.shop === true,
+        shopNpub:
+          listed && row.shop_nostr_pubkey !== null ? nip19.npubEncode(row.shop_nostr_pubkey) : null,
+      };
+    });
   }
 
   /**
@@ -5315,7 +5359,7 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   /**
-   * Insert `row` (and optional photo and video) into `message` and return it.
+   * Insert `row`, mentions, and optional stills in one data-modifying CTE and return it.
    *
    * Writes `content_fp` when media is present, `accountId` is not null, and
    * `eventId` is null. A non-null `parentId` requires a live parent
@@ -5341,7 +5385,8 @@ export class PostgresMessageStore implements MessageStore {
    * @returns The stored row after a successful insert (a copy) with `hasPhoto`
    *   from `photo`, `photoCount` from photo 0 plus extras, and `hasVideo` /
    *   `videoContentType` from `video`. INSERT
-   *   failure unlinks the video (`removeForumVideo`), except unique violation
+   *   failure leaves no message or extra-photo row and unlinks the video
+   *   (`removeForumVideo`), except unique violation
    *   when `getById(stored.id)` matches that id (gift-reply retry, no unlink).
    */
   async create(
@@ -5394,7 +5439,8 @@ export class PostgresMessageStore implements MessageStore {
     if (video !== undefined) {
       await writeForumVideo(stored.id, video);
     }
-    const params: readonly unknown[] = [
+    const marks = stored.mentions ?? [];
+    const params: unknown[] = [
       stored.id,
       stored.accountId,
       stored.name,
@@ -5440,49 +5486,60 @@ export class PostgresMessageStore implements MessageStore {
       stored.receivedAmountEur ?? null,
       stored.receivedAmountPhp ?? null,
     ];
+    const extraSlots: string[] = [];
+    for (let index = 0; index < 9; index += 1) {
+      const extra = extras[index];
+      const base = 45 + index * 3;
+      extraSlots.push(`(${index + 1}, $${base}::bytea, $${base + 1}::text, $${base + 2}::text)`);
+      params.push(
+        extra === undefined ? null : extra.bytes,
+        extra === undefined ? null : extra.contentType,
+        extra === undefined ? null : (extra.takenAt ?? null),
+      );
+    }
+    params.push(JSON.stringify(marks));
     try {
-      if (stored.parentId !== null) {
-        const inserted = await this.#sql.query<{ id: string }>(
-          `INSERT INTO message (
+      const createSql = `WITH inserted AS (
+           INSERT INTO message (
            id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
            nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
            fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
            place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
+           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,
+           mentions
          )
-         SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
-                $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
-                $31,$32::numeric,$33::numeric,$34::numeric,$35::numeric,$36::numeric,$37,$38,$39,
-                $40,$41::numeric,$42::numeric,$43::numeric,$44::numeric
-         WHERE EXISTS (SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL)
-         RETURNING id`,
-          params,
-        );
-        if (inserted.length === 0) {
-          const byId = await this.getById(stored.id);
-          if (byId !== undefined && byId.id === stored.id) {
-            return byId;
-          }
-          throw new Error('parent missing or deleted');
-        }
-      } else {
-        await this.#sql.execute(
-          `INSERT INTO message (
-           id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,
-           nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,
-           fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,
-           place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,
-           goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
-           shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php
-         ) VALUES (
+         SELECT
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
            $31,$32::numeric,$33::numeric,$34::numeric,$35::numeric,$36::numeric,$37,$38,$39,
-           $40,$41::numeric,$42::numeric,$43::numeric,$44::numeric
-         )`,
-          params,
-        );
+           $40,$41::numeric,$42::numeric,$43::numeric,$44::numeric,$72::jsonb
+         WHERE $11::uuid IS NULL OR EXISTS (
+           SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL
+         )
+         RETURNING id
+       ), extra_rows AS (
+         INSERT INTO message_extra_photo (
+           message_id, idx, photo, photo_content_type, photo_taken_at
+         )
+         SELECT inserted.id, extra.idx, extra.photo,
+           extra.content_type, extra.taken_at
+         FROM inserted
+         JOIN (VALUES ${extraSlots.join(', ')})
+           AS extra(idx, photo, content_type, taken_at) ON extra.photo IS NOT NULL
+         RETURNING message_id
+       )
+       SELECT id FROM inserted`;
+      const inserted =
+        stored.parentId === null
+          ? (await this.#sql.execute(createSql, params), [{ id: stored.id }])
+          : await this.#sql.query<{ id: string }>(createSql, params);
+      if (inserted.length === 0) {
+        const byId = await this.getById(stored.id);
+        if (byId !== undefined && byId.id === stored.id) {
+          return byId;
+        }
+        throw new Error('parent missing or deleted');
       }
     } catch (err) {
       if (isUniqueViolation(err)) {
@@ -5508,24 +5565,6 @@ export class PostgresMessageStore implements MessageStore {
         }
       }
       throw err;
-    }
-    for (const [i, extra] of extras.entries()) {
-      try {
-        await this.#sql.execute(
-          `INSERT INTO message_extra_photo (message_id, idx, photo, photo_content_type, photo_taken_at) VALUES ($1,$2,$3,$4,$5)`,
-          [stored.id, i + 1, extra.bytes, extra.contentType, extra.takenAt ?? null],
-        );
-      } catch (err) {
-        await this.deleteById(stored.id);
-        throw err;
-      }
-    }
-    const marks = stored.mentions ?? [];
-    if (marks.length > 0) {
-      await this.#sql.execute(`UPDATE message SET mentions = $2::jsonb WHERE id = $1`, [
-        stored.id,
-        JSON.stringify(marks),
-      ]);
     }
     return stored;
   }
@@ -5562,12 +5601,31 @@ export class PostgresMessageStore implements MessageStore {
   }
 
   async deleteById(id: string): Promise<boolean> {
-    const targets = await this.#sql.query<{ id: string; video_content_type: string | null }>(
-      `WITH
+    const deleteLocked = (
+      sql: SqlClient,
+    ): Promise<Array<{ id: string; video_content_type: string | null }>> =>
+      sql.query<{ id: string; video_content_type: string | null }>(
+        `WITH targets AS (
+           SELECT id, video_content_type FROM message WHERE id = $1 OR parent_id = $1
+         ), del_receipts AS (
+           DELETE FROM nostr_zap_receipt WHERE message_id IN (SELECT id FROM targets)
+         ), del_invoices AS (
+           DELETE FROM message_invoice WHERE message_id IN (SELECT id FROM targets)
+         ), del_rows AS (
+           DELETE FROM message WHERE id IN (SELECT id FROM targets) RETURNING id
+         )
+         SELECT id, video_content_type FROM targets`,
+        [id],
+      );
+    const targets =
+      this.#sql.transaction === undefined
+        ? await this.#sql.query<{ id: string; video_content_type: string | null }>(
+            `WITH
          root AS (
            SELECT id
            FROM message
            WHERE id = $1 AND NOT (goal_repayable IS TRUE AND sats > 0)
+             AND NOT EXISTS (SELECT 1 FROM shop_identity WHERE message_id = message.id)
            FOR UPDATE
          ),
          targets AS (
@@ -5589,8 +5647,23 @@ export class PostgresMessageStore implements MessageStore {
            RETURNING id
          )
        SELECT t.id, t.video_content_type FROM targets t`,
-      [id],
-    );
+            [id],
+          )
+        : await this.#sql.transaction(async (tx) => {
+            const roots = await tx.query<{
+              goal_repayable: boolean | null;
+              sats: number | string;
+            }>(`SELECT goal_repayable, sats FROM message WHERE id = $1 FOR UPDATE`, [id]);
+            const root = roots[0];
+            if (root === undefined || (root.goal_repayable === true && Number(root.sats) > 0)) {
+              return [];
+            }
+            const identities = await tx.query<Record<string, unknown>>(
+              `SELECT 1 FROM shop_identity WHERE message_id = $1`,
+              [id],
+            );
+            return identities[0] === undefined ? deleteLocked(tx) : [];
+          });
     if (targets.length === 0) {
       return false;
     }

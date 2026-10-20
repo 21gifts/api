@@ -6,7 +6,7 @@
  * that is not the address, a full structured address, and a description.
  */
 
-import type { ForumPlace } from '@/lib/place';
+import type { ForumPlace, ForumPlaceAddress } from '@/lib/place';
 
 /** Minimum shop description length after the shop tag is stripped. */
 export const SHOP_DESCRIPTION_MIN = 20;
@@ -124,4 +124,81 @@ export function shopTextProblem(text: string, place: ForumPlace | null): string 
     return SHOP_DESCRIPTION_RANGE;
   }
   return null;
+}
+
+const SHOP_HASHTAG_PRESENT = /#21GiftsShop(?![A-Za-z0-9_])/i;
+
+/** Note fields that decide whether a forum note is a listed shop. */
+export interface ShopListingFields {
+  /** Parent note id; a listed shop is top-level (`null`). */
+  parentId: string | null;
+  /** Hide or delete time; a listed shop is live (`null`). */
+  deletedAt: Date | null;
+  /** Stored note text. */
+  text: string;
+  /** Place pin, if any. */
+  place?: ForumPlace | null;
+  /** Assigned till account, if any. */
+  shopAccount?: { id: string } | null;
+}
+
+/** A listed shop: its name and its complete pin. */
+export interface ListedShop {
+  /** Shop name (the pin label). */
+  name: string;
+  /** Complete pin with its structured address. */
+  place: { lat: number; lng: number; label: string; address: ForumPlaceAddress };
+  /** Till account id (`shop_account_id`). */
+  tillAccountId: string;
+}
+
+/**
+ * The listed shop of a note, or `null` when the note is not listed.
+ *
+ * Listed means: top-level, live, the `#21GiftsShop` token (same rule as
+ * `GET /shops/activity`), a pin, a till account, and complete under
+ * {@link shopPlaceProblem} and {@link shopTextProblem}.
+ *
+ * @param row - Forum note, or `undefined` when it does not exist.
+ * @returns Name and complete pin, or `null`.
+ */
+export function listedShop(row: ShopListingFields | undefined): ListedShop | null {
+  if (
+    row === undefined ||
+    row.parentId !== null ||
+    row.deletedAt !== null ||
+    row.shopAccount === undefined ||
+    row.shopAccount === null ||
+    row.place === undefined ||
+    row.place === null ||
+    row.place.label === null ||
+    row.place.address === null ||
+    !SHOP_HASHTAG_PRESENT.test(row.text) ||
+    shopPlaceProblem(row.place) !== null ||
+    shopTextProblem(row.text, row.place) !== null
+  ) {
+    return null;
+  }
+  const { lat, lng, label, address } = row.place;
+  return { name: label, place: { lat, lng, label, address }, tillAccountId: row.shopAccount.id };
+}
+
+/**
+ * Shop name of a listed shop, or `null` (see {@link listedShop}).
+ *
+ * @param row - Forum note, or `undefined`.
+ * @returns The pin label, or `null`.
+ */
+export function listedShopName(row: ShopListingFields | undefined): string | null {
+  return listedShop(row)?.name ?? null;
+}
+
+/**
+ * Whether a note is a listed shop (see {@link listedShop}).
+ *
+ * @param row - Forum note, or `undefined`.
+ * @returns `true` when the note is listed.
+ */
+export function isListedShop(row: ShopListingFields | undefined): boolean {
+  return listedShop(row) !== null;
 }

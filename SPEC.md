@@ -165,6 +165,7 @@ Public base URLs used in examples:
 | GET    | `/messages`                                          | none for active / Bearer                     | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                              |
 | GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/shops/:npub`                                       | Public                                       | Listed shop by npub; known hex redirects; unlisted identity 410                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/messages`                                          | Bearer                                       | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                   | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1436,6 +1437,56 @@ not create a BOLT11 invoice. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
 
+### `GET /shops/:npub`
+
+Public lookup of a shop by its NOSTR identity
+([docs/shop-identity.md](docs/shop-identity.md) S3). No session; a missing
+or invalid bearer gets the same answer. Registered after `/shops/activity`,
+so `activity` keeps its own handler. The route takes any single path segment
+and validates it inside the handler.
+
+| Request                                  | Response                                                                  |
+| ---------------------------------------- | ------------------------------------------------------------------------- |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                          |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`       |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                        |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` |
+
+`Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
+`Cache-Control: no-store` on 503. The 410 body carries no name.
+
+`Shop` is
+`{ "npub", "messageId", "name", "description", "place": { "lat", "lng", "label", "address": { "street", "houseNumber", "postalCode", "city", "country" } }, "photos": [{ "url", "width", "height" }], "payUsername", "nip05", "createdAt" }`.
+`name` is the pin label, `description` the note text without the
+`#21GiftsShop` token. `lat` and `lng` are as in `GET /messages/places`.
+`address` is always present (a listed shop is complete). `photos` are the
+note's photos in note order (at most 10): photo 1 is
+`/messages/:id/photo.<ext>` and photo n ≥ 2 is
+`/messages/:id/photo/<n-1>.<ext>`, absolute from the public API base or the
+path alone when no public origin is set. `width` and `height` come from the
+image header only (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`), swapped
+for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
+cannot be read. `payUsername` is the till account's username when it has a
+username and a non-empty Lightning address, otherwise `null`. `nip05` is the
+shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
+`PUBLIC_BASE_URL` gives no NIP-05 domain. `createdAt` is the note's ISO-8601
+creation time.
+
+A **listed shop** is a live top-level note with the `#21GiftsShop` token, a
+pin, a till account (`shop_account_id`) and a complete pin and description
+(`shopPlaceProblem` and `shopTextProblem` both null). A write that makes a
+note a listed shop for the first time (`POST /messages`,
+`PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
+`PATCH /messages/:id/shop-account`, `PUT /me/about`,
+`POST /debug/messages/:id/restore`) creates its key after the commit when
+`NOSTR_NSEC_KEK` is set; a failure logs `shop.nostr_key.failed` and never
+fails the request. The worker backfills keys that are missing. The key
+belongs to the note forever. Every store write that changes the text, pin,
+till account, hide state or photos of a note with a key queues the
+OpenCryptoPay outbox in the same transaction; the senders run in the
+background ([docs/shop-identity.md](docs/shop-identity.md) S5).
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -2429,11 +2480,12 @@ table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
 per allowlisted name (cap 200): `account`, `passkey_credential`,
 `passkey_challenge`, `auth_session`, `address_verification`, `api_log`,
 `contact`, `pos_charge`, `conversation`, `conversation_message`, `conversation_read`,
-`message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
-`nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
+`message`, `message_extra_photo`, `shop_identity`, `message_invoice`,
+`nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
 `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
-`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media
-bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
+`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media bytes stay off JSON. `nostrNsecCiphertext` of an
+`account` row is envelope hex. A `shop_identity` row has the key metadata
+and the outbox state but never its encrypted secret. `btc_usd_daily`,
 `usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
 wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
 audit store is wired (the newest 200; the full history is `GET /debug/api-log`
@@ -2448,7 +2500,7 @@ Unknown table → **Response** `404` unless the path segment is one of
 `account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
 `address_verification`, `api_log`, `contact`, `pos_charge`, `conversation`,
 `conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
-`message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
+`shop_identity`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
 `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
 `db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
@@ -4048,8 +4100,10 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "accountId?" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "shopNpub", "accountId?" }] }`.
 `shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
+`shopNpub` is the npub only when the row is a currently listed shop with a
+stored identity; otherwise it is JSON null.
 `address` is `{ "street", "houseNumber", "postalCode", "city", "country" }` or JSON `null`.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
@@ -4740,7 +4794,8 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
-stored and omitted when unset, even when `accountId` is omitted,
+stored (omitted when unset, even when `accountId` is omitted), and always
+`shopNpub` (the listed-shop npub or JSON null),
 `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
@@ -4952,7 +5007,7 @@ unchanged. The write stores only `shop_account_id`. A real change appends `messa
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then PUT the current complete shop pin to `/map/places` when `mapPush` is set (an incomplete existing shop is not sent), and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a new outbox generation. A real change writes the body and `message_edit` together, creates the shop identity when needed, queues the durable OpenCryptoPay place outbox, and is **200** public message JSON; delivery is asynchronous. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 

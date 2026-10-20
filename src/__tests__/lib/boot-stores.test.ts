@@ -27,6 +27,7 @@ import { PostgresFundingStore } from '@/lib/funding-store';
 import { InMemoryDailyRosterStore, PostgresDailyRosterStore } from '@/lib/daily-roster-store';
 import { PostgresDebugDbStore } from '@/lib/debug-db';
 import { PostgresBannerStore } from '@/lib/banner-store';
+import { PostgresShopIdentityStore } from '@/lib/shop-identity';
 
 function unusedClient(): SqlClient {
   return {
@@ -554,6 +555,7 @@ describe('openBootStores', () => {
     });
 
     expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
+    expect(stores.shopIdentityStore).toBeInstanceOf(PostgresShopIdentityStore);
     expect(stores.translationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).not.toBe(stores.translationStore);

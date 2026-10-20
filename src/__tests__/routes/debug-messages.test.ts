@@ -917,7 +917,7 @@ describe('debugMessagesRoutes', () => {
     );
   });
 
-  it('puts a restored live top-level shop pin', async () => {
+  it('does not use the removed direct map push on restore', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
       forumRow({
@@ -952,13 +952,7 @@ describe('debugMessagesRoutes', () => {
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(204);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.method).toBe('PUT');
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
-      techProvider: '21.gifts',
-      origin: '21gifts',
-      externalId: HIDDEN_ID,
-    });
+    expect(calls).toHaveLength(0);
   });
 
   it('returns 204 on shop restore when mapPush is omitted', async () => {

@@ -17,8 +17,8 @@ import {
   serializeDebugMessage,
   type DebugMessagePhotoMeta,
 } from '@/lib/message';
-import { textHasHashtagToken, type MessageStore } from '@/lib/message-store';
-import { syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import type { MessageStore } from '@/lib/message-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
   decodeForumVideo,
@@ -34,10 +34,13 @@ export interface DebugMessagesRouteDeps {
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
   /**
-   * Optional map push. Omitted → restore does not PUT. Set → a restored
-   * live top-level shop pin is sent with PUT.
+   * Shop identities. With `nostrKek`, a restore that makes the note a
+   * listed shop creates its key. The restore write queues the
+   * OpenCryptoPay outbox itself. Omitted → no shop keys.
    */
-  mapPush?: MapPush;
+  shopIdentities?: ShopIdentityStore;
+  /** Key-encryption key for new shop keys. */
+  nostrKek?: Uint8Array;
 }
 
 /** Shared 503/401 gate matching other `/debug/*` routes. */
@@ -263,16 +266,12 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
         }
         await deps.store.unblockPubkeyByMessage(id);
         logEvent('debug.messages.restored', { messageId: id });
-        const row = await deps.store.getById(id);
-        if (row !== undefined) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: row.id,
-            text: row.text,
-            parentId: row.parentId ?? null,
-            place: row.place ?? null,
-            textHasHashtagToken,
-          });
+        if (deps.shopIdentities !== undefined && deps.nostrKek !== undefined) {
+          try {
+            await deps.shopIdentities.ensureListed(id, deps.nostrKek);
+          } catch {
+            logEvent('shop.nostr_key.failed', { messageId: id });
+          }
         }
         return c.body(null, 204);
       } catch {

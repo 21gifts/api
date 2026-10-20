@@ -35,7 +35,7 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { stillLook } from '@/lib/nostr/image';
-import { nip05Domain, nip05Identifier } from '@/lib/nip05';
+import { listShopNip05Entries, nip05Domain, nip05Identifier } from '@/lib/nip05';
 import {
   forumVideoUrl,
   isoBmffDisplaySize,
@@ -58,7 +58,14 @@ import {
   writeRelayUrls,
   type ResolvedWriteSet,
 } from '@/lib/nostr/relays';
-import { signEventForAccount } from '@/lib/nostr/sign';
+import { signEventForAccount, signEventForShop } from '@/lib/nostr/sign';
+import {
+  shopNpub,
+  type ShopCandidateCursor,
+  type ShopIdentityRow,
+  type ShopIdentityStore,
+} from '@/lib/shop-identity';
+import { listedShop, shopDescription } from '@/lib/shop-place';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
@@ -150,6 +157,8 @@ export interface NostrWorkerDeps {
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** Optional shop-key store; omitted on older/unit-only worker surfaces. */
+  shopIdentities?: ShopIdentityStore;
 }
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
@@ -410,6 +419,7 @@ export async function runNostrWorkerTick(
   }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
+  await backfillShopKeys(deps);
   await signBatch(deps, nowMs);
   await signConversationBatch(deps, nowMs);
   await resignPhotoKind1(deps);
@@ -418,6 +428,8 @@ export async function runNostrWorkerTick(
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
     await publishRelayLists(deps, writeSet);
+    await publishShopProfiles(deps, writeSet);
+    await publishShopRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
     await publishConversationBatch(deps, writeSet, nowMs);
   }
@@ -912,6 +924,35 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   }
 }
 
+const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor | null>();
+
+/**
+ * Create keys for listed shops that have none (S1 backfill), at most
+ * `WORKER_BATCH` candidates per tick. Candidates are live top-level pinned
+ * `#21GiftsShop` notes with a till account and no key; completeness is
+ * checked in code by `ensureListed`. The keyset cursor by (`created_at`,
+ * `id`) moves past rejected notes and wraps around after a short page, so
+ * an incomplete note never holds the slot of a listed shop behind it. A new
+ * key queues the place push. A failure logs `shop.nostr_key.failed`.
+ *
+ * @param deps - Worker deps (`shopIdentities`, `kek`).
+ */
+async function backfillShopKeys(deps: NostrWorkerDeps): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined) return;
+  const cursor = shopBackfillCursors.get(shops) ?? null;
+  const page = await shops.listCandidates(cursor, WORKER_BATCH);
+  const last = page[page.length - 1];
+  shopBackfillCursors.set(shops, page.length < WORKER_BATCH || last === undefined ? null : last);
+  for (const candidate of page) {
+    try {
+      await shops.ensureListed(candidate.id, deps.kek);
+    } catch {
+      logEvent('shop.nostr_key.failed', { messageId: candidate.id });
+    }
+  }
+}
+
 /**
  * Create a profile forum note for named accounts with a non-blank Lightning
  * Address that lack one (or whose stored id no longer points at a message
@@ -1086,22 +1127,22 @@ async function publishReachCopy(
  * @param deps - Worker deps.
  * @param event - Signed event already accepted by space and the public relays.
  * @param nackEvent - Log name when the indexer does not ACK ok.
- * @param accountId - Account id for the nack log.
+ * @param owner - `{ accountId }` or `{ messageId }` (shop) for the nack log.
  */
 async function publishIndexerCopy(
   deps: NostrWorkerDeps,
   event: Record<string, unknown>,
   nackEvent: 'nostr.profile.indexer_nack' | 'nostr.relays.indexer_nack',
-  accountId: string,
+  owner: { accountId: string } | { messageId: string },
 ): Promise<void> {
   try {
     const acks = await deps.publisher.publish(event, [INDEXER_RELAY_URL], RELAY_TIMEOUT_MS);
     const ack = acks.find((row) => row.url === INDEXER_RELAY_URL);
     if (ack === undefined || !ack.ok) {
-      logEvent(nackEvent, { accountId });
+      logEvent(nackEvent, owner);
     }
   } catch {
-    logEvent(nackEvent, { accountId });
+    logEvent(nackEvent, owner);
   }
 }
 
@@ -1202,7 +1243,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
           deps,
           signed as unknown as Record<string, unknown>,
           'nostr.profile.indexer_nack',
-          live.id,
+          { accountId: live.id },
         );
       }
     } catch {
@@ -1303,7 +1344,7 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
           deps,
           signed as unknown as Record<string, unknown>,
           'nostr.relays.indexer_nack',
-          live.id,
+          { accountId: live.id },
         );
       }
     } catch {
@@ -1311,6 +1352,268 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
         cache.delete(live.id);
       }
       logEvent('nostr.relays.nack', { accountId: live.id });
+    }
+  }
+}
+
+const shopProfileCaches = new WeakMap<ShopIdentityStore, Map<string, Kind0Reservation>>();
+const shopProfileWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>>();
+const shopRelayCaches = new WeakMap<ShopIdentityStore, Map<string, Kind0Reservation>>();
+const shopRelayWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>>();
+
+function shopCache<T>(
+  caches: WeakMap<ShopIdentityStore, Map<string, T>>,
+  store: ShopIdentityStore,
+): Map<string, T> {
+  const existing = caches.get(store);
+  if (existing !== undefined) return existing;
+  const created = new Map<string, T>();
+  caches.set(store, created);
+  return created;
+}
+
+/** Kind 0 `about` of a shop that is no longer listed. */
+const SHOP_UNLISTED_ABOUT = 'This shop is no longer listed on 21.gifts.';
+
+/** Kind 0 name of a shop whose note is hidden or deleted. */
+const SHOP_HIDDEN_NAME = 'Shop';
+
+/**
+ * Site origin for a shop's kind 0 `website`: `PUBLIC_BASE_URL` without a
+ * trailing slash (as `notePageUrl` builds note links), or `https://21.gifts`
+ * when it is empty.
+ */
+function shopSiteOrigin(env: Record<string, string | undefined>): string {
+  const raw = (env['PUBLIC_BASE_URL'] ?? '').trim().replace(/\/$/, '');
+  return raw === '' ? 'https://21.gifts' : raw;
+}
+
+/** Arguments of `buildKind0Content` / `buildKind0Event` for one shop. */
+interface ShopKind0Args {
+  name: string;
+  lud16: string | null;
+  nip05: string | null;
+  about: string;
+  images: { picture: string | null; banner: string | null };
+  website: string;
+  listed: boolean;
+}
+
+/**
+ * Kind 0 fields of one shop identity (S2). A listed shop gets its name,
+ * description, photos, `<site origin>/{npub}`, its NIP-05 and the till
+ * account's `lud16`; a shop that is no longer listed keeps `profile_name`
+ * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
+ * and the `website`, without images, NIP-05 or `lud16`.
+ */
+async function shopKind0Args(
+  deps: NostrWorkerDeps,
+  shops: ShopIdentityStore,
+  identity: ShopIdentityRow,
+  nip05Locals: ReadonlyMap<string, string>,
+  domain: string | null,
+): Promise<ShopKind0Args> {
+  const note = await deps.messages.getById(identity.messageId);
+  const website = `${shopSiteOrigin(deps.env)}/${shopNpub(identity)}`;
+  const shop = listedShop(note);
+  if (note === undefined || shop === null) {
+    const gone = note === undefined || note.deletedAt !== null;
+    return {
+      name: gone ? SHOP_HIDDEN_NAME : identity.profileName,
+      lud16: null,
+      nip05: null,
+      about: SHOP_UNLISTED_ABOUT,
+      images: { picture: null, banner: null },
+      website,
+      listed: false,
+    };
+  }
+  if (shop.name !== identity.profileName) {
+    await shops.setProfileName(identity.messageId, shop.name);
+  }
+  const till = await deps.auth.getAccount(shop.tillAccountId);
+  const lud16 =
+    till === undefined || till.name === null || (till.lightningAddress ?? '').trim() === ''
+      ? null
+      : till.lightningAddress;
+  let picture: string | null = null;
+  let banner: string | null = null;
+  const apiBase = resolvePublicApiBase(deps.env);
+  if (apiBase !== '') {
+    const first = await deps.messages.getPhoto(note.id);
+    if (first !== null) {
+      picture = forumPhotoUrl(apiBase, note.id, first.contentType);
+      const second = (await deps.messages.listExtraPhotos(note.id))[0];
+      if (second !== undefined) {
+        banner = forumExtraPhotoUrl(apiBase, note.id, 1, second.contentType);
+      }
+    }
+  }
+  const local = nip05Locals.get(note.id);
+  return {
+    name: shop.name,
+    lud16,
+    nip05: domain === null || local === undefined ? null : `${local}@${domain}`,
+    about: shopDescription(note.text),
+    images: { picture, banner },
+    website,
+    listed: true,
+  };
+}
+
+/**
+ * Publish kind 0 for every shop identity, listed or not, with the same
+ * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
+ *
+ * @param deps - Worker deps.
+ * @param writeSet - Resolved write relays.
+ */
+async function publishShopProfiles(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined) return;
+  const cache = shopCache(shopProfileCaches, shops);
+  const watermarks = shopCache(shopProfileWatermarks, shops);
+  const urls = writeRelayUrls(writeSet);
+  const domain = nip05Domain(deps.env);
+  const nip05Locals = new Map(
+    domain === null
+      ? []
+      : (await listShopNip05Entries(deps.auth, shops, deps.messages)).map(
+          (row) => [row.messageId, row.local] as const,
+        ),
+  );
+  let attempted = 0;
+  for (const identity of await shops.listAll()) {
+    if (attempted >= WORKER_BATCH) break;
+    const id = identity.messageId;
+    try {
+      const args = await shopKind0Args(deps, shops, identity, nip05Locals, domain);
+      const content = buildKind0Content(
+        args.name,
+        args.lud16,
+        args.nip05,
+        args.about,
+        args.images,
+        args.website,
+        args.listed,
+      );
+      if (reservedContent(cache, id) === content) continue;
+      const previous = cache.get(id);
+      const reservation: Kind0Reservation = {
+        content,
+        createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
+      };
+      cache.set(id, reservation);
+      attempted += 1;
+      reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
+      watermarks.set(id, reservation.createdAt);
+      const unsigned = buildKind0Event(
+        args.name,
+        args.lud16,
+        reservation.createdAt,
+        args.nip05,
+        args.about,
+        args.images,
+        args.website,
+        args.listed,
+      );
+      const signed = await signEventForShop(shops, id, deps.kek, unsigned);
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      if (
+        !spaceAcked(acks, writeSet.spaceUrl) ||
+        (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
+      ) {
+        cache.delete(id);
+        logEvent('nostr.profile.nack', { messageId: id });
+        continue;
+      }
+      logEvent('nostr.profile.ok', { messageId: id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.profile.indexer_nack',
+          { messageId: id },
+        );
+      }
+    } catch {
+      cache.delete(id);
+      logEvent('nostr.profile.nack', { messageId: id });
+    }
+  }
+}
+
+/**
+ * Publish kind 10002 (the same write relays as an account's) for every
+ * shop identity, with the same cache and ack rules as
+ * {@link publishRelayLists}.
+ *
+ * @param deps - Worker deps.
+ * @param writeSet - Resolved write relays.
+ */
+async function publishShopRelayLists(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined) return;
+  const cache = shopCache(shopRelayCaches, shops);
+  const watermarks = shopCache(shopRelayWatermarks, shops);
+  const urls = writeRelayUrls(writeSet);
+  const content = urls.join('\n');
+  let attempted = 0;
+  for (const identity of await shops.listAll()) {
+    if (attempted >= WORKER_BATCH) break;
+    const id = identity.messageId;
+    if (reservedContent(cache, id) === content) continue;
+    const previous = cache.get(id);
+    const reservation: Kind0Reservation = {
+      content,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
+    };
+    cache.set(id, reservation);
+    attempted += 1;
+    try {
+      reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
+      watermarks.set(id, reservation.createdAt);
+      const signed = await signEventForShop(
+        shops,
+        id,
+        deps.kek,
+        buildKind10002Event(urls, reservation.createdAt),
+      );
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      if (
+        !spaceAcked(acks, writeSet.spaceUrl) ||
+        (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
+      ) {
+        cache.delete(id);
+        logEvent('nostr.relays.nack', { messageId: id });
+        continue;
+      }
+      logEvent('nostr.relays.ok', { messageId: id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.relays.indexer_nack',
+          { messageId: id },
+        );
+      }
+    } catch {
+      cache.delete(id);
+      logEvent('nostr.relays.nack', { messageId: id });
     }
   }
 }

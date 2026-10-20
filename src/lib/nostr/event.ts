@@ -400,9 +400,9 @@ export interface Kind0ProfileContent {
   /** Fixed site URL. */
   website: string;
   /** Wide header: the account's own wide image, or the shared 1200×630 image. */
-  banner: string;
+  banner?: string;
   /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
-  picture: string;
+  picture?: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
   /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
@@ -434,15 +434,19 @@ export function buildKind0Content(
   nip05: string | null = null,
   about: string = '21.gifts',
   images: { picture?: string | null; banner?: string | null } | null = null,
+  website: string = 'https://21.gifts',
+  includeImages: boolean = true,
 ): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
-    website: 'https://21.gifts',
-    banner: profileImageUrl(images?.banner, KIND0_BANNER_URL),
-    picture: profileImageUrl(images?.picture, KIND0_PICTURE_URL),
+    website,
     about,
   };
+  if (includeImages) {
+    body.banner = profileImageUrl(images?.banner, KIND0_BANNER_URL);
+    body.picture = profileImageUrl(images?.picture, KIND0_PICTURE_URL);
+  }
   if (lightningAddress !== null) {
     body.lud16 = lightningAddress;
   }
@@ -482,10 +486,20 @@ export function buildKind0Event(
   nip05: string | null = null,
   about: string = '21.gifts',
   images: { picture?: string | null; banner?: string | null } | null = null,
+  website: string = 'https://21.gifts',
+  includeImages: boolean = true,
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress, nip05, about, images),
+    content: buildKind0Content(
+      name,
+      lightningAddress,
+      nip05,
+      about,
+      images,
+      website,
+      includeImages,
+    ),
     tags: [],
     created_at: createdAtUnix,
   };

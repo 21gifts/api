@@ -18,6 +18,8 @@ import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { buildNostrJson } from '@/lib/nip05';
 import { logEvent } from '@/lib/log';
 import { normalizeUsername } from '@/lib/username';
+import type { MessageStore } from '@/lib/message-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 
 /** Collaborators for the well-known routes. */
 export interface WellKnownRouteDeps {
@@ -31,6 +33,11 @@ export interface WellKnownRouteDeps {
   posStore?: PosStore;
   /** Clock in epoch milliseconds. Default `Date.now`. */
   now?: () => number;
+  /**
+   * Shop identities and the forum store. Listed shops join `nostr.json`
+   * after every account. Omitted → accounts only.
+   */
+  shops?: { identities: ShopIdentityStore; messages: MessageStore };
 }
 
 const WELL_KNOWN_CORS = {
@@ -61,7 +68,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
     .get('/nostr.json', async (c) => {
       try {
         const name = c.req.query('name') ?? undefined;
-        const body = await buildNostrJson(deps.auth, env, name);
+        const body = await buildNostrJson(deps.auth, env, name, deps.shops);
         return c.json(body, 200, WELL_KNOWN_CORS);
       } catch {
         logEvent('nostr.nip05.failed');

@@ -1,7 +1,7 @@
 import { encode as encodeJpeg } from 'jpeg-js';
 import { PNG } from 'pngjs';
 import { describe, expect, it } from 'vitest';
-import { imageBlurhash, imageDisplaySize, stillLook } from '@/lib/nostr/image';
+import { imageBlurhash, imageDisplaySize, imageHeaderSize, stillLook } from '@/lib/nostr/image';
 
 function png(width: number, height: number): Uint8Array {
   const image = new PNG({ width, height });
@@ -164,5 +164,160 @@ describe('image display size and blurhash', () => {
     expect(imageBlurhash(new Uint8Array([0xff, 0xd8, 0xff, 0xd9]), 'image/jpeg')).toBeNull();
     expect(imageBlurhash(new Uint8Array([0x89, 0x50, 0x4e, 0x47]), 'image/png')).toBeNull();
     expect(stillLook(new Uint8Array([1, 2, 3]), 'image/jpeg')).toEqual({});
+  });
+});
+
+function tiffBlock(
+  order: 'II' | 'MM',
+  entries: Array<[number, number]>,
+  ifdOffset = 8,
+): Uint8Array {
+  const little = order === 'II';
+  const bytes = new Uint8Array(ifdOffset + 2 + entries.length * 12 + 4);
+  const view = new DataView(bytes.buffer);
+  bytes[0] = order.charCodeAt(0);
+  bytes[1] = order.charCodeAt(1);
+  view.setUint16(2, 42, little);
+  view.setUint32(4, ifdOffset, little);
+  view.setUint16(ifdOffset, entries.length, little);
+  entries.forEach(([tag, value], index) => {
+    const entry = ifdOffset + 2 + index * 12;
+    view.setUint16(entry, tag, little);
+    view.setUint16(entry + 2, 3, little);
+    view.setUint32(entry + 4, 1, little);
+    view.setUint16(entry + 8, value, little);
+  });
+  return bytes;
+}
+
+function segment(marker: number, payload: Uint8Array): Uint8Array {
+  const size = payload.length + 2;
+  return new Uint8Array([0xff, marker, size >> 8, size & 0xff, ...payload]);
+}
+
+function exifPayload(tiff: Uint8Array): Uint8Array {
+  return new Uint8Array([0x45, 0x78, 0x69, 0x66, 0, 0, ...tiff]);
+}
+
+function withSegments(image: Uint8Array, ...segments: Uint8Array[]): Uint8Array {
+  return new Uint8Array([
+    ...image.subarray(0, 2),
+    ...segments.flatMap((s) => [...s]),
+    ...image.subarray(2),
+  ]);
+}
+
+function pngHeader(width: number, height: number): Uint8Array {
+  const bytes = new Uint8Array(24);
+  bytes.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 13, 0x49, 0x48, 0x44, 0x52]);
+  const view = new DataView(bytes.buffer);
+  view.setUint32(16, width);
+  view.setUint32(20, height);
+  return bytes;
+}
+
+const NONE = { width: null, height: null };
+
+describe('imageHeaderSize', () => {
+  it('reads a PNG IHDR without decoding, also from a header alone', () => {
+    expect(imageHeaderSize(pngHeader(320, 200), 'image/png')).toEqual({ width: 320, height: 200 });
+    expect(imageHeaderSize(png(3, 2), 'image/png')).toEqual({ width: 3, height: 2 });
+    const offset = new Uint8Array(30);
+    offset.set(pngHeader(5, 6), 6);
+    expect(imageHeaderSize(offset.subarray(6), 'image/png')).toEqual({ width: 5, height: 6 });
+  });
+
+  it('answers null for an unreadable PNG header', () => {
+    const badSignature = pngHeader(1, 1);
+    badSignature[7] = 0;
+    const noIhdr = pngHeader(1, 1);
+    noIhdr[12] = 0;
+    for (const bytes of [
+      new Uint8Array(23),
+      badSignature,
+      noIhdr,
+      pngHeader(0, 1),
+      pngHeader(30000, 1),
+    ]) {
+      expect(imageHeaderSize(bytes, 'image/png')).toEqual(NONE);
+    }
+  });
+
+  it('reads JPEG SOF and WebP headers', () => {
+    expect(imageHeaderSize(jpeg(4, 3), 'image/jpeg')).toEqual({ width: 4, height: 3 });
+    expect(imageHeaderSize(vp8x(7, 5), 'image/webp')).toEqual({ width: 7, height: 5 });
+    expect(imageHeaderSize(vp8l(9, 8), 'image/webp')).toEqual({ width: 9, height: 8 });
+    expect(imageHeaderSize(new Uint8Array([1, 2]), 'image/jpeg')).toEqual(NONE);
+    expect(imageHeaderSize(new Uint8Array([1, 2]), 'image/webp')).toEqual(NONE);
+    expect(imageHeaderSize(jpeg(4, 3), 'video/mp4' as never)).toEqual(NONE);
+  });
+
+  it('swaps the axes for a JPEG with EXIF orientation 5 to 8', () => {
+    for (const orientation of [5, 6, 7, 8]) {
+      for (const order of ['II', 'MM'] as const) {
+        const bytes = withSegments(
+          jpeg(4, 3),
+          segment(
+            0xe1,
+            exifPayload(
+              tiffBlock(order, [
+                [0x010f, 1],
+                [0x0112, orientation],
+              ]),
+            ),
+          ),
+        );
+        expect(imageHeaderSize(bytes, 'image/jpeg')).toEqual({ width: 3, height: 4 });
+      }
+    }
+  });
+
+  it('keeps the axes for any other or unreadable orientation', () => {
+    const cases: Uint8Array[] = [
+      segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 3]]))),
+      segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 0]]))),
+      segment(0xe1, exifPayload(tiffBlock('MM', [[0x0112, 9]]))),
+      segment(0xe1, exifPayload(tiffBlock('II', [[0x010f, 6]]))),
+      segment(0xe1, exifPayload(tiffBlock('XX' as 'II', [[0x0112, 6]]))),
+      segment(0xe1, exifPayload(new Uint8Array([0x49, 0x49, 42, 0]))),
+      segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 6]], 200).subarray(0, 20))),
+      segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 6]]).subarray(0, 16))),
+      segment(0xe1, new Uint8Array([0x68, 0x74, 0x74, 0x70, 0x3a, 0x2f, 0x2f, 0x6e])),
+      segment(0xe0, exifPayload(tiffBlock('II', [[0x0112, 6]]))),
+    ];
+    for (const extra of cases) {
+      expect(imageHeaderSize(withSegments(jpeg(4, 3), extra), 'image/jpeg')).toEqual({
+        width: 4,
+        height: 3,
+      });
+    }
+  });
+
+  it('stops looking for EXIF at the scan or a broken segment', () => {
+    const plain = jpeg(4, 3);
+    const app0 = segment(0xe0, new Uint8Array([1, 2, 3]));
+    const exif = segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 6]])));
+    expect(imageHeaderSize(withSegments(plain, app0, exif), 'image/jpeg')).toEqual({
+      width: 3,
+      height: 4,
+    });
+    const sofIndex = plain.findIndex((byte, index) => byte === 0xff && plain[index + 1] === 0xc0);
+    const sof = plain.subarray(sofIndex);
+    const scanFirst = new Uint8Array([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02, ...exif, ...sof]);
+    expect(imageDisplaySize(scanFirst, 'image/jpeg')).toBe('4x3');
+    expect(imageHeaderSize(scanFirst, 'image/jpeg')).toEqual({ width: 4, height: 3 });
+    const sofSegment = sof.subarray(0, 2 + ((sof[2]! << 8) | sof[3]!));
+    const afterSof = (...tail: number[]): Uint8Array =>
+      new Uint8Array([0xff, 0xd8, ...sofSegment, ...tail]);
+    for (const bytes of [
+      afterSof(),
+      afterSof(0xff, 0xe2, 0x00, 0x01),
+      afterSof(0x00, 0x00, 0x00, 0x00),
+      afterSof(0xff, 0xe1, 0x00, 0x08, 0x45, 0x78, 0x69, 0x66, 0, 0),
+    ]) {
+      expect(imageHeaderSize(bytes, 'image/jpeg')).toEqual({ width: 4, height: 3 });
+    }
+    const padded = new Uint8Array([0xff, 0xd8, 0xff, 0xff, ...sof.subarray(1)]);
+    expect(imageHeaderSize(padded, 'image/jpeg')).toEqual({ width: 4, height: 3 });
   });
 });

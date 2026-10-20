@@ -11,6 +11,10 @@ import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
+import { migrateShopIdentitySchema, PostgresShopIdentityStore } from '@/lib/shop-identity';
+import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
+import { signEventForShop } from '@/lib/nostr/sign';
+import type { MessageRow } from '@/lib/message';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -30,6 +34,17 @@ function createBunSqlClient(databaseUrl: string): { client: SqlClient; sql: SQL 
     },
     async execute(text: string, params: readonly unknown[] = []): Promise<void> {
       await sql.unsafe(text, [...params]);
+    },
+    async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+      return sql.begin(async (tx) =>
+        run({
+          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+            (await tx.unsafe(text, [...params])) as R[],
+          execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+            await tx.unsafe(text, [...params]);
+          },
+        }),
+      );
     },
   };
   return { client, sql };
@@ -344,6 +359,7 @@ describe('PostgresMessageStore deleteById on a credit', () => {
       await migrateBtcUsdSchema(client);
       await migrateFiatSchema(client);
       await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
       ready = true;
       await new PostgresAuthStore(client).createAccount({
         id: accountId,
@@ -405,6 +421,7 @@ describe('PostgresMessageStore deleteById on a credit', () => {
       await migrateBtcUsdSchema(client);
       await migrateFiatSchema(client);
       await migrateMessageSchema(client);
+      await migrateShopIdentitySchema(client);
       ready = true;
       await new PostgresAuthStore(client).createAccount({
         id: accountId,
@@ -476,6 +493,312 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
       }
       await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('shop identity on Postgres', () => {
+  const KEK = new Uint8Array(32).fill(7);
+  const TEXT = 'Fresh coffee roasted here every morning. #21GiftsShop';
+  const PLACE = {
+    lat: 47.3769,
+    lng: 8.5417,
+    label: 'Coffee Lab',
+    address: {
+      street: 'Main Street',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    },
+  };
+  const PNG = { contentType: 'image/png' as const, bytes: new Uint8Array([1, 2, 3]) };
+
+  async function setup(): Promise<{
+    client: SqlClient;
+    sql: SQL;
+    accountId: string;
+    messages: PostgresMessageStore;
+    shops: PostgresShopIdentityStore;
+    note: (overrides?: Partial<MessageRow>) => MessageRow;
+    cleanup: () => Promise<void>;
+  }> {
+    const { client, sql } = createBunSqlClient(String(databaseUrl));
+    await migrateAuthSchema(client);
+    await migrateBtcUsdSchema(client);
+    await migrateFiatSchema(client);
+    await migrateMessageSchema(client);
+    await migrateShopIdentitySchema(client);
+    await migrateShopIdentitySchema(client);
+    const accountId = crypto.randomUUID();
+    await new PostgresAuthStore(client).createAccount({
+      id: accountId,
+      linkingKey: `02${accountId.replaceAll('-', '').padEnd(64, '2')}`,
+      role: 'verified',
+      name: 'Coffee',
+      username: `c${accountId.replaceAll('-', '').slice(0, 12)}`,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: accountId.replaceAll('-', '').padEnd(64, 'c'),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    const messages = new PostgresMessageStore(client);
+    const shops = new PostgresShopIdentityStore(client, messages);
+    const note = (overrides: Partial<MessageRow> = {}): MessageRow => ({
+      id: crypto.randomUUID(),
+      accountId,
+      name: 'Coffee',
+      text: TEXT,
+      createdAt: new Date(),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: PLACE,
+      shopAccount: { id: accountId, username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    });
+    const cleanup = async (): Promise<void> => {
+      await client.execute(
+        'DELETE FROM shop_identity WHERE message_id IN (SELECT id FROM message WHERE account_id = $1)',
+        [accountId],
+      );
+      await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
+      await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
+      await closeIfPossible(sql);
+    };
+    return { client, sql, accountId, messages, shops, note, cleanup };
+  }
+
+  test('a failed extra photo leaves neither the note nor a key while the backfill runs', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note({ hasPhoto: true });
+      const failing = ctx.messages.create(row, PNG, undefined, [
+        PNG,
+        { contentType: null as unknown as 'image/png', bytes: PNG.bytes },
+      ]);
+      const backfill = (async () => {
+        for (let round = 0; round < 20; round += 1) {
+          for (const candidate of await ctx.shops.listCandidates(null, 50)) {
+            if (candidate.id === row.id) await ctx.shops.ensureListed(candidate.id, KEK);
+          }
+        }
+      })();
+      let thrown: unknown;
+      try {
+        await failing;
+      } catch (error) {
+        thrown = error;
+      }
+      await backfill;
+      expect(thrown).toBeDefined();
+      expect(await ctx.messages.getById(row.id)).toBeUndefined();
+      expect(await ctx.shops.getByMessageId(row.id)).toBeUndefined();
+      expect(
+        await ctx.client.query('SELECT 1 FROM message_extra_photo WHERE message_id = $1', [row.id]),
+      ).toEqual([]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('creates one key per listed note, keeps it, and queues every write by trigger', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note({ hasPhoto: true });
+      await ctx.messages.create(row, PNG, undefined, [PNG]);
+      const [left, right] = await Promise.all([
+        ctx.shops.ensureListed(row.id, KEK),
+        ctx.shops.ensureListed(row.id, KEK),
+      ]);
+      expect(left?.nostrPubkey).toBe(right?.nostrPubkey ?? '');
+      expect(left).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 1 });
+      expect((await ctx.messages.getById(row.id))?.shopNpub).toMatch(/^npub1/);
+      expect(
+        (await ctx.messages.listPlaces(1000)).find((place) => place.id === row.id)?.shopNpub,
+      ).toMatch(/^npub1/);
+
+      const [claim] = await ctx.shops.claimPlaces(20, 60_000);
+      expect(claim).toEqual({ messageId: row.id, generation: 1, claim: 1 });
+      expect(await ctx.shops.claimPlaces(20, 60_000)).toEqual([]);
+      expect(await ctx.shops.leaseHasTime('place', claim!, 15_000)).toBe(true);
+      expect(await ctx.shops.leaseHasTime('place', claim!, 120_000)).toBe(false);
+      expect(await ctx.shops.nextRevision('place', claim!)).toBe(1);
+      await ctx.shops.finishPlace(claim!, 'put');
+      let identity = (await ctx.shops.getByMessageId(row.id))!;
+      expect(identity).toMatchObject({
+        ocpPlacePending: false,
+        ocpPlaceClaimedUntil: null,
+        ocpPhotosPending: true,
+        ocpPhotosGeneration: 1,
+        ocpRevision: 1,
+      });
+
+      await ctx.messages.updateText(row.id, `${TEXT} More beans.`);
+      identity = (await ctx.shops.getByMessageId(row.id))!;
+      expect(identity).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 2 });
+
+      await ctx.messages.replacePhotos(row.id, [PNG]);
+      expect((await ctx.shops.getByMessageId(row.id))!.ocpPhotosGeneration).toBeGreaterThan(1);
+      const photoGeneration = (await ctx.shops.getByMessageId(row.id))!.ocpPhotosGeneration;
+
+      await ctx.messages.markDeleted(row.id, new Date(), ctx.accountId);
+      identity = (await ctx.shops.getByMessageId(row.id))!;
+      expect(identity.ocpPlaceGeneration).toBe(3);
+      await ctx.messages.replacePhotos(row.id, []);
+      expect((await ctx.shops.getByMessageId(row.id))!.ocpPhotosGeneration).toBe(photoGeneration);
+      expect((await ctx.messages.getById(row.id))?.shopNpub).toMatch(/^npub1/);
+
+      expect(await ctx.messages.deleteById(row.id)).toBe(false);
+      expect(await ctx.messages.getById(row.id)).toBeDefined();
+
+      await ctx.messages.markUndeleted(row.id);
+      expect((await ctx.shops.getByMessageId(row.id))!.ocpPlaceGeneration).toBe(4);
+      expect(await ctx.shops.queueAllPlacePage(null, 200)).toContain(row.id);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('creates no key for an incomplete or changed note', async () => {
+    const ctx = await setup();
+    try {
+      const incomplete = ctx.note({ text: 'Too short #21GiftsShop' });
+      await ctx.messages.create(incomplete);
+      expect(await ctx.shops.ensureListed(incomplete.id, KEK)).toBeUndefined();
+      expect(
+        (await ctx.shops.listCandidates(null, 1000)).some((row) => row.id === incomplete.id),
+      ).toBe(true);
+      const moved = ctx.note();
+      await ctx.messages.create(moved);
+      const stale = new PostgresShopIdentityStore(ctx.client, {
+        getById: async (id: string) => ({
+          ...(await ctx.messages.getById(id))!,
+          text: `${TEXT} Older text.`,
+        }),
+      } as unknown as PostgresMessageStore);
+      expect(await stale.ensureListed(moved.id, KEK)).toBeUndefined();
+      expect(await ctx.shops.ensureListed(moved.id, KEK)).toBeDefined();
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('runs both outboxes against the real statements', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note({ hasPhoto: true });
+      await ctx.messages.create(row, PNG, undefined, [PNG]);
+      const identity = (await ctx.shops.ensureListed(row.id, KEK))!;
+      expect((await ctx.shops.getByPubkey(identity.nostrPubkey))?.messageId).toBe(row.id);
+      const signed = await signEventForShop(ctx.shops, row.id, KEK, {
+        kind: 0,
+        content: '{}',
+        tags: [],
+        created_at: 1,
+      });
+      expect(signed.pubkey).toBe(identity.nostrPubkey);
+      await ctx.shops.setProfileName(row.id, 'Other');
+      expect((await ctx.shops.listAll()).find((r) => r.messageId === row.id)?.profileName).toBe(
+        'Other',
+      );
+
+      const answers: Array<{ status: number; body: string }> = [];
+      const sent: Array<{ url: string; method: string; body: Record<string, unknown> }> = [];
+      const mapPush = {
+        baseUrl: 'https://map.test',
+        token: 't',
+        fetchImpl: async (url: string, init: RequestInit): Promise<Response> => {
+          sent.push({
+            url,
+            method: String(init.method),
+            body: JSON.parse(String(init.body)) as Record<string, unknown>,
+          });
+          const next = answers.shift()!;
+          return new Response(next.body, { status: next.status });
+        },
+      };
+      const deps = { identities: ctx.shops, messages: ctx.messages, mapPush };
+      const state = async () => (await ctx.shops.getByMessageId(row.id))!;
+      const releasePlace = () =>
+        ctx.client.execute(
+          'UPDATE shop_identity SET ocp_place_claimed_until = NULL WHERE message_id = $1',
+          [row.id],
+        );
+      const releasePhotos = () =>
+        ctx.client.execute(
+          'UPDATE shop_identity SET ocp_photos_claimed_until = NULL WHERE message_id = $1',
+          [row.id],
+        );
+
+      answers.push({ status: 201, body: '{}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect(sent.at(-1)).toMatchObject({ method: 'PUT', body: { revision: 1 } });
+      expect(await state()).toMatchObject({
+        ocpPlacePending: false,
+        ocpPhotosPending: true,
+        ocpRevision: 1,
+      });
+
+      answers.push({ status: 200, body: '{"photos":[],"skipped":[]}' });
+      await runOcpPhotoOutboxPass(deps);
+      expect(sent.at(-1)).toMatchObject({
+        url: 'https://map.test/map/places/photos',
+        body: { revision: 2 },
+      });
+      const stored = await state();
+      expect(stored.ocpPhotosPending).toBe(false);
+      expect(stored.ocpPhotosHash).toMatch(/^[0-9a-f]{64}$/);
+
+      await ctx.client.execute(
+        'UPDATE shop_identity SET ocp_photos_pending = true, ocp_photos_generation = ocp_photos_generation + 1 WHERE message_id = $1',
+        [row.id],
+      );
+      await runOcpPhotoOutboxPass(deps);
+      expect(sent).toHaveLength(2);
+      expect((await state()).ocpPhotosPending).toBe(false);
+
+      await ctx.messages.replacePhotos(row.id, [PNG, PNG, PNG]);
+      answers.push({ status: 404, body: '{"error":"Place not found"}' });
+      await runOcpPhotoOutboxPass(deps);
+      expect(await state()).toMatchObject({
+        ocpPhotosHash: null,
+        ocpPhotosPending: false,
+        ocpPlacePending: true,
+      });
+
+      answers.push({ status: 409, body: '{"error":"Stale revision"}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect(await state()).toMatchObject({ ocpPlacePending: true, ocpPlaceClaimedUntil: null });
+
+      answers.push({ status: 200, body: '{}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect(await state()).toMatchObject({ ocpPlacePending: false, ocpPhotosPending: true });
+
+      answers.push({ status: 413, body: '{"error":"too large"}' });
+      await runOcpPhotoOutboxPass(deps);
+      expect((await state()).ocpPhotosPending).toBe(false);
+
+      await ctx.messages.markDeleted(row.id, new Date(), ctx.accountId);
+      answers.push({ status: 503, body: '' });
+      await runOcpPlaceOutboxPass(deps);
+      expect(sent.at(-1)).toMatchObject({ method: 'DELETE' });
+      expect(await state()).toMatchObject({ ocpPlacePending: true, ocpPhotosHash: null });
+      await releasePlace();
+      answers.push({ status: 200, body: '{"deleted":true}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect((await state()).ocpPlacePending).toBe(false);
+
+      await ctx.messages.markUndeleted(row.id);
+      answers.push({ status: 400, body: '{"error":"bad"}' });
+      await runOcpPlaceOutboxPass(deps);
+      expect((await state()).ocpPlacePending).toBe(false);
+      await releasePhotos();
+      expect((await state()).ocpRevision).toBe(sent.length);
+    } finally {
+      await ctx.cleanup();
     }
   });
 });

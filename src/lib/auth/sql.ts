@@ -20,6 +20,8 @@ export interface SqlClient {
    * @param params - Bound values, in order.
    */
   execute(text: string, params?: readonly unknown[]): Promise<void>;
+  /** Run all callback statements on one database transaction/connection. */
+  transaction?<T>(run: (tx: SqlClient) => Promise<T>): Promise<T>;
 }
 
 const SQLSTATE_PATTERN = /^[0-9A-Z]{5}$/;

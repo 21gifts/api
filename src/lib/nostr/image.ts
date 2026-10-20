@@ -31,6 +31,37 @@ export function imageDisplaySize(bytes: Uint8Array, mime: Kind1Photo['mime']): s
 }
 
 /**
+ * Width and height of a still from its header only, without decoding
+ * pixels: JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`. For a JPEG whose
+ * EXIF orientation is 5 to 8 the two are swapped (the displayed size).
+ * {@link imageDisplaySize} stays as it is.
+ *
+ * @param bytes - Stored image bytes.
+ * @param mime - Stored still MIME.
+ * @returns Header size, or both `null` when the header cannot be read.
+ */
+export function imageHeaderSize(
+  bytes: Uint8Array,
+  mime: Kind1Photo['mime'],
+): { width: number | null; height: number | null } {
+  const dim =
+    mime === 'image/png'
+      ? pngHeaderSize(bytes)
+      : mime === 'image/jpeg'
+        ? jpegSize(bytes)
+        : mime === 'image/webp'
+          ? webpSize(bytes)
+          : null;
+  if (dim === null) {
+    return { width: null, height: null };
+  }
+  const [width, height] = dim.split('x').map(Number) as [number, number];
+  return mime === 'image/jpeg' && jpegExifOrientation(bytes) >= 5
+    ? { width: height, height: width }
+    : { width, height };
+}
+
+/**
  * BlurHash placeholder for a JPEG or PNG, or `null` when the bytes do not
  * decode. WebP and video return `null`. The sample is at most 32 px on the
  * long side.
@@ -211,6 +242,70 @@ function u32le(bytes: Uint8Array, offset: number): number {
       (bytes[offset + 3]! << 24)) >>>
     0
   );
+}
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const PNG_IHDR = [0x49, 0x48, 0x44, 0x52];
+
+/** `WIDTHxHEIGHT` from the PNG signature and the `IHDR` chunk, or `null`. */
+function pngHeaderSize(bytes: Uint8Array): string | null {
+  if (
+    bytes.length < 24 ||
+    PNG_SIGNATURE.some((value, index) => bytes[index] !== value) ||
+    PNG_IHDR.some((value, index) => bytes[12 + index] !== value)
+  ) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return dimText(view.getUint32(16), view.getUint32(20));
+}
+
+/**
+ * EXIF orientation (1–8) of a JPEG whose `SOF` was already found, or `1`
+ * when there is no readable orientation in an `APP1` `Exif` segment before
+ * the scan.
+ */
+function jpegExifOrientation(bytes: Uint8Array): number {
+  let offset = 2;
+  while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
+    const marker = bytes[offset + 1];
+    const size = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
+    if (marker === 0xda || size < 2) {
+      return 1;
+    }
+    const end = Math.min(bytes.length, offset + 2 + size);
+    if (
+      marker === 0xe1 &&
+      String.fromCharCode(...bytes.subarray(offset + 4, offset + 10)) === 'Exif\0\0'
+    ) {
+      return exifOrientation(bytes, offset + 10, end);
+    }
+    offset += 2 + size;
+  }
+  return 1;
+}
+
+/** Orientation tag `0x0112` of IFD0 in a TIFF block `[tiff, end)`, or `1`. */
+function exifOrientation(bytes: Uint8Array, tiff: number, end: number): number {
+  const order = String.fromCharCode(bytes[tiff] ?? 0, bytes[tiff + 1] ?? 0);
+  if ((order !== 'II' && order !== 'MM') || tiff + 8 > end) {
+    return 1;
+  }
+  const little = order === 'II';
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const ifd = tiff + view.getUint32(tiff + 4, little);
+  const count = ifd + 2 <= end ? view.getUint16(ifd, little) : 0;
+  for (let index = 0; index < count; index += 1) {
+    const entry = ifd + 2 + index * 12;
+    if (entry + 12 > end) {
+      return 1;
+    }
+    if (view.getUint16(entry, little) === 0x0112) {
+      const value = view.getUint16(entry + 8, little);
+      return value >= 1 && value <= 8 ? value : 1;
+    }
+  }
+  return 1;
 }
 
 function dimText(width: number, height: number): string | null {

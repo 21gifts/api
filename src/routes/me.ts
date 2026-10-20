@@ -30,6 +30,7 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
@@ -96,6 +97,11 @@ export interface MeRouteDeps {
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Shop identities. With `nostrKek`, `PUT /me/about` creates the key when
+   * the profile note becomes a listed shop. Omitted → no shop keys.
+   */
+  shopIdentities?: ShopIdentityStore;
 }
 
 /**
@@ -728,6 +734,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }
         const liveRow = await deps.messages.getById(noteId);
+        if (deps.shopIdentities !== undefined && deps.nostrKek !== undefined) {
+          try {
+            await deps.shopIdentities.ensureListed(noteId, deps.nostrKek);
+          } catch {
+            logEvent('shop.nostr_key.failed', { messageId: noteId });
+          }
+        }
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
         }

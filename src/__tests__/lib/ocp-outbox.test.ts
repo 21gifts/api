@@ -1,0 +1,572 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
+import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
+import type { MapPush } from '@/lib/ocp-place';
+import {
+  OCP_LEASE_MARGIN_MS,
+  OCP_PHOTO_TIMEOUT_MS,
+  OCP_PLACE_TIMEOUT_MS,
+  ocpPhotoSetHash,
+  queueAllShopPlaces,
+  runOcpPhotoOutboxPass,
+  runOcpPlaceOutboxPass,
+  startOcpOutboxWorker,
+  type OcpOutboxDeps,
+} from '@/lib/ocp-outbox';
+import {
+  InMemoryShopIdentityStore,
+  type ShopIdentityRow,
+  type ShopIdentityStore,
+  type ShopOcpClaim,
+} from '@/lib/shop-identity';
+
+const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const PUBKEY = 'ab'.repeat(32);
+const TEXT = 'Fresh coffee roasted here every morning. #21GiftsShop';
+const CLAIM: ShopOcpClaim = { messageId: ID, generation: 1, claim: 1 };
+const PNG: ForumPhoto = { contentType: 'image/png', bytes: new Uint8Array([1, 2, 3]) };
+const JPEG: ForumPhoto = { contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) };
+
+function shopNote(overrides: Partial<MessageRow> = {}): MessageRow {
+  return {
+    id: ID,
+    accountId: 'author',
+    name: 'Ada',
+    text: TEXT,
+    createdAt: new Date('2026-10-01T00:00:00Z'),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    place: {
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Coffee Lab',
+      address: {
+        street: 'Main Street',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    },
+    shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+    ...overrides,
+  };
+}
+
+function identity(overrides: Partial<ShopIdentityRow> = {}): ShopIdentityRow {
+  return {
+    messageId: ID,
+    nostrPubkey: PUBKEY,
+    nostrNsecCiphertext: new Uint8Array([1]),
+    nostrKekId: 1,
+    nostrKeyCustody: 'custodial',
+    nostrKeyCreatedAt: new Date(0),
+    profileName: 'Coffee Lab',
+    ocpPhotosHash: null,
+    ocpPhotosPending: true,
+    ocpPhotosGeneration: 1,
+    ocpPhotosClaimedUntil: null,
+    ocpPhotosClaim: 1,
+    ocpPlacePending: true,
+    ocpPlaceGeneration: 1,
+    ocpPlaceClaimedUntil: null,
+    ocpPlaceClaim: 1,
+    ocpRevision: 0,
+    ...overrides,
+  };
+}
+
+type Stub = { [K in keyof ShopIdentityStore]: ReturnType<typeof vi.fn> };
+
+function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
+  return {
+    ensureListed: vi.fn(),
+    getByMessageId: vi.fn(() => Promise.resolve(row ?? undefined)),
+    getByPubkey: vi.fn(),
+    getNostrCiphertext: vi.fn(),
+    listAll: vi.fn(),
+    setProfileName: vi.fn(),
+    listCandidates: vi.fn(),
+    queueAllPlacePage: vi.fn(),
+    claimPlaces: vi.fn(() => Promise.resolve([CLAIM])),
+    claimPhoto: vi.fn(() => Promise.resolve(CLAIM)),
+    leaseHasTime: vi.fn(() => Promise.resolve(true)),
+    nextRevision: vi.fn(() => Promise.resolve(7)),
+    release: vi.fn(() => Promise.resolve()),
+    resetPhotosForDelete: vi.fn(() => Promise.resolve()),
+    finishPlace: vi.fn(() => Promise.resolve()),
+    clearPhotoWithoutSend: vi.fn(() => Promise.resolve()),
+    clearPhotoHash: vi.fn(() => Promise.resolve()),
+    finishPhotos: vi.fn(() => Promise.resolve()),
+    missingPhotoPlace: vi.fn(() => Promise.resolve()),
+  };
+}
+
+type Sent = { url: string; method: string; body: Record<string, unknown>; init: RequestInit };
+
+function mapPush(answer: (url: string) => Response | Promise<Response>): {
+  push: MapPush;
+  sent: Sent[];
+} {
+  const sent: Sent[] = [];
+  const push: MapPush = {
+    baseUrl: 'https://map.test',
+    token: 'secret',
+    fetchImpl: (async (url: string, init: RequestInit) => {
+      sent.push({
+        url,
+        method: String(init.method),
+        body: JSON.parse(String(init.body)) as Record<string, unknown>,
+        init,
+      });
+      return answer(url);
+    }) as unknown as MapPush['fetchImpl'],
+  };
+  return { push, sent };
+}
+
+async function messagesWith(
+  row: MessageRow,
+  photos: ForumPhoto[] = [],
+): Promise<InMemoryMessageStore> {
+  const messages = new InMemoryMessageStore();
+  await messages.create(row, photos[0], undefined, photos.slice(1));
+  return messages;
+}
+
+function deps(
+  identities: Stub | ShopIdentityStore,
+  messages: MessageStore,
+  push: MapPush,
+): OcpOutboxDeps {
+  return { identities: identities as unknown as ShopIdentityStore, messages, mapPush: push };
+}
+
+let warn: ReturnType<typeof vi.spyOn>;
+beforeEach(() => {
+  warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+});
+afterEach(() => {
+  warn.mockRestore();
+  vi.useRealTimers();
+});
+
+function logged(event: string): Array<Record<string, unknown>> {
+  return warn.mock.calls
+    .map((call) => JSON.parse(String(call[0])) as Record<string, unknown>)
+    .filter((line) => line['event'] === event);
+}
+
+describe('runOcpPlaceOutboxPass', () => {
+  it('puts a listed shop with its key and revision, then queues its photos', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.claimPlaces).toHaveBeenCalledWith(20, 60_000);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({ url: 'https://map.test/map/places', method: 'PUT' });
+    expect(sent[0]?.body).toMatchObject({
+      origin: '21gifts',
+      externalId: ID,
+      name: 'Coffee Lab',
+      nostrPubkey: PUBKEY,
+      revision: 7,
+    });
+    expect((sent[0]?.init.headers as Record<string, string>)['Authorization']).toBe(
+      'Bearer secret',
+    );
+    expect(ids.leaseHasTime).toHaveBeenCalledWith(
+      'place',
+      CLAIM,
+      OCP_PLACE_TIMEOUT_MS + OCP_LEASE_MARGIN_MS,
+    );
+    expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'put');
+  });
+
+  it('records 201 as a created place', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push } = mapPush(() => new Response('{}', { status: 201 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'created');
+  });
+
+  it('resets the photos and deletes a shop that is not listed', async () => {
+    const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
+    const { push, sent } = mapPush(() => new Response('{"deleted":false}', { status: 200 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.resetPhotosForDelete).toHaveBeenCalledWith(CLAIM);
+    expect(sent[0]?.method).toBe('DELETE');
+    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: ID, revision: 7 });
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'delete');
+  });
+
+  it('deletes when the note is gone', async () => {
+    const messages = { getById: () => Promise.resolve(undefined) } as unknown as MessageStore;
+    const { push, sent } = mapPush(() => new Response(null, { status: 204 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent[0]?.method).toBe('DELETE');
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'delete');
+  });
+
+  it('releases a row whose identity vanished', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push, sent } = mapPush(() => new Response('{}'));
+    const ids = stubIdentities(null);
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.release).toHaveBeenCalledWith('place', CLAIM);
+    expect(sent).toEqual([]);
+  });
+
+  it('sends nothing when the claim was taken over', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push, sent } = mapPush(() => new Response('{}'));
+    const ids = stubIdentities();
+    ids.nextRevision.mockResolvedValueOnce(undefined);
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).not.toHaveBeenCalled();
+  });
+
+  it('releases and skips when the lease is too short', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push, sent } = mapPush(() => new Response('{}'));
+    const ids = stubIdentities();
+    ids.leaseHasTime.mockResolvedValueOnce(false);
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('place', CLAIM);
+  });
+
+  it('only releases on 409 Stale revision', async () => {
+    const messages = await messagesWith(shopNote());
+    const { push } = mapPush(() => new Response('{"error":"Stale revision"}', { status: 409 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.release).toHaveBeenCalledWith('place', CLAIM);
+    expect(ids.finishPlace).not.toHaveBeenCalled();
+  });
+
+  it('logs ocp.place.rejected and clears the flag on 400 or another 409', async () => {
+    for (const [status, text] of [
+      [400, '{"error":"Place NOSTR public key is required"}'],
+      [409, '{"error":"nostrPubkey belongs to another place"}'],
+    ] as const) {
+      const messages = await messagesWith(shopNote());
+      const { push } = mapPush(() => new Response(text, { status }));
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+    }
+    expect(logged('ocp.place.rejected')).toEqual([
+      expect.objectContaining({ messageId: ID, status: 400 }),
+      expect.objectContaining({ messageId: ID, status: 409 }),
+    ]);
+  });
+
+  it('treats an unreadable 409 body as another 409', async () => {
+    const messages = await messagesWith(shopNote());
+    const broken = {
+      ok: false,
+      status: 409,
+      text: () => Promise.reject(new Error('stream')),
+    } as unknown as Response;
+    const { push } = mapPush(() => broken);
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+  });
+
+  it('keeps the flag and logs ocp.place.failed on any other answer or error', async () => {
+    const messages = await messagesWith(shopNote());
+    for (const answer of [
+      () => new Response('', { status: 401 }),
+      () => new Response('', { status: 503 }),
+      () => Promise.reject(Object.assign(new Error('timeout'), { name: 'TimeoutError' })),
+    ]) {
+      const { push } = mapPush(answer);
+      const ids = stubIdentities();
+      await runOcpPlaceOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPlace).not.toHaveBeenCalled();
+      expect(ids.release).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.place.failed')).toEqual([
+      expect.objectContaining({ messageId: ID, status: 401 }),
+      expect.objectContaining({ messageId: ID, status: 503 }),
+      expect.objectContaining({ messageId: ID }),
+    ]);
+  });
+});
+
+describe('ocpPhotoSetHash', () => {
+  it('depends on the order, types and bytes of the photos', () => {
+    const empty = ocpPhotoSetHash([]);
+    expect(empty).toMatch(/^[0-9a-f]{64}$/);
+    expect(ocpPhotoSetHash([PNG, JPEG])).toBe(ocpPhotoSetHash([PNG, JPEG]));
+    expect(ocpPhotoSetHash([PNG, JPEG])).not.toBe(ocpPhotoSetHash([JPEG, PNG]));
+    expect(ocpPhotoSetHash([PNG])).not.toBe(
+      ocpPhotoSetHash([{ contentType: 'image/webp', bytes: PNG.bytes }]),
+    );
+    expect(ocpPhotoSetHash([PNG])).not.toBe(empty);
+  });
+});
+
+describe('runOcpPhotoOutboxPass', () => {
+  it('does nothing without a claim', async () => {
+    const ids = stubIdentities();
+    ids.claimPhoto.mockResolvedValueOnce(undefined);
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, new InMemoryMessageStore(), push));
+    expect(ids.claimPhoto).toHaveBeenCalledWith(60_000);
+    expect(sent).toEqual([]);
+  });
+
+  it('sends up to 10 photos in note order with the key and revision', async () => {
+    const photos = Array.from({ length: 10 }, (_, index) => ({
+      contentType: 'image/png' as const,
+      bytes: new Uint8Array([index]),
+    }));
+    const messages = await messagesWith(shopNote({ hasPhoto: true }), photos);
+    const ids = stubIdentities();
+    const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(ids.leaseHasTime).toHaveBeenCalledTimes(2);
+    expect(ids.leaseHasTime).toHaveBeenCalledWith(
+      'photos',
+      CLAIM,
+      OCP_PHOTO_TIMEOUT_MS + OCP_LEASE_MARGIN_MS,
+    );
+    expect(ids.clearPhotoHash).toHaveBeenCalledWith(CLAIM);
+    expect(sent[0]?.url).toBe('https://map.test/map/places/photos');
+    expect(sent[0]?.method).toBe('PUT');
+    expect(sent[0]?.body).toEqual({
+      origin: '21gifts',
+      nostrPubkey: PUBKEY,
+      revision: 7,
+      photos: photos.map((photo) => ({
+        contentType: 'image/png',
+        data: Buffer.from(photo.bytes).toString('base64'),
+      })),
+    });
+    expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash(photos));
+    expect(logged('ocp.photos.skipped')).toEqual([]);
+  });
+
+  it('sends an empty list for a shop without photos', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = stubIdentities();
+    const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent[0]?.body['photos']).toEqual([]);
+    expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
+  });
+
+  it('logs skipped photos and tolerates odd 200 bodies', async () => {
+    const messages = await messagesWith(shopNote({ hasPhoto: true }), [PNG]);
+    for (const body of [
+      '{"photos":[],"skipped":[{"index":0,"error":"bad"}]}',
+      '{"photos":[],"skipped":"none"}',
+      'not json',
+    ]) {
+      const ids = stubIdentities();
+      const { push } = mapPush(() => new Response(body, { status: 200 }));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPhotos).toHaveBeenCalledTimes(1);
+    }
+    expect(logged('ocp.photos.skipped')).toEqual([
+      expect.objectContaining({ messageId: ID, skipped: 1 }),
+    ]);
+  });
+
+  it('releases when the lease is short before or after reading the bytes', async () => {
+    const messages = await messagesWith(shopNote());
+    for (const results of [[false], [true, false]]) {
+      const ids = stubIdentities();
+      for (const value of results) ids.leaseHasTime.mockResolvedValueOnce(value);
+      const { push, sent } = mapPush(() => new Response('{}'));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+      expect(sent).toEqual([]);
+    }
+  });
+
+  it('clears without sending for a shop that is not listed or has no identity', async () => {
+    const unlisted = await messagesWith(shopNote({ deletedAt: new Date(0) }));
+    const listed = await messagesWith(shopNote());
+    for (const [ids, messages] of [
+      [stubIdentities(), unlisted],
+      [stubIdentities(null), listed],
+    ] as const) {
+      const { push, sent } = mapPush(() => new Response('{}'));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.clearPhotoWithoutSend).toHaveBeenCalledWith(CLAIM);
+      expect(sent).toEqual([]);
+    }
+  });
+
+  it('clears without sending when the set equals the stored hash', async () => {
+    const messages = await messagesWith(shopNote({ hasPhoto: true }), [PNG]);
+    const ids = stubIdentities(identity({ ocpPhotosHash: ocpPhotoSetHash([PNG]) }));
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(ids.clearPhotoWithoutSend).toHaveBeenCalledWith(CLAIM);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(sent).toEqual([]);
+  });
+
+  it('sends nothing when the claim was taken over before the revision', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = stubIdentities();
+    ids.nextRevision.mockResolvedValueOnce(undefined);
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+  });
+
+  it('nulls the hash and releases on 409 Stale revision', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = stubIdentities();
+    const { push } = mapPush(() => new Response('{"error":"Stale revision"}', { status: 409 }));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(ids.clearPhotoHash).toHaveBeenCalledTimes(2);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('stores the hash and logs ocp.photos.rejected on 400 or 413', async () => {
+    const messages = await messagesWith(shopNote());
+    for (const status of [400, 413]) {
+      const ids = stubIdentities();
+      const { push } = mapPush(() => new Response('{"error":"x"}', { status }));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
+    }
+    expect(logged('ocp.photos.rejected').map((line) => line['status'])).toEqual([400, 413]);
+  });
+
+  it('queues the place again on 404 while the shop is still listed', async () => {
+    const listed = await messagesWith(shopNote());
+    let reads = 0;
+    const flipping = {
+      getById: async (id: string) => {
+        reads += 1;
+        const row = await listed.getById(id);
+        return reads === 1 ? row : undefined;
+      },
+      getPhoto: (id: string) => listed.getPhoto(id),
+      listExtraPhotos: (id: string) => listed.listExtraPhotos(id),
+    } as unknown as MessageStore;
+    for (const [messages, expected] of [
+      [listed, true],
+      [flipping, false],
+    ] as const) {
+      const ids = stubIdentities();
+      const { push } = mapPush(() => new Response('{"error":"Place not found"}', { status: 404 }));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, expected);
+    }
+  });
+
+  it('keeps the flag and logs ocp.photos.failed on any other answer or error', async () => {
+    const messages = await messagesWith(shopNote());
+    for (const answer of [
+      () => new Response('', { status: 500 }),
+      () => new Response('{"error":"other"}', { status: 409 }),
+      () => Promise.reject(new Error('reset')),
+    ]) {
+      const ids = stubIdentities();
+      const { push } = mapPush(answer);
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(ids.finishPhotos).not.toHaveBeenCalled();
+      expect(ids.release).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.photos.failed')).toHaveLength(3);
+  });
+});
+
+describe('queueAllShopPlaces', () => {
+  it('walks every page of 200 by message id', async () => {
+    const page = Array.from({ length: 200 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const ids = stubIdentities();
+    ids.queueAllPlacePage.mockResolvedValueOnce(page).mockResolvedValueOnce(['z']);
+    expect(await queueAllShopPlaces(ids as unknown as ShopIdentityStore)).toBe(201);
+    expect(ids.queueAllPlacePage.mock.calls).toEqual([
+      [null, 200],
+      ['id-199', 200],
+    ]);
+  });
+
+  it('queues the real store and stops at an empty page', async () => {
+    const messages = await messagesWith(shopNote());
+    const store = new InMemoryShopIdentityStore(messages);
+    await store.ensureListed(ID, new Uint8Array(32).fill(7));
+    const claim = (await store.claimPlaces(1, 60_000))[0]!;
+    await store.finishPlace(claim, 'put');
+    expect(await queueAllShopPlaces(store)).toBe(1);
+    expect((await store.getByMessageId(ID))?.ocpPlacePending).toBe(true);
+    expect(await queueAllShopPlaces(new InMemoryShopIdentityStore(messages))).toBe(0);
+  });
+});
+
+describe('startOcpOutboxWorker', () => {
+  it('runs the place lane on an interval and the photo lane serialised until stopped', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(350);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(3);
+    expect(ids.claimPhoto).toHaveBeenCalledTimes(3);
+    handle.stop();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(3);
+    expect(ids.claimPhoto).toHaveBeenCalledTimes(3);
+  });
+
+  it('logs lane failures and does not reschedule a photo pass after stop', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockRejectedValue(new Error('db'));
+    let finish: (() => void) | undefined;
+    ids.claimPhoto.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          finish = () => reject(new Error('db'));
+        }),
+    );
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    handle.stop();
+    finish?.();
+    await vi.advanceTimersByTimeAsync(500);
+    expect(ids.claimPhoto).toHaveBeenCalledTimes(1);
+    expect(logged('ocp.place.failed')).toHaveLength(1);
+    expect(logged('ocp.photos.failed')).toHaveLength(1);
+  });
+
+  it('defaults to the worker interval', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+    );
+    await vi.advanceTimersByTimeAsync(1_999);
+    expect(ids.claimPlaces).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    handle.stop();
+  });
+});

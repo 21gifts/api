@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { readFile } from 'node:fs/promises';
+import { nip19 } from 'nostr-tools';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   forumContentFingerprint,
@@ -25,6 +26,7 @@ class MockSql implements SqlClient {
   queryQueue: unknown[][] = [];
   queryError: unknown | undefined;
   executeError: unknown | undefined;
+  transaction?: <T>(run: (tx: SqlClient) => Promise<T>) => Promise<T>;
 
   async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
     this.queries.push({ text, params });
@@ -2512,6 +2514,7 @@ describe('InMemoryMessageStore', () => {
       address: null,
       accountId: 'acc',
       shop: true,
+      shopNpub: null,
     });
     expect(listed[1]?.shop).toBe(false);
     expect((await store.listPlaces(1)).map((row) => row.id)).toEqual(['zb']);
@@ -5002,7 +5005,10 @@ describe('PostgresMessageStore', () => {
       mentions: [{ accountId: 'bob', username: 'bob' }],
     });
     expect(created.mentions).toEqual([{ accountId: 'bob', username: 'bob' }]);
-    expect(sql.executes.some((item) => item.text.includes('SET mentions'))).toBe(true);
+    expect(sql.executes[0]?.text).toMatch(/mentions/);
+    expect(sql.executes[0]?.params[71]).toBe(
+      JSON.stringify([{ accountId: 'bob', username: 'bob' }]),
+    );
     sql.nextRows = [
       {
         id: 'm-mark',
@@ -5823,16 +5829,24 @@ describe('PostgresMessageStore', () => {
       {
         id: 'pin-1',
         name: 'Ada',
+        text: 'A sufficiently long shop description #21GiftsShop',
         created_at: createdAt,
         place_lat: '47.3',
         place_lng: '8.5',
         place_label: 'Zürich',
+        place_street: 'Langstrasse',
+        place_house_number: '1',
+        place_postal_code: '8004',
+        place_city: 'Zürich',
+        place_country: 'CH',
+        shop_account_id: 'shop-acc',
+        shop_nostr_pubkey: null,
         shop: true,
       },
     ];
     const listed = await new PostgresMessageStore(sql).listPlaces(10);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT id, name, created_at, place_lat, place_lng, place_label,\s+place_street, place_house_number, place_postal_code, place_city, place_country,\s+account_id,\s+\(text ~\* \$2\) AS shop/,
+      /SELECT id, name, created_at, place_lat, place_lng, place_label,\s+place_street, place_house_number, place_postal_code, place_city, place_country,\s+account_id, shop_account_id, text,\s+\(text ~\* \$2\) AS shop/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE parent_id IS NULL AND deleted_at IS NULL\s+AND place_lat IS NOT NULL AND place_lng IS NOT NULL/,
@@ -5848,9 +5862,16 @@ describe('PostgresMessageStore', () => {
         lat: 47.3,
         lng: 8.5,
         label: 'Zürich',
-        address: null,
+        address: {
+          street: 'Langstrasse',
+          houseNumber: '1',
+          postalCode: '8004',
+          city: 'Zürich',
+          country: 'CH',
+        },
         accountId: undefined,
         shop: true,
+        shopNpub: null,
       },
     ]);
   });
@@ -5948,13 +5969,13 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
       /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
-    expect(sql.executes[0]?.params).toEqual([
+    expect(sql.executes[0]?.params.slice(0, 44)).toEqual([
       'm1',
       'acc',
       'Ada',
@@ -6000,7 +6021,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(44);
+    expect(sql.executes[0]?.params).toHaveLength(72);
+    expect(sql.executes[0]?.params.slice(44, 71)).toEqual(Array(27).fill(null));
+    expect(sql.executes[0]?.params[71]).toBe('[]');
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.receivedSats).toBe(0);
@@ -6019,7 +6042,7 @@ describe('PostgresMessageStore', () => {
     expect(priced.amountChf).toBeNull();
     expect(priced.amountEur).toBe('0.90');
     expect(priced.amountPhp).toBeNull();
-    expect(sql.executes[1]?.params.slice(16)).toEqual([
+    expect(sql.executes[1]?.params.slice(16, 44)).toEqual([
       '1.00',
       null,
       '0.90',
@@ -6066,7 +6089,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.params[15]).toBe(21000);
-    expect(sql.executes[0]?.params.slice(16)).toEqual([
+    expect(sql.executes[0]?.params.slice(16, 44)).toEqual([
       null,
       null,
       null,
@@ -6240,17 +6263,17 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT \$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric/,
+      /SELECT\s+\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
+      /WHERE \$11::uuid IS NULL OR EXISTS \(\s*SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(/RETURNING id/);
     expect(sql.queries[0]?.text).not.toMatch(/ON CONFLICT/i);
-    expect(sql.queries[0]?.params).toEqual([
+    expect(sql.queries[0]?.params.slice(0, 44)).toEqual([
       'child-1',
       'acc',
       'Ada',
@@ -6296,7 +6319,9 @@ describe('PostgresMessageStore', () => {
       null,
       null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(44);
+    expect(sql.queries[0]?.params).toHaveLength(72);
+    expect(sql.queries[0]?.params.slice(44, 71)).toEqual(Array(27).fill(null));
+    expect(sql.queries[0]?.params[71]).toBe('[]');
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -6318,7 +6343,7 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.queries[0]?.params[15]).toBeNull();
-    expect(sql.queries[0]?.params.slice(16)).toEqual([
+    expect(sql.queries[0]?.params.slice(16, 44)).toEqual([
       null,
       null,
       null,
@@ -6366,7 +6391,7 @@ describe('PostgresMessageStore', () => {
       place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
     };
     const created = await store.create(row);
-    expect(sql.executes[0]?.params.slice(16)).toEqual([
+    expect(sql.executes[0]?.params.slice(16, 44)).toEqual([
       null,
       null,
       null,
@@ -6448,7 +6473,7 @@ describe('PostgresMessageStore', () => {
       place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
     };
     const created = await store.create(row);
-    expect(sql.queries[0]?.params.slice(16)).toEqual([
+    expect(sql.queries[0]?.params.slice(16, 44)).toEqual([
       null,
       null,
       null,
@@ -6504,7 +6529,7 @@ describe('PostgresMessageStore', () => {
     ).rejects.toThrow('parent missing or deleted');
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /WHERE EXISTS \(SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\)/,
+      /WHERE \$11::uuid IS NULL OR EXISTS \(\s*SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\s*\)/,
     );
     await expect(
       readFile(videoFilePath(resolveMediaDir(), 'm-reply-dead-parent', 'video/mp4')),
@@ -6644,7 +6669,7 @@ describe('PostgresMessageStore', () => {
     expect(created.id).toBe('m1');
   });
 
-  it('create on 23505 does not INSERT extras when getById finds the same id', async () => {
+  it('create on 23505 leaves the atomic extra-photo CTE unapplied', async () => {
     const sql = new MockSql();
     sql.executeError = Object.assign(new Error('duplicate key'), { code: '23505' });
     sql.nextRows = [
@@ -6673,9 +6698,7 @@ describe('PostgresMessageStore', () => {
     expect(created.id).toBe('m1');
     expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message \(/);
-    expect(sql.executes.some((item) => /INSERT INTO message_extra_photo/.test(item.text))).toBe(
-      false,
-    );
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_extra_photo/);
   });
 
   it('create on Bun errno 23505 returns the row when getById finds the same id', async () => {
@@ -6857,7 +6880,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes).toEqual([]);
   });
 
-  it('create extras INSERT binds message_extra_photo after the message row', async () => {
+  it('create binds extra photos inside the same statement as the message row', async () => {
     const sql = new MockSql();
     const row: MessageRow = {
       id: 'm1',
@@ -6870,17 +6893,15 @@ describe('PostgresMessageStore', () => {
     };
     await new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2]);
     expect(sql.executes[0]?.text).toMatch(/INSERT INTO message \(/);
-    expect(sql.executes[1]?.text).toMatch(/INSERT INTO message_extra_photo/);
-    expect(sql.executes[1]?.text).toMatch(
-      /\(message_id, idx, photo, photo_content_type, photo_taken_at\)/,
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_extra_photo/);
+    expect(sql.executes[0]?.text).toMatch(
+      /\(\s*message_id, idx, photo, photo_content_type, photo_taken_at\s*\)/,
     );
-    expect(sql.executes[1]?.text).toMatch(
-      /VALUES \(\s*\$1\s*,\s*\$2\s*,\s*\$3\s*,\s*\$4\s*,\s*\$5\s*\)/,
-    );
-    expect(sql.executes[1]?.params).toEqual([row.id, 1, JPEG2.bytes, JPEG2.contentType, null]);
+    expect(sql.executes[0]?.params.slice(44, 47)).toEqual([JPEG2.bytes, JPEG2.contentType, null]);
   });
 
-  it('create deletes the row and rethrows when an extra INSERT fails', async () => {
+  it('create leaves no cleanup statement when the atomic extra-photo CTE fails', async () => {
     const extraError = new Error('extra insert boom');
     const sql = new MockSql();
     const execute = sql.execute.bind(sql);
@@ -6902,13 +6923,9 @@ describe('PostgresMessageStore', () => {
     await expect(new PostgresMessageStore(sql).create(row, JPEG, undefined, [JPEG2])).rejects.toBe(
       extraError,
     );
-    expect(sql.executes.some((item) => /INSERT INTO message_extra_photo/.test(item.text))).toBe(
-      true,
-    );
-    expect(sql.queries[0]?.text).toMatch(/WITH/);
-    expect(sql.queries[0]?.text).toMatch(/targets AS/);
-    expect(sql.queries[0]?.text).toMatch(/DELETE FROM message/);
-    expect(sql.queries[0]?.text).toMatch(/OR parent_id IN \(SELECT id FROM root\)/);
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toMatch(/INSERT INTO message_extra_photo/);
+    expect(sql.queries).toEqual([]);
   });
 
   it('getPhoto maps a bytea row', async () => {
@@ -7447,6 +7464,27 @@ describe('PostgresMessageStore', () => {
     expect(sql.executes).toEqual([]);
     expect(sql.queries).toHaveLength(1);
     expect(sql.queries[0]?.text).toMatch(/WITH/);
+  });
+
+  it('deleteById locks then checks shop identity inside one transaction', async () => {
+    const sql = new MockSql();
+    sql.transaction = async <T>(run: (tx: SqlClient) => Promise<T>): Promise<T> => run(sql);
+    sql.queryQueue = [
+      [{ goal_repayable: false, sats: 0 }],
+      [],
+      [{ id: 'm1', video_content_type: null }],
+    ];
+    expect(await new PostgresMessageStore(sql).deleteById('m1')).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+    expect(sql.queries[1]?.text).toMatch(/FROM shop_identity/);
+    expect(sql.queries[2]?.text).toMatch(/DELETE FROM message/);
+
+    const protectedSql = new MockSql();
+    protectedSql.transaction = async <T>(run: (tx: SqlClient) => Promise<T>): Promise<T> =>
+      run(protectedSql);
+    protectedSql.queryQueue = [[{ goal_repayable: false, sats: 0 }], [{ found: 1 }]];
+    expect(await new PostgresMessageStore(protectedSql).deleteById('m1')).toBe(false);
+    expect(protectedSql.queries).toHaveLength(2);
   });
 
   it('markDeleted issues an UPDATE CTE and returns false when missing', async () => {
@@ -9889,7 +9927,7 @@ describe('message fiat accumulator SQL', () => {
       goalAmountPhp: null,
     };
     await store.create(row);
-    expect(sql.executes[0]?.params.slice(30)).toEqual([
+    expect(sql.executes[0]?.params.slice(30, 44)).toEqual([
       'USD',
       '1.5',
       '1.50',
@@ -9914,7 +9952,7 @@ describe('message fiat accumulator SQL', () => {
       goalRepayable: true,
     });
     expect(sql.queries[0]?.params[15]).toBeNull();
-    expect(sql.queries[0]?.params.slice(30)).toEqual([
+    expect(sql.queries[0]?.params.slice(30, 44)).toEqual([
       null,
       null,
       null,
@@ -10005,5 +10043,106 @@ describe('message fiat accumulator SQL', () => {
     expect(child.goalAmount).toBeNull();
     expect(child.goalAmountUsd).toBeNull();
     expect(child.goalRepayable).toBeNull();
+  });
+});
+
+describe('shop identity on message rows', () => {
+  const SHOP_PUBKEY = 'ab'.repeat(32);
+  const SHOP_PLACE = {
+    lat: 47.3,
+    lng: 8.5,
+    label: 'Coffee Lab',
+    address: {
+      street: 'Main Street',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    },
+  };
+  const SHOP_ROW: MessageRow = {
+    ...EARLY,
+    id: 'shop-1',
+    text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+    place: SHOP_PLACE,
+    shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+  };
+
+  it('in memory: lists shopNpub only for a listed shop with a key and keeps such a note', async () => {
+    const store = new InMemoryMessageStore([SHOP_ROW, { ...SHOP_ROW, id: 'shop-2' }]);
+    store.setShopNpub('missing', 'npub1x');
+    store.setShopNpub('shop-1', nip19.npubEncode(SHOP_PUBKEY));
+    const byId = new Map((await store.listPlaces(10)).map((row) => [row.id, row.shopNpub]));
+    expect(byId.get('shop-1')).toBe(nip19.npubEncode(SHOP_PUBKEY));
+    expect(byId.get('shop-2')).toBeNull();
+    await store.updateText('shop-1', 'Tiny #21GiftsShop');
+    expect((await store.listPlaces(10)).find((row) => row.id === 'shop-1')?.shopNpub).toBeNull();
+    expect(await store.deleteById('shop-1')).toBe(false);
+    expect(await store.getById('shop-1')).toBeDefined();
+    store.setShopNpub('shop-2', null);
+    expect(await store.deleteById('shop-2')).toBe(true);
+  });
+
+  it('postgres: maps the shop pubkey of a row to its npub', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'shop-1',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'shop',
+        created_at: new Date(0),
+        has_photo: false,
+        shop_nostr_pubkey: SHOP_PUBKEY,
+      },
+    ];
+    const row = await new PostgresMessageStore(sql).getById('shop-1');
+    expect(row?.shopNpub).toBe(nip19.npubEncode(SHOP_PUBKEY));
+    expect(sql.queries[0]?.text).toMatch(
+      /\(SELECT nostr_pubkey FROM shop_identity WHERE shop_identity\.message_id = message\.id\) AS shop_nostr_pubkey/,
+    );
+  });
+
+  it('postgres: lists shopNpub only for a listed shop with a key', async () => {
+    const base = {
+      name: 'Ada',
+      created_at: new Date(0),
+      place_lat: 47.3,
+      place_lng: 8.5,
+      place_label: 'Coffee Lab',
+      place_street: 'Main Street',
+      place_house_number: '1',
+      place_postal_code: '8001',
+      place_city: 'Zürich',
+      place_country: 'CH',
+      account_id: 'acc',
+      text: SHOP_ROW.text,
+      shop: true,
+    };
+    const sql = new MockSql();
+    sql.nextRows = [
+      { ...base, id: 'a', shop_account_id: 'till', shop_nostr_pubkey: SHOP_PUBKEY },
+      { ...base, id: 'b', shop_account_id: null, shop_nostr_pubkey: SHOP_PUBKEY },
+      { ...base, id: 'c', shop_account_id: 'till', shop_nostr_pubkey: null },
+    ];
+    const rows = await new PostgresMessageStore(sql).listPlaces(10);
+    expect(rows.map((row) => row.shopNpub)).toEqual([nip19.npubEncode(SHOP_PUBKEY), null, null]);
+  });
+
+  it('postgres: a transactional delete keeps a credit with sats', async () => {
+    const sql = new MockSql();
+    sql.transaction = async <T>(run: (tx: SqlClient) => Promise<T>): Promise<T> => run(sql);
+    sql.queryQueue = [
+      [{ goal_repayable: true, sats: '5' }],
+      [{ goal_repayable: true, sats: 0 }],
+      [],
+      [{ id: 'm1', video_content_type: null }],
+      [],
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.deleteById('m1')).toBe(false);
+    expect(sql.queries).toHaveLength(1);
+    expect(await store.deleteById('m1')).toBe(true);
+    expect(await store.deleteById('gone')).toBe(false);
   });
 });

@@ -4,6 +4,9 @@
 
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { resolveWriteSet, writeRelayUrls } from '@/lib/nostr/relays';
+import type { MessageStore } from '@/lib/message-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
+import { listedShopName } from '@/lib/shop-place';
 
 /** One NIP-05 mapping ready to publish on kind:0 and in `nostr.json`. */
 export interface Nip05Entry {
@@ -166,17 +169,16 @@ export function nip05Identifier(
 }
 
 /**
- * Load accounts that already have a Nostr pubkey, oldest first.
+ * Account locals in the order of `nostr.json`: every account with a stored
+ * username or a name, oldest first, stored usernames reserved first.
  *
- * Stored usernames win over display-name slugs. Accounts with a stored
- * username and a skipped/blank name are included. Nameless accounts
- * without a username are skipped.
- *
- * @param auth - Auth store.
- * @returns Directory rows.
+ * @param accounts - Every account.
+ * @returns Eligible accounts with their locals, and every local taken.
  */
-export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
-  const accounts = await auth.listAccounts();
+function allocateAccountLocals(accounts: readonly Account[]): {
+  rows: Array<{ account: Account; local: string }>;
+  taken: Set<string>;
+} {
   const eligible = accounts
     .filter((row) => storedUsername(row) !== null || (row.name !== null && row.name.trim() !== ''))
     .sort((left, right) => {
@@ -185,7 +187,7 @@ export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
       return byTime !== 0 ? byTime : left.id.localeCompare(right.id);
     });
   const taken = seedTakenUsernames(eligible);
-  const entries: Nip05Entry[] = [];
+  const rows: Array<{ account: Account; local: string }> = [];
   for (const account of eligible) {
     const stored = storedUsername(account);
     const local =
@@ -196,6 +198,25 @@ export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
     if (stored === null) {
       taken.add(local);
     }
+    rows.push({ account, local });
+  }
+  return { rows, taken };
+}
+
+/**
+ * Load accounts that already have a Nostr pubkey, oldest first.
+ *
+ * Stored usernames win over display-name slugs. Accounts with a stored
+ * username and a skipped/blank name are included. Nameless accounts
+ * without a username are skipped.
+ *
+ * @param auth - Auth store.
+ * @returns Directory rows.
+ */
+export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
+  const { rows } = allocateAccountLocals(await auth.listAccounts());
+  const entries: Nip05Entry[] = [];
+  for (const { account, local } of rows) {
     const pubkey = await auth.getNostrPublicKey(account.id);
     if (pubkey === undefined) {
       continue;
@@ -207,20 +228,71 @@ export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
   return entries;
 }
 
+/** One listed shop in the NIP-05 directory. */
+export interface ShopNip05Entry {
+  /** Shop note id. */
+  messageId: string;
+  /** Shop name (pin label). */
+  name: string;
+  /** Shop hex pubkey. */
+  pubkey: string;
+  /** Local-part (`shop` in `shop@21.gifts`). */
+  local: string;
+}
+
+/**
+ * NIP-05 locals of listed shops, allocated after every account.
+ *
+ * Accounts are allocated first with the set and order of
+ * {@link listNip05Entries}, so an account never loses its local part to a
+ * shop. Shops follow in `nostr_key_created_at`, then `message_id` order,
+ * with the same slug and collision suffix ({@link allocateNip05Local}) from
+ * the current shop name. Shops that are not listed get no local.
+ *
+ * @param auth - Auth store.
+ * @param shops - Shop identities (ordered by key creation).
+ * @param messages - Forum store that decides whether a shop is listed.
+ * @returns One entry per listed shop with a key.
+ */
+export async function listShopNip05Entries(
+  auth: AuthStore,
+  shops: ShopIdentityStore,
+  messages: MessageStore,
+): Promise<ShopNip05Entry[]> {
+  const { taken } = allocateAccountLocals(await auth.listAccounts());
+  const out: ShopNip05Entry[] = [];
+  for (const identity of await shops.listAll()) {
+    const name = listedShopName(await messages.getById(identity.messageId));
+    if (name === null) {
+      continue;
+    }
+    const local = allocateNip05Local(name, identity.messageId, taken);
+    taken.add(local);
+    out.push({ messageId: identity.messageId, name, pubkey: identity.nostrPubkey, local });
+  }
+  return out;
+}
+
 /**
  * NIP-05 `nostr.json` body (names + recommended relays).
  *
  * @param auth - Auth store.
  * @param env - Process env for write-set relays.
  * @param nameFilter - Optional `?name=` filter (NIP-05 clients send this).
+ * @param shops - Optional shop identities and forum store; listed shops
+ *   follow the accounts ({@link listShopNip05Entries}).
  * @returns JSON-serialisable directory.
  */
 export async function buildNostrJson(
   auth: AuthStore,
   env: Record<string, string | undefined>,
   nameFilter?: string,
+  shops?: { identities: ShopIdentityStore; messages: MessageStore },
 ): Promise<{ names: Record<string, string>; relays: Record<string, string[]> }> {
-  const entries = await listNip05Entries(auth);
+  const entries: Array<{ local: string; pubkey: string }> = await listNip05Entries(auth);
+  if (shops !== undefined) {
+    entries.push(...(await listShopNip05Entries(auth, shops.identities, shops.messages)));
+  }
   const filtered =
     nameFilter === undefined || nameFilter.trim() === ''
       ? entries
