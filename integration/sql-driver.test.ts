@@ -4031,6 +4031,101 @@ describe('mergeAccounts and the shop payment rows', () => {
     }
   });
 
+  test('the merge takes the merged account’s charge rows before its payment rows: blocked on a held charge, it holds no payment row', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      // The survivor has no pending charge, so the merged account's pending
+      // charge is not deleted but moved by the catalog update.
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const paid = {
+        id: crypto.randomUUID(),
+        accountId: from,
+        amountSats: 21,
+        posChargeId: fromCharge.id,
+        bolt11: 'lnbc21',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'paid' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: new Date(now),
+        paidAt: new Date(now),
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(paid))).toBe(true);
+
+      // Another transaction holds the charge row, as the settlement step does.
+      let held = (): void => undefined;
+      const chargeHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holder = mergeDb.begin(async (tx) => {
+        await tx.query('SELECT id FROM pos_charge WHERE id = $1 FOR UPDATE', [fromCharge.id]);
+        held();
+        await released;
+      });
+      await chargeHeld;
+      const merging = mergeAccounts(mergeDb, { from, into, verify: 'into' });
+      try {
+        // The merge waits on the charge row in its charge lock.
+        let waiting = false;
+        for (let i = 0; i < 50 && !waiting; i += 1) {
+          const rows = await client.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT id FROM pos_charge%'`,
+          );
+          waiting = (rows[0]?.n ?? 0) > 0;
+          if (!waiting) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        expect(waiting).toBe(true);
+        // While it waits it holds no payment row of the merged account.
+        const probe = await mergeDb.begin((tx) =>
+          tx
+            .query<{ id: string }>('SELECT id FROM shop_payment WHERE id = $1 FOR UPDATE NOWAIT', [
+              paid.id,
+            ])
+            .then(
+              (rows) => rows.map((row) => row.id),
+              (error: unknown) => sqlState(error),
+            ),
+        );
+        expect(probe).toEqual([paid.id]);
+      } finally {
+        release();
+        await holder;
+      }
+      expect(await merging).toEqual({ ok: true, messages: 0 });
+      expect((await pos.findChargeForPayment({ chargeId: fromCharge.id }))?.accountId).toBe(into);
+      expect(await shop.transaction((tx) => tx.getPayment(paid.id))).toMatchObject({
+        accountId: into,
+        posChargeId: fromCharge.id,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
   test('the merge refuses when the survivor’s only pending charge has expired', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     try {

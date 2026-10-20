@@ -529,10 +529,12 @@ the merge handles shop payments first, in the same transaction:
 - The merged account's other shop payments are `paid` or closed and
   never change again; they move with the account like every other row.
 - The merge deletes a pending charge of the merged account when the
-  surviving account has one. It first locks that charge's row
-  (`SELECT … FOR UPDATE`), as it already locks both accounts, then
-  deletes the charge's `pos_charge_invoice` rows, whose `charge_id` has
-  no cascade, and then the charge. A `recordInvoice` for that charge
+  surviving account has one. It first locks all of the merged
+  account's charge rows in the order of their ids
+  (`SELECT … ORDER BY id FOR UPDATE`), as it already locks both
+  accounts, then its payment rows. It then deletes the charge's
+  `pos_charge_invoice` rows, whose `charge_id` has no cascade, and
+  then the charge. A `recordInvoice` for that charge
   waits on the row lock in its foreign-key check and then fails, which
   the invoice routes log as `pos.invoice.record_failed`, as they do for
   any store error, so no row can appear between the two deletes. Any shop

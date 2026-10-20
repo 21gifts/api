@@ -1115,8 +1115,8 @@ a new transaction. The two statements that write several existing
 watcher's lapsed-window end (`endLapsedWindows`, `SELECT … ORDER BY id
 FOR UPDATE`, then one `UPDATE` of the locked ids) and
 `POST /debug/accounts/merge`, which locks the merged account's payment
-rows (`SELECT … ORDER BY id FOR UPDATE`) after both account rows and its
-charge row and before it moves them. Every other transaction locks or
+rows (`SELECT … ORDER BY id FOR UPDATE`) after both account rows and all
+its charge rows and before it moves them. Every other transaction locks or
 writes at most one existing `shop_payment` row. The settlement step locks the account,
 `pos_charge`, and `shop_payment` rows (a payer's payment only its
 `shop_payment` row) and no proof row, so no two of these wait for each
@@ -1125,7 +1125,9 @@ other in opposite order. Every transaction that locks or writes both
 the `pos_charge` rows, then the `shop_payment` rows: the settlement step,
 the charge watch, `POST /pos`, `DELETE /pos`, the creation's step 1
 re-check and its step 8 insert (after the payment hash claim), and the
-merge (both account rows, then the charge row, then the payment rows). The amount of a `hex` proof is the amount in its
+merge (both account rows, then all of the merged account's charge rows in
+the order of their ids, then its payment rows, before it deletes or moves
+any of them). The amount of a `hex` proof is the amount in its
 verified transfer `data`; a `tx` or `detected` proof's is the value of its
 `Transfer` log.
 

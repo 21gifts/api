@@ -62,13 +62,14 @@ function quoteIdentifier(identifier: string): string {
  * any write, while the merged account has a shop payment that is neither
  * paid nor closed, or has an unexpired pending charge while the surviving
  * account has no unexpired pending charge and has an `open` shop payment.
- * When both accounts have a pending charge, it locks the merged account's
- * charge row (`SELECT … FOR UPDATE`) and then deletes that charge's
- * `pos_charge_invoice` rows and the charge. Before that delete and the
- * catalog update that moves the merged account's shop payments, it locks
- * those payments in the order of their ids
- * (`SELECT … ORDER BY id FOR UPDATE`), the order `lockPaymentsForProofs`
- * takes payment rows in.
+ * Before its first write to a charge or payment row it locks all of the
+ * merged account's `pos_charge` rows and then its `shop_payment` rows, each
+ * in the order of their ids (`SELECT … ORDER BY id FOR UPDATE`), charges
+ * before payments as every transaction writing both takes them, payments in
+ * the order `lockPaymentsForProofs` takes them in. When both accounts have a
+ * pending charge, it then deletes the merged account's charge's
+ * `pos_charge_invoice` rows and the charge; the catalog update moves the
+ * rest of the merged account's charges and its shop payments.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -420,23 +421,35 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
       accountParams,
     );
-    // The merged account's pending charge goes when the survivor has one. Lock
-    // it first, so a concurrent `recordInvoice` waits in its foreign-key check
-    // and then fails; then drop its hashes (`pos_charge_invoice.charge_id` has
-    // no cascade) and the charge, both by the locked ids.
+    // Every transaction that writes both `pos_charge` and `shop_payment` rows
+    // takes the charge rows before the payment rows. The merge writes the
+    // merged account's charges twice: it deletes its pending charge when the
+    // survivor has one, and the catalog loop below moves the rest in one
+    // unordered `UPDATE`. Lock all of them here first, in the order of their
+    // ids, so a concurrent `recordInvoice` on one of them waits in its
+    // foreign-key check (and fails once the charge is gone).
+    await tx.query(
+      `SELECT id FROM pos_charge
+       WHERE account_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      [input.from],
+    );
+    // The merged account's pending charge goes when the survivor has one. Its
+    // row is already held; drop its hashes (`pos_charge_invoice.charge_id` has
+    // no cascade) and the charge, both by these ids.
     const doomed = await tx.query<{ id: string }>(
       `SELECT id FROM pos_charge
        WHERE account_id = $1 AND status = 'pending' AND EXISTS (
          SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'
        )
-       ORDER BY id
-       FOR UPDATE`,
+       ORDER BY id`,
       accountParams,
     );
     // The catalog loop below moves the merged account's shop payments in one
     // unordered `UPDATE`, and a submit answer holds one payment row while it
     // waits for another (`lockPaymentsForProofs`). Lock them here, after both
-    // account rows and the charge row (the settlement step's order), in the
+    // account rows and the charge rows (the settlement step's order), in the
     // order of their ids, the order that answer takes them in, so neither
     // waits for the other in opposite order; the charge delete's
     // `ON DELETE SET NULL` then writes a payment row already held.

@@ -47,7 +47,7 @@ interface FakeDatabaseOptions {
   columns?: readonly FakeCatalogColumn[];
   verifyExists?: readonly { exists: boolean }[];
   messageCount?: readonly { n: number }[];
-  /** Rows of the lock on the merged account's pending charge (deleted when the survivor has one). */
+  /** Rows of the merged account's pending charge read (deleted when the survivor has one). */
   pendingCharges?: readonly { id: string }[];
   /** Rows of the survivor's open shop payment beside the merged account's pending charge. */
   openBesideCharge?: readonly { id: string }[];
@@ -67,6 +67,9 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
         async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
           queries.push({ text, params });
           if (text.includes('FROM pos_charge') && text.includes('FOR UPDATE')) {
+            return [];
+          }
+          if (text.startsWith('SELECT id FROM pos_charge') && text.includes("status = 'pending'")) {
             return (options.pendingCharges ?? []) as T[];
           }
           if (text.includes('FROM shop_payment') && text.includes('FOR UPDATE')) {
@@ -150,6 +153,22 @@ function fakeDatabase(options: FakeDatabaseOptions = {}): {
     },
   };
   return { db, queries, begins };
+}
+
+/** Index of the lock on all of the merged account's charge rows. */
+function chargeLockIndex(queries: readonly RecordedQuery[]): number {
+  return queries.findIndex(
+    (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+  );
+}
+
+/** Index of the read of the merged account's pending charges to delete. */
+function doomedReadIndex(queries: readonly RecordedQuery[]): number {
+  return queries.findIndex(
+    (query) =>
+      query.text.startsWith('SELECT id FROM pos_charge') &&
+      query.text.includes("status = 'pending'"),
+  );
 }
 
 describe('mergeAccounts', () => {
@@ -418,12 +437,10 @@ describe('mergeAccounts', () => {
     const result = await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
     expect(result.ok).toBe(true);
     const check = queries.findIndex((query) => query.text.includes("p.status = 'open'"));
-    const lock = queries.findIndex(
-      (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
-    );
+    const lock = chargeLockIndex(queries);
     expect(check).toBeGreaterThanOrEqual(0);
     expect(lock).toBeGreaterThan(check);
-    expect(queries[lock + 3]).toEqual({
+    expect(queries[lock + 4]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1"}'],
     });
@@ -431,36 +448,85 @@ describe('mergeAccounts', () => {
     expect(queries.some((query) => /UPDATE shop_payment/.test(query.text))).toBe(false);
   });
 
-  it('locks the deleted pending charge, then deletes its invoice rows and the charge by those ids', async () => {
+  it('locks all of the merged account’s charges in id order, then its payments, then deletes the pending charge’s invoice rows and the charge by the read ids', async () => {
     const { db, queries } = fakeDatabase({
       pendingCharges: [{ id: 'c-from-1' }, { id: 'c-from-2' }],
     });
     await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
-    const lock = queries.findIndex(
-      (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
-    );
+    const lock = chargeLockIndex(queries);
     expect(lock).toBeGreaterThanOrEqual(0);
-    expect(queries[lock]?.params).toEqual([FROM, INTO]);
-    // Only the merged account's pending charge, and only while the kept account has one.
-    expect((queries[lock]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
-      "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' ) ORDER BY id FOR UPDATE",
+    // Every charge row of the merged account, pending or not, in id order:
+    // the deleted charge and the ones the catalog update moves.
+    expect(queries[lock]).toEqual({
+      text: `SELECT id FROM pos_charge
+       WHERE account_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      params: [FROM],
+    });
+    // It is the only charge lock, and it comes before the payment lock.
+    expect(
+      queries.filter(
+        (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
+      ),
+    ).toHaveLength(1);
+    // Then the pending charges to drop, rows already held, only while the kept
+    // account has one.
+    expect(doomedReadIndex(queries)).toBe(lock + 1);
+    expect(queries[lock + 1]?.params).toEqual([FROM, INTO]);
+    expect((queries[lock + 1]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' ) ORDER BY id",
     );
     // Then the merged account's payment rows in id order, before the delete's
     // `ON DELETE SET NULL` writes one of them.
-    expect(queries[lock + 1]).toEqual({
+    expect(queries[lock + 2]).toEqual({
       text: `SELECT id FROM shop_payment
        WHERE account_id = $1
        ORDER BY id
        FOR UPDATE`,
       params: [FROM],
     });
-    expect(queries[lock + 2]).toEqual({
+    expect(queries[lock + 3]).toEqual({
       text: 'DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
     });
-    expect(queries[lock + 3]).toEqual({
+    expect(queries[lock + 4]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
+    });
+  });
+
+  it('locks the charge rows before the payment rows and writes neither before both locks', async () => {
+    const { db, queries } = fakeDatabase({
+      pendingCharges: [{ id: 'c-from-1' }],
+      columns: [
+        { schema_name: 'public', table_name: 'pos_charge', column_name: 'account_id' },
+        { schema_name: 'public', table_name: 'shop_payment', column_name: 'account_id' },
+      ],
+    });
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+    const chargeLock = chargeLockIndex(queries);
+    const paymentLock = queries.findIndex(
+      (query) => query.text.includes('FROM shop_payment') && query.text.includes('FOR UPDATE'),
+    );
+    const chargeWrites = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => /^(UPDATE|DELETE FROM) ("public"\.)?"?pos_charge"?\b/.test(query.text))
+      .map(({ index }) => index);
+    const paymentWrites = queries
+      .map((query, index) => ({ query, index }))
+      .filter(({ query }) => /^UPDATE ("public"\.)?"?shop_payment"?\b/.test(query.text))
+      .map(({ index }) => index);
+    expect(chargeWrites).toHaveLength(2);
+    expect(paymentWrites).toHaveLength(1);
+    expect(chargeLock).toBeLessThan(paymentLock);
+    for (const index of [...chargeWrites, ...paymentWrites]) {
+      expect(index).toBeGreaterThan(paymentLock);
+    }
+    // The catalog update writes the merged account's remaining charges too.
+    expect(queries).toContainEqual({
+      text: 'UPDATE "public"."pos_charge" SET "account_id" = $1 WHERE "account_id" = $2',
+      params: [INTO, FROM],
     });
   });
 
