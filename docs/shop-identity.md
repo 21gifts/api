@@ -470,8 +470,8 @@ Rules for every claim:
   check and cannot store a hash afterwards. OpenCryptoPay may drop the
   photos even when the answer is lost or a newer change makes the result
   write a no-op, and a null hash makes the next confirmed `PUT` send the
-  photos again. It keeps the 5 s
-  timeout of `mapPlacesRequest` (`src/lib/ocp-place.ts`).
+  photos again. It uses the 5 s timeout of the former `mapPlacesRequest`
+  (`OCP_PLACE_TIMEOUT_MS`, `src/lib/ocp-outbox.ts:22`).
 - **Results.**
   - `PUT` 2xx: in one statement, clear the pending flag (conditional on
     `g`) and queue the photo push (set `ocp_photos_pending`, raise
