@@ -529,10 +529,14 @@ When no new offer passes, the new quote is Lightning-only (its expiry is
 whose expiry has passed and that is not replaced gets a new Lightning-only
 quote row, which is not a replacement. `quote.payment` never changes for a
 payment. When the payment stops being `open` between these steps, the api
-reads the account's state again and answers as without an open amount from
-it: a charge that is still waiting keeps today's pinned pay request, and
-anything else gets today's unpinned one (or, with `timeout` or `method`,
-the 404 for no pending payment).
+reads the account's state again. When another payment is the open amount
+now (a new payer amount replaced it, or a charge's creation inserted one),
+the request answers that open amount as above, once per request. Otherwise,
+and when that payment also stops being `open` before it is answered, it
+answers as without an open amount from the state: a charge that is still
+waiting keeps today's pinned pay request, and anything else gets today's
+unpinned one (or, with `timeout` or `method`, the 404 for no pending
+payment).
 
 **Waiting for a pending charge.** A pending charge with no shop payment
 first starts or joins the creation procedure when stablecoin rows are on

@@ -4476,6 +4476,51 @@ describe('pay link without and with timeout (Pay link: No open amount, Open amou
     expect(answer.json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
   });
 
+  it('answers the open amount that replaced the payment during the fetch, once per request', async () => {
+    for (const query of [NO_QUERY, { ...NO_QUERY, timeout: '0' }]) {
+      const h = await setup();
+      const first = await payerPayment(h, 1000);
+      const second = await payerPayment(h, 2000);
+      // The fetch read the state before the new payer amount replaced `first`.
+      let reads = 0;
+      h.store.hooks.openPayment = async (tx, ...args) => {
+        reads += 1;
+        return reads === 1
+          ? { ...first, status: 'open' }
+          : tx.openPayment(...(args as unknown as [string]));
+      };
+      const answer = await bodyOf(await h.svc.payLink(h.account, USER, METADATA, query, clock));
+      expect(answer.status).toBe(200);
+      expect((answer.json['quote'] as Record<string, unknown>)['payment']).toBe(second.id);
+      expect(answer.json['minSendable']).toBe(2_000_000);
+    }
+  });
+
+  it('answers as with nothing waiting when the replacing payment also left open during the fetch', async () => {
+    for (const query of [NO_QUERY, { ...NO_QUERY, timeout: '0' }]) {
+      const h = await setup();
+      const first = await payerPayment(h, 1000);
+      const second = await payerPayment(h, 2000);
+      await payerPayment(h, 3000);
+      // Each state read sees the amount a later payer then replaced.
+      const stale = [first, second];
+      h.store.hooks.openPayment = async (tx, ...args) => {
+        const row = stale.shift();
+        return row === undefined
+          ? tx.openPayment(...(args as unknown as [string]))
+          : { ...row, status: 'open' };
+      };
+      const answer = await h.svc.payLink(h.account, USER, METADATA, query, clock);
+      if (query === NO_QUERY) {
+        expect(answer).toEqual({ kind: 'today', pinSats: null });
+      } else {
+        const { status, json } = await bodyOf(answer);
+        expect(status).toBe(404);
+        expect(json).toEqual(noPendingPaymentBody(USER, 'Corner Shop'));
+      }
+    }
+  });
+
   it('timeout: a charge found 8.5 s after the arrival starts the creation without waiting and answers today’s pinned request', async () => {
     const h = await setup();
     const charge = chargeRow();

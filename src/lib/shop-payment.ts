@@ -2627,6 +2627,8 @@ export class ShopPayments {
    * @param metadata - Today's metadata.
    * @param payment - The open payment.
    * @param query - Pay-link query.
+   * @param retried - `true` when `payment` is the open amount found after
+   *   the first one left `open` during this request.
    * @returns The answer.
    */
   async #openAmountAnswer(
@@ -2636,14 +2638,28 @@ export class ShopPayments {
     metadata: string,
     payment: ShopPayment,
     query: ShopPayLinkQuery,
+    retried = false,
   ): Promise<ShopPayLinkAnswer> {
     const current = await this.currentQuote(account, username, payment);
     if (current === null) {
-      // The payment left `open` meanwhile: answer as without an open amount,
-      // from the state now, so a charge still waiting keeps its pin. A state
-      // that reads `open` again is a race with another creation; it answers
-      // as with nothing waiting.
+      // The payment left `open` meanwhile: answer from the state now. Another
+      // payment that is the open amount now (a new payer amount replaced
+      // this one, or a charge's creation inserted one) is answered as the
+      // open amount, once per request. A state that reads the same payment
+      // `open` again, or another one after that retry, answers as with
+      // nothing waiting; a charge still waiting keeps its pin.
       const state = await this.#linkState(account.id, this.#deps.now());
+      if (state.kind === 'open' && !retried && state.payment.id !== payment.id) {
+        return this.#openAmountAnswer(
+          account,
+          username,
+          name,
+          metadata,
+          state.payment,
+          query,
+          true,
+        );
+      }
       return withoutOpenAmount(
         state.kind === 'open' ? { kind: 'none' } : state,
         username,
