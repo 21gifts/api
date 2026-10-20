@@ -522,6 +522,7 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
     expect(ids.finishPhotos).not.toHaveBeenCalled();
     expect(ids.clearPhotoWithoutSend).not.toHaveBeenCalled();
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
   });
 
   it('nulls the hash and releases on 409 Stale revision', async () => {
@@ -746,11 +747,13 @@ describe('OpenCryptoPay main without the photo route', () => {
 describe('a photo pass that read the photos before a place change', () => {
   /**
    * A listed shop whose place is confirmed and whose photos are pending, and
-   * outbox deps whose `listExtraPhotos` runs `between` once, right after the
-   * photo pass claimed and read the photos and before it reserves a revision.
+   * outbox deps whose `listExtraPhotos` runs `between` once, right after a
+   * photo pass claimed and read the photos and before it reserves a revision:
+   * in the photo pass after the first `passesBefore` ones.
    */
   async function pendingPhotos(
     between: (outbox: OcpOutboxDeps, messages: InMemoryMessageStore) => Promise<void>,
+    passesBefore = 0,
   ): Promise<{
     messages: InMemoryMessageStore;
     store: InMemoryShopIdentityStore;
@@ -761,16 +764,13 @@ describe('a photo pass that read the photos before a place change', () => {
     const store = new InMemoryShopIdentityStore(messages, () => 1_000_000);
     await store.ensureListed(ID, new Uint8Array(32).fill(7));
     const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
-    let hooked = false;
+    let reads = 0;
     const hookedMessages = new Proxy(messages, {
       get(target, key) {
         if (key === 'listExtraPhotos') {
           return async (id: string) => {
             const extras = await target.listExtraPhotos(id);
-            if (!hooked) {
-              hooked = true;
-              await between(outbox, messages);
-            }
+            if (reads++ === passesBefore) await between(outbox, messages);
             return extras;
           };
         }
@@ -787,7 +787,7 @@ describe('a photo pass that read the photos before a place change', () => {
       ocpPhotosPending: true,
       ocpRevision: 1,
     });
-    expect(hooked).toBe(false);
+    expect(reads).toBe(0);
     return { messages, store, sent, outbox };
   }
 
@@ -814,6 +814,28 @@ describe('a photo pass that read the photos before a place change', () => {
       ocpRevision: 2,
       ocpPlacePending: false,
       ocpPhotosPending: false,
+    });
+  });
+
+  it('keeps the stored hash when the place went pending before the revision', async () => {
+    const ctx = await pendingPhotos(async (_outbox, messages) => {
+      await messages.markDeleted(ID, new Date(), 'staff');
+    }, 1);
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    const stored = ocpPhotoSetHash([PNG, JPEG]);
+    expect((await ctx.store.getByMessageId(ID))?.ocpPhotosHash).toBe(stored);
+    await ctx.messages.replacePhotos(ID, [JPEG]);
+    await runOcpPhotoOutboxPass(ctx.outbox);
+    expect(ctx.sent.map((request) => [request.method, request.url])).toEqual([
+      ['PUT', 'https://map.test/map/places'],
+      ['PUT', 'https://map.test/map/places/photos'],
+    ]);
+    expect(await ctx.store.getByMessageId(ID)).toMatchObject({
+      ocpRevision: 2,
+      ocpPlacePending: true,
+      ocpPhotosPending: true,
+      ocpPhotosHash: stored,
+      ocpPhotosClaimedUntil: null,
     });
   });
 

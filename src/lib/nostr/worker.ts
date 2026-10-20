@@ -1375,8 +1375,8 @@ const shopProfileCursors = new WeakMap<ShopIdentityStore, ShopIdentityCursor>();
 const shopRelayCursors = new WeakMap<ShopIdentityStore, ShopIdentityCursor>();
 
 /** Stores whose shop kind 0 / kind 10002 pass is in flight in this process. */
-const shopProfileRunning = new WeakSet<ShopIdentityStore>();
-const shopRelayRunning = new WeakSet<ShopIdentityStore>();
+const shopProfileInFlight = new WeakSet<ShopIdentityStore>();
+const shopRelayInFlight = new WeakSet<ShopIdentityStore>();
 
 /**
  * One bounded round-robin pass of a shop publisher kind: unless a pass of
@@ -1388,7 +1388,7 @@ const shopRelayRunning = new WeakSet<ShopIdentityStore>();
  * fails or publishes nothing still moves the lap on. `visit` returns
  * `false` to stop the pass early.
  *
- * @param running - In-flight stores of this kind.
+ * @param inFlight - In-flight stores of this kind.
  * @param cursors - Cursors of this kind.
  * @param shops - Shop identity store.
  * @param visit - Work for one shop.
@@ -1396,13 +1396,13 @@ const shopRelayRunning = new WeakSet<ShopIdentityStore>();
  *   when the read or a visit throws).
  */
 async function shopRoundPass(
-  running: WeakSet<ShopIdentityStore>,
+  inFlight: WeakSet<ShopIdentityStore>,
   cursors: WeakMap<ShopIdentityStore, ShopIdentityCursor>,
   shops: ShopIdentityStore,
   visit: (identity: ShopIdentityRow) => Promise<boolean>,
 ): Promise<void> {
-  if (running.has(shops)) return;
-  running.add(shops);
+  if (inFlight.has(shops)) return;
+  inFlight.add(shops);
   try {
     const page = await shops.listRound(cursors.get(shops) ?? null, WORKER_BATCH);
     for (const identity of page) {
@@ -1413,7 +1413,7 @@ async function shopRoundPass(
       if (!(await visit(identity))) return;
     }
   } finally {
-    running.delete(shops);
+    inFlight.delete(shops);
   }
 }
 
@@ -1601,7 +1601,7 @@ async function publishShopProfiles(
     }
     return entry?.name === name ? entry : undefined;
   };
-  await shopRoundPass(shopProfileRunning, shopProfileCursors, shops, async (identity) => {
+  await shopRoundPass(shopProfileInFlight, shopProfileCursors, shops, async (identity) => {
     const id = identity.messageId;
     // The pass moved the cursor before this visit, so a shop whose reads
     // fail (or whose content is unchanged) still uses a slot of the page.
@@ -1698,7 +1698,7 @@ async function publishShopRelayLists(
   const watermarks = shopCache(shopRelayWatermarks, shops);
   const urls = writeRelayUrls(writeSet);
   const content = urls.join('\n');
-  await shopRoundPass(shopRelayRunning, shopRelayCursors, shops, async (identity) => {
+  await shopRoundPass(shopRelayInFlight, shopRelayCursors, shops, async (identity) => {
     const id = identity.messageId;
     // Every row of the page is visited (the cursor already moved past it),
     // also one whose relay list is unchanged, so a lap reads each shop once.

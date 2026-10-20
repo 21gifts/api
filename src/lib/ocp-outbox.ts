@@ -270,11 +270,12 @@ async function skippedCount(response: Response): Promise<number> {
  * Claim and send one pending OpenCryptoPay photo set (`PUT /map/places/photos`).
  *
  * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
- * cleared without a request. Otherwise the hash is nulled first, then up to
- * 10 photos are sent in note order as base64. The revision is reserved
- * only while the place is not pending and the photo generation is still the
+ * cleared without a request. Otherwise the revision is reserved first, only
+ * while the place is not pending and the photo generation is still the
  * claim's (`nextRevision`); otherwise the claim is released without a
- * request, and the photos are sent after the place lane has settled.
+ * request and with the stored hash kept, and the photos are sent after the
+ * place lane has settled. After the reservation the hash is nulled, then up
+ * to 10 photos are sent in note order as base64.
  * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
@@ -313,15 +314,16 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
     await identities.clearPhotoWithoutSend(claim);
     return;
   }
-  await identities.clearPhotoHash(claim);
   const revision = await identities.nextRevision('photos', claim);
   if (revision === undefined) {
     // The place is pending, the photo generation moved on, or the claim was
     // taken over: send nothing and release (a lost claim is a no-op). The
-    // flag stays, so the photos follow once the place lane has settled.
+    // flag and the stored hash stay, so the photos follow once the place lane
+    // has settled and an unchanged set is still not sent again.
     await identities.release('photos', claim);
     return;
   }
+  await identities.clearPhotoHash(claim);
   if (!(await identities.leaseHasTime('photos', claim, minimumMs))) {
     await identities.release('photos', claim);
     return;

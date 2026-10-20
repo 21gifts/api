@@ -322,7 +322,7 @@ END;
 $trigger$`;
 }
 
-/** Idempotent SQL for `shop_identity` and its queue triggers (matches `docs/schema/shop_identity.sql`). */
+/** Idempotent SQL for `shop_identity`, its keyset index and queue triggers (matches `docs/schema/shop_identity.sql`). */
 export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS shop_identity (
      message_id uuid PRIMARY KEY REFERENCES message (id),

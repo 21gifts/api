@@ -489,9 +489,9 @@ Rules for every claim:
   revision for the `DELETE`. Without this check the photo request would
   take the next revision, reach OpenCryptoPay after the `DELETE`, and the
   `DELETE` would be stale. When the check fails, the photo sender releases
-  its claim and sends nothing; the flag stays (unless the place sender's
-  reset before a `DELETE` cleared it), and the photos follow once the place
-  is confirmed again.
+  its claim and sends nothing; the flag and `ocp_photos_hash` stay (unless
+  the place sender's reset before a `DELETE` cleared them), and the photos
+  follow once the place is confirmed again.
 - Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
   releases the claim and skips the row this tick (for photos, this pass).
@@ -616,10 +616,12 @@ Rules for every claim:
     sent.
   - It computes the SHA-256 over the photo set. If it equals
     `ocp_photos_hash`, it clears the flag and sends nothing.
-  - Otherwise it first sets `ocp_photos_hash` to null, conditional only on
-    the token `c`, so an answer that is lost or loses the generation check
-    leaves no hash that could hide a different set on OpenCryptoPay. Then it
-    sends up to 10 photos, in note order, with
+  - Otherwise it first reserves the revision (see above). A refused
+    reservation leaves `ocp_photos_hash` as it was, so an unchanged set is
+    not sent again. After the reservation it sets `ocp_photos_hash` to null,
+    conditional only on the token `c`, so an answer that is lost or loses
+    the generation check leaves no hash that could hide a different set on
+    OpenCryptoPay. Then it sends up to 10 photos, in note order, with
     `PUT /map/places/photos` as
     `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10
