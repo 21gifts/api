@@ -1,11 +1,9 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
-  normalizeOcpPlace,
   publishExistingShopPlaces,
   removeShopOcpPlace,
   resolveMapPush,
   shopOcpPlaceInput,
-  shopOcpPlaceName,
   syncShopOcpPlace,
   type MapFetch,
   type MapPush,
@@ -14,23 +12,20 @@ import { createApp } from '@/server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { ForumPlace } from '@/lib/place';
 
-const COORD_ERROR = 'Place must be a latitude and longitude';
-const ORIGIN_ERROR = 'Place origin is invalid';
-const EXTERNAL_ID_ERROR = 'Place external id is required';
-const NAME_ERROR = 'Place name is required';
-const CATEGORY_ERROR = 'Place category is required';
-const TECH_PROVIDER_ERROR = 'Place tech provider is invalid';
-
-const VALID = {
-  origin: 'partner',
-  externalId: 'ext-1',
-  name: 'Cafe',
-  lat: 47.3,
-  lon: 8.5,
-  category: 'cafe',
-  paymentMethods: 'lightning',
+const ADDRESS = {
+  street: 'Bahnhofstrasse',
+  houseNumber: '1',
+  postalCode: '8001',
+  city: 'Zürich',
+  country: 'CH',
 };
+
+const STALL: ForumPlace = { lat: 47.3, lng: 8.5, label: 'Stall', address: ADDRESS };
+const SHOP_TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+const SHOP_DESCRIPTION = 'Coffee roasted on site and served at the bar every morning.';
+const INCOMPLETE: ForumPlace = { lat: 1, lng: 2, label: null, address: null };
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -39,206 +34,31 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
     .map((arg) => JSON.parse(arg) as Record<string, unknown>);
 }
 
-describe('normalizeOcpPlace', () => {
-  it('rejects non-objects and arrays', () => {
-    expect(normalizeOcpPlace(null)).toEqual({ ok: false, error: COORD_ERROR });
-    expect(normalizeOcpPlace('x')).toEqual({ ok: false, error: COORD_ERROR });
-    expect(normalizeOcpPlace([])).toEqual({ ok: false, error: COORD_ERROR });
-  });
-
-  it('rejects missing, non-finite, and out-of-range coordinates', () => {
-    expect(normalizeOcpPlace({ ...VALID, lat: undefined })).toEqual({
-      ok: false,
-      error: COORD_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, lon: '8.5' })).toEqual({
-      ok: false,
-      error: COORD_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, lat: Number.NaN })).toEqual({
-      ok: false,
-      error: COORD_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, lat: 90.000001 })).toEqual({
-      ok: false,
-      error: COORD_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, lon: -180.000001 })).toEqual({
-      ok: false,
-      error: COORD_ERROR,
-    });
-  });
-
-  it('rounds coordinates to six decimals and collapses -0', () => {
-    const result = normalizeOcpPlace({
-      ...VALID,
-      lat: 47.1234567,
-      lon: -0,
-    });
-    expect(result).toEqual({
-      ok: true,
-      value: {
-        ...VALID,
-        lat: 47.123457,
-        lon: 0,
-      },
-    });
-    if (result.ok) {
-      expect(Object.is(result.value.lon, -0)).toBe(false);
-    }
-  });
-
-  it('validates origin, externalId, name, and category', () => {
-    expect(normalizeOcpPlace({ ...VALID, origin: 1 })).toEqual({
-      ok: false,
-      error: ORIGIN_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, externalId: 1 })).toEqual({
-      ok: false,
-      error: EXTERNAL_ID_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, name: 1 })).toEqual({
-      ok: false,
-      error: NAME_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, category: 1 })).toEqual({
-      ok: false,
-      error: CATEGORY_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, origin: 'Bad' })).toEqual({
-      ok: false,
-      error: ORIGIN_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, origin: '' })).toEqual({
-      ok: false,
-      error: ORIGIN_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, externalId: '' })).toEqual({
-      ok: false,
-      error: EXTERNAL_ID_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, externalId: 'x'.repeat(81) })).toEqual({
-      ok: false,
-      error: EXTERNAL_ID_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, externalId: 'a\nb' })).toEqual({
-      ok: false,
-      error: EXTERNAL_ID_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, name: '   ' })).toEqual({
-      ok: false,
-      error: NAME_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, name: 'a\u007fb' })).toEqual({
-      ok: false,
-      error: NAME_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, category: 'Cafe' })).toEqual({
-      ok: false,
-      error: CATEGORY_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, category: '' })).toEqual({
-      ok: false,
-      error: CATEGORY_ERROR,
-    });
-  });
-
-  it('trims fields and normalizes paymentMethods', () => {
-    expect(
-      normalizeOcpPlace({
-        ...VALID,
-        origin: ' partner ',
-        externalId: ' ext-1 ',
-        name: ' Cafe ',
-        category: ' cafe ',
-        paymentMethods: ' onchain,lightning ',
-      }),
-    ).toEqual({
-      ok: true,
-      value: {
-        ...VALID,
-        origin: 'partner',
-        externalId: 'ext-1',
-        name: 'Cafe',
-        category: 'cafe',
-        paymentMethods: 'onchain,lightning',
-      },
-    });
-    expect(normalizeOcpPlace({ ...VALID, paymentMethods: null }).ok && true).toBe(true);
-    expect(normalizeOcpPlace({ ...VALID, paymentMethods: '' })).toMatchObject({
-      ok: true,
-      value: { paymentMethods: null },
-    });
-    expect(normalizeOcpPlace({ ...VALID, paymentMethods: undefined })).toMatchObject({
-      ok: true,
-      value: { paymentMethods: null },
-    });
-    expect(normalizeOcpPlace({ ...VALID, paymentMethods: 'cash' })).toMatchObject({
-      ok: true,
-      value: { paymentMethods: null },
-    });
-    expect(normalizeOcpPlace({ ...VALID, paymentMethods: 1 })).toMatchObject({
-      ok: true,
-      value: { paymentMethods: null },
-    });
-  });
-
-  it('normalizes optional techProvider', () => {
-    expect(normalizeOcpPlace(VALID)).toEqual({ ok: true, value: VALID });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: null })).toEqual({
-      ok: true,
-      value: VALID,
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: '   ' })).toEqual({
-      ok: true,
-      value: VALID,
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: ' 21.gifts ' })).toEqual({
-      ok: true,
-      value: { ...VALID, techProvider: '21.gifts' },
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(40) })).toEqual({
-      ok: true,
-      value: { ...VALID, techProvider: 'A'.repeat(40) },
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: 1 })).toEqual({
-      ok: false,
-      error: TECH_PROVIDER_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: 'bad_name' })).toEqual({
-      ok: false,
-      error: TECH_PROVIDER_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: '.start' })).toEqual({
-      ok: false,
-      error: TECH_PROVIDER_ERROR,
-    });
-    expect(normalizeOcpPlace({ ...VALID, techProvider: 'A'.repeat(41) })).toEqual({
-      ok: false,
-      error: TECH_PROVIDER_ERROR,
-    });
-  });
-});
-
-describe('shopOcpPlaceName / shopOcpPlaceInput', () => {
-  it('prefers label, then author name, then Shop, truncated to 80', () => {
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: 'Pin' }, 'Ada')).toBe('Pin');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: null }, 'Ada')).toBe('Ada');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: null }, null)).toBe('Shop');
-    expect(shopOcpPlaceName({ lat: 1, lng: 2, label: 'A'.repeat(90) }, null)).toHaveLength(80);
-  });
-
-  it('maps a shop pin onto origin 21gifts and lightning', () => {
-    expect(shopOcpPlaceInput('msg-1', { lat: 47.3, lng: 8.5, label: 'Stall' }, 'Ada')).toEqual({
+describe('shopOcpPlaceInput', () => {
+  it('maps a complete shop pin onto origin 21gifts with description, shopType, and address', () => {
+    expect(shopOcpPlaceInput('msg-1', SHOP_TEXT, STALL)).toEqual({
       origin: '21gifts',
       externalId: 'msg-1',
       name: 'Stall',
+      description: SHOP_DESCRIPTION,
       lat: 47.3,
       lon: 8.5,
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
+      shopType: 'Others',
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
     });
+  });
+
+  it('returns null when the shop name, address, or description is incomplete', () => {
+    expect(shopOcpPlaceInput('msg-1', SHOP_TEXT, INCOMPLETE)).toBeNull();
+    expect(shopOcpPlaceInput('msg-1', SHOP_TEXT, { ...STALL, address: null })).toBeNull();
+    expect(shopOcpPlaceInput('msg-1', 'Open #21GiftsShop', STALL)).toBeNull();
   });
 });
 
@@ -309,7 +129,7 @@ describe('resolveMapPush', () => {
 });
 
 describe('createApp map push', () => {
-  const pin = { text: 'Open #21GiftsShop', place: { lat: 47.3, lng: 8.5, label: 'Stall' } };
+  const pin = { text: SHOP_TEXT, place: STALL };
 
   async function postShop(app: ReturnType<typeof createApp>): Promise<number> {
     const res = await app.request('/messages', {
@@ -364,9 +184,16 @@ describe('createApp map push', () => {
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
+      shopType: 'Others',
       name: 'Stall',
+      description: SHOP_DESCRIPTION,
       lat: 47.3,
       lon: 8.5,
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
     });
     expect(typeof body['externalId']).toBe('string');
     expect(String(body['externalId']).length).toBeGreaterThan(0);
@@ -390,10 +217,9 @@ describe('syncShopOcpPlace', () => {
     await syncShopOcpPlace({
       mapPush,
       messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      text: 'Open #21GiftsShop',
+      text: SHOP_TEXT,
       parentId: null,
-      place: { lat: 1, lng: 2, label: 'Stall' },
-      authorName: 'Ada',
+      place: { lat: 1, lng: 2, label: 'Stall', address: ADDRESS },
       textHasHashtagToken: (text, name) => text.includes(`#${name}`),
     });
     expect(calls).toHaveLength(1);
@@ -416,14 +242,16 @@ describe('syncShopOcpPlace', () => {
     const opts = {
       mapPush,
       messageId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      text: 'Open #21GiftsShop',
+      text: SHOP_TEXT,
       parentId: null,
-      place: { lat: 1, lng: 2, label: 'Stall' },
-      authorName: 'Ada',
+      place: { lat: 1, lng: 2, label: 'Stall', address: ADDRESS },
       textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
     };
     await syncShopOcpPlace(opts);
-    await syncShopOcpPlace({ ...opts, place: { lat: 3, lng: 4, label: 'Moved' } });
+    await syncShopOcpPlace({
+      ...opts,
+      place: { lat: 3, lng: 4, label: 'Moved', address: ADDRESS },
+    });
     expect(calls).toHaveLength(2);
     expect(calls[0]?.method).toBe('PUT');
     expect(calls[1]?.method).toBe('PUT');
@@ -440,16 +268,15 @@ describe('syncShopOcpPlace', () => {
     const base = {
       mapPush,
       messageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
-      text: 'Open #21GiftsShop',
-      place: { lat: 1, lng: 2, label: null } as const,
-      authorName: 'Ada',
+      text: SHOP_TEXT,
+      place: STALL,
       textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
     };
     await syncShopOcpPlace({ ...base, parentId: 'parent' });
     await syncShopOcpPlace({
       ...base,
       parentId: null,
-      text: 'plain',
+      text: SHOP_DESCRIPTION,
     });
     await syncShopOcpPlace({
       ...base,
@@ -460,9 +287,16 @@ describe('syncShopOcpPlace', () => {
       messageId: base.messageId,
       text: base.text,
       place: base.place,
-      authorName: base.authorName,
       textHasHashtagToken: base.textHasHashtagToken,
       parentId: null,
+    });
+    await syncShopOcpPlace({
+      mapPush,
+      messageId: base.messageId,
+      text: SHOP_TEXT,
+      parentId: null,
+      place: { ...STALL, address: null },
+      textHasHashtagToken: base.textHasHashtagToken,
     });
     expect(calls).toEqual([]);
   });
@@ -472,10 +306,9 @@ describe('syncShopOcpPlace', () => {
     await syncShopOcpPlace({
       mapPush,
       messageId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
-      text: '#21GiftsShop',
+      text: SHOP_TEXT,
       parentId: null,
-      place: { lat: 1, lng: 2, label: null },
-      authorName: null,
+      place: STALL,
       textHasHashtagToken: () => true,
     });
     const throwing: MapPush = {
@@ -489,10 +322,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -521,10 +353,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -552,10 +383,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -585,10 +415,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -615,10 +444,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -643,10 +471,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -673,10 +500,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -703,10 +529,9 @@ describe('syncShopOcpPlace', () => {
       syncShopOcpPlace({
         mapPush: throwing,
         messageId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
-        text: '#21GiftsShop',
+        text: SHOP_TEXT,
         parentId: null,
-        place: { lat: 1, lng: 2, label: null },
-        authorName: null,
+        place: STALL,
         textHasHashtagToken: () => true,
       }),
     ).resolves.toBeUndefined();
@@ -790,7 +615,7 @@ describe('removeShopOcpPlace', () => {
 
 describe('publishExistingShopPlaces', () => {
   const hasShopTag = (text: string, name: string) => text.includes(`#${name}`);
-  const stall = { lat: 47.3, lng: 8.5, label: 'Stall' };
+  const stall = STALL;
 
   let warn: ReturnType<typeof vi.spyOn>;
 
@@ -831,7 +656,7 @@ describe('publishExistingShopPlaces', () => {
         if (id === 'keep') {
           return {
             id: 'keep',
-            text: 'Open #21GiftsShop',
+            text: SHOP_TEXT,
             name: 'Ada',
             parentId: null,
             place: stall,
@@ -840,25 +665,25 @@ describe('publishExistingShopPlaces', () => {
         if (id === 'notag') {
           return {
             id: 'notag',
-            text: 'plain',
+            text: SHOP_DESCRIPTION,
             name: 'Ada',
             parentId: null,
-            place: { lat: 1, lng: 2, label: null },
+            place: stall,
           };
         }
         if (id === 'reply') {
           return {
             id: 'reply',
-            text: 'Open #21GiftsShop',
+            text: SHOP_TEXT,
             name: 'Ada',
             parentId: 'parent',
-            place: { lat: 1, lng: 2, label: null },
+            place: stall,
           };
         }
         if (id === 'nullplace') {
           return {
             id: 'nullplace',
-            text: 'Open #21GiftsShop',
+            text: SHOP_TEXT,
             name: 'Ada',
             parentId: null,
             place: null,
@@ -867,7 +692,7 @@ describe('publishExistingShopPlaces', () => {
         if (id === 'undefplace') {
           return {
             id: 'undefplace',
-            text: 'Open #21GiftsShop',
+            text: SHOP_TEXT,
             name: 'Ada',
             parentId: null,
           };
@@ -875,10 +700,10 @@ describe('publishExistingShopPlaces', () => {
         if (id === 'hidden') {
           return {
             id: 'hidden',
-            text: 'Open #21GiftsShop',
+            text: SHOP_TEXT,
             name: 'Ada',
             parentId: null,
-            place: { lat: 1, lng: 2, label: null },
+            place: stall,
             deletedAt: new Date('2026-01-01T00:00:00.000Z'),
           };
         }
@@ -892,8 +717,37 @@ describe('publishExistingShopPlaces', () => {
     expect(calls[0]?.method).toBe('PUT');
     expect(calls[0]?.authorization).toBe('Bearer secret');
     expect(timeoutSpy).toHaveBeenCalledWith(5_000);
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', stall, 'Ada'));
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', SHOP_TEXT, stall));
     timeoutSpy.mockRestore();
+  });
+
+  it('skips an incomplete live shop pin and puts only a complete one', async () => {
+    const { mapPush, calls } = recordingPush();
+    await publishExistingShopPlaces({
+      mapPush,
+      listPlaces: async () => [{ id: 'incomplete' }, { id: 'keep' }],
+      getById: async (id) => {
+        if (id === 'incomplete') {
+          return {
+            id: 'incomplete',
+            text: SHOP_TEXT,
+            name: 'Ada',
+            parentId: null,
+            place: { ...STALL, address: null },
+          };
+        }
+        return {
+          id: 'keep',
+          text: SHOP_TEXT,
+          name: 'Ada',
+          parentId: null,
+          place: stall,
+        };
+      },
+      textHasHashtagToken: hasShopTag,
+    });
+    expect(calls).toHaveLength(1);
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', SHOP_TEXT, stall));
   });
 
   it('treats HTTP 200 as success and logs no failure', async () => {
@@ -903,7 +757,7 @@ describe('publishExistingShopPlaces', () => {
       listPlaces: async () => [{ id: 'keep' }],
       getById: async () => ({
         id: 'keep',
-        text: 'Open #21GiftsShop',
+        text: SHOP_TEXT,
         name: 'Ada',
         parentId: null,
         place: stall,
@@ -932,7 +786,7 @@ describe('publishExistingShopPlaces', () => {
       listPlaces: async () => [{ id: 'first' }, { id: 'second' }],
       getById: async (id) => ({
         id,
-        text: 'Open #21GiftsShop',
+        text: SHOP_TEXT,
         name: 'Ada',
         parentId: null,
         place: stall,
@@ -940,8 +794,12 @@ describe('publishExistingShopPlaces', () => {
       textHasHashtagToken: hasShopTag,
     });
     expect(calls).toHaveLength(2);
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('first', stall, 'Ada'));
-    expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual(shopOcpPlaceInput('second', stall, 'Ada'));
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(
+      shopOcpPlaceInput('first', SHOP_TEXT, stall),
+    );
+    expect(JSON.parse(calls[1]?.body ?? '{}')).toEqual(
+      shopOcpPlaceInput('second', SHOP_TEXT, stall),
+    );
     const failed = parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed');
     expect(failed).toHaveLength(1);
     expect(failed[0]?.['status']).toBe(500);
@@ -966,7 +824,7 @@ describe('publishExistingShopPlaces', () => {
         listPlaces: async () => [{ id: 'keep' }],
         getById: async () => ({
           id: 'keep',
-          text: 'Open #21GiftsShop',
+          text: SHOP_TEXT,
           name: 'Ada',
           parentId: null,
           place: stall,
@@ -1015,7 +873,7 @@ describe('publishExistingShopPlaces', () => {
         }
         return {
           id: 'keep',
-          text: 'Open #21GiftsShop',
+          text: SHOP_TEXT,
           name: 'Ada',
           parentId: null,
           place: stall,
@@ -1024,7 +882,7 @@ describe('publishExistingShopPlaces', () => {
       textHasHashtagToken: hasShopTag,
     });
     expect(calls).toHaveLength(1);
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', stall, 'Ada'));
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual(shopOcpPlaceInput('keep', SHOP_TEXT, stall));
     expect(parsedEvents(warn).filter((e) => e['event'] === 'ocp.place.failed')).toHaveLength(1);
   });
 });

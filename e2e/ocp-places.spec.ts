@@ -1,10 +1,14 @@
 import { expect, test } from '@playwright/test';
 
-test('Function: normalizeOcpPlace — default boot is healthy', async ({ request }) => {
+test('Function: shopDescription — default boot is healthy', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: shopOcpPlaceName — default boot is healthy', async ({ request }) => {
+test('Function: shopPlaceProblem — default boot is healthy', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: shopTextProblem — default boot is healthy', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
