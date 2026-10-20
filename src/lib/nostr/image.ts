@@ -124,7 +124,23 @@ function decodedDim(read: () => { width: number; height: number }): string | nul
   }
 }
 
-function jpegSize(bytes: Uint8Array): string | null {
+/**
+ * Walk the JPEG marker segments after `SOI` and hand each segment with a
+ * length to `visit`. Any number of `0xFF` fill bytes before a marker is
+ * skipped, and the length-less markers `TEM`, `SOI`, `EOI` and `RST0`–`RST7`
+ * carry no segment. The walk ends at the first byte that is not a marker, at
+ * a length below 2 or at a segment that runs past the end.
+ *
+ * @param bytes - Stored image bytes.
+ * @param visit - Gets the marker, the index of the two length bytes and the
+ *   length (which counts those two bytes); `undefined` walks on, any other
+ *   value ends the walk with it.
+ * @returns The first value `visit` gave, or `null` when the walk ended first.
+ */
+function walkJpegSegments<T>(
+  bytes: Uint8Array,
+  visit: (marker: number, start: number, length: number) => T | undefined,
+): T | null {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     return null;
   }
@@ -156,17 +172,27 @@ function jpegSize(bytes: Uint8Array): string | null {
     if (length < 2 || i + length > bytes.length) {
       return null;
     }
-    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
-      if (length < 7) {
-        return null;
-      }
-      const height = (bytes[i + 3]! << 8) | bytes[i + 4]!;
-      const width = (bytes[i + 5]! << 8) | bytes[i + 6]!;
-      return dimText(width, height);
+    const result = visit(marker, i, length);
+    if (result !== undefined) {
+      return result;
     }
     i += length;
   }
   return null;
+}
+
+function jpegSize(bytes: Uint8Array): string | null {
+  return walkJpegSegments(bytes, (marker, i, length) => {
+    if (marker !== 0xc0 && marker !== 0xc1 && marker !== 0xc2) {
+      return undefined;
+    }
+    if (length < 7) {
+      return null;
+    }
+    const height = (bytes[i + 3]! << 8) | bytes[i + 4]!;
+    const width = (bytes[i + 5]! << 8) | bytes[i + 6]!;
+    return dimText(width, height);
+  });
 }
 
 function webpSize(bytes: Uint8Array): string | null {
@@ -263,26 +289,21 @@ function pngHeaderSize(bytes: Uint8Array): string | null {
 /**
  * EXIF orientation (1–8) of a JPEG whose `SOF` was already found, or `1`
  * when there is no readable orientation in an `APP1` `Exif` segment before
- * the scan.
+ * the scan. Uses the same marker walk as the `SOF` reader
+ * ({@link walkJpegSegments}).
  */
 function jpegExifOrientation(bytes: Uint8Array): number {
-  let offset = 2;
-  while (offset + 4 <= bytes.length && bytes[offset] === 0xff) {
-    const marker = bytes[offset + 1];
-    const size = (bytes[offset + 2]! << 8) | bytes[offset + 3]!;
-    if (marker === 0xda || size < 2) {
-      return 1;
-    }
-    const end = Math.min(bytes.length, offset + 2 + size);
-    if (
-      marker === 0xe1 &&
-      String.fromCharCode(...bytes.subarray(offset + 4, offset + 10)) === 'Exif\0\0'
-    ) {
-      return exifOrientation(bytes, offset + 10, end);
-    }
-    offset += 2 + size;
-  }
-  return 1;
+  return (
+    walkJpegSegments(bytes, (marker, i, length) => {
+      if (marker === 0xda) {
+        return 1;
+      }
+      if (marker === 0xe1 && String.fromCharCode(...bytes.subarray(i + 2, i + 8)) === 'Exif\0\0') {
+        return exifOrientation(bytes, i + 8, i + length);
+      }
+      return undefined;
+    }) ?? 1
+  );
 }
 
 /** Orientation tag `0x0112` of IFD0 in a TIFF block `[tiff, end)`, or `1`. */

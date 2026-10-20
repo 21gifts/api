@@ -3883,7 +3883,8 @@ column is not null (omitted when null), and when `goalCurrency` is stored also
 those keys),
 optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`;
-the key is omitted when unset),
+the key is omitted when unset), always `shopNpub` (the npub of a currently
+listed shop with a key in `shop_identity`, otherwise JSON `null`),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -3971,6 +3972,7 @@ Success → **Response** `200`:
       "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
+      "shopNpub": null,
       "role": "basis",
       "replyCount": 0
     }
@@ -4245,8 +4247,9 @@ allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
-stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
-`videoContentType`. May include `goalSats` (positive integer on a top-level
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
+`videoContentType`, and always `shopNpub` (the npub of a currently listed
+shop with a key, otherwise JSON `null`). May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
 column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
@@ -4397,6 +4400,7 @@ Success → **Response** `200`:
   "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
+  "shopNpub": null,
   "role": "verified"
 }
 ```
@@ -5002,7 +5006,8 @@ Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
 Success → **200** live public message JSON (optional `shopAccount`
-`{ id, username, name }`, omitted when cleared, reply count, no hide
+`{ id, username, name }`, omitted when cleared or when the till account
+has no username, reply count, no hide
 stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
 unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.

@@ -272,6 +272,22 @@ describe('imageHeaderSize', () => {
     }
   });
 
+  it('finds the EXIF orientation behind fill bytes and length-less markers', () => {
+    const exif = segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 6]])));
+    const filled = new Uint8Array([0xff, 0xff, 0xff, ...exif]);
+    const standalone = new Uint8Array([0xff, 0x01, 0xff, 0xd0, 0xff, 0xd7, 0xff, 0xd8]);
+    for (const prefix of [filled, standalone]) {
+      expect(imageHeaderSize(withSegments(jpeg(4, 3), prefix, exif), 'image/jpeg')).toEqual({
+        width: 3,
+        height: 4,
+      });
+    }
+    expect(imageHeaderSize(withSegments(jpeg(4, 3), filled), 'image/jpeg')).toEqual({
+      width: 3,
+      height: 4,
+    });
+  });
+
   it('keeps the axes for any other or unreadable orientation', () => {
     const cases: Uint8Array[] = [
       segment(0xe1, exifPayload(tiffBlock('II', [[0x0112, 3]]))),

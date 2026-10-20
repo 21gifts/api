@@ -350,11 +350,13 @@ describe('shop kind 0', () => {
     });
   });
 
-  it('omits lud16 when the till account has no kind 0 address', async () => {
+  it('omits lud16 when the till account has no kind 0 address or no username', async () => {
     for (const till of [
       account({ lightningAddress: null }),
       account({ lightningAddress: ' ' }),
       account({ name: null }),
+      account({ username: null, name: 'Coffee', lightningAddress: 'coffee@example.com' }),
+      account({ username: ' ', name: 'Coffee', lightningAddress: 'coffee@example.com' }),
       null,
     ]) {
       const ctx = await context([{ row: shopNote(uuid(1)) }], till);

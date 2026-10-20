@@ -1402,7 +1402,8 @@ interface ShopKind0Args {
 /**
  * Kind 0 fields of one shop identity (S2). A listed shop gets its name,
  * description, photos, `<site origin>/{npub}`, its NIP-05 and the till
- * account's `lud16`; a shop that is no longer listed keeps `profile_name`
+ * account's `lud16` (only when the till account has a name, a username and a
+ * non-empty Lightning address); a shop that is no longer listed keeps `profile_name`
  * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
  * and the `website`, without images, NIP-05 or `lud16`.
  */
@@ -1434,8 +1435,13 @@ async function shopKind0Args(
     await shops.renameIfListed(note);
   }
   const till = await deps.auth.getAccount(shop.tillAccountId);
+  // Same rule as `payUsername` on GET /shops/:npub, plus a published
+  // account kind 0 (a name): no lud16 without a username.
   const lud16 =
-    till === undefined || till.name === null || (till.lightningAddress ?? '').trim() === ''
+    till === undefined ||
+    till.name === null ||
+    (till.username ?? '').trim() === '' ||
+    (till.lightningAddress ?? '').trim() === ''
       ? null
       : till.lightningAddress;
   let picture: string | null = null;

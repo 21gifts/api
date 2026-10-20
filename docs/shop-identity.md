@@ -27,8 +27,8 @@ A **listed shop** is a top-level forum note (`parent_id` null) that:
 - has a place pin;
 - has `shop_account_id` set. The till account does not need a username: an
   account without one (for example the survivor of an account merge, which
-  keeps its own username) still lists the shop, and only `payUsername` is
-  `null`;
+  keeps its own username) still lists the shop; only `payUsername` is
+  `null` and the shop kind 0 has no `lud16`;
 - is complete under 21gifts/api#478: `shopPlaceProblem` (label, structured
   address, label without the address) and `shopTextProblem` (description)
   both return `null`. This is the same check `shopOcpPlaceInput` makes before
@@ -210,7 +210,7 @@ Kind 0 content of a listed shop:
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
 | `website`      | `<site origin>/{npub}`, see below                                           |
 | `nip05`        | `<local>@<domain>`, see below                                               |
-| `lud16`        | the `lud16` of the till account's own kind 0; omitted when it has none      |
+| `lud16`        | the till account's Lightning address, see below                             |
 
 Without a public origin, the shop profile does what an account profile does
 (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
@@ -247,8 +247,13 @@ Accounts call both without them and keep their content.
 
 Kind 10002 lists the same write relays as an account's.
 
-The `lud16` is a plain Lightning address. The till account's LNURL response
-is unchanged, so this spec adds no zap receipts for a shop key.
+The `lud16` is a plain Lightning address: the till account's
+`lightning_address`, set only when the till account has a name (so it has
+its own kind 0), a non-blank username and a non-blank address. That is the
+`payUsername` rule of `GET /shops/:npub` plus the name, so a till account
+without a username lists the shop but gives it no `lud16`, although its own
+kind 0 carries one. The till account's LNURL response is unchanged, so this
+spec adds no zap receipts for a shop key.
 
 ### NIP-05
 
