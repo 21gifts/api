@@ -237,10 +237,11 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  */
 export async function runOcpPlaceOutboxPass(deps: OcpOutboxDeps): Promise<void> {
   const claims = await deps.identities.claimPlaces(WORKER_BATCH, WORKER_LEASE_MS);
-  // allSettled, not all: one rejecting claim must not settle the pass while
-  // the other claims' requests are still in flight (the lane would start the
-  // next pass and two passes' place requests would overlap).
-  await Promise.allSettled(
+  // Each row's failure is logged and turned into a resolved promise, so the
+  // pass waits for every row: a failed row never ends the pass while the other
+  // rows' requests are still in flight, which would let the lane start the
+  // next pass and overlap two passes' place requests.
+  await Promise.all(
     claims.map((claim) =>
       sendPlace(deps, claim).catch((error: unknown) => {
         logEvent('ocp.place.failed', { messageId: claim.messageId, ...errorLogFields(error) });
