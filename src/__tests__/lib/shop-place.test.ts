@@ -6,6 +6,10 @@ import {
   shopDescription,
   shopPlaceProblem,
   shopTextProblem,
+  isListedShop,
+  listedShop,
+  listedShopName,
+  shopListingFingerprint,
 } from '@/lib/shop-place';
 
 const ADDRESS = {
@@ -143,5 +147,95 @@ describe('shopTextProblem', () => {
     expect(SHOP_DESCRIPTION_MAX).toBe(1000);
     expect(shopTextProblem(`${longEnough}\n\n#21GiftsShop`, PIN)).toBeNull();
     expect(shopTextProblem(`${'x'.repeat(19)} #21GiftsShop`, PIN)).toBe(DESCRIPTION_RANGE);
+  });
+});
+
+describe('listedShop', () => {
+  const place = {
+    lat: 47.3,
+    lng: 8.5,
+    label: 'Coffee Lab',
+    address: {
+      street: 'Main Street',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    },
+  };
+  const note = {
+    parentId: null,
+    deletedAt: null,
+    text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+    place,
+    shopAccount: { id: 'till' },
+  };
+
+  it('returns the name, the complete pin and the till account of a listed shop', () => {
+    expect(listedShop(note)).toEqual({ name: 'Coffee Lab', place, tillAccountId: 'till' });
+    expect(listedShopName(note)).toBe('Coffee Lab');
+    expect(isListedShop(note)).toBe(true);
+    expect(
+      isListedShop({ ...note, text: 'Fresh coffee roasted here every morning. #21giftsshop' }),
+    ).toBe(true);
+  });
+
+  it('rejects every condition that is not met', () => {
+    const withoutTill = { parentId: null, deletedAt: null, text: note.text, place };
+    const withoutPlace = {
+      parentId: null,
+      deletedAt: null,
+      text: note.text,
+      shopAccount: { id: 'x' },
+    };
+    for (const row of [
+      undefined,
+      { ...note, parentId: 'parent' },
+      { ...note, deletedAt: new Date(0) },
+      withoutTill,
+      { ...note, shopAccount: null },
+      withoutPlace,
+      { ...note, place: null },
+      { ...note, place: { ...place, label: null } },
+      { ...note, place: { ...place, address: null } },
+      { ...note, text: 'Fresh coffee roasted here every morning. #21GiftsShops' },
+      { ...note, place: { ...place, label: 'Coffee Lab Main Street' } },
+      { ...note, text: 'Too short #21GiftsShop' },
+    ]) {
+      expect(listedShop(row)).toBeNull();
+      expect(listedShopName(row)).toBeNull();
+      expect(isListedShop(row)).toBe(false);
+    }
+  });
+});
+
+describe('shopListingFingerprint', () => {
+  const note = {
+    parentId: null,
+    deletedAt: null,
+    text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+    place: PIN,
+    shopAccount: { id: 'till' },
+  };
+
+  it('is missing for no note and equal for the same listing fields', () => {
+    expect(shopListingFingerprint(undefined)).toBe('missing');
+    expect(shopListingFingerprint({ ...note, place: { ...PIN } })).toBe(
+      shopListingFingerprint(note),
+    );
+  });
+
+  it('changes with the text, the pin, the till account and deletedAt', () => {
+    const base = shopListingFingerprint(note);
+    for (const changed of [
+      { ...note, text: `${note.text} More beans.` },
+      { ...note, place: { ...PIN, label: 'Roastery' } },
+      { ...note, place: null },
+      { ...note, shopAccount: { id: 'other' } },
+      { ...note, shopAccount: null },
+      { ...note, deletedAt: new Date(0) },
+    ]) {
+      expect(shopListingFingerprint(changed)).not.toBe(base);
+    }
   });
 });

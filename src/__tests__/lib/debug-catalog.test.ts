@@ -9,6 +9,7 @@ import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
+import { InMemoryShopIdentityStore } from '@/lib/shop-identity';
 import { InMemoryTrustStore } from '@/lib/trust-store';
 
 describe('isDebugCatalogTable', () => {
@@ -675,6 +676,7 @@ describe('loadDebugTables', () => {
     expect(omitted.nostr_zap_receipt).toEqual([]);
     expect(omitted.nostr_zap_payment).toEqual([]);
     expect(omitted.message_extra_photo).toEqual([]);
+    expect(omitted.shop_identity).toEqual([]);
     const bareActor = await loadDebugTables(
       {
         auth: new InMemoryAuthStore(),
@@ -910,4 +912,112 @@ describe('loadDebugTables', () => {
       }),
     ]);
   });
+});
+
+describe('loadDebugTables shop_identity', () => {
+  it('dumps the identity and outbox state without the encrypted secret', async () => {
+    const messages = new InMemoryMessageStore([
+      {
+        id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+        createdAt: new Date(0),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        place: {
+          lat: 47.3,
+          lng: 8.5,
+          label: 'Coffee Lab',
+          address: {
+            street: 'Main Street',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      },
+    ]);
+    const shops = new InMemoryShopIdentityStore(messages, () => 5_000);
+    const identity = (await shops.ensureListed(
+      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      new Uint8Array(32).fill(7),
+    ))!;
+    await shops.claimPlaces(1, 60_000);
+    const { shop_identity: rows } = await loadDebugTables(
+      { auth: new InMemoryAuthStore(), messages, contacts: new InMemoryContactStore(), shops },
+      'shop_identity',
+    );
+    expect(rows).toEqual([
+      {
+        messageId: identity.messageId,
+        nostrPubkey: identity.nostrPubkey,
+        nostrKekId: 1,
+        nostrKeyCustody: 'custodial',
+        nostrKeyCreatedAt: new Date(5_000).toISOString(),
+        profileName: 'Coffee Lab',
+        ocpPhotosHash: null,
+        ocpPhotosPending: false,
+        ocpPhotosGeneration: 0,
+        ocpPhotosClaimedUntil: null,
+        ocpPhotosClaim: 0,
+        ocpPlacePending: true,
+        ocpPlaceGeneration: 1,
+        ocpPlaceClaimedUntil: new Date(65_000).toISOString(),
+        ocpPlaceClaim: 1,
+        ocpRevision: 0,
+      },
+    ]);
+    expect(JSON.stringify(rows)).not.toContain('Ciphertext');
+  });
+
+  it('caps the dump at MESSAGE_LIST_LIMIT identities like every other table', async () => {
+    const ids = Array.from(
+      { length: MESSAGE_LIST_LIMIT + 1 },
+      (_, index) => `00000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, '0')}`,
+    );
+    const messages = new InMemoryMessageStore(
+      ids.map((id) => ({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+        createdAt: new Date(0),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        place: {
+          lat: 47.3,
+          lng: 8.5,
+          label: 'Coffee Lab',
+          address: {
+            street: 'Main Street',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      })),
+    );
+    const shops = new InMemoryShopIdentityStore(messages, () => 5_000);
+    for (const id of ids) await shops.ensureListed(id, new Uint8Array(32).fill(7));
+    expect(await shops.listAll()).toHaveLength(MESSAGE_LIST_LIMIT + 1);
+    const deps = {
+      auth: new InMemoryAuthStore(),
+      messages,
+      contacts: new InMemoryContactStore(),
+      shops,
+    };
+    const { shop_identity: rows } = await loadDebugTables(deps, 'shop_identity');
+    expect(rows).toHaveLength(MESSAGE_LIST_LIMIT);
+    // The first MESSAGE_LIST_LIMIT in key order (equal key times, then message id).
+    expect((rows as Array<{ messageId: string }>).map((row) => row.messageId)).toEqual(
+      ids.slice(0, MESSAGE_LIST_LIMIT),
+    );
+    const all = await loadDebugTables(deps);
+    expect(all.shop_identity).toHaveLength(MESSAGE_LIST_LIMIT);
+  }, 30_000);
 });

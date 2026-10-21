@@ -4849,6 +4849,8 @@ describe('indexOpenZapReceipts', () => {
       getPhoto: (id: string) => base.getPhoto(id),
       getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
       listExtraPhotos: (id: string) => base.listExtraPhotos(id),
+      getPhotoContentTypes: (id: string) => base.getPhotoContentTypes(id),
+      getPhotoSet: (id: string) => base.getPhotoSet(id),
       deleteById: (id: string) => base.deleteById(id),
       markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
       markUndeleted: (id: string) => base.markUndeleted(id),
@@ -4860,6 +4862,7 @@ describe('indexOpenZapReceipts', () => {
       listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
         base.listEdits(...args),
       getById: (id: string) => base.getById(id),
+      getByIds: (ids: readonly string[]) => base.getByIds(ids),
       getByEventId: async (id: string) => {
         getByEventIdCalls += 1;
         return base.getByEventId(id);
@@ -5109,6 +5112,8 @@ describe('indexOpenZapReceipts', () => {
         getPhoto: (id: string) => base.getPhoto(id),
         getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
         listExtraPhotos: (id: string) => base.listExtraPhotos(id),
+        getPhotoContentTypes: (id: string) => base.getPhotoContentTypes(id),
+        getPhotoSet: (id: string) => base.getPhotoSet(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
@@ -5120,6 +5125,7 @@ describe('indexOpenZapReceipts', () => {
         listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
           base.listEdits(...args),
         getById: (id: string) => base.getById(id),
+        getByIds: (ids: readonly string[]) => base.getByIds(ids),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
           base.claimUnsigned(...args),
@@ -5913,6 +5919,8 @@ describe('indexOpenZapReceipts', () => {
         getPhoto: (id: string) => base.getPhoto(id),
         getExtraPhoto: (id: string, index: number) => base.getExtraPhoto(id, index),
         listExtraPhotos: (id: string) => base.listExtraPhotos(id),
+        getPhotoContentTypes: (id: string) => base.getPhotoContentTypes(id),
+        getPhotoSet: (id: string) => base.getPhotoSet(id),
         deleteById: (id: string) => base.deleteById(id),
         markDeleted: (id: string, at: Date, by: string) => base.markDeleted(id, at, by),
         markUndeleted: (id: string) => base.markUndeleted(id),
@@ -5924,6 +5932,7 @@ describe('indexOpenZapReceipts', () => {
         listEdits: (...args: Parameters<InMemoryMessageStore['listEdits']>) =>
           base.listEdits(...args),
         getById: (id: string) => base.getById(id),
+        getByIds: (ids: readonly string[]) => base.getByIds(ids),
         getByEventId: (id: string) => base.getByEventId(id),
         claimUnsigned: (...args: Parameters<InMemoryMessageStore['claimUnsigned']>) =>
           base.claimUnsigned(...args),

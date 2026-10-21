@@ -165,6 +165,7 @@ Public base URLs used in examples:
 | GET    | `/messages`                                          | none for active / Bearer                     | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                              |
 | GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/shops/:npub`                                       | Public                                       | Listed shop by npub; known hex redirects; unlisted identity 410                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | POST   | `/messages`                                          | Bearer                                       | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                   | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -1436,6 +1437,80 @@ not create a BOLT11 invoice. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
 
+### `GET /shops/:npub`
+
+Public lookup of a shop by its NOSTR identity
+([docs/shop-identity.md](docs/shop-identity.md) S3). No session; a missing
+or invalid bearer gets the same answer. Registered after `/shops/activity`,
+so `activity` keeps its own handler. The route takes any single path segment
+and validates it inside the handler.
+
+| Request                                  | Response                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                              |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                        |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                     |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
+| note still changing after the photo read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "note_changed"` |
+
+`Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
+`Cache-Control: no-store` on 503. The 410 body carries no name.
+
+`Shop` is
+`{ "npub", "messageId", "name", "description", "place": { "lat", "lng", "label", "address": { "street", "houseNumber", "postalCode", "city", "country" } }, "photos": [{ "url", "width", "height" }], "payUsername", "nip05", "createdAt" }`.
+`name` is the pin label, `description` the note text without the
+`#21GiftsShop` token. `lat` and `lng` are as in `GET /messages/places`.
+`address` is always present (a listed shop is complete). `photos` are the
+note's photos in note order (at most 10), from one read of the whole set
+(`MessageStore.getPhotoSet`), never photo 0 of one set with the extras of
+another: photo 0 is
+`/messages/:id/photo.<ext>` and extra still n ≥ 1 is
+`/messages/:id/photo/<n>.<ext>`, absolute from the public API base or the
+path alone when no public origin is set. `n` is the index the still is
+stored under, so a still that the set leaves out (an unrecognized type)
+drops only its own entry and never shifts the URLs after it; an
+unrecognized photo 0 leaves the list with the extras alone. `width` and `height` come from the
+image header only (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`), swapped
+for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
+cannot be read. `payUsername` is the till account's username when it has a
+username and a non-empty Lightning address, otherwise `null`. `nip05` is the
+shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
+`PUBLIC_BASE_URL` gives no NIP-05 domain. It is read from the NIP-05
+directory that `/.well-known/nostr.json` and the shop kind 0 share, cached in
+process for 60 s per store set. Its entry must carry the name of the note
+this request read; on the first missing entry or other name the request asks
+once for a forced refresh of the directory (at most one computation per 10 s
+per store set) and checks again, and when it still does not match (renamed
+or unlisted in between) the route reads the note again (a note no longer
+listed is then 410); a mismatch on the last round answers the 503 with
+`reason: "nip05_stale"`. After
+the photo set the route reads the note again; when its text, pin, till
+account id or `deletedAt` differ from the note the answer is built from (a
+rename, text or pin change while the photos were read), it goes round once
+more with that re-read, and when the note still differs on that last round it
+answers the 503 with `reason: "note_changed"`, so a 200 never pairs the old
+name with photos set after the change. A request reads the note at most three
+times, asks for at most one forced NIP-05 directory refresh and reads the
+photo set at most twice
+([docs/shop-identity.md](docs/shop-identity.md) S3). `createdAt` is the note's
+ISO-8601 creation time.
+
+A **listed shop** is a live top-level note with the `#21GiftsShop` token, a
+pin, a till account (`shop_account_id`) and a complete pin and description
+(`shopPlaceProblem` and `shopTextProblem` both null). A write that makes a
+note a listed shop for the first time (`POST /messages`,
+`PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
+`PATCH /messages/:id/shop-account`, `PUT /me/about`,
+`POST /debug/messages/:id/restore`) creates its key after the commit with the
+shop KEK (`NOSTR_NSEC_KEK`; a memory boot uses a random process-ephemeral key); a failure logs `shop.nostr_key.failed` and never
+fails the request. The worker backfills keys that are missing. The key
+belongs to the note forever. Every store write that changes the text, pin,
+till account, hide state or photos of a note with a key queues the
+OpenCryptoPay outbox in the same transaction; the senders run in the
+background ([docs/shop-identity.md](docs/shop-identity.md) S5).
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -2429,11 +2504,12 @@ table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
 per allowlisted name (cap 200): `account`, `passkey_credential`,
 `passkey_challenge`, `auth_session`, `address_verification`, `api_log`,
 `contact`, `pos_charge`, `conversation`, `conversation_message`, `conversation_read`,
-`message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
-`nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
+`message`, `message_extra_photo`, `shop_identity`, `message_invoice`,
+`nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
 `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
-`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media
-bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
+`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media bytes stay off JSON. `nostrNsecCiphertext` of an
+`account` row is envelope hex. A `shop_identity` row has the key metadata
+and the outbox state but never its encrypted secret. `btc_usd_daily`,
 `usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
 wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
 audit store is wired (the newest 200; the full history is `GET /debug/api-log`
@@ -2448,7 +2524,7 @@ Unknown table → **Response** `404` unless the path segment is one of
 `account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
 `address_verification`, `api_log`, `contact`, `pos_charge`, `conversation`,
 `conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
-`message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
+`shop_identity`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
 `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
 `db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
@@ -3831,7 +3907,8 @@ column is not null (omitted when null), and when `goalCurrency` is stored also
 those keys),
 optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`;
-the key is omitted when unset),
+the key is omitted when unset), always `shopNpub` (the npub of a currently
+listed shop with a key in `shop_identity`, otherwise JSON `null`),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a non-blank Lightning Address; null or empty `eventId` is not payable),
 `hasPhoto` (photo 0 exists), `photoCount` (integer 0–10 = photo 0
@@ -3919,6 +3996,7 @@ Success → **Response** `200`:
       "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
+      "shopNpub": null,
       "role": "basis",
       "replyCount": 0
     }
@@ -4048,8 +4126,10 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "accountId?" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "shopNpub", "accountId?" }] }`.
 `shop` is true when the note text contains the shop tag. `accountId` is set for a 21gifts author and omitted for an external pin.
+`shopNpub` is the npub only when the row is a currently listed shop with a
+stored identity; otherwise it is JSON null.
 `address` is `{ "street", "houseNumber", "postalCode", "city", "country" }` or JSON `null`.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
@@ -4191,8 +4271,9 @@ allowed. The **200** body is the public message object itself (not wrapped
 in `{ messages }`), including `sats`, `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
-stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
-`videoContentType`. May include `goalSats` (positive integer on a top-level
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
+`videoContentType`, and always `shopNpub` (the npub of a currently listed
+shop with a key, otherwise JSON `null`). May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
 column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
@@ -4343,15 +4424,16 @@ Success → **Response** `200`:
   "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
+  "shopNpub": null,
   "role": "verified"
 }
 ```
 
-When `mapPush` is set, a new top-level shop note with a pin joins the
-per-note map queue after it is stored. At its turn the row is read again: a
-note gone or hidden by then sends nothing, a complete stored shop pin is sent
-with PUT to `/map/places`, and a pin cleared meanwhile or an incomplete
-stored shop sends nothing. A replay does not call the map.
+A new note that is a listed shop when it is read again after the commit gets
+its shop key, and creating the key queues its OpenCryptoPay place outbox (see
+the listed shop rule above); the sender then PUTs the complete stored shop. A
+note gone, hidden, unpinned or incomplete by that read gets no key, and
+nothing is sent. A replay creates no key and queues nothing.
 
 ### `POST /messages/:id/invoice`
 
@@ -4746,7 +4828,10 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
-stored and omitted when unset, even when `accountId` is omitted,
+stored (omitted when unset or when that account has no username, even when
+`accountId` is omitted; a note whose till account has no username can still
+be a listed shop), and always
+`shopNpub` (the listed-shop npub or JSON null),
 `payable`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
@@ -4898,11 +4983,12 @@ block additionally logs `messages.external.blocked` with only `messageId` and
 the hidden-row count, never the pubkey. On store throw it logs
 `messages.delete.failed`.
 
-When `mapPush` is set, hiding a top-level shop note (`#21GiftsShop`) sends
-DELETE to `/map/places` after `markDeleted`, also for a note that had no pin
-when it was read, because a pin set concurrently may already be on the map.
-The call waits its turn in the per-note map queue and does not read the row
-again. A failure logs `ocp.place.failed` and the response stays 204.
+Hiding a shop note that has a key queues its OpenCryptoPay place outbox in
+the same write (`trg_shop_identity_place` on `deleted_at`), whatever its pin
+was when the route read it, because a pin set concurrently may already be on
+the map; the sender then sends DELETE to `/map/places`, since a hidden note is
+not listed. A note without a key was never sent, and nothing is queued.
+Delivery is asynchronous; a failure never changes the 204.
 
 ### `PATCH /messages/:id/place`
 
@@ -4932,17 +5018,16 @@ and nothing is stored. Clearing with `null` skips both shop checks.
 Success → **200** live public message JSON (optional `place`, reply count,
 no hide stamps). Logs `messages.place.updated` with `messageId`,
 `accountId`, and `role` only. Text and publish state are unchanged. A real
-pin change appends `message_edit`. An identical pin does not. When
-`mapPush` is set, a non-null place write re-reads the row and PUTs a
-complete result to `/map/places`; an incomplete result after the write
-sends DELETE instead, and a pin cleared or a note gone or hidden
-concurrently sends DELETE. Clearing the pin also sends DELETE, unless a
-later write has set a complete shop pin again by the time the clear's turn
-comes (an incomplete pin set again still gets DELETE). Map calls of
-`POST /messages`, `DELETE /messages/:id` and the three shop PATCH routes run one
-after another per note, and each create and PATCH call reads the row when
-its turn comes, so concurrent edits reach the map in order and the last of
-those calls matches the last write (the debug restore push is not queued).
+pin change appends `message_edit`. An identical pin does not. A pin change
+on a shop with a key queues its OpenCryptoPay place outbox in the same
+write. The sender reads the note when it sends: a listed shop gets PUT to
+`/map/places`, and a shop that is no longer listed (pin and text
+incomplete, pin or till account cleared, hidden or gone, also by a
+concurrent request) gets DELETE. Clearing the pin therefore sends DELETE,
+unless a later write has set a complete shop pin again before the send,
+which then sends one PUT (an incomplete pin set again still gets DELETE).
+Each send carries a new revision, so concurrent edits of one shop reach the
+map in order and the last send matches the last write.
 
 ### `PATCH /messages/:id/shop-account`
 
@@ -4966,23 +5051,19 @@ Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
 Success → **200** live public message JSON (optional `shopAccount`
-`{ id, username, name }`, omitted when cleared, reply count, no hide stamps).
-Logs `messages.shop_account.updated` with `messageId`, `accountId`, and
-`role` only. Text, place, and publish state are unchanged. The write
-stores only `shop_account_id`. A real change appends `message_edit`. An
-unchanged account does not. The same account id with a new name or
-username is unchanged. When `mapPush` is set, a note gone or hidden
-concurrently at the re-read sends DELETE; otherwise a re-read row with a
-complete shop place PUTs the current pin, while no place or an incomplete
-shop sends nothing. Map calls of `POST /messages`, `DELETE /messages/:id`
-and the three shop PATCH routes run one after another per note, and each
-create and PATCH call reads the row when its turn comes, so concurrent
-edits reach the map in order and the last of those calls matches the last
-write (the debug restore push is not queued).
+`{ id, username, name }`, omitted when cleared or when the till account
+has no username, reply count, no hide
+stamps). Logs `messages.shop_account.updated` with `messageId`,
+`accountId`, and `role` only. Text, place, and publish state are
+unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
+A real change on a shop with a key queues its OpenCryptoPay place outbox in
+the same write. The sender reads the note when it sends: a listed shop gets
+PUT, and a note that is hidden or gone by then (also concurrently), or whose
+till account was cleared, gets DELETE.
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then, when `mapPush` is set, re-reads the row and PUTs a complete shop pin to `/map/places` or sends DELETE when a present pin makes the result incomplete; a note gone or hidden concurrently sends DELETE; map calls for one note run one after another (create, hide and the shop PATCH routes) and each create and PATCH call reads the row when its turn comes; it is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a new outbox generation. A real change writes the body and `message_edit` together, creates the shop identity when needed, queues the durable OpenCryptoPay place outbox, and is **200** public message JSON; delivery is asynchronous. The sender reads the note when it sends: a listed shop gets PUT, and a keyed shop that is no longer listed gets DELETE, such as one whose pin lost its address in a concurrent place edit or that was hidden concurrently; an older shop whose pin never had an address was never listed, has no key, and sends nothing. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 
@@ -4990,7 +5071,7 @@ Staff replacement of the stills on a live top-level shop note. Bearer session re
 
 ### `GET /messages/:id/edits`
 
-Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null (`username` is null when the till account had none). `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
@@ -5023,7 +5104,7 @@ a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
 when a pin is stored; `address` is the structured postal address or JSON `null`;
 omitted when unset), optional `shopAccount`
 (`{ id, username, name }`) when a shop account is stored (omitted when
-unset), always-present `parentId` (JSON `null`
+unset or when the till account has no username), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from

@@ -397,12 +397,12 @@ export interface Kind0ProfileContent {
   name: string;
   /** Same as `name` for Damus/Primal. */
   display_name: string;
-  /** Fixed site URL. */
+  /** Site URL: `https://21.gifts` for accounts, the shop page URL for shops. */
   website: string;
   /** Wide header: the account's own wide image, or the shared 1200×630 image. */
-  banner: string;
+  banner?: string;
   /** Avatar: the account's own profile photo, or the shared 21.gifts icon. */
-  picture: string;
+  picture?: string;
   /** LUD-16 when the account has a linked address. */
   lud16?: string;
   /** NIP-05 identifier (`name@21.gifts`) when the public host is set. */
@@ -418,14 +418,16 @@ export interface Kind0ProfileContent {
  * the profile-photo slot and `banner` is only the wide-image slot. Blank
  * values fall back to {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
  * The About me note photo is neither. `about` defaults to `21.gifts` and is
- * the profile-note text when the worker passes it. Set `nip05` when a public
- * host is available. Never set `bot`.
+ * the profile-note text (or, for a shop profile, the description of a listed
+ * shop or the unlisted-shop text) when the worker passes it. Set `nip05` when a public host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
- * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param about - Kind:0 about text (profile note, listed-shop description, unlisted-shop text, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
+ * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
+ * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.
  * @returns JSON string for the kind:0 `content` field.
  */
 export function buildKind0Content(
@@ -434,15 +436,19 @@ export function buildKind0Content(
   nip05: string | null = null,
   about: string = '21.gifts',
   images: { picture?: string | null; banner?: string | null } | null = null,
+  website: string = 'https://21.gifts',
+  includeImages: boolean = true,
 ): string {
   const body: Kind0ProfileContent = {
     name,
     display_name: name,
-    website: 'https://21.gifts',
-    banner: profileImageUrl(images?.banner, KIND0_BANNER_URL),
-    picture: profileImageUrl(images?.picture, KIND0_PICTURE_URL),
+    website,
     about,
   };
+  if (includeImages) {
+    body.banner = profileImageUrl(images?.banner, KIND0_BANNER_URL);
+    body.picture = profileImageUrl(images?.picture, KIND0_PICTURE_URL);
+  }
   if (lightningAddress !== null) {
     body.lud16 = lightningAddress;
   }
@@ -471,8 +477,10 @@ export interface UnsignedKind0 {
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
- * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param about - Kind:0 about text (profile note, listed-shop description, unlisted-shop text, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. The About me photo is neither.
+ * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
+ * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.
  * @returns Unsigned event fields for `finalizeEvent`.
  */
 export function buildKind0Event(
@@ -482,10 +490,20 @@ export function buildKind0Event(
   nip05: string | null = null,
   about: string = '21.gifts',
   images: { picture?: string | null; banner?: string | null } | null = null,
+  website: string = 'https://21.gifts',
+  includeImages: boolean = true,
 ): UnsignedKind0 {
   return {
     kind: 0,
-    content: buildKind0Content(name, lightningAddress, nip05, about, images),
+    content: buildKind0Content(
+      name,
+      lightningAddress,
+      nip05,
+      about,
+      images,
+      website,
+      includeImages,
+    ),
     tags: [],
     created_at: createdAtUnix,
   };

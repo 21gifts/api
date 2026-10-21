@@ -20,9 +20,11 @@ import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import { RELAY_TIMEOUT_MS, startNostrWorker, WORKER_INTERVAL_MS } from './lib/nostr/worker';
-import { InMemoryMessageStore, textHasHashtagToken } from './lib/message-store';
+import { InMemoryMessageStore } from './lib/message-store';
 import { seedDevShopPlaces } from './lib/dev-shop-places';
-import { publishExistingShopPlaces, resolveMapPush } from './lib/ocp-place';
+import { resolveMapPush } from './lib/ocp-place';
+import { InMemoryShopIdentityStore } from './lib/shop-identity';
+import { startOcpOutboxWorker } from './lib/ocp-outbox';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
@@ -51,15 +53,29 @@ function retain<T>(pending: Promise<T>): Promise<T> {
 
 function createBunDatabase(databaseUrl: string): BunDatabase {
   const sql = new SQL(databaseUrl);
-  return {
-    client: {
-      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
-        return (await retain(sql.unsafe(text, [...params]))) as T[];
-      },
-      async execute(text: string, params: readonly unknown[] = []): Promise<void> {
-        await retain(sql.unsafe(text, [...params]));
-      },
+  const client: SqlClient = {
+    async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+      return (await retain(sql.unsafe(text, [...params]))) as T[];
     },
+    async execute(text: string, params: readonly unknown[] = []): Promise<void> {
+      await retain(sql.unsafe(text, [...params]));
+    },
+    async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
+      return retain(
+        sql.begin(async (tx) =>
+          run({
+            query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+              (await retain(tx.unsafe(text, [...params]))) as R[],
+            execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+              await retain(tx.unsafe(text, [...params]));
+            },
+          }),
+        ),
+      );
+    },
+  };
+  return {
+    client,
     mergeDb: {
       async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
         return retain(
@@ -127,6 +143,7 @@ if (import.meta.main) {
     btcUsdRates,
     fiatRates,
     messageStore,
+    shopIdentityStore,
     nostrKek,
     contactStore,
     memberHabitStore,
@@ -163,6 +180,7 @@ if (import.meta.main) {
   );
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
+  const shopIdentities = shopIdentityStore ?? new InMemoryShopIdentityStore(forumMessages);
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
   const app = createApp({
     authStore,
@@ -172,13 +190,17 @@ if (import.meta.main) {
     posStore,
     env: process.env,
     messageStore: forumMessages,
+    shopIdentityStore: shopIdentities,
     ...(giftStore === undefined ? {} : { giftStore }),
     ...(giftRecorder === undefined ? {} : { giftRecorder }),
     ...(boot.translationStore === undefined ? {} : { translationStore: boot.translationStore }),
     ...(boot.conversationTranslationStore === undefined
       ? {}
       : { conversationTranslationStore: boot.conversationTranslationStore }),
-    ...(nostrKek === undefined ? {} : { nostrKek }),
+    // A memory boot has no KEK; its shop keys use a process-ephemeral one and vanish with the rows.
+    ...(nostrKek === undefined
+      ? { shopKek: crypto.getRandomValues(new Uint8Array(32)) }
+      : { nostrKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     nostrQuerier: querier,
     nostrRelayUrls: resolveZapReadRelays(process.env),
@@ -214,14 +236,10 @@ if (import.meta.main) {
     ...(bun === undefined ? {} : { sql: bun.client }),
   });
   const mapPush = resolveMapPush(process.env, globalThis.fetch);
-  void publishExistingShopPlaces({
-    ...(mapPush === undefined ? {} : { mapPush }),
-    listPlaces: (limit) => forumMessages.listPlaces(limit),
-    getById: (id) => forumMessages.getById(id),
-    textHasHashtagToken,
-  }).catch(() => {
-    console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
-  });
+  if (mapPush !== undefined) {
+    // Also runs the start-up pass (queueAllShopPlaces) and retries it until it succeeds.
+    startOcpOutboxWorker({ identities: shopIdentities, messages: forumMessages, mapPush });
+  }
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
   if (sender.isConfigured()) {
     startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
@@ -246,6 +264,7 @@ if (import.meta.main) {
         ...(fundingStore === undefined ? {} : { fundingStore }),
         banners,
         fiatRates,
+        shopIdentities,
       },
       WORKER_INTERVAL_MS,
     );

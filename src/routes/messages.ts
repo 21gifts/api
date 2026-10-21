@@ -41,6 +41,7 @@ import {
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
+  type MessageShopAccount,
 } from '@/lib/message';
 import {
   textHasHashtagToken,
@@ -81,7 +82,7 @@ import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
 import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
-import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -270,13 +271,13 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * a complete write; DELETE on clear, hide, an incomplete place/text pair
-   * re-read after a place/text write, or a note gone or hidden at its queue
-   * turn on PATCH place, text, or shop-account). Omitted → the forum write
-   * still succeeds and nothing is sent.
+   * Shop identities. With `shopKek` (or `nostrKek`), a write that makes a
+   * note a listed shop creates its key after the commit. The OpenCryptoPay
+   * outbox is queued by the store write itself. Omitted → no shop keys.
    */
-  mapPush?: MapPush;
+  shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -342,6 +343,30 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+
+/**
+ * After a committed write that can make a note a listed shop: create its key
+ * once (S1). The OpenCryptoPay outbox is queued by the store write itself.
+ * A failure logs `shop.nostr_key.failed` and never fails the request.
+ *
+ * @param deps - Route deps (shop identities and KEK).
+ * @param messageId - Written note id.
+ * @returns The shop npub, or `undefined` when the note has no key.
+ */
+async function ensureShopIdentity(
+  deps: MessagesRouteDeps,
+  messageId: string,
+): Promise<string | undefined> {
+  const kek = deps.shopKek ?? deps.nostrKek;
+  if (deps.shopIdentities === undefined || kek === undefined) return undefined;
+  try {
+    const identity = await deps.shopIdentities.ensureListed(messageId, kek);
+    return identity === undefined ? undefined : shopNpub(identity);
+  } catch {
+    logEvent('shop.nostr_key.failed', { messageId });
+    return undefined;
+  }
+}
 
 /**
  * Whether a credit note still has money out. Once any sats arrived, the note
@@ -439,7 +464,7 @@ function ensureShopNoteTag(text: string): string {
  * Both absent matches. One absent does not. Only the account id counts.
  */
 function shopAccountsMatch(
-  a: { id: string; username: string; name: string } | null | undefined,
+  a: MessageShopAccount | null | undefined,
   b: { id: string; username: string; name: string } | null,
 ): boolean {
   const left = a ?? null;
@@ -951,55 +976,6 @@ function multipartPlaceAddress(form: FormData): unknown {
   return { street, houseNumber, postalCode, city, country };
 }
 
-// The last map push queued per note id; each push waits for the one before it.
-const shopMapQueue = new Map<string, Promise<void>>();
-
-/**
- * Run one map push for a note after every earlier push for that note.
- *
- * With `readRow`, the push gets the row read when its turn comes, so
- * concurrent edits of one shop reach the map in order and the last queued
- * push sees the last write. A failed read logs `ocp.place.failed` and skips
- * the push. Without `readRow` the push runs in turn without a read.
- *
- * @param store - Message store the row is read from.
- * @param id - Forum message id (the map `externalId`).
- * @param push - The map call; receives the row, or `undefined` when it is gone or not read.
- * @param readRow - Whether to read the row first. Default true.
- */
-async function queueShopMapPush(
-  store: MessageStore,
-  id: string,
-  push: (latest: MessageRow | undefined) => Promise<void>,
-  readRow = true,
-): Promise<void> {
-  const run = async (): Promise<void> => {
-    if (!readRow) {
-      await push(undefined);
-      return;
-    }
-    let latest: MessageRow | undefined;
-    try {
-      latest = await store.getById(id);
-    } catch {
-      logEvent('ocp.place.failed', { messageId: id });
-      return;
-    }
-    await push(latest);
-  };
-  // A failed earlier turn must not skip this one.
-  const previous = shopMapQueue.get(id) ?? Promise.resolve();
-  const turn = previous.then(run, run);
-  shopMapQueue.set(id, turn);
-  try {
-    await turn;
-  } finally {
-    if (shopMapQueue.get(id) === turn) {
-      shopMapQueue.delete(id);
-    }
-  }
-}
-
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor and except mention account ids on the
@@ -1252,29 +1228,9 @@ async function persistForumPost(
       }
     }
     const published = created;
-    if (
-      !isReplay &&
-      deps.mapPush !== undefined &&
-      published.parentId === null &&
-      published.place !== null &&
-      published.place !== undefined &&
-      textHasHashtagToken(published.text, '21GiftsShop')
-    ) {
-      // The push reads the row in turn: a shop hidden or edited meanwhile is not overwritten.
-      const mapPush = deps.mapPush;
-      await queueShopMapPush(deps.store, published.id, async (latest) => {
-        if (latest === undefined || latest.deletedAt !== null) {
-          return;
-        }
-        await syncShopOcpPlace({
-          mapPush,
-          messageId: latest.id,
-          text: latest.text,
-          parentId: latest.parentId ?? null,
-          place: latest.place ?? null,
-          textHasHashtagToken,
-        });
-      });
+    if (!isReplay) {
+      const npub = await ensureShopIdentity(deps, published.id);
+      if (npub !== undefined) published.shopNpub = npub;
     }
     return c.json(
       serializeMessage(
@@ -2218,22 +2174,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'An open credit cannot be deleted' }, 409);
           }
         }
-        // Every top-level shop gets the DELETE: a pin set concurrently may already be on the map.
-        const mapPush = deps.mapPush;
-        if (
-          mapPush !== undefined &&
-          target.parentId === null &&
-          textHasHashtagToken(target.text, '21GiftsShop')
-        ) {
-          await queueShopMapPush(
-            deps.store,
-            target.id,
-            async () => {
-              await removeShopOcpPlace({ mapPush, messageId: target.id });
-            },
-            false,
-          );
-        }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
@@ -2356,33 +2296,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // The push reads the row in turn: a shop hidden or cleared meanwhile stays off the map.
-        const mapPush = deps.mapPush;
-        if (mapPush !== undefined) {
-          await queueShopMapPush(deps.store, updated.id, async (latest) => {
-            if (
-              latest !== undefined &&
-              latest.deletedAt === null &&
-              latest.place !== null &&
-              latest.place !== undefined
-            ) {
-              await syncShopOcpPlace({
-                mapPush,
-                messageId: latest.id,
-                text: latest.text,
-                parentId: latest.parentId ?? null,
-                place: latest.place,
-                removeWhenIncomplete: true,
-                textHasHashtagToken,
-              });
-            } else {
-              await removeShopOcpPlace({
-                mapPush,
-                messageId: updated.id,
-              });
-            }
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2491,27 +2406,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
-        const mapPush = deps.mapPush;
-        if (mapPush !== undefined) {
-          await queueShopMapPush(deps.store, updated.id, async (latest) => {
-            if (latest === undefined || latest.deletedAt !== null) {
-              await removeShopOcpPlace({
-                mapPush,
-                messageId: updated.id,
-              });
-            } else if (latest.place !== null && latest.place !== undefined) {
-              await syncShopOcpPlace({
-                mapPush,
-                messageId: latest.id,
-                text: latest.text,
-                parentId: latest.parentId ?? null,
-                place: latest.place,
-                textHasHashtagToken,
-              });
-            }
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2627,28 +2523,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
-        const mapPush = deps.mapPush;
-        if (mapPush !== undefined) {
-          await queueShopMapPush(deps.store, updated.id, async (latest) => {
-            if (latest === undefined || latest.deletedAt !== null) {
-              await removeShopOcpPlace({
-                mapPush,
-                messageId: updated.id,
-              });
-            } else {
-              await syncShopOcpPlace({
-                mapPush,
-                messageId: latest.id,
-                text: latest.text,
-                parentId: latest.parentId ?? null,
-                place: latest.place ?? null,
-                removeWhenIncomplete: true,
-                textHasHashtagToken,
-              });
-            }
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2869,6 +2745,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               label: row.label,
               address: row.address,
               shop: row.shop,
+              shopNpub: row.shopNpub,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },

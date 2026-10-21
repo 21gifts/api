@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
-import type { MapPush } from '@/lib/ocp-place';
+import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
   readForumVideoBytes,
@@ -88,15 +88,8 @@ function videoRow(overrides: Partial<MessageRow> = {}): MessageRow {
   };
 }
 
-function mount(store: MessageStore, debugToken: string | undefined, mapPush?: MapPush): Hono {
-  return new Hono().route(
-    '/debug/messages',
-    debugMessagesRoutes({
-      store,
-      debugToken,
-      ...(mapPush === undefined ? {} : { mapPush }),
-    }),
-  );
+function mount(store: MessageStore, debugToken: string | undefined): Hono {
+  return new Hono().route('/debug/messages', debugMessagesRoutes({ store, debugToken }));
 }
 
 describe('debugMessagesRoutes', () => {
@@ -917,11 +910,12 @@ describe('debugMessagesRoutes', () => {
     );
   });
 
-  it('puts a restored live top-level shop pin', async () => {
+  it('queues the place push of a keyed shop on restore', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
       forumRow({
         text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
       }),
     );
     await store.setPlace(HIDDEN_ID, {
@@ -936,32 +930,29 @@ describe('debugMessagesRoutes', () => {
         country: 'CH',
       },
     });
+    const kek = new Uint8Array(32).fill(7);
+    const shops = new InMemoryShopIdentityStore(store);
+    await shops.ensureListed(HIDDEN_ID, kek);
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
-    const calls: Array<{ method: string; body: string }> = [];
-    const mapPush: MapPush = {
-      baseUrl: 'http://map.test',
-      token: 'ingest',
-      fetchImpl: async (_input, init) => {
-        calls.push({ method: String(init.method), body: String(init.body) });
-        return new Response('{}', { status: 201 });
-      },
-    };
-    const app = mount(store, 'secret', mapPush);
+    // The hide raised the place generation once.
+    expect((await shops.getByMessageId(HIDDEN_ID))?.ocpPlaceGeneration).toBe(2);
+    const app = new Hono().route(
+      '/debug/messages',
+      debugMessagesRoutes({ store, debugToken: 'secret', shopIdentities: shops, shopKek: kek }),
+    );
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(204);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.method).toBe('PUT');
-    expect(JSON.parse(calls[0]?.body ?? '{}')).toMatchObject({
-      techProvider: '21.gifts',
-      origin: '21gifts',
-      externalId: HIDDEN_ID,
+    // The restore raised it again: the place request re-lists the shop.
+    expect(await shops.getByMessageId(HIDDEN_ID)).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 3,
     });
   });
 
-  it('returns 204 on shop restore when mapPush is omitted', async () => {
+  it('returns 204 on shop restore without a shop identity store', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
       forumRow({
@@ -987,5 +978,115 @@ describe('debugMessagesRoutes', () => {
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(204);
+  });
+});
+
+describe('shop identity hooks', () => {
+  const now = (): number => 1_700_000_000_000;
+
+  const KEK = new Uint8Array(32).fill(7);
+
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+
+  const TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+
+  const ADDRESS = {
+    street: 'Bahnhofstrasse',
+    houseNumber: '1',
+    postalCode: '8001',
+    city: 'Zürich',
+    country: 'CH',
+  };
+
+  const PIN = { lat: 47.3, lng: 8.5, label: 'Cafe', address: ADDRESS };
+
+  function shopNote(overrides: Partial<MessageRow>): MessageRow {
+    return {
+      id: SHOP_ID,
+      accountId: 'mod',
+      name: 'Mo',
+      text: TEXT,
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: PIN,
+      shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    };
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function logged(event: string): Array<Record<string, unknown>> {
+    return warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line['event'] === event);
+  }
+
+  const failing = {
+    ensureListed: () => Promise.reject(new Error('db down')),
+  } as unknown as ShopIdentityStore;
+
+  describe('shop key after a staff restore', () => {
+    async function restore(
+      identities: (messages: InMemoryMessageStore) => ShopIdentityStore,
+      kek?: Uint8Array,
+    ): Promise<{
+      status: number;
+      messages: InMemoryMessageStore;
+    }> {
+      const messages = new InMemoryMessageStore();
+      await messages.create(shopNote({}));
+      await messages.markDeleted(SHOP_ID, new Date(now()), 'mod');
+      const app = new Hono().route(
+        '/debug/messages',
+        debugMessagesRoutes({
+          store: messages,
+          debugToken: 'dbg',
+          shopIdentities: identities(messages),
+          ...(kek === undefined ? {} : { shopKek: kek }),
+        }),
+      );
+      const res = await app.request(`/debug/messages/${SHOP_ID}/restore`, {
+        method: 'POST',
+        headers: { authorization: 'Bearer dbg' },
+      });
+      return { status: res.status, messages };
+    }
+
+    it('creates the key of the restored listed shop', async () => {
+      let shops: InMemoryShopIdentityStore | undefined;
+      const { status } = await restore((messages) => {
+        shops = new InMemoryShopIdentityStore(messages);
+        return shops;
+      }, KEK);
+      expect(status).toBe(204);
+      expect(await shops!.getByMessageId(SHOP_ID)).toBeDefined();
+    });
+
+    it('logs a failure and still answers 204, and skips without a KEK', async () => {
+      expect((await restore(() => failing, KEK)).status).toBe(204);
+      expect(logged('shop.nostr_key.failed')).toEqual([
+        expect.objectContaining({ messageId: SHOP_ID }),
+      ]);
+      let shops: InMemoryShopIdentityStore | undefined;
+      expect(
+        (
+          await restore((messages) => {
+            shops = new InMemoryShopIdentityStore(messages);
+            return shops;
+          })
+        ).status,
+      ).toBe(204);
+      expect(await shops!.listAll()).toEqual([]);
+    });
   });
 });

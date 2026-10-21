@@ -1,6 +1,12 @@
-import { afterEach, describe, expect, it, vi } from 'vitest';
-import { finalizeEvent, generateSecretKey, getPublicKey } from 'nostr-tools/pure';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import {
+  finalizeEvent,
+  generateSecretKey,
+  getPublicKey,
+  verifyEvent,
+  type NostrEvent,
+} from 'nostr-tools/pure';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryBannerStore } from '@/lib/banner-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
@@ -12,8 +18,16 @@ import {
   MESSAGE_INBOUND_REPLY_MAX_LENGTH,
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
+  type ForumPhoto,
+  type MessageRow,
 } from '@/lib/message';
-import { InMemoryMessageStore, type MessageInvoiceAttempt } from '@/lib/message-store';
+import {
+  InMemoryMessageStore,
+  type MessageInvoiceAttempt,
+  type MessageStore,
+} from '@/lib/message-store';
+import { buildNostrJson, NIP05_DIRECTORY_TTL_MS, nip05Directory } from '@/lib/nip05';
+import { KIND0_BANNER_URL, KIND0_PICTURE_URL } from '@/lib/nostr/event';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { decryptNostrSecret, ensureAccountNostrKey, zeroizeSecret } from '@/lib/nostr/keys';
@@ -26,15 +40,31 @@ import {
   HOT_ZAP_WINDOW_MS,
   runNostrWorkerTick,
   startNostrWorker,
+  WORKER_BATCH,
+  WORKER_INTERVAL_MS,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
+import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import { InMemoryPushStore } from '@/lib/push-store';
+import {
+  InMemoryShopIdentityStore,
+  shopNpub,
+  type ShopIdentityRow,
+  type ShopIdentityStore,
+} from '@/lib/shop-identity';
+import { shopDescription } from '@/lib/shop-place';
 import { removeForumVideo } from '@/lib/video';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
+
+// Pass-through spy: the shop kind 0 tests count and fail the worker's NIP-05 directory reads.
+vi.mock('@/lib/nip05', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/lib/nip05')>();
+  return { ...actual, nip05Directory: vi.fn(actual.nip05Directory) };
+});
 
 const mockedDecode = vi.mocked(decodeBolt11);
 
@@ -7760,5 +7790,1223 @@ describe('startNostrWorker', () => {
     expect(imeta?.some((part) => part.startsWith('size '))).toBe(true);
     expect(imeta?.some((part) => /^x [0-9a-f]{64}$/.test(part))).toBe(true);
     expect(imeta?.some((part) => part.startsWith('dim '))).toBe(false);
+  });
+});
+
+describe('shop identities (S1 keys, S2 profiles)', () => {
+  const TILL = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+  const TEXT = 'Fresh coffee roasted here every morning. #21GiftsShop';
+  const ENV = {
+    NOSTR_PUBLISH: '1',
+    NOSTR_RELAY_SPACE: 'wss://relay.nostr.space',
+    PUBLIC_BASE_URL: 'https://21.gifts',
+  };
+  const PUBLIC_ENV = {
+    ...ENV,
+    NOSTR_PUBLISH_PUBLIC: '1',
+    NOSTR_RELAY_PUBLIC: 'wss://relay.damus.io',
+  };
+
+  function uuid(n: number): string {
+    const hex = n.toString(16).padStart(12, '0');
+    return `00000000-0000-4000-8000-${hex}`;
+  }
+
+  function shopNote(id: string, overrides: Partial<MessageRow> = {}): MessageRow {
+    return {
+      id,
+      accountId: 'author',
+      name: 'Ada',
+      text: TEXT,
+      createdAt: new Date('2026-10-01T00:00:00Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: {
+        lat: 47.3,
+        lng: 8.5,
+        label: 'Coffee Lab',
+        address: {
+          street: 'Main Street',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+      shopAccount: { id: TILL, username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    };
+  }
+
+  function account(overrides: Partial<Account> = {}): Account {
+    return {
+      id: TILL,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Coffee',
+      username: 'coffee',
+      lightningAddress: 'coffee@example.com',
+      lightningAddressVerified: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: '11'.repeat(32),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      ...overrides,
+    } as Account;
+  }
+
+  const PNG: ForumPhoto = { contentType: 'image/png', bytes: new Uint8Array([1, 2, 3]) };
+  const JPEG: ForumPhoto = { contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) };
+
+  interface Ctx {
+    auth: InMemoryAuthStore;
+    messages: InMemoryMessageStore;
+    shops: InMemoryShopIdentityStore;
+    publisher: RecordingPublisher;
+  }
+
+  async function context(
+    notes: Array<{ row: MessageRow; photos?: ForumPhoto[] }>,
+    till: Account | null = account(),
+  ): Promise<Ctx> {
+    const auth = new InMemoryAuthStore();
+    if (till !== null) await auth.createAccount(till);
+    const messages = new InMemoryMessageStore();
+    for (const { row, photos = [] } of notes) {
+      await messages.create(row, photos[0], undefined, photos.slice(1));
+    }
+    return {
+      auth,
+      messages,
+      shops: new InMemoryShopIdentityStore(messages),
+      publisher: new RecordingPublisher(),
+    };
+  }
+
+  let clock = 1_700_000_000_000;
+
+  async function tick(
+    ctx: Ctx,
+    env: Record<string, string> = ENV,
+    overrides: Partial<NostrWorkerDeps> = {},
+  ): Promise<void> {
+    clock += 60_000;
+    const now = clock;
+    await runNostrWorkerTick({
+      messages: ctx.messages,
+      auth: ctx.auth,
+      kek: KEK,
+      publisher: ctx.publisher,
+      querier: new RecordingQuerier(),
+      fetchImpl: async () => new Response('{}', { status: 500 }),
+      now: () => now,
+      env,
+      shopIdentities: ctx.shops,
+      ...overrides,
+    });
+  }
+
+  function shopEvents(ctx: Ctx, identity: ShopIdentityRow, kind: number): NostrEvent[] {
+    return ctx.publisher.calls
+      .filter(
+        (call) =>
+          call.event['pubkey'] === identity.nostrPubkey &&
+          call.event['kind'] === kind &&
+          call.urls.includes('wss://relay.nostr.space'),
+      )
+      .map((call) => call.event as unknown as NostrEvent);
+  }
+
+  function content(event: NostrEvent | undefined): Record<string, unknown> {
+    return JSON.parse(String(event?.content)) as Record<string, unknown>;
+  }
+
+  /** Same object with some methods replaced; other methods stay bound to the original. */
+  function override<T extends object>(target: T, replaced: Partial<T>): T {
+    return new Proxy(target, {
+      get(object, key) {
+        if (Object.hasOwn(replaced, key)) return (replaced as Record<PropertyKey, unknown>)[key];
+        const value: unknown = Reflect.get(object, key, object);
+        return typeof value === 'function'
+          ? (value as (...args: unknown[]) => unknown).bind(object)
+          : value;
+      },
+    });
+  }
+
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function logged(event: string): Array<Record<string, unknown>> {
+    return warn.mock.calls
+      .map((call) => String(call[0]))
+      .filter((line) => line.startsWith('{'))
+      .map((line) => JSON.parse(line) as Record<string, unknown>)
+      .filter((line) => line['event'] === event);
+  }
+
+  describe('shop key backfill', () => {
+    it('creates the key of a listed shop and queues its place push', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx);
+      const identity = await ctx.shops.getByMessageId(uuid(1));
+      expect(identity).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 1 });
+    });
+
+    it('walks past incomplete notes and wraps around', async () => {
+      const notes = Array.from({ length: 21 }, (_, index) => ({
+        row: shopNote(uuid(index + 1), {
+          text: 'Too short #21GiftsShop',
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        }),
+      }));
+      notes.push({ row: shopNote(uuid(99), { createdAt: new Date(Date.UTC(2026, 0, 2)) }) });
+      const ctx = await context(notes);
+      await tick(ctx);
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeUndefined();
+      await tick(ctx);
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeDefined();
+      await ctx.messages.updateText(uuid(1), TEXT);
+      await tick(ctx);
+      expect(await ctx.shops.getByMessageId(uuid(1))).toBeDefined();
+    });
+
+    it('pages past keyed shops one bounded raw page per tick', async () => {
+      const notes = Array.from({ length: 26 }, (_, index) => ({
+        row: shopNote(uuid(index + 1), { createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)) }),
+      }));
+      const ctx = await context(notes);
+      for (let n = 1; n <= 25; n += 1) await ctx.shops.ensureListed(uuid(n), KEK);
+      const reads: Array<{ cursor: string | null; ids: string[] }> = [];
+      const keyed: string[] = [];
+      const shops = override<ShopIdentityStore>(ctx.shops, {
+        listCandidates: async (cursor, limit) => {
+          const page = await ctx.shops.listCandidates(cursor, limit);
+          reads.push({ cursor: cursor?.id ?? null, ids: page.map((row) => row.id) });
+          return page;
+        },
+        ensureListed: (id, kek) => {
+          keyed.push(id);
+          return ctx.shops.ensureListed(id, kek);
+        },
+      });
+      // First tick: one raw page of WORKER_BATCH keyed shops, no key generated.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads).toEqual([
+        { cursor: null, ids: Array.from({ length: 20 }, (_, index) => uuid(index + 1)) },
+      ]);
+      expect(keyed).toEqual([]);
+      expect(await ctx.shops.getByMessageId(uuid(26))).toBeUndefined();
+      // Second tick: the cursor advanced on the raw page; the short page holds
+      // the unkeyed shop, which alone gets its key.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads[1]).toEqual({
+        cursor: uuid(20),
+        ids: Array.from({ length: 6 }, (_, index) => uuid(index + 21)),
+      });
+      expect(keyed).toEqual([uuid(26)]);
+      expect(await ctx.shops.getByMessageId(uuid(26))).toBeDefined();
+      // The short raw page reset the cursor to the start.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads[2]?.cursor).toBeNull();
+      expect(reads.every((read) => read.ids.length <= 20)).toBe(true);
+    });
+
+    it('logs shop.nostr_key.failed and continues', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      let calls = 0;
+      const failing = override<ShopIdentityStore>(ctx.shops, {
+        ensureListed: (id, kek) => {
+          calls += 1;
+          return calls === 1 ? Promise.reject(new Error('db')) : ctx.shops.ensureListed(id, kek);
+        },
+      });
+      await tick(ctx, {}, { shopIdentities: failing });
+      expect(logged('shop.nostr_key.failed')).toEqual([
+        expect.objectContaining({ messageId: uuid(1) }),
+      ]);
+      expect(await ctx.shops.getByMessageId(uuid(2))).toBeDefined();
+    });
+
+    it('does nothing without a shop store', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx, ENV, { shopIdentities: undefined as unknown as ShopIdentityStore });
+      expect(await ctx.shops.listAll()).toEqual([]);
+    });
+
+    it('skips the backfill of a tick while the previous backfill is in flight', async () => {
+      const notes = Array.from({ length: 21 }, (_, index) => ({
+        row: shopNote(uuid(index + 1), {
+          text: 'Too short #21GiftsShop',
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        }),
+      }));
+      notes.push({ row: shopNote(uuid(99), { createdAt: new Date(Date.UTC(2026, 0, 2)) }) });
+      const ctx = await context(notes);
+      const step = gate();
+      const read = ctx.shops.listCandidates.bind(ctx.shops);
+      const cursors: Array<string | null> = [];
+      ctx.shops.listCandidates = async (cursor, limit) => {
+        cursors.push(cursor?.id ?? null);
+        const page = await read(cursor, limit);
+        if (cursors.length === 1) {
+          step.enter();
+          await step.held;
+        }
+        return page;
+      };
+      const first = tick(ctx);
+      await step.entered;
+      // The second tick reads no candidate page and leaves the cursor alone.
+      await tick(ctx);
+      expect(cursors).toEqual([null]);
+      step.release();
+      await first;
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeUndefined();
+      // The next tick continues after the first page and reaches the shop.
+      await tick(ctx);
+      expect(cursors).toEqual([null, uuid(20)]);
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeDefined();
+    });
+
+    it('clears the backfill in-flight mark when the candidate read fails', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const read = ctx.shops.listCandidates.bind(ctx.shops);
+      let failures = 1;
+      ctx.shops.listCandidates = (cursor, limit) => {
+        if (failures > 0) {
+          failures -= 1;
+          return Promise.reject(new Error('db down'));
+        }
+        return read(cursor, limit);
+      };
+      await expect(tick(ctx)).rejects.toThrow('db down');
+      await tick(ctx);
+      expect(await ctx.shops.getByMessageId(uuid(1))).toBeDefined();
+    });
+  });
+
+  describe('shop kind 0', () => {
+    it('publishes the listed profile signed by the shop key, once per content', async () => {
+      const ctx = await context([
+        { row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG, JPEG] },
+      ]);
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      expect(verifyEvent(events[0]!)).toBe(true);
+      expect(content(events[0])).toEqual({
+        name: 'Coffee Lab',
+        display_name: 'Coffee Lab',
+        website: `https://21.gifts/${shopNpub(identity)}`,
+        about: 'Fresh coffee roasted here every morning.',
+        banner: `https://api.21.gifts/messages/${uuid(1)}/photo/1.jpg`,
+        picture: `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
+        lud16: 'coffee@example.com',
+        nip05: 'coffee-lab@21.gifts',
+      });
+      expect(logged('nostr.profile.ok')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      await tick(ctx);
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
+    });
+
+    it('reads only the photo content types, also for an unchanged shop', async () => {
+      const ctx = await context([
+        { row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG, JPEG] },
+      ]);
+      // Byte reads of the shop note only: backfillProfileMessages creates the
+      // till account's profile note at the end of the first tick, and signBatch
+      // reads that note's photo in the second tick.
+      const byteReads: string[] = [];
+      const typeReads: string[] = [];
+      const metadataOnly = override<MessageStore>(countingBytes(ctx.messages, byteReads), {
+        getPhotoContentTypes: (id) => {
+          typeReads.push(id);
+          return ctx.messages.getPhotoContentTypes(id);
+        },
+      });
+      // The shop store reads through the counting store as well, so its own
+      // queue syncs count towards the byte reads.
+      ctx.shops = new InMemoryShopIdentityStore(metadataOnly);
+      await tick(ctx, ENV, { messages: metadataOnly });
+      // Unchanged content: the second pass skips the publish after its reads.
+      await tick(ctx, ENV, { messages: metadataOnly });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        banner: `https://api.21.gifts/messages/${uuid(1)}/photo/1.jpg`,
+        picture: `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
+      });
+      expect(typeReads).toEqual([uuid(1), uuid(1)]);
+      expect(byteReads.filter((read) => read.endsWith(`:${uuid(1)}`))).toEqual([]);
+    });
+
+    it('follows a rename with a new local part and profile_name', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx);
+      await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(2);
+      expect(content(events[1])).toMatchObject({ name: 'Roastery', nip05: 'roastery@21.gifts' });
+      expect(events[1]!.created_at).toBeGreaterThan(events[0]!.created_at);
+      expect(identity.profileName).toBe('Roastery');
+    });
+
+    it('does not put an older name back over a rename that committed during the tick', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx);
+      await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      const seen: string[] = [];
+      const racing = override<ShopIdentityStore>(ctx.shops, {
+        renameIfListed: async (note) => {
+          seen.push(note.place!.label!);
+          // A newer rename commits after this tick read the note.
+          await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Bakery' });
+          await ctx.shops.ensureListed(uuid(1), KEK);
+          return ctx.shops.renameIfListed(note);
+        },
+      });
+      await tick(ctx, ENV, { shopIdentities: racing });
+      expect(seen).toEqual(['Roastery']);
+      expect((await ctx.shops.getByMessageId(uuid(1)))?.profileName).toBe('Bakery');
+      // The build outlived its read: no kind 0 with the older name Roastery.
+      const raced = shopEvents(ctx, (await ctx.shops.getByMessageId(uuid(1)))!, 0);
+      expect(raced.map((event) => content(event)['name'])).toEqual(['Coffee Lab']);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
+      // Unlisted before the next tick: the kind 0 keeps the newest name.
+      await ctx.messages.setShopAccount(uuid(1), null);
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(content(events.at(-1))).toMatchObject({ name: 'Bakery' });
+    });
+
+    /** Messages whose `getPhotoContentTypes` (late in the kind 0 build) runs `change` once first. */
+    function changeDuringBuild(ctx: Ctx, change: () => Promise<void>): MessageStore {
+      let done = false;
+      return override<MessageStore>(ctx.messages, {
+        getPhotoContentTypes: async (id) => {
+          if (!done) {
+            done = true;
+            await change();
+          }
+          return ctx.messages.getPhotoContentTypes(id);
+        },
+      });
+    }
+
+    it('publishes no kind 0 from a note renamed during the build, and the new name next', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const messages = changeDuringBuild(ctx, async () => {
+        await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      });
+      await tick(ctx, ENV, { messages });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      // The build read Coffee Lab; the rename came in before the reservation.
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
+      await tick(ctx, ENV, { messages });
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        name: 'Roastery',
+        nip05: 'roastery@21.gifts',
+        about: shopDescription(TEXT),
+      });
+    });
+
+    it('publishes no listed kind 0 from a note hidden during the build, and the hidden one next', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
+      const messages = changeDuringBuild(ctx, async () => {
+        await ctx.messages.markDeleted(uuid(1), new Date(0), 'staff');
+      });
+      await tick(ctx, ENV, { messages });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
+      await tick(ctx, ENV, { messages });
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      // Hidden: no listed name, description, photos or NIP-05 from the older read.
+      expect(content(events[0])).toEqual({
+        name: 'Shop',
+        display_name: 'Shop',
+        website: `https://21.gifts/${shopNpub(identity)}`,
+        about: 'This shop is no longer listed on 21.gifts.',
+      });
+    });
+
+    it('keeps the last listed name for an unlisted shop and uses Shop once it is hidden', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      await ctx.messages.updateText(uuid(1), 'Too short #21GiftsShop');
+      await tick(ctx);
+      await ctx.messages.markDeleted(uuid(1), new Date(0), 'staff');
+      await tick(ctx);
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(3);
+      const website = `https://21.gifts/${shopNpub(identity)}`;
+      expect(content(events[1])).toEqual({
+        name: 'Coffee Lab',
+        display_name: 'Coffee Lab',
+        website,
+        about: 'This shop is no longer listed on 21.gifts.',
+      });
+      expect(content(events[2])).toEqual({
+        name: 'Shop',
+        display_name: 'Shop',
+        website,
+        about: 'This shop is no longer listed on 21.gifts.',
+      });
+    });
+
+    it('uses Shop when the note is gone', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const gone = override<MessageStore>(ctx.messages, {
+        getById: () => Promise.resolve(undefined),
+      });
+      await tick(ctx, ENV, { messages: gone });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(content(shopEvents(ctx, identity, 0)[0])).toMatchObject({ name: 'Shop' });
+    });
+
+    it('falls back like an account profile without a public origin', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
+      const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+      await tick(ctx, env);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const body = content(shopEvents(ctx, identity, 0)[0]);
+      expect(body).toMatchObject({
+        website: `https://21.gifts/${shopNpub(identity)}`,
+        picture: KIND0_PICTURE_URL,
+        banner: KIND0_BANNER_URL,
+      });
+      expect(body['nip05']).toBeUndefined();
+    });
+
+    it('links a dev shop to its own site and uses the banner fallback for one photo', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
+      await tick(ctx, { ...ENV, PUBLIC_BASE_URL: 'https://dev.21.gifts/' });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(content(shopEvents(ctx, identity, 0)[0])).toMatchObject({
+        website: `https://dev.21.gifts/${shopNpub(identity)}`,
+        picture: `https://dev-api.21.gifts/messages/${uuid(1)}/photo.png`,
+        banner: KIND0_BANNER_URL,
+        nip05: 'coffee-lab@dev.21.gifts',
+      });
+    });
+
+    it.each([0, 1, 2])(
+      'takes picture from photo 0 and banner from the still stored at index 1 when index %i has an unrecognized type',
+      async (bad) => {
+        const WEBP: ForumPhoto = { contentType: 'image/webp', bytes: new Uint8Array([6]) };
+        const stills: ForumPhoto[] = [PNG, JPEG, WEBP, PNG];
+        stills[bad] = {
+          contentType: 'image/gif',
+          bytes: new Uint8Array([7]),
+        } as unknown as ForumPhoto;
+        const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: stills }]);
+        await tick(ctx);
+        const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+        // Each field reads its own stored index: an unrecognized photo 0
+        // keeps the banner, and an unrecognized still 1 is not replaced by
+        // still 2.
+        expect(content(shopEvents(ctx, identity, 0)[0])).toMatchObject({
+          picture:
+            bad === 0 ? KIND0_PICTURE_URL : `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
+          banner:
+            bad === 1 ? KIND0_BANNER_URL : `https://api.21.gifts/messages/${uuid(1)}/photo/1.jpg`,
+        });
+      },
+    );
+
+    it('omits lud16 when the till account has no kind 0 address or no username', async () => {
+      for (const till of [
+        account({ lightningAddress: null }),
+        account({ lightningAddress: ' ' }),
+        account({ name: null }),
+        account({ username: null, name: 'Coffee', lightningAddress: 'coffee@example.com' }),
+        account({ username: ' ', name: 'Coffee', lightningAddress: 'coffee@example.com' }),
+        null,
+      ]) {
+        const ctx = await context([{ row: shopNote(uuid(1)) }], till);
+        await tick(ctx);
+        const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+        expect(content(shopEvents(ctx, identity, 0)[0])['lud16']).toBeUndefined();
+      }
+    });
+
+    it('matches the nostr.json entry when a nameless account holds the slug', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.auth.createAccount(
+        account({
+          id: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+          name: null,
+          username: 'coffee-lab',
+          lightningAddress: null,
+          viewKey: '22'.repeat(32),
+          createdAt: 2,
+        }),
+      );
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const nip05 = String(content(shopEvents(ctx, identity, 0)[0])['nip05']);
+      // At the tick's clock: the same cached directory the tick read.
+      const json = await buildNostrJson(
+        ctx.auth,
+        ENV,
+        undefined,
+        { identities: ctx.shops, messages: ctx.messages },
+        clock,
+      );
+      const local = nip05.split('@')[0]!;
+      expect(local).toBe(`coffee-lab-${uuid(1).replace(/-/g, '').slice(0, 8)}`);
+      expect(json.names[local]).toBe(identity.nostrPubkey);
+      expect(json.names['coffee-lab']).not.toBe(identity.nostrPubkey);
+    });
+
+    it('computes the NIP-05 directory once per tick, only for a visited listed shop with a domain', async () => {
+      const directory = vi.mocked(nip05Directory);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      const computations = vi.spyOn(ctx.shops, 'listAll');
+      await tick(ctx);
+      expect(computations).toHaveBeenCalledTimes(1);
+      const identity = (await ctx.shops.getByMessageId(uuid(2)))!;
+      expect(content(shopEvents(ctx, identity, 0)[0])['nip05']).toMatch(
+        /^coffee-lab-.+@21\.gifts$/,
+      );
+
+      directory.mockClear();
+      const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
+      const noDomain = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(noDomain, env);
+      expect(shopEvents(noDomain, (await noDomain.shops.getByMessageId(uuid(1)))!, 0)).toHaveLength(
+        1,
+      );
+
+      const unlisted = await context([{ row: shopNote(uuid(1)) }]);
+      await unlisted.shops.ensureListed(uuid(1), KEK);
+      await unlisted.messages.updateText(uuid(1), 'Only coffee here, no tag at all.');
+      await tick(unlisted);
+      const gone = (await unlisted.shops.getByMessageId(uuid(1)))!;
+      expect(content(shopEvents(unlisted, gone, 0)[0])['nip05']).toBeUndefined();
+      expect(directory).not.toHaveBeenCalled();
+    });
+
+    it('skips shop kind 0 for a tick whose NIP-05 directory read fails, and the tick goes on', async () => {
+      const directory = vi.mocked(nip05Directory);
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      const later: string[] = [];
+      const messages = override<InMemoryMessageStore>(ctx.messages, {
+        claimUnpublished: (limit, nowMs, leaseMs) => {
+          later.push('kind 1');
+          return ctx.messages.claimUnpublished(limit, nowMs, leaseMs);
+        },
+      });
+      const store = new InMemoryConversationStore();
+      const conversations = override<InMemoryConversationStore>(store, {
+        claimUnpublished: (limit, nowMs, leaseMs) => {
+          later.push('conversations');
+          return store.claimUnpublished(limit, nowMs, leaseMs);
+        },
+      });
+      directory.mockClear();
+      directory.mockRejectedValueOnce(new Error('db'));
+      await tick(ctx, ENV, { messages, conversations });
+      expect(directory).toHaveBeenCalledTimes(1);
+      const shops = await ctx.shops.listAll();
+      for (const identity of shops) {
+        expect(shopEvents(ctx, identity, 0)).toHaveLength(0);
+        expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+      }
+      expect(later).toEqual(['kind 1', 'conversations']);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'nip05',
+        },
+      ]);
+      await tick(ctx);
+      for (const identity of shops) {
+        expect(String(content(shopEvents(ctx, identity, 0)[0])['nip05'])).toMatch(/@21\.gifts$/);
+      }
+    });
+
+    /** Run `change` once, right after shop `first` publishes its kind 0. */
+    function afterShopKind0(ctx: Ctx, first: ShopIdentityRow, change: () => Promise<void>): void {
+      const publisher = ctx.publisher;
+      const publish = publisher.publish.bind(publisher);
+      let done = false;
+      publisher.publish = async (event, urls, timeoutMs) => {
+        const acks = await publish(event, urls, timeoutMs);
+        if (!done && event['pubkey'] === first.nostrPubkey && event['kind'] === 0) {
+          done = true;
+          await change();
+        }
+        return acks;
+      };
+    }
+
+    it('refreshes the NIP-05 directory once for a shop renamed after it in the same tick', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      const [first, second] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
+      });
+      const computations = vi.spyOn(ctx.shops, 'listAll');
+      await tick(ctx);
+      // The tick's directory, then one forced refresh.
+      expect(computations).toHaveBeenCalledTimes(2);
+      expect(content(shopEvents(ctx, first!, 0)[0])['nip05']).toBe('coffee-lab@21.gifts');
+      const events = shopEvents(ctx, second!, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({ name: 'Roastery', nip05: 'roastery@21.gifts' });
+      // At the tick's clock: the same cached directory the tick read.
+      const json = await buildNostrJson(
+        ctx.auth,
+        ENV,
+        undefined,
+        { identities: ctx.shops, messages: ctx.messages },
+        clock,
+      );
+      expect(json.names['roastery']).toBe(second!.nostrPubkey);
+      expect(logged('nostr.profile.nack')).toEqual([]);
+    });
+
+    it('refreshes the NIP-05 directory once for a shop listed after it in the same tick', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
+      for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
+      await ctx.messages.updateText(uuid(2), 'Only coffee here, no tag at all.');
+      const [first, second] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.updateText(uuid(2), TEXT);
+      });
+      const computations = vi.spyOn(ctx.shops, 'listAll');
+      await tick(ctx);
+      expect(computations).toHaveBeenCalledTimes(2);
+      const events = shopEvents(ctx, second!, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        name: 'Coffee Lab',
+        nip05: `coffee-lab-${uuid(2).replace(/-/g, '').slice(0, 8)}@21.gifts`,
+      });
+      expect(logged('nostr.profile.nack')).toEqual([]);
+    });
+
+    it('publishes nothing for a shop whose NIP-05 is still stale after the forced refresh', async () => {
+      const ctx = await context([
+        { row: shopNote(uuid(1)) },
+        { row: shopNote(uuid(2)) },
+        { row: shopNote(uuid(3)) },
+      ]);
+      for (const id of [uuid(1), uuid(2), uuid(3)]) await ctx.shops.ensureListed(id, KEK);
+      await ctx.messages.updateText(uuid(3), 'Only coffee here, no tag at all.');
+      const [first, second, third] = await ctx.shops.listAll();
+      afterShopKind0(ctx, first!, async () => {
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
+      });
+      const original = ctx.messages.getByIds.bind(ctx.messages);
+      const notes = vi.spyOn(ctx.messages, 'getByIds');
+      notes.mockImplementationOnce(original).mockImplementationOnce(async (ids) => {
+        // Renamed again before the forced refresh reads the notes, listed again after it.
+        await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Bakery' });
+        const rows = await original(ids);
+        await ctx.messages.updateText(uuid(3), TEXT);
+        return rows;
+      });
+      await tick(ctx);
+      // The tick's directory and one forced refresh; shop 3's miss inside the
+      // refresh gap gets the cached directory and computes nothing.
+      expect(notes).toHaveBeenCalledTimes(2);
+      expect(shopEvents(ctx, first!, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, second!, 0)).toHaveLength(0);
+      expect(shopEvents(ctx, third!, 0)).toHaveLength(0);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(2),
+          reason: 'nip05_stale',
+        },
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(3),
+          reason: 'nip05_stale',
+        },
+      ]);
+      // No rename was written for the stale shop.
+      expect((await ctx.shops.getByMessageId(uuid(2)))?.profileName).toBe('Coffee Lab');
+      await tick(ctx);
+      expect(content(shopEvents(ctx, second!, 0)[0])).toMatchObject({
+        name: 'Bakery',
+        nip05: 'bakery@21.gifts',
+      });
+      expect(content(shopEvents(ctx, third!, 0)[0])).toMatchObject({
+        name: 'Coffee Lab',
+        nip05: `coffee-lab-${uuid(3).replace(/-/g, '').slice(0, 8)}@21.gifts`,
+      });
+    });
+
+    it('clears the cache on a nack and retries on the next tick', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      ctx.publisher.ok = false;
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(logged('nostr.profile.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      expect(logged('nostr.relays.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      ctx.publisher.ok = true;
+      await tick(ctx);
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(2);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(2);
+    });
+
+    it('requires the public ack and copies to the indexer when public publishing is on', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const publisher = ctx.publisher;
+      let publicOk = false;
+      publisher.publish = (event, urls) => {
+        publisher.calls.push({ event, urls: [...urls] });
+        return Promise.resolve(
+          urls.map((url) => ({
+            url,
+            ok: url === 'wss://relay.damus.io' ? publicOk : url !== 'wss://purplepag.es',
+          })),
+        );
+      };
+      await tick(ctx, PUBLIC_ENV);
+      expect(logged('nostr.profile.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      publicOk = true;
+      await tick(ctx, PUBLIC_ENV);
+      expect(logged('nostr.profile.indexer_nack')).toContainEqual({
+        ts: expect.any(String),
+        event: 'nostr.profile.indexer_nack',
+        messageId: uuid(1),
+      });
+      expect(logged('nostr.relays.indexer_nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(
+        publisher.calls.some(
+          (call) =>
+            call.event['pubkey'] === identity.nostrPubkey && call.urls[0] === 'wss://purplepag.es',
+        ),
+      ).toBe(true);
+    });
+
+    it('logs a nack when signing fails', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const broken = override<ShopIdentityStore>(ctx.shops, {
+        getNostrCiphertext: () => Promise.resolve(undefined),
+      });
+      await tick(ctx, ENV, { shopIdentities: broken });
+      expect(logged('nostr.profile.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+      expect(logged('nostr.relays.nack')).toContainEqual(
+        expect.objectContaining({ messageId: uuid(1) }),
+      );
+    });
+
+    it('publishes a new relay list when the write relays change', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const first = shopEvents(ctx, identity, 10002);
+      await tick(ctx, PUBLIC_ENV);
+      const both = shopEvents(ctx, identity, 10002);
+      expect(first).toHaveLength(1);
+      expect(both).toHaveLength(2);
+      expect(both[1]!.created_at).toBeGreaterThan(both[0]!.created_at);
+      expect(both[1]!.tags).toEqual([
+        ['r', 'wss://relay.nostr.space'],
+        ['r', 'wss://relay.damus.io'],
+      ]);
+    });
+
+    it('attempts at most 20 shops per tick', async () => {
+      const notes = Array.from({ length: 21 }, (_, index) => ({ row: shopNote(uuid(index + 1)) }));
+      const ctx = await context(notes);
+      for (const { row } of notes) await ctx.shops.ensureListed(row.id, KEK);
+      const keys = new Set((await ctx.shops.listAll()).map((row) => row.nostrPubkey));
+      const count = (kind: number): number =>
+        ctx.publisher.calls.filter(
+          (call) =>
+            call.event['kind'] === kind &&
+            keys.has(String(call.event['pubkey'])) &&
+            call.urls.includes('wss://relay.nostr.space'),
+        ).length;
+      await tick(ctx);
+      expect(count(0)).toBe(20);
+      expect(count(10002)).toBe(20);
+      await tick(ctx);
+      expect(count(0)).toBe(21);
+      expect(count(10002)).toBe(21);
+    });
+
+    it('publishes a shop behind 20 permanently failing shops within two ticks', async () => {
+      const notes = Array.from({ length: 21 }, (_, index) => ({ row: shopNote(uuid(index + 1)) }));
+      const ctx = await context(notes);
+      for (const { row } of notes) await ctx.shops.ensureListed(row.id, KEK);
+      const failing = new Set(notes.slice(0, 20).map(({ row }) => row.id));
+      const broken = override<ShopIdentityStore>(ctx.shops, {
+        getNostrCiphertext: (id: string) =>
+          failing.has(id) ? Promise.resolve(undefined) : ctx.shops.getNostrCiphertext(id),
+      });
+      const last = (await ctx.shops.getByMessageId(uuid(21)))!;
+      await tick(ctx, ENV, { shopIdentities: broken });
+      expect(shopEvents(ctx, last, 0)).toHaveLength(0);
+      expect(shopEvents(ctx, last, 10002)).toHaveLength(0);
+      await tick(ctx, ENV, { shopIdentities: broken });
+      expect(shopEvents(ctx, last, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, last, 10002)).toHaveLength(1);
+      for (let round = 0; round < 3; round += 1) {
+        await tick(ctx, ENV, { shopIdentities: broken });
+      }
+      expect(shopEvents(ctx, last, 0)).toHaveLength(1);
+      expect(logged('nostr.profile.nack').filter((row) => row['messageId'] === uuid(21))).toEqual(
+        [],
+      );
+    });
+
+    it('walks every kind round robin from the last attempted shop and wraps at the end', async () => {
+      const notes = Array.from({ length: 25 }, (_, index) => ({ row: shopNote(uuid(index + 1)) }));
+      const ctx = await context(notes);
+      for (const { row } of notes) await ctx.shops.ensureListed(row.id, KEK);
+      ctx.publisher.ok = false;
+      const order = (await ctx.shops.listAll()).map((row) => row.messageId);
+      expect(order).toEqual(notes.map(({ row }) => row.id));
+      const attempts = (event: string): string[] =>
+        logged(event)
+          .map((row) => row['messageId'])
+          .filter((id): id is string => typeof id === 'string');
+      const lap = [...order, ...order, ...order];
+      for (let round = 1; round <= 3; round += 1) {
+        await tick(ctx);
+        // 20 attempts per tick and kind, continuing after the last one.
+        expect(attempts('nostr.profile.nack')).toEqual(lap.slice(0, 20 * round));
+        expect(attempts('nostr.relays.nack')).toEqual(lap.slice(0, 20 * round));
+      }
+      // Every shop was attempted within two ticks, and the third tick started
+      // at shop 16 after wrapping past shop 25 in the second.
+      expect(attempts('nostr.profile.nack').slice(40, 41)).toEqual([uuid(16)]);
+      expect(new Set(attempts('nostr.relays.nack').slice(0, 40))).toEqual(new Set(order));
+    });
+
+    /** Message ids of the shops each kind attempted so far, in order. */
+    function attemptsOf(event: string): string[] {
+      return logged(event)
+        .map((row) => row['messageId'])
+        .filter((id): id is string => typeof id === 'string');
+    }
+
+    /** `count` listed shops with keys, in `listAll()` order. */
+    async function listedShops(count: number): Promise<{ ctx: Ctx; order: string[] }> {
+      const notes = Array.from({ length: count }, (_, index) => ({
+        row: shopNote(uuid(index + 1)),
+      }));
+      const ctx = await context(notes);
+      for (const { row } of notes) await ctx.shops.ensureListed(row.id, KEK);
+      const order = (await ctx.shops.listAll()).map((row) => row.messageId);
+      expect(order).toEqual(notes.map(({ row }) => row.id));
+      return { ctx, order };
+    }
+
+    it('counts a shop whose kind 0 fields cannot be read and moves the cursor past it', async () => {
+      const { ctx, order } = await listedShops(25);
+      const shopIds = new Set(order);
+      const messages = override<MessageStore>(ctx.messages, {
+        getById: (id: string) =>
+          shopIds.has(id) ? Promise.reject(new Error('db down')) : ctx.messages.getById(id),
+      });
+      // Without `PUBLIC_BASE_URL` there is no NIP-05 list, so the first
+      // failing read is the shop's own note in its kind 0 fields.
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      await tick(ctx, env, { messages });
+      // Exactly 20 attempts, failures included, not a walk over every shop.
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
+      await tick(ctx, env, { messages });
+      // The next tick continues after shop 20 and wraps at the end.
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual([
+        ...order.slice(20),
+        ...order.slice(0, 15),
+      ]);
+      const keys = new Set((await ctx.shops.listAll()).map((row) => row.nostrPubkey));
+      const shopKind0 = ctx.publisher.calls.filter(
+        (call) => call.event['kind'] === 0 && keys.has(String(call.event['pubkey'])),
+      );
+      expect(shopKind0).toEqual([]);
+    });
+
+    it('reads at most 20 identity rows per pass and kind, never every row', async () => {
+      const { ctx, order } = await listedShops(45);
+      ctx.publisher.ok = false;
+      const pages: Array<{ cursor: string | null; ids: string[] }> = [];
+      const shops = override<ShopIdentityStore>(ctx.shops, {
+        listAll: () => Promise.reject(new Error('listAll must not be read')),
+        listRound: async (cursor, limit) => {
+          expect(limit).toBe(WORKER_BATCH);
+          const rows = await ctx.shops.listRound(cursor, limit);
+          pages.push({ cursor: cursor?.messageId ?? null, ids: rows.map((r) => r.messageId) });
+          return rows;
+        },
+      });
+      // Without `PUBLIC_BASE_URL` there is no NIP-05 directory, which reads
+      // every shop like `/.well-known/nostr.json` does.
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      for (let round = 0; round < 3; round += 1) {
+        await tick(ctx, env, { shopIdentities: shops });
+      }
+      // One page per kind and tick, each at most WORKER_BATCH rows; the third
+      // tick wraps from shop 45 to shop 1 with a second bounded read.
+      expect(pages.map((page) => page.ids.length)).toEqual([20, 20, 20, 20, 20, 20]);
+      const lap = [...order, ...order];
+      for (const [index, page] of pages.entries()) {
+        const start = 20 * Math.floor(index / 2);
+        expect(page.ids).toEqual(lap.slice(start, start + 20));
+        expect(page.cursor).toBe(start === 0 ? null : lap[start - 1]);
+      }
+      // No shop starves: every one of the 45 was visited by both kinds.
+      expect(new Set(attemptsOf('nostr.profile.nack'))).toEqual(new Set(order));
+      expect(new Set(attemptsOf('nostr.relays.nack'))).toEqual(new Set(order));
+    });
+
+    it('computes the NIP-05 directory once per TTL plus one forced refresh, whatever the shop count', async () => {
+      const count = WORKER_BATCH + 5;
+      const { ctx, order } = await listedShops(count);
+      const computations = vi.spyOn(ctx.shops, 'listAll');
+      const notes = vi.spyOn(ctx.messages, 'getByIds');
+      const base = clock + 60_000;
+      const at = async (now: number): Promise<void> => {
+        await runNostrWorkerTick({
+          messages: ctx.messages,
+          auth: ctx.auth,
+          kek: KEK,
+          publisher: ctx.publisher,
+          querier: new RecordingQuerier(),
+          fetchImpl: async () => new Response('{}', { status: 500 }),
+          now: () => now,
+          env: ENV,
+          shopIdentities: ctx.shops,
+        });
+      };
+      // Two ticks visit all 25 listed shops: one directory for both.
+      await at(base);
+      await at(base + WORKER_INTERVAL_MS);
+      expect(new Set(attemptsOf('nostr.profile.ok'))).toEqual(new Set(order));
+      expect(computations).toHaveBeenCalledTimes(1);
+      expect(notes).toHaveBeenCalledTimes(1);
+      // A rename of a shop on the next page forces one refresh; the other
+      // shops of that tick and the next tick read the refreshed cache.
+      const renamed = order[WORKER_BATCH + 1]!;
+      await ctx.messages.setPlace(renamed, { ...shopNote(renamed).place!, label: 'Roastery' });
+      await at(base + 2 * WORKER_INTERVAL_MS);
+      await at(base + 3 * WORKER_INTERVAL_MS);
+      expect(computations).toHaveBeenCalledTimes(2);
+      const identity = (await ctx.shops.getByMessageId(renamed))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(content(events[events.length - 1])).toMatchObject({
+        name: 'Roastery',
+        nip05: 'roastery@21.gifts',
+      });
+      expect(logged('nostr.profile.nack')).toEqual([]);
+      // The TTL ends: the next tick that needs it computes once more.
+      await at(base + 2 * WORKER_INTERVAL_MS + NIP05_DIRECTORY_TTL_MS);
+      expect(computations).toHaveBeenCalledTimes(3);
+      clock = base + 2 * WORKER_INTERVAL_MS + NIP05_DIRECTORY_TTL_MS;
+    });
+
+    it('visits unchanged kind 10002 shops too, so a changed one is reached within a lap', async () => {
+      const { ctx, order } = await listedShops(45);
+      const env = { ...ENV, PUBLIC_BASE_URL: '' };
+      for (let round = 0; round < 3; round += 1) await tick(ctx, env);
+      const relayLists = (): string[] =>
+        logged('nostr.relays.ok')
+          .map((row) => row['messageId'])
+          .filter((id): id is string => typeof id === 'string');
+      expect(relayLists()).toEqual(order);
+      // Every list is cached now; the next three ticks visit 60 rows and
+      // publish none of them, then a relay change reaches every shop.
+      for (let round = 0; round < 3; round += 1) await tick(ctx, env);
+      expect(relayLists()).toHaveLength(45);
+      for (let round = 0; round < 3; round += 1)
+        await tick(ctx, { ...PUBLIC_ENV, PUBLIC_BASE_URL: '' });
+      expect(new Set(relayLists().slice(45))).toEqual(new Set(order));
+    });
+
+    it('reaches a newer shop added after the cursor in the same lap', async () => {
+      const { ctx, order } = await listedShops(25);
+      ctx.publisher.ok = false;
+      await tick(ctx);
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order.slice(0, 20));
+      await ctx.messages.create(shopNote(uuid(26)));
+      await ctx.shops.ensureListed(uuid(26), KEK);
+      expect((await ctx.shops.listAll()).map((row) => row.messageId).at(-1)).toBe(uuid(26));
+      await tick(ctx);
+      const next = [...order.slice(20), uuid(26), ...order.slice(0, 14)];
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(next);
+      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(next);
+    });
+
+    it('wraps to the first shop when no row follows the cursor', async () => {
+      const { ctx, order } = await listedShops(20);
+      ctx.publisher.ok = false;
+      // Tick 1 ends on the last row: the cursor is shop 20.
+      await tick(ctx);
+      expect(attemptsOf('nostr.profile.nack')).toEqual(order);
+      // Tick 2 finds no row after the cursor and starts at shop 1.
+      await tick(ctx);
+      expect(attemptsOf('nostr.profile.nack').slice(20)).toEqual(order);
+      expect(attemptsOf('nostr.relays.nack').slice(20)).toEqual(order);
+    });
+  });
+
+  /** A promise held until `release`, plus one that settles when it is first awaited. */
+  function gate(): {
+    entered: Promise<void>;
+    enter: () => void;
+    held: Promise<void>;
+    release: () => void;
+  } {
+    let enter: () => void = () => undefined;
+    let release: () => void = () => undefined;
+    const entered = new Promise<void>((resolve) => {
+      enter = resolve;
+    });
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    return { entered, enter, held, release };
+  }
+
+  describe('overlapping shop ticks', () => {
+    it('skips the kind 0 pass of a tick while the previous kind 0 pass is in flight', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const step = gate();
+      const read = ctx.shops.getNostrCiphertext.bind(ctx.shops);
+      let reads = 0;
+      ctx.shops.getNostrCiphertext = async (id) => {
+        reads += 1;
+        if (reads === 1) {
+          step.enter();
+          await step.held;
+        }
+        return read(id);
+      };
+      const pages = vi.spyOn(ctx.shops, 'listRound');
+      const first = tick(ctx);
+      await step.entered;
+      expect(pages).toHaveBeenCalledTimes(1);
+      await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      await tick(ctx);
+      // The second tick read only the kind 10002 page and published no kind 0.
+      expect(pages).toHaveBeenCalledTimes(2);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+      step.release();
+      await first;
+      await tick(ctx);
+      const names = shopEvents(ctx, identity, 0).map((event) => content(event)['name']);
+      expect(names).toEqual(['Coffee Lab', 'Roastery']);
+    });
+
+    it('skips the kind 10002 pass of a tick while the previous kind 10002 pass is in flight', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const step = gate();
+      const read = ctx.shops.getNostrCiphertext.bind(ctx.shops);
+      let reads = 0;
+      ctx.shops.getNostrCiphertext = async (id) => {
+        reads += 1;
+        if (reads === 2) {
+          step.enter();
+          await step.held;
+        }
+        return read(id);
+      };
+      const first = tick(ctx);
+      await step.entered;
+      await tick(ctx, PUBLIC_ENV);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 10002)).toEqual([]);
+      step.release();
+      await first;
+      await tick(ctx, PUBLIC_ENV);
+      expect(shopEvents(ctx, identity, 10002).map((event) => event.tags)).toEqual([
+        [['r', 'wss://relay.nostr.space']],
+        [
+          ['r', 'wss://relay.nostr.space'],
+          ['r', 'wss://relay.damus.io'],
+        ],
+      ]);
+    });
+
+    it('clears the in-flight mark when the page read fails', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      await ctx.shops.ensureListed(uuid(1), KEK);
+      const page = ctx.shops.listRound.bind(ctx.shops);
+      let failures = 1;
+      ctx.shops.listRound = (cursor, limit) => {
+        if (failures > 0) {
+          failures -= 1;
+          return Promise.reject(new Error('db down'));
+        }
+        return page(cursor, limit);
+      };
+      await expect(tick(ctx)).rejects.toThrow('db down');
+      await tick(ctx);
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
+      expect(shopEvents(ctx, identity, 10002)).toHaveLength(1);
+    });
   });
 });
