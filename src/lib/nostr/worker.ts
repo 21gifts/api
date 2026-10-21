@@ -1515,12 +1515,14 @@ async function shopKind0Args(
   let banner: string | null = null;
   const apiBase = resolvePublicApiBase(deps.env);
   if (apiBase !== '') {
-    const first = await deps.messages.getPhoto(note.id);
-    if (first !== null) {
-      picture = forumPhotoUrl(apiBase, note.id, first.contentType);
-      const second = (await deps.messages.listExtraPhotos(note.id))[0];
+    // Content types only: this runs before the unchanged-content skip, so
+    // reading the photo bytes here would load them on every pass.
+    const types = await deps.messages.getPhotoContentTypes(note.id);
+    if (types.photo !== null) {
+      picture = forumPhotoUrl(apiBase, note.id, types.photo);
+      const second = types.extras[0];
       if (second !== undefined) {
-        banner = forumExtraPhotoUrl(apiBase, note.id, 1, second.contentType);
+        banner = forumExtraPhotoUrl(apiBase, note.id, 1, second);
       }
     }
   }

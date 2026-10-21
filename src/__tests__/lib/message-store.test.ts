@@ -3089,6 +3089,21 @@ describe('InMemoryMessageStore', () => {
     expect(await store.listExtraPhotos('a')).toEqual([]);
   });
 
+  it('getPhotoContentTypes returns the types of photo 0 and the extras in index order', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+    expect(await store.getPhotoContentTypes('a')).toEqual({ photo: null, extras: [] });
+    await store.replacePhotos('a', [
+      { contentType: 'image/png', bytes: new Uint8Array([1]) },
+      JPEG2,
+      { contentType: 'image/webp', bytes: new Uint8Array([2]) },
+    ]);
+    expect(await store.getPhotoContentTypes('a')).toEqual({
+      photo: 'image/png',
+      extras: ['image/jpeg', 'image/webp'],
+    });
+    expect(await store.getPhotoContentTypes('missing')).toEqual({ photo: null, extras: [] });
+  });
+
   it('create keeps a top-level shop account and clears one on a reply', async () => {
     const store = new InMemoryMessageStore();
     const account = { id: 'shop-acc', username: 'luna', name: 'Luna' };
@@ -7124,6 +7139,31 @@ describe('PostgresMessageStore', () => {
       { idx: 4, photo: JPEG2.bytes, photo_content_type: 'image/jpeg' },
     ];
     expect(await new PostgresMessageStore(sql).listExtraPhotos('m1')).toEqual([JPEG2]);
+  });
+
+  it('getPhotoContentTypes reads photo 0 and the extras in one statement without bytes', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { idx: 0, photo_content_type: 'image/png' },
+      { idx: '1', photo_content_type: 'image/jpeg' },
+      { idx: 2, photo_content_type: 'image/gif' },
+      { idx: 3, photo_content_type: 'image/webp' },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.getPhotoContentTypes('m1')).toEqual({
+      photo: 'image/png',
+      extras: ['image/jpeg', 'image/webp'],
+    });
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]!.text;
+    expect(text).toMatch(/SELECT 0 AS idx, photo_content_type FROM message\s/);
+    expect(text).toMatch(/UNION ALL\s+SELECT idx, photo_content_type FROM message_extra_photo/);
+    expect(text).toMatch(/ORDER BY idx ASC/);
+    // No bytea column is selected: `photo` appears only in null checks.
+    expect(text.replace(/photo IS NOT NULL/g, '')).not.toMatch(/\bphoto\b(?!_)/);
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+    sql.nextRows = [{ idx: 0, photo_content_type: 'image/gif' }];
+    expect(await store.getPhotoContentTypes('m1')).toEqual({ photo: null, extras: [] });
   });
 
   it('getExtraPhoto returns null for an unrecognized content type', async () => {

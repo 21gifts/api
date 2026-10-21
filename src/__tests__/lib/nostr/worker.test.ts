@@ -8024,6 +8024,41 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(shopEvents(ctx, identity, 0)).toHaveLength(1);
     });
 
+    it('reads only the photo content types, also for an unchanged shop', async () => {
+      const ctx = await context([
+        { row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG, JPEG] },
+      ]);
+      // Byte reads of the shop note only: the tick also builds other notes.
+      const byteReads: string[] = [];
+      const typeReads: string[] = [];
+      const metadataOnly = override<MessageStore>(ctx.messages, {
+        getPhoto: (id) => {
+          if (id === uuid(1)) byteReads.push('getPhoto');
+          return ctx.messages.getPhoto(id);
+        },
+        listExtraPhotos: (id) => {
+          if (id === uuid(1)) byteReads.push('listExtraPhotos');
+          return ctx.messages.listExtraPhotos(id);
+        },
+        getPhotoContentTypes: (id) => {
+          typeReads.push(id);
+          return ctx.messages.getPhotoContentTypes(id);
+        },
+      });
+      await tick(ctx, ENV, { messages: metadataOnly });
+      // Unchanged content: the second pass skips the publish after its reads.
+      await tick(ctx, ENV, { messages: metadataOnly });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        banner: `https://api.21.gifts/messages/${uuid(1)}/photo/1.jpg`,
+        picture: `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
+      });
+      expect(typeReads).toEqual([uuid(1), uuid(1)]);
+      expect(byteReads).toEqual([]);
+    });
+
     it('follows a rename with a new local part and profile_name', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }]);
       await tick(ctx);

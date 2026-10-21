@@ -671,6 +671,20 @@ export interface MessageStore {
   listExtraPhotos(id: string): Promise<ForumPhoto[]>;
 
   /**
+   * Content types of the stills of a message id, without reading any photo
+   * bytes: what {@link MessageStore.getPhoto} and
+   * {@link MessageStore.listExtraPhotos} would return, reduced to
+   * `contentType`. Shop kind 0 uses it to build its picture and banner URLs.
+   *
+   * @param id - Message id.
+   * @returns `photo` for photo 0 (`null` when missing / no photo) and `extras`
+   *   for the extra stills, ordered by index ascending (empty when none).
+   */
+  getPhotoContentTypes(
+    id: string,
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }>;
+
+  /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
    * and on-disk videos. A credit note that has received sats is never removed.
    *
@@ -3143,6 +3157,22 @@ export class InMemoryMessageStore implements MessageStore {
    */
   async listExtraPhotos(id: string): Promise<ForumPhoto[]> {
     return (this.#extraPhotos.get(id) ?? []).map(copyPhoto);
+  }
+
+  /**
+   * Content types of photo 0 and of the extra stills for `id`, without
+   * copying any bytes.
+   *
+   * @param id - Message id.
+   * @returns `photo` (`null` when none) and `extras` in index order.
+   */
+  getPhotoContentTypes(
+    id: string,
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }> {
+    return Promise.resolve({
+      photo: this.#photos.get(id)?.contentType ?? null,
+      extras: (this.#extraPhotos.get(id) ?? []).map((photo) => photo.contentType),
+    });
   }
 
   getById(id: string): Promise<MessageRow | undefined> {
@@ -7326,6 +7356,44 @@ export class PostgresMessageStore implements MessageStore {
       extras.push(photo);
     }
     return extras;
+  }
+
+  /**
+   * Content types of photo 0 and of the extra stills for a message id in one
+   * statement that selects no `bytea` column (`photo IS NOT NULL` reads only
+   * the null bitmap). Same filters as {@link PostgresMessageStore.getPhoto}
+   * and {@link PostgresMessageStore.listExtraPhotos}: a null photo or an
+   * unrecognized type is left out.
+   *
+   * @param id - Message id (`$1`).
+   * @returns `photo` (`null` when missing) and `extras` ordered by index ascending.
+   */
+  async getPhotoContentTypes(
+    id: string,
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }> {
+    const rows = await this.#sql.query<{ idx: number | string; photo_content_type: string }>(
+      `SELECT 0 AS idx, photo_content_type FROM message
+       WHERE id = $1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL
+       UNION ALL
+       SELECT idx, photo_content_type FROM message_extra_photo
+       WHERE message_id = $1 AND photo IS NOT NULL
+       ORDER BY idx ASC`,
+      [id],
+    );
+    let photo: ForumPhotoContentType | null = null;
+    const extras: ForumPhotoContentType[] = [];
+    for (const row of rows) {
+      if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+        continue;
+      }
+      const contentType = row.photo_content_type as ForumPhotoContentType;
+      if (Number(row.idx) === 0) {
+        photo = contentType;
+      } else {
+        extras.push(contentType);
+      }
+    }
+    return { photo, extras };
   }
 }
 

@@ -201,7 +201,8 @@ not, in the same loop and with the same rules as account profiles
   failing cannot hold back the shops behind them. Every row of the page
   uses a slot, also a shop whose reads throw or whose content is unchanged
   (for kind 10002 too, so a lap visits every shop within
-  ⌈shops / 20⌉ passes), and a pass reads at most `WORKER_BATCH` shops per
+  ⌈shops / 20⌉ passes, unless a kind 0 pass stops early after a failed
+  NIP-05 allocation), and a pass reads at most `WORKER_BATCH` shops per
   kind (a tick whose previous pass of that kind is still running reads none), also during an outage, plus the NIP-05 allocation: the same listed names as
   `/.well-known/nostr.json` (every account and every shop note), read only
   once a visited shop is listed and the NIP-05 domain is set, at first once
@@ -242,6 +243,12 @@ Kind 0 content of a listed shop:
 | `website`      | `<site origin>/{npub}`, see below                                           |
 | `nip05`        | `<local>@<domain>`, see below                                               |
 | `lud16`        | the till account's Lightning address, see below                             |
+
+The `picture` and `banner` URLs need only the content types of photo 1 and
+photo 2. The worker reads them with `MessageStore.getPhotoContentTypes`, one
+statement that selects no `bytea` column, and not with `getPhoto` /
+`listExtraPhotos`: these reads run on every pass, before the unchanged-content
+skip, so reading the bytes would load up to ten photos per shop every 2 s.
 
 Without a public origin, the shop profile does what an account profile does
 (`publishProfiles`, `buildKind0Content`): when `nip05Domain`

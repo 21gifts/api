@@ -1047,6 +1047,39 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  test('reads the photo content types of a shop note without its bytes', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note({ hasPhoto: true });
+      await ctx.messages.create(row, PNG, undefined, [
+        { contentType: 'image/jpeg', bytes: new Uint8Array([4, 5]) },
+        { contentType: 'image/webp', bytes: new Uint8Array([6]) },
+      ]);
+      expect(await ctx.messages.getPhotoContentTypes(row.id)).toEqual({
+        photo: 'image/png',
+        extras: ['image/jpeg', 'image/webp'],
+      });
+      // Same answer as the byte reads it replaces in shop kind 0.
+      expect((await ctx.messages.getPhoto(row.id))?.contentType).toBe('image/png');
+      expect((await ctx.messages.listExtraPhotos(row.id)).map((p) => p.contentType)).toEqual([
+        'image/jpeg',
+        'image/webp',
+      ]);
+      const plain = ctx.note();
+      await ctx.messages.create(plain);
+      expect(await ctx.messages.getPhotoContentTypes(plain.id)).toEqual({
+        photo: null,
+        extras: [],
+      });
+      expect(await ctx.messages.getPhotoContentTypes(crypto.randomUUID())).toEqual({
+        photo: null,
+        extras: [],
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test('pages the round robin with bounded keyset reads and wraps at the end', async () => {
     const ctx = await setup();
     try {
