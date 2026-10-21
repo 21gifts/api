@@ -249,7 +249,7 @@ photo 2. The worker reads them with `MessageStore.getPhotoContentTypes`, one
 statement that selects no `bytea` column, and not with `getPhoto` /
 `listExtraPhotos`: these reads run on every pass, before the unchanged-content
 skip, so reading the bytes would load up to ten photos per visited shop on
-every pass (up to 200 photos per 2 s tick). The worker itself then reads no
+every pass (up to 200 photos per 2 s tick). The shop kind 0 pass then reads no
 photo bytes; `PostgresShopIdentityStore` queues by triggers and reads none
 either, while `InMemoryShopIdentityStore` (memory boot only) still compares
 every identity's photos on each store call.
