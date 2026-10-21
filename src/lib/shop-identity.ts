@@ -188,8 +188,10 @@ export interface ShopIdentityStore {
    * One raw page of key-backfill candidates: live top-level pinned
    * `#21GiftsShop` notes with a till account, whether or not they already
    * have a key. The page is bounded before the key check, so a lap where
-   * every candidate has a key still reads at most `limit` notes per call;
+   * every candidate has a key still returns at most `limit` rows per call;
    * the caller advances its cursor on this raw page and skips `keyed` rows.
+   * With a cursor, the Postgres read is a separate statement whose cursor is
+   * always an index condition on `message_shop_candidate_idx`.
    *
    * @param cursor - Last row of the previous page, or `null` for the first page.
    * @param limit - Page size.
@@ -1140,18 +1142,28 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   }
 
   async listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]> {
-    // Both reads walk shop_identity_key_order_idx and stop after `limit`
-    // rows. Keys are written from a JavaScript Date, so millisecond cursors
-    // compare exactly.
+    // Every read walks shop_identity_key_order_idx and stops after `limit`
+    // rows. Without a cursor the read has no predicate; with one it has only
+    // the row comparison, so even a cached generic plan of a prepared
+    // statement keeps the cursor as an index condition. Keys are written from
+    // a JavaScript Date, so millisecond cursors compare exactly.
+    if (cursor === null) {
+      const first = await this.#sql.query<IdentitySqlRow>(
+        `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
+         ORDER BY nostr_key_created_at ASC, message_id ASC
+         LIMIT $1`,
+        [limit],
+      );
+      return first.map(mapIdentity);
+    }
     const after = await this.#sql.query<IdentitySqlRow>(
       `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
-       WHERE $1::timestamptz IS NULL
-          OR (nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)
+       WHERE (nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)
        ORDER BY nostr_key_created_at ASC, message_id ASC
        LIMIT $3`,
-      [cursor?.createdAt ?? null, cursor?.messageId ?? null, limit],
+      [cursor.createdAt, cursor.messageId, limit],
     );
-    if (cursor === null || after.length >= limit) return after.map(mapIdentity);
+    if (after.length >= limit) return after.map(mapIdentity);
     const wrapped = await this.#sql.query<IdentitySqlRow>(
       `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
        WHERE (nostr_key_created_at, message_id) <= ($1::timestamptz, $2::uuid)
@@ -1174,17 +1186,30 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     // Walks the partial index message_shop_candidate_idx: the WHERE implies
     // its predicate, and LIMIT bounds the raw page before the key check (an
     // EXISTS in the select list, evaluated per returned row only), so a page
-    // reads at most `limit` notes even when every candidate has a key.
-    const rows = await this.#sql.query<{ id: string; created_at: Date | string; keyed: boolean }>(
-      `SELECT m.id, m.created_at,
+    // returns at most `limit` rows even when every candidate has a key. The
+    // first page has no cursor predicate; every later page has only the row
+    // comparison, so even a cached generic plan of a prepared statement keeps
+    // the cursor as an index condition and never reads the rows before it.
+    type CandidateSqlRow = { id: string; created_at: Date | string; keyed: boolean };
+    const select = `SELECT m.id, m.created_at,
          EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed
        FROM message m
-       WHERE ${LISTED_SHAPE_SQL('m')}
-         AND ($1::timestamptz IS NULL OR (m.created_at, m.id) > ($1::timestamptz, $2::uuid))
+       WHERE ${LISTED_SHAPE_SQL('m')}`;
+    const rows =
+      cursor === null
+        ? await this.#sql.query<CandidateSqlRow>(
+            `${select}
+       ORDER BY m.created_at ASC, m.id ASC
+       LIMIT $1`,
+            [limit],
+          )
+        : await this.#sql.query<CandidateSqlRow>(
+            `${select}
+         AND (m.created_at, m.id) > ($1::timestamptz, $2::uuid)
        ORDER BY m.created_at ASC, m.id ASC
        LIMIT $3`,
-      [cursor?.createdAt ?? null, cursor?.id ?? null, limit],
-    );
+            [cursor.createdAt, cursor.id, limit],
+          );
     return rows.map((row) => ({
       id: row.id,
       createdAt: sqlDate(row.created_at),
@@ -1193,17 +1218,19 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   }
 
   async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {
+    // Two statements, so the cursor is always an index condition on the
+    // primary key, also under a cached generic plan.
+    const page =
+      afterMessageId === null
+        ? 'SELECT message_id FROM shop_identity ORDER BY message_id LIMIT $1'
+        : 'SELECT message_id FROM shop_identity WHERE message_id > $2::uuid ORDER BY message_id LIMIT $1';
     const rows = await this.#sql.query<{ message_id: string }>(
-      `WITH page AS (
-         SELECT message_id FROM shop_identity
-         WHERE ($1::uuid IS NULL OR message_id > $1::uuid)
-         ORDER BY message_id LIMIT $2
-       )
+      `WITH page AS (${page})
        UPDATE shop_identity s SET ocp_place_pending = true,
          ocp_place_generation = s.ocp_place_generation + 1
        FROM page WHERE s.message_id = page.message_id
        RETURNING s.message_id`,
-      [afterMessageId, limit],
+      afterMessageId === null ? [limit] : [limit, afterMessageId],
     );
     return rows.map((row) => row.message_id).sort();
   }

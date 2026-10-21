@@ -710,13 +710,51 @@ describe('shop identity on Postgres', () => {
         execute: (text, params) => ctx.client.execute(text, params),
       };
       const store = new PostgresShopIdentityStore(spy, ctx.messages);
-      expect(await store.listCandidates(null, 50)).toHaveLength(3);
+      const first = await store.listCandidates(null, 50);
+      expect(first).toHaveLength(3);
       const [read] = seen;
+      expect(read!.text).not.toContain('(m.created_at, m.id) >');
       const plan = await ctx.client.query<{ 'QUERY PLAN': unknown }>(
         `EXPLAIN (FORMAT JSON) ${read!.text}`,
         read!.params,
       );
       expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_candidate_idx"');
+      // The page after a cursor is its own statement. Even under the generic
+      // plan a prepared statement may cache, the cursor is an index condition.
+      const cursor = { createdAt: first[0]!.createdAt, id: first[0]!.id };
+      expect((await store.listCandidates(cursor, 50)).map((row) => row.id)).toEqual(
+        first.slice(1).map((row) => row.id),
+      );
+      const after = seen[1]!;
+      expect(after.text).not.toBe(read!.text);
+      expect(after.text).not.toContain('IS NULL OR');
+      expect(after.params).toEqual([cursor.createdAt, cursor.id, 50]);
+      const generic = await ctx.sql.begin(async (tx) => {
+        await tx.unsafe('SET LOCAL plan_cache_mode = force_generic_plan');
+        await tx.unsafe(
+          `PREPARE shop_candidate_after (timestamptz, uuid, bigint) AS ${after.text}`,
+        );
+        const rows = (await tx.unsafe(
+          `EXPLAIN (FORMAT JSON) EXECUTE shop_candidate_after (
+             '${cursor.createdAt.toISOString()}'::timestamptz, '${cursor.id}'::uuid, 50)`,
+        )) as { 'QUERY PLAN': unknown }[];
+        await tx.unsafe('DEALLOCATE shop_candidate_after');
+        return rows;
+      });
+      const nodes: Record<string, unknown>[] = [];
+      const walk = (node: unknown): void => {
+        if (Array.isArray(node)) {
+          node.forEach(walk);
+          return;
+        }
+        if (node === null || typeof node !== 'object') return;
+        const record = node as Record<string, unknown>;
+        if (record['Index Name'] === 'message_shop_candidate_idx') nodes.push(record);
+        Object.values(record).forEach(walk);
+      };
+      walk(generic);
+      expect(nodes).toHaveLength(1);
+      expect(String(nodes[0]!['Index Cond'])).toMatch(/created_at.*\bid\b.*\$1.*\$2/);
     } finally {
       await ctx.cleanup();
     }

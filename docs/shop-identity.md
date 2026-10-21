@@ -97,7 +97,12 @@ builds on that change.
     `message_shop_candidate_idx` on `message` (`created_at`, `id`), limited
     to live top-level notes with a till account and a pin
     (`parent_id IS NULL`, `deleted_at IS NULL`, `shop_account_id IS NOT NULL`,
-    `place_lat IS NOT NULL`), so a tick does not scan every live note.
+    `place_lat IS NOT NULL`), so a tick does not scan every live note, and a
+    page returns at most `limit` rows. The first page has no cursor
+    predicate; every later page is a separate statement with only
+    `(created_at, id) > ($1, $2)`, so the cursor is always an index
+    condition on that index, also under a cached generic plan of the
+    prepared statement, and a page never reads the candidates before it.
     Ticks start without waiting for the previous one, so the backfill
     holds a per-store in-flight mark (cleared also when the page read
     fails): a tick that finds it set skips the backfill without reading.

@@ -894,17 +894,21 @@ describe('PostgresShopIdentityStore', () => {
     // No cursor: one read, also when it is short.
     expect(ids(await store.listRound(null, 20))).toEqual([ID_A]);
     expect(calls).toHaveLength(1);
-    expect(calls[0]?.params).toEqual([null, null, 20]);
-    expect(calls[0]?.text).toContain(
-      '(nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)',
-    );
+    expect(calls[0]?.params).toEqual([20]);
+    expect(calls[0]?.text).not.toContain('WHERE');
     expect(calls[0]?.text).toContain('ORDER BY nostr_key_created_at ASC, message_id ASC');
-    expect(calls[0]?.text).toContain('LIMIT $3');
+    expect(calls[0]?.text).toContain('LIMIT $1');
     const cursor = { createdAt: new Date('2026-10-01T00:00:00Z'), messageId: ID_A };
     // A full page after the cursor: no second read.
     expect(ids(await store.listRound(cursor, 2))).toEqual([ID_A, ID_B]);
     expect(calls).toHaveLength(2);
     expect(calls[1]?.params).toEqual([cursor.createdAt, ID_A, 2]);
+    // Only the row comparison, so the cursor is always an index condition.
+    expect(calls[1]?.text).toContain(
+      'WHERE (nostr_key_created_at, message_id) > ($1::timestamptz, $2::uuid)',
+    );
+    expect(calls[1]?.text).not.toContain('IS NULL');
+    expect(calls[1]?.text).toContain('LIMIT $3');
     // A short page: the second read takes only the rest of the limit.
     expect(ids(await store.listRound(cursor, 2))).toEqual([ID_C, ID_A]);
     expect(calls).toHaveLength(4);
@@ -986,7 +990,9 @@ describe('PostgresShopIdentityStore', () => {
       { id: ID_A, createdAt: created, keyed: true },
       { id: ID_B, createdAt: new Date('2026-01-02T00:00:00Z'), keyed: false },
     ]);
-    expect(calls[0]?.params).toEqual([null, null, 20]);
+    expect(calls[0]?.params).toEqual([20]);
+    expect(calls[0]?.text).not.toContain('(m.created_at, m.id) >');
+    expect(calls[0]?.text).toContain('LIMIT $1');
     // The key check is per returned row, after the LIMIT, not a filter.
     expect(calls[0]?.text).toContain(
       'EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed',
@@ -995,14 +1001,23 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[0]?.text).toContain("m.text ~* '#21giftsshop([^a-z0-9_]|$)'");
     await store.listCandidates({ createdAt: created, id: ID_A }, 5);
     expect(calls[1]?.params).toEqual([created, ID_A, 5]);
+    // Only the row comparison, so the cursor is always an index condition.
+    expect(calls[1]?.text).toContain('AND (m.created_at, m.id) > ($1::timestamptz, $2::uuid)');
+    expect(calls[1]?.text).not.toContain('$1::timestamptz IS NULL');
+    expect(calls[1]?.text).toContain('LIMIT $3');
   });
 
   it('queues a page of identities by message id', async () => {
-    const { sql, calls } = fakeSql([[{ message_id: ID_B }, { message_id: ID_A }]]);
+    const { sql, calls } = fakeSql([[{ message_id: ID_B }, { message_id: ID_A }], []]);
     const store = new PostgresShopIdentityStore(sql, messages);
     expect(await store.queueAllPlacePage(null, 200)).toEqual([ID_A, ID_B]);
-    expect(calls[0]?.params).toEqual([null, 200]);
+    expect(calls[0]?.params).toEqual([200]);
+    expect(calls[0]?.text).not.toContain('WHERE message_id >');
     expect(calls[0]?.text).toContain('ocp_place_generation = s.ocp_place_generation + 1');
+    expect(await store.queueAllPlacePage(ID_B, 200)).toEqual([]);
+    expect(calls[1]?.params).toEqual([200, ID_B]);
+    expect(calls[1]?.text).toContain('WHERE message_id > $2::uuid ORDER BY message_id LIMIT $1');
+    expect(calls[1]?.text).not.toContain('IS NULL');
   });
 
   it('claims places and photos with the database clock', async () => {

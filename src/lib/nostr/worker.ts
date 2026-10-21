@@ -948,7 +948,8 @@ const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
  * keyed and rejected notes and resets to the start only after a short raw
  * page, so neither an incomplete note nor a run of keyed shops holds the slot
  * of an unkeyed listed shop behind it, and a lap over keyed shops never reads
- * more than one page per tick. A new key queues the place push. A failure logs `shop.nostr_key.failed`.
+ * more than one page per tick. A new key queues the place push.
+ * A failure logs `shop.nostr_key.failed`.
  * While a backfill for the same store is still in flight (ticks start
  * without waiting for the previous one), the tick skips it, reading
  * nothing, so overlapping ticks never stack scans or key generation and an

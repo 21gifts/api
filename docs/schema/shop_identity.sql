@@ -47,6 +47,8 @@ $shop_identity$;
 -- Keyset order of the shop publishers' round robin (ShopIdentityStore.listRound):
 -- each worker pass reads at most WORKER_BATCH rows after a cursor
 -- (nostr_key_created_at, message_id), and wraps with a second bounded read.
+-- The read without a cursor and the read after it are separate statements, so
+-- the cursor is always an index condition.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
@@ -60,8 +62,11 @@ $shop_identity$;
 -- top-level pinned notes with a till account, keyed or not; the key check is
 -- an EXISTS in the select list, evaluated only for the rows the LIMIT returns.
 -- The partial index holds only those notes, so the page does not scan every
--- live note, and it reads at most one page also once every shop has its key.
--- The query's WHERE implies the index predicate.
+-- live note, and it returns at most `limit` rows also once every shop has its
+-- key. The query's WHERE implies the index predicate. The first page has no
+-- cursor predicate; every later page is a separate statement with only
+-- (created_at, id) > ($1, $2), so the cursor is always an index condition,
+-- also under a cached generic plan of the prepared statement.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
