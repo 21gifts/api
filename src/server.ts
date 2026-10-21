@@ -504,6 +504,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/.well-known',
     wellKnownRoutes({
       auth: store,
+      env,
       fetchImpl,
       posStore,
       now,
