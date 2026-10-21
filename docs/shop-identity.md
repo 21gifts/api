@@ -89,6 +89,12 @@ builds on that change.
     till account and a pin (`parent_id IS NULL`, `deleted_at IS NULL`,
     `shop_account_id IS NOT NULL`, `place_lat IS NOT NULL`), so a tick does
     not scan every live note, also once every shop has its key.
+    Ticks start without waiting for the previous one, so the backfill
+    holds a per-store in-flight mark (cleared also when the page read
+    fails): a tick that finds it set skips the backfill without reading.
+    Overlapping ticks therefore never stack candidate scans or key
+    generation, and an older pass cannot set the cursor back to an earlier
+    page.
     After it creates a key, it queues the OpenCryptoPay place push of S5
     for that shop, so a failed mint at the write is repaired without another
     edit. The key insert, outbox columns, write-path queueing, backfill
@@ -532,6 +538,12 @@ Rules for every claim:
   is not a busy loop. Each instance therefore has at most one photo upload
   in flight, and the paged start-up pass does not send every shop's photos
   at once.
+- The place sender runs serialised the same way, with its own timer: the
+  next pass of at most `WORKER_BATCH` rows starts `WORKER_INTERVAL_MS`
+  after the previous one settled, also after a failure. A slow pass
+  (database or OpenCryptoPay) therefore never stacks further passes; each
+  instance has at most one place pass in flight. Stopping the worker
+  clears both timers, and a pass still in flight then schedules no other.
 - Every write after a claim that clears a pending flag or stores a hash is
   also conditional on the generation `g`, including the writes of the paths
   that send nothing; if a newer change was queued meanwhile, the worker only

@@ -405,13 +405,15 @@ export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise
 }
 
 /**
- * Start both outbox lanes: the place pass on a fixed interval (claims keep
- * two passes apart), and the photo pass serialised, each pass scheduled
- * `intervalMs` after the previous one settled, so each instance has at most
- * one photo upload in flight.
+ * Start both outbox lanes, each serialised: a lane schedules its next pass
+ * `intervalMs` after the previous one settled (also after a failure), so
+ * each instance has at most one place pass and one photo upload in flight
+ * and a slow pass never stacks database or HTTP work. `stop` clears both
+ * pending timers; a pass still in flight then settles without scheduling
+ * another.
  *
  * @param deps - Identities, messages and the map target.
- * @param intervalMs - Tick interval (default `WORKER_INTERVAL_MS`).
+ * @param intervalMs - Delay between passes of a lane (default `WORKER_INTERVAL_MS`).
  * @returns Handle whose `stop` ends both lanes.
  */
 export function startOcpOutboxWorker(
@@ -419,27 +421,27 @@ export function startOcpOutboxWorker(
   intervalMs: number = WORKER_INTERVAL_MS,
 ): { stop: () => void } {
   let stopped = false;
-  let photoTimer: ReturnType<typeof setTimeout> | undefined;
-  const runPhoto = (): void => {
-    void runOcpPhotoOutboxPass(deps)
-      .catch((error: unknown) => {
-        logEvent('ocp.photos.failed', errorLogFields(error));
-      })
-      .finally(() => {
-        if (!stopped) photoTimer = setTimeout(runPhoto, intervalMs);
-      });
+  const lane = (pass: (deps: OcpOutboxDeps) => Promise<void>, failed: string): (() => void) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const run = (): void => {
+      void pass(deps)
+        .catch((error: unknown) => {
+          logEvent(failed, errorLogFields(error));
+        })
+        .finally(() => {
+          if (!stopped) timer = setTimeout(run, intervalMs);
+        });
+    };
+    timer = setTimeout(run, intervalMs);
+    return () => clearTimeout(timer);
   };
-  photoTimer = setTimeout(runPhoto, intervalMs);
-  const placeTimer = setInterval(() => {
-    void runOcpPlaceOutboxPass(deps).catch((error: unknown) => {
-      logEvent('ocp.place.failed', errorLogFields(error));
-    });
-  }, intervalMs);
+  const stopPlace = lane(runOcpPlaceOutboxPass, 'ocp.place.failed');
+  const stopPhoto = lane(runOcpPhotoOutboxPass, 'ocp.photos.failed');
   return {
     stop: () => {
       stopped = true;
-      clearInterval(placeTimer);
-      clearTimeout(photoTimer);
+      stopPlace();
+      stopPhoto();
     },
   };
 }

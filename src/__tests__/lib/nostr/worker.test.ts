@@ -7995,6 +7995,57 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       await tick(ctx, ENV, { shopIdentities: undefined as unknown as ShopIdentityStore });
       expect(await ctx.shops.listAll()).toEqual([]);
     });
+
+    it('skips the backfill of a tick while the previous backfill is in flight', async () => {
+      const notes = Array.from({ length: 21 }, (_, index) => ({
+        row: shopNote(uuid(index + 1), {
+          text: 'Too short #21GiftsShop',
+          createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)),
+        }),
+      }));
+      notes.push({ row: shopNote(uuid(99), { createdAt: new Date(Date.UTC(2026, 0, 2)) }) });
+      const ctx = await context(notes);
+      const step = gate();
+      const read = ctx.shops.listCandidates.bind(ctx.shops);
+      const cursors: Array<string | null> = [];
+      ctx.shops.listCandidates = async (cursor, limit) => {
+        cursors.push(cursor?.id ?? null);
+        const page = await read(cursor, limit);
+        if (cursors.length === 1) {
+          step.enter();
+          await step.held;
+        }
+        return page;
+      };
+      const first = tick(ctx);
+      await step.entered;
+      // The second tick reads no candidate page and leaves the cursor alone.
+      await tick(ctx);
+      expect(cursors).toEqual([null]);
+      step.release();
+      await first;
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeUndefined();
+      // The next tick continues after the first page and reaches the shop.
+      await tick(ctx);
+      expect(cursors).toEqual([null, uuid(20)]);
+      expect(await ctx.shops.getByMessageId(uuid(99))).toBeDefined();
+    });
+
+    it('clears the backfill in-flight mark when the candidate read fails', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const read = ctx.shops.listCandidates.bind(ctx.shops);
+      let failures = 1;
+      ctx.shops.listCandidates = (cursor, limit) => {
+        if (failures > 0) {
+          failures -= 1;
+          return Promise.reject(new Error('db down'));
+        }
+        return read(cursor, limit);
+      };
+      await expect(tick(ctx)).rejects.toThrow('db down');
+      await tick(ctx);
+      expect(await ctx.shops.getByMessageId(uuid(1))).toBeDefined();
+    });
   });
 
   describe('shop kind 0', () => {

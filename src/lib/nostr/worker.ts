@@ -935,6 +935,9 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
 
 const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor | null>();
 
+/** Stores whose shop key backfill is in flight in this process. */
+const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
+
 /**
  * Create keys for listed shops that have none (S1 backfill), at most
  * `WORKER_BATCH` candidates per tick. Candidates are live top-level pinned
@@ -943,22 +946,33 @@ const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor |
  * `id`) moves past rejected notes and wraps around after a short page, so
  * an incomplete note never holds the slot of a listed shop behind it. A new
  * key queues the place push. A failure logs `shop.nostr_key.failed`.
+ * While a backfill for the same store is still in flight (ticks start
+ * without waiting for the previous one), the tick skips it, reading
+ * nothing, so overlapping ticks never stack scans or key generation and an
+ * older pass cannot set the cursor back to an earlier page.
  *
  * @param deps - Worker deps (`shopIdentities`, `kek`).
+ * @returns Resolves when the pass ended (the in-flight mark is cleared also
+ *   when the page read throws).
  */
 async function backfillShopKeys(deps: NostrWorkerDeps): Promise<void> {
   const shops = deps.shopIdentities;
-  if (shops === undefined) return;
-  const cursor = shopBackfillCursors.get(shops) ?? null;
-  const page = await shops.listCandidates(cursor, WORKER_BATCH);
-  const last = page[page.length - 1];
-  shopBackfillCursors.set(shops, page.length < WORKER_BATCH || last === undefined ? null : last);
-  for (const candidate of page) {
-    try {
-      await shops.ensureListed(candidate.id, deps.kek);
-    } catch {
-      logEvent('shop.nostr_key.failed', { messageId: candidate.id });
+  if (shops === undefined || shopBackfillInFlight.has(shops)) return;
+  shopBackfillInFlight.add(shops);
+  try {
+    const cursor = shopBackfillCursors.get(shops) ?? null;
+    const page = await shops.listCandidates(cursor, WORKER_BATCH);
+    const last = page[page.length - 1];
+    shopBackfillCursors.set(shops, page.length < WORKER_BATCH || last === undefined ? null : last);
+    for (const candidate of page) {
+      try {
+        await shops.ensureListed(candidate.id, deps.kek);
+      } catch {
+        logEvent('shop.nostr_key.failed', { messageId: candidate.id });
+      }
     }
+  } finally {
+    shopBackfillInFlight.delete(shops);
   }
 }
 

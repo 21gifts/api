@@ -899,7 +899,7 @@ describe('queueAllShopPlaces', () => {
 });
 
 describe('startOcpOutboxWorker', () => {
-  it('runs the place lane on an interval and the photo lane serialised until stopped', async () => {
+  it('runs both lanes serialised on the interval until stopped', async () => {
     vi.useFakeTimers();
     const ids = stubIdentities();
     ids.claimPlaces.mockResolvedValue([]);
@@ -939,6 +939,59 @@ describe('startOcpOutboxWorker', () => {
     expect(ids.claimPhoto).toHaveBeenCalledTimes(1);
     expect(logged('ocp.place.failed')).toHaveLength(1);
     expect(logged('ocp.photos.failed')).toHaveLength(1);
+  });
+
+  it('starts the next place pass only after the previous one settled', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    let finish: ((claims: ShopOcpClaim[]) => void) | undefined;
+    ids.claimPlaces.mockImplementationOnce(
+      () =>
+        new Promise<ShopOcpClaim[]>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(550);
+    // Five intervals passed; the blocked pass is the only one started.
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    finish?.([]);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(2);
+    handle.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(2);
+  });
+
+  it('starts no place pass after stop while a pass is in flight', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    let finish: ((claims: ShopOcpClaim[]) => void) | undefined;
+    ids.claimPlaces.mockImplementationOnce(
+      () =>
+        new Promise<ShopOcpClaim[]>((resolve) => {
+          finish = resolve;
+        }),
+    );
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(100);
+    handle.stop();
+    finish?.([]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it('defaults to the worker interval', async () => {
