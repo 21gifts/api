@@ -208,11 +208,12 @@ export interface ShopIdentityStore {
   queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
   /**
    * Claim pending places (lease by the database clock), least recently
-   * claimed first: rows never claimed or released (`ocp_place_claimed_until`
+   * claimed first: rows never claimed or settled (`ocp_place_claimed_until`
    * null) first, then by the end of their last lease, then by `message_id`.
-   * A row whose send failed keeps its lease until it ends, so the next
-   * claims take the rows behind it before it is picked again, and rows that
-   * keep failing never hold the place of later shops.
+   * A row whose send failed keeps its lease until it ends, and a released
+   * row counts as a lease that ended at the release, so the next claims take
+   * the rows behind it before it is picked again, and rows that keep failing
+   * or keep being released never hold the place of later shops.
    *
    * @param limit - Most rows to claim.
    * @param leaseMs - Lease length.
@@ -222,7 +223,8 @@ export interface ShopIdentityStore {
   /**
    * Claim one pending photo set whose place is not pending, least recently
    * claimed first (`ocp_photos_claimed_until` null first, then by the end of
-   * the last lease, then by `message_id`), so a set that keeps failing never
+   * the last lease, a release counting as a lease that ended then, then by
+   * `message_id`), so a set that keeps failing or keeps being released never
    * holds the place of later shops.
    *
    * @param leaseMs - Lease length.
@@ -235,7 +237,8 @@ export interface ShopIdentityStore {
    * @param lane - Place or photo lane.
    * @param claim - Claim to check.
    * @param minimumMs - Lease time the next request needs.
-   * @returns `true` when the claim holds at least `minimumMs` longer.
+   * @returns `true` when the lease has not ended (a released lease ended at
+   *   the release) and the claim holds at least `minimumMs` longer.
    */
   leaseHasTime(lane: ShopOcpLane, claim: ShopOcpClaim, minimumMs: number): Promise<boolean>;
   /**
@@ -253,7 +256,9 @@ export interface ShopIdentityStore {
    */
   nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined>;
   /**
-   * Release the lease (conditional on the claim token).
+   * Release the lease (conditional on the claim token): its end becomes the
+   * current time, so the row is claimable at once but goes behind rows
+   * never claimed and behind leases that ended earlier.
    *
    * @param lane - Place or photo lane.
    * @param claim - Claim to release.
@@ -804,7 +809,10 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const row = this.#claimed(lane, claim);
     if (row === undefined) return Promise.resolve(false);
     const until = lane === 'place' ? row.ocpPlaceClaimedUntil : row.ocpPhotosClaimedUntil;
-    return Promise.resolve(until !== null && until.getTime() >= this.#now() + minimumMs);
+    const nowMs = this.#now();
+    return Promise.resolve(
+      until !== null && until.getTime() > nowMs && until.getTime() >= nowMs + minimumMs,
+    );
   }
 
   async nextRevision(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<number | undefined> {
@@ -824,8 +832,9 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void> {
     const row = this.#claimed(lane, claim);
     if (row !== undefined) {
-      if (lane === 'place') row.ocpPlaceClaimedUntil = null;
-      else row.ocpPhotosClaimedUntil = null;
+      const now = new Date(this.#now());
+      if (lane === 'place') row.ocpPlaceClaimedUntil = now;
+      else row.ocpPhotosClaimedUntil = now;
     }
     return Promise.resolve();
   }
@@ -923,7 +932,8 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   /**
    * Rows in claim order (the `ORDER BY … claimed_until ASC NULLS FIRST,
    * message_id` of the Postgres adapter): a null lease first, then the
-   * earliest lease end, then the message id (the sort is stable).
+   * earliest lease end (a release stores its time as the end), then the
+   * message id (the sort is stable).
    */
   #leastRecentlyClaimed(until: (row: ShopIdentityRow) => Date | null): ShopIdentityRow[] {
     const key = (row: ShopIdentityRow): number => until(row)?.getTime() ?? Number.MIN_SAFE_INTEGER;
@@ -1332,6 +1342,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     const rows = await this.#sql.query<{ ok: number }>(
       `SELECT 1 AS ok FROM shop_identity
        WHERE message_id = $1 AND ${prefix}_claim = $2
+         AND ${prefix}_claimed_until > now()
          AND ${prefix}_claimed_until >= now() + ($3::bigint * interval '1 millisecond')`,
       [claim.messageId, claim.claim, minimumMs],
     );
@@ -1358,7 +1369,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   async release(lane: ShopOcpLane, claim: ShopOcpClaim): Promise<void> {
     const prefix = lanePrefix(lane);
     await this.#sql.execute(
-      `UPDATE shop_identity SET ${prefix}_claimed_until = NULL
+      `UPDATE shop_identity SET ${prefix}_claimed_until = now()
        WHERE message_id = $1 AND ${prefix}_claim = $2`,
       [claim.messageId, claim.claim],
     );

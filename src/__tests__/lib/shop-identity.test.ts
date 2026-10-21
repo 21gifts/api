@@ -646,13 +646,35 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await round()).toEqual([ID_B, ID_A]);
     clock.now += 60_000;
     expect(await round()).toEqual([ID_C, ID_A]);
-    // A released claim (null lease) is due before every expired one.
+    clock.now += 60_000;
+    // B's lease ended first; its claim is released a second after the leases of A and C ended.
     const [released] = await store.claimPlaces(1, 60_000);
     expect(released?.messageId).toBe(ID_B);
+    clock.now += 1_000;
     await store.release('place', released!);
-    clock.now += 60_000;
-    // A and C share a lease end again, so the id decides.
-    expect(await round()).toEqual([ID_B, ID_A]);
+    expect((await store.getByMessageId(ID_B))?.ocpPlaceClaimedUntil).toEqual(new Date(clock.now));
+    // A released claim counts as a lease that ended at the release: A and C, whose
+    // leases ended earlier, go first.
+    expect(await round()).toEqual([ID_A, ID_C]);
+    expect(await round()).toEqual([ID_B]);
+  });
+
+  it('still claims the other places when one is released on every pass', async () => {
+    const { store, clock } = setup([shopRow(ID_A), shopRow(ID_B)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    const claimed: string[] = [];
+    for (let pass = 0; pass < 6; pass += 1) {
+      const [claim] = await store.claimPlaces(1, 60_000);
+      claimed.push(claim!.messageId);
+      // A gets 409 Stale revision on every pass and is released; B fails and keeps its lease.
+      if (claim!.messageId === ID_A) await store.release('place', claim!);
+      clock.now += 25_000;
+    }
+    // Pass 2: B, never claimed, goes before the released A. B's lease runs to 85 s, so A goes on
+    // passes 3 and 4; on pass 5 (100 s) A's release at 75 s ended before B's lease, on pass 6
+    // (125 s) B's lease ended before A's release at 100 s. A null release would give A every pass.
+    expect(claimed).toEqual([ID_A, ID_B, ID_A, ID_A, ID_A, ID_B]);
   });
 
   it('claims the least recently claimed photo set first, so failing sets never starve later shops', async () => {
@@ -691,6 +713,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await store.leaseHasTime('photos', claim, 0)).toBe(false);
     expect(await store.leaseHasTime('place', { ...claim, messageId: 'missing' }, 0)).toBe(false);
     expect(await store.leaseHasTime('photos', { ...claim, messageId: 'missing' }, 0)).toBe(false);
+    // A released lease ends now: the claim still matches but has no time left.
     await store.release('place', claim);
     expect(await store.leaseHasTime('place', claim, 0)).toBe(false);
   });
@@ -720,16 +743,20 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await store.nextRevision('place', place!)).toBe(2);
   });
 
-  it('releases only with the matching token, for either lane', async () => {
-    const { store, claim } = await claimed();
+  it('releases only with the matching token, for either lane, ending the lease now', async () => {
+    const { store, clock, claim } = await claimed();
     await store.release('place', { ...claim, claim: 9 });
-    expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).not.toBeNull();
+    expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(
+      new Date(clock.now + 60_000),
+    );
+    clock.now += 1_000;
     await store.release('place', claim);
-    expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toBeNull();
+    expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(new Date(clock.now));
     await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'put');
     const photo = (await store.claimPhoto(60_000))!;
+    clock.now += 1_000;
     await store.release('photos', photo);
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosClaimedUntil).toBeNull();
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosClaimedUntil).toEqual(new Date(clock.now));
   });
 
   it('records each place result', async () => {
@@ -892,12 +919,22 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.deferPhotos(photo, true);
     expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(placeUntil);
 
-    await store.release('photos', photo);
     await store.release('place', place);
+    clock.now += 1_000;
+    await store.release('photos', photo);
     await store.deferPhotos(photo, true);
+    // A released lease ends at the release: the place lease is lifted to the later photo release.
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPlacePending: true,
-      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaimedUntil: new Date(clock.now),
+      ocpPhotosClaimedUntil: new Date(clock.now),
+    });
+
+    // A settled photo claim (null lease) leaves the place lease as it is.
+    await store.clearPhotoWithoutSend(photo);
+    await store.deferPhotos(photo, true);
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      ocpPlaceClaimedUntil: new Date(clock.now),
       ocpPhotosClaimedUntil: null,
     });
   });
@@ -1170,6 +1207,7 @@ describe('PostgresShopIdentityStore', () => {
     const store = new PostgresShopIdentityStore(sql, messages);
     const claim = { messageId: ID_A, generation: 1, claim: 2 };
     expect(await store.leaseHasTime('place', claim, 15_000)).toBe(true);
+    expect(calls[0]?.text).toContain('ocp_place_claimed_until > now()');
     expect(calls[0]?.text).toContain('ocp_place_claimed_until >= now()');
     expect(calls[0]?.params).toEqual([ID_A, 2, 15_000]);
     expect(await store.leaseHasTime('photos', claim, 40_000)).toBe(false);
@@ -1201,8 +1239,8 @@ describe('PostgresShopIdentityStore', () => {
     await store.renameIfListed(shopRow(ID_A));
     await store.deferPhotos(claim, false);
     await store.deferPhotos(claim, true);
-    expect(calls[0]?.text).toContain('ocp_place_claimed_until = NULL');
-    expect(calls[1]?.text).toContain('ocp_photos_claimed_until = NULL');
+    expect(calls[0]?.text).toContain('ocp_place_claimed_until = now()');
+    expect(calls[1]?.text).toContain('ocp_photos_claimed_until = now()');
     expect(calls[2]?.text).toContain('ocp_place_claim = $2');
     expect(calls[3]?.params).toEqual([ID_A, 6, 4, false, true]);
     expect(calls[4]?.params).toEqual([ID_A, 6, 4, true, false]);

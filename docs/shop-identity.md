@@ -611,17 +611,26 @@ for one shop must never be in flight at once:
   existing claims need no token because their writes are idempotent; here a
   request that outlived its lease could otherwise overwrite newer state on
   OpenCryptoPay.
-- A claim takes the least recently claimed rows first
-  (`ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id`, and the
-  same with `ocp_photos_claimed_until` for photos): rows never claimed, or
-  whose claim was released or settled (`claimed_until` null), then the
-  earliest lease end, then the message id. A failed send keeps its claim
-  until the lease ends; ordered by `message_id` alone, the same lowest ids
-  would be picked again each time their leases end, and with more failing
-  rows than one lease window holds (30 photo claims, 600 place claims at
-  `WORKER_BATCH` 20 every `WORKER_INTERVAL_MS` 2 s within `WORKER_LEASE_MS`
-  60 s) the shops behind them would never be sent. With this order every
-  pending row is claimed before a failed one is claimed again.
+
+The claim order also differs, because rows whose sends fail must not starve
+the shops behind them. A claim takes the least recently claimed rows first
+(`ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id`, and the
+same with `ocp_photos_claimed_until` for photos): rows never claimed, or
+whose last claim settled (`claimed_until` null), then the earliest lease
+end, then the message id. A failed send keeps its claim until the lease
+ends. A released claim (for example after 409 `Stale revision` or a lease
+too short to send) sets `claimed_until = now()`: the row is claimable at
+once, but it goes behind rows never claimed and behind leases that ended
+earlier, as if its lease had ended at the release. Ordered by
+`message_id` alone, the same lowest ids would be picked again each time
+their leases end, and with more failing rows than one lease window holds
+(30 photo claims, 600 place claims at `WORKER_BATCH` 20 every
+`WORKER_INTERVAL_MS` 2 s within `WORKER_LEASE_MS` 60 s) the shops behind
+them would never be sent; a null release would put a row that is released
+on every pass ahead of every other row each time, so a repeated
+`Stale revision` would hold the photo lane (one row per pass) or, with as
+many such rows as a batch holds, every place batch. With this order every pending row is claimed before a failed or
+released one is claimed again.
 
 Rules for every claim:
 
@@ -671,7 +680,8 @@ Rules for every claim:
 - Every write after a claim that clears a pending flag or stores a hash is
   also conditional on the generation `g`, including the writes of the paths
   that send nothing; if a newer change was queued meanwhile, the worker only
-  releases the claim, and the newer change is sent next.
+  ends the claim (`claimed_until` null, as for a settled row, since the
+  newer change has not been tried yet), and the newer change is sent next.
 
 ### Place outbox
 

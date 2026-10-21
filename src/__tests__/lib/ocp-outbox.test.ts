@@ -829,6 +829,48 @@ describe('OpenCryptoPay main without the photo route', () => {
   });
 });
 
+describe('a photo set that gets 409 Stale revision on every pass', () => {
+  it('goes behind the other pending sets, so they are still sent', async () => {
+    const OTHER = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+    const messages = new InMemoryMessageStore();
+    await messages.create(shopNote(), PNG);
+    await messages.create(shopNote({ id: OTHER }), JPEG);
+    const clock = { now: 1_000_000 };
+    const store = new InMemoryShopIdentityStore(messages, () => clock.now);
+    const kek = new Uint8Array(32).fill(7);
+    const stale = (await store.ensureListed(ID, kek))!.nostrPubkey;
+    await store.ensureListed(OTHER, kek);
+    const { push, sent } = mapPush((url) => {
+      if (!url.endsWith('/photos')) return new Response('{"created":false}', { status: 200 });
+      return sent.at(-1)?.body['nostrPubkey'] === stale
+        ? new Response('{"error":"Stale revision"}', { status: 409 })
+        : new Response('{"photos":[],"skipped":[]}', { status: 200 });
+    });
+    const outbox = deps(store, messages, push);
+    await runOcpPlaceOutboxPass(outbox);
+    for (let pass = 0; pass < 3; pass += 1) {
+      await runOcpPhotoOutboxPass(outbox);
+      clock.now += 2_000;
+    }
+    // The stale set goes first by id and is released; the other set, never
+    // claimed, goes next, and the stale set is tried again after it. A null
+    // release would claim the stale set on every pass.
+    expect(
+      sent
+        .filter((request) => request.url.endsWith('/photos'))
+        .map((request) => (request.body['nostrPubkey'] === stale ? ID : OTHER)),
+    ).toEqual([ID, OTHER, ID]);
+    expect(await store.getByMessageId(OTHER)).toMatchObject({
+      ocpPhotosPending: false,
+      ocpPhotosHash: ocpPhotoSetHash([JPEG]),
+    });
+    expect(await store.getByMessageId(ID)).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosHash: null,
+    });
+  });
+});
+
 describe('a photo pass that read the photos before a place change', () => {
   /**
    * A listed shop whose place is confirmed and whose photos are pending, and
@@ -886,7 +928,8 @@ describe('a photo pass that read the photos before a place change', () => {
       ocpRevision: 1,
       ocpPlacePending: true,
       ocpPhotosPending: true,
-      ocpPhotosClaimedUntil: null,
+      // Released without a request: the lease ended at the release.
+      ocpPhotosClaimedUntil: new Date(1_000_000),
     });
     // The place lane deletes with the next revision; the photos are dropped.
     await runOcpPlaceOutboxPass(ctx.outbox);
@@ -920,7 +963,8 @@ describe('a photo pass that read the photos before a place change', () => {
       ocpPlacePending: true,
       ocpPhotosPending: true,
       ocpPhotosHash: stored,
-      ocpPhotosClaimedUntil: null,
+      // Released without a request: the lease ended at the release.
+      ocpPhotosClaimedUntil: new Date(1_000_000),
     });
   });
 
@@ -939,7 +983,8 @@ describe('a photo pass that read the photos before a place change', () => {
       ocpRevision: 2,
       ocpPlacePending: false,
       ocpPhotosPending: false,
-      ocpPhotosClaimedUntil: null,
+      // Released without a request: the lease ended at the release.
+      ocpPhotosClaimedUntil: new Date(1_000_000),
     });
   });
 

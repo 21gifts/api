@@ -4,11 +4,12 @@
  *
  * Both lanes claim rows of `shop_identity` with a lease by the database
  * clock and a claim token, least recently claimed first, so rows whose sends
- * keep failing (and keep their claims until the lease ends) never hold the
- * place of later shops. Every request carries the next `revision` of the
- * shop's shared counter. The worker decides at send time from the note as
- * it is then: a listed shop gets `PUT /map/places`, anything else
- * `DELETE /map/places`.
+ * keep failing (and keep their claims until the lease ends) or that are
+ * released on every pass (a release goes behind never-claimed rows and
+ * leases that ended earlier) never hold the place of later shops. Every
+ * request carries the next `revision` of the shop's shared counter. The
+ * worker decides at send time from the note as it is then: a listed shop
+ * gets `PUT /map/places`, anything else `DELETE /map/places`.
  */
 
 import { createHash } from 'node:crypto';

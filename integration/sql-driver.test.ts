@@ -922,6 +922,16 @@ describe('shop identity on Postgres', () => {
       expect(await places()).toEqual([a, c]);
       // B's lease ended a round before those of A and C.
       expect(await places()).toEqual([a, b]);
+      // C's lease ended first. Its next claim is released after the leases of
+      // A and B ended, which counts as a lease that ended at the release, so
+      // A and B go before C.
+      await Bun.sleep(5);
+      const [held] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(held?.messageId).toBe(c);
+      await Bun.sleep(5);
+      await ctx.shops.release('place', held!);
+      expect(await ctx.shops.leaseHasTime('place', held!, 0)).toBe(false);
+      expect(await places()).toEqual([a, b]);
       // Confirm every place, which queues every photo set.
       await Bun.sleep(5);
       const confirmed = await ctx.shops.claimPlaces(20, 60_000);
@@ -1146,7 +1156,15 @@ describe('shop identity on Postgres', () => {
 
       answers.push({ status: 409, body: '{"error":"Stale revision"}' });
       await runOcpPlaceOutboxPass(deps);
-      expect(await state()).toMatchObject({ ocpPlacePending: true, ocpPlaceClaimedUntil: null });
+      expect((await state()).ocpPlacePending).toBe(true);
+      // The release ends the lease at the database's now: claimable at once, not null.
+      expect(
+        await ctx.client.query<{ due: boolean }>(
+          `SELECT ocp_place_claimed_until IS NOT NULL AND ocp_place_claimed_until <= now() AS due
+           FROM shop_identity WHERE message_id = $1`,
+          [row.id],
+        ),
+      ).toEqual([{ due: true }]);
 
       answers.push({ status: 200, body: '{}' });
       await runOcpPlaceOutboxPass(deps);
