@@ -439,7 +439,10 @@ export async function nip05Directory(
   const slot = directorySlot(auth, shops);
   if (refresh) {
     const sinceForced = now - slot.forcedAt;
-    if (slot.forced === undefined && (sinceForced < 0 || sinceForced >= NIP05_DIRECTORY_REFRESH_MS)) {
+    if (
+      slot.forced === undefined &&
+      (sinceForced < 0 || sinceForced >= NIP05_DIRECTORY_REFRESH_MS)
+    ) {
       slot.forcedAt = now;
       const forced = computeDirectory(slot, auth, shops, now).finally(() => {
         slot.forced = undefined;

@@ -495,6 +495,7 @@ describe('nip05', () => {
         id: '00000000-0000-4000-8000-000000000002',
         name: 'Bea',
         username: 'bakery',
+        viewKey: 'bc'.repeat(32),
         createdAt: 2,
       });
       await auth.createAccount(bea);
