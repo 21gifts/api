@@ -271,9 +271,10 @@ export interface MessagesRouteDeps {
   spendPing?: SpendPing;
   /**
    * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * a complete write; DELETE on clear, hide, or an incomplete place/text
-   * pair re-read after a place/text write). Omitted → the forum write still
-   * succeeds and nothing is sent.
+   * a complete write; DELETE on clear, hide, an incomplete place/text pair
+   * re-read after a place/text write, or a note gone or hidden at its queue
+   * turn on PATCH place, text, or shop-account). Omitted → the forum write
+   * still succeeds and nothing is sent.
    */
   mapPush?: MapPush;
   /**
