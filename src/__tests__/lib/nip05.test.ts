@@ -1,10 +1,11 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import {
   allocateNip05Local,
   buildNostrJson,
+  listNip05Entries,
   listShopNip05Entries,
   nip05Domain,
   nip05Identifier,
@@ -24,6 +25,32 @@ function account(partial: Partial<Account> & Pick<Account, 'id' | 'name'>): Acco
     createdAt: 1,
     rulesAgreedAt: null,
     ...partial,
+  };
+}
+
+function shop(id: string, label: string, overrides: Partial<MessageRow> = {}): MessageRow {
+  return {
+    id,
+    accountId: 'author',
+    name: 'Ada',
+    text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+    createdAt: new Date('2026-10-01T00:00:00Z'),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    place: {
+      lat: 47.3,
+      lng: 8.5,
+      label,
+      address: {
+        street: 'Main Street',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    },
+    shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+    ...overrides,
   };
 }
 
@@ -190,29 +217,6 @@ describe('nip05', () => {
   });
 
   it('allocates listed shops after the accounts with one bulk read of their notes', async () => {
-    const shop = (id: string, label: string, overrides: Partial<MessageRow> = {}): MessageRow => ({
-      id,
-      accountId: 'author',
-      name: 'Ada',
-      text: 'Fresh coffee roasted here every morning. #21GiftsShop',
-      createdAt: new Date('2026-10-01T00:00:00Z'),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-      place: {
-        lat: 47.3,
-        lng: 8.5,
-        label,
-        address: {
-          street: 'Main Street',
-          houseNumber: '1',
-          postalCode: '8001',
-          city: 'Zürich',
-          country: 'CH',
-        },
-      },
-      shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
-      ...overrides,
-    });
     const ids = [1, 2, 3].map((n) => `0000000${String(n)}-0000-4000-8000-000000000000`);
     const messages = new InMemoryMessageStore([
       shop(ids[0]!, 'Ada'),
@@ -245,5 +249,43 @@ describe('nip05', () => {
       [ids[2], 'Bakery', 'bakery'],
     ]);
     expect(reads).toEqual({ getById: 0, getByIds: 1 });
+  });
+
+  it('reads the accounts once per nostr.json, so a shop never takes the local part of an account', async () => {
+    const shopId = '00000003-0000-4000-8000-000000000000';
+    const messages = new InMemoryMessageStore([shop(shopId, 'Bakery')]);
+    const shops = new InMemoryShopIdentityStore(messages);
+    await shops.ensureListed(shopId, new Uint8Array(32).fill(7));
+    const auth = new InMemoryAuthStore();
+    const baker = account({ id: '00000000-0000-4000-8000-000000000001', name: 'Bakery' });
+    await auth.createAccount(baker);
+    await auth.setNostrKeyIfAbsent(baker.id, {
+      pubkey: 'aa'.repeat(32),
+      ciphertext: new Uint8Array(16),
+      kekId: 1,
+      custody: 'custodial',
+    });
+    const first = await auth.listAccounts();
+    // A later read no longer sees the account (renamed or merged in between).
+    const listAccounts = vi
+      .spyOn(auth, 'listAccounts')
+      .mockResolvedValueOnce(first)
+      .mockResolvedValue([]);
+    const body = await buildNostrJson(auth, {}, undefined, { identities: shops, messages });
+    expect(listAccounts).toHaveBeenCalledTimes(1);
+    const shopKey = (await shops.getByMessageId(shopId))!.nostrPubkey;
+    expect(body.names).toEqual({ bakery: 'aa'.repeat(32), 'bakery-00000003': shopKey });
+    expect(body.relays[shopKey]).toBeDefined();
+    listAccounts.mockResolvedValueOnce(first);
+    const filtered = await buildNostrJson(auth, {}, ' Bakery-00000003 ', {
+      identities: shops,
+      messages,
+    });
+    expect(filtered.names).toEqual({ 'bakery-00000003': shopKey });
+    // Without a snapshot, each list reads the accounts itself.
+    listAccounts.mockClear();
+    expect(await listNip05Entries(auth)).toEqual([]);
+    expect((await listShopNip05Entries(auth, shops, messages))[0]?.local).toBe('bakery');
+    expect(listAccounts).toHaveBeenCalledTimes(2);
   });
 });

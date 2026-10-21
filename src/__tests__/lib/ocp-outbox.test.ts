@@ -13,6 +13,7 @@ import {
   startOcpOutboxWorker,
   type OcpOutboxDeps,
 } from '@/lib/ocp-outbox';
+import { WORKER_LEASE_MS } from '@/lib/nostr/worker';
 import {
   InMemoryShopIdentityStore,
   type ShopIdentityRow,
@@ -88,7 +89,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     listRound: vi.fn(),
     renameIfListed: vi.fn(),
     listCandidates: vi.fn(),
-    queueAllPlacePage: vi.fn(),
+    queueAllPlacePage: vi.fn(() => Promise.resolve([])),
     claimPlaces: vi.fn(() => Promise.resolve([CLAIM])),
     claimPhoto: vi.fn(() => Promise.resolve(CLAIM)),
     leaseHasTime: vi.fn(() => Promise.resolve(true)),
@@ -1065,6 +1066,129 @@ describe('startOcpOutboxWorker', () => {
     await vi.advanceTimersByTimeAsync(100);
     expect(ids.claimPlaces).toHaveBeenCalledTimes(2);
     handle.stop();
+  });
+
+  it('runs the start-up pass at once and retries it until every identity is queued', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const all = Array.from({ length: 250 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const queued = new Set<string>();
+    let failures = 0;
+    ids.queueAllPlacePage.mockImplementation((after: string | null, limit: number) => {
+      if (after !== null && failures === 0) {
+        failures += 1;
+        return Promise.reject(Object.assign(new Error('upstream body text'), { code: '57P01' }));
+      }
+      const page = all.filter((id) => after === null || id > after).slice(0, limit);
+      for (const id of page) queued.add(id);
+      return Promise.resolve(page);
+    });
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    // Page 1 was queued, page 2 failed: logged with the safe fields only.
+    expect(queued.size).toBe(200);
+    expect(logged('ocp.place.failed')).toEqual([
+      expect.objectContaining({
+        pass: 'startup',
+        attempt: 1,
+        retryInMs: 100,
+        name: 'Error',
+        code: '57P01',
+      }),
+    ]);
+    expect(JSON.stringify(logged('ocp.place.failed'))).not.toContain('upstream body text');
+    await vi.advanceTimersByTimeAsync(100);
+    // The retry starts again at the first page and queues the rest.
+    expect(ids.queueAllPlacePage.mock.calls.map((call) => call[0])).toEqual([
+      null,
+      'id-199',
+      null,
+      'id-199',
+    ]);
+    expect([...queued].sort()).toEqual(all);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(4);
+    expect(logged('ocp.place.failed')).toHaveLength(1);
+    handle.stop();
+  });
+
+  it('doubles the start-up retry delay up to the lease time', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    ids.queueAllPlacePage.mockRejectedValue(new Error('db'));
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      25_000,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(25_000);
+    await vi.advanceTimersByTimeAsync(50_000);
+    await vi.advanceTimersByTimeAsync(WORKER_LEASE_MS - 1);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(3);
+    await vi.advanceTimersByTimeAsync(1);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(4);
+    expect(
+      logged('ocp.place.failed')
+        .filter((line) => line['pass'] === 'startup')
+        .map((line) => [line['attempt'], line['retryInMs']]),
+    ).toEqual([
+      [1, 25_000],
+      [2, 50_000],
+      [3, WORKER_LEASE_MS],
+      [4, WORKER_LEASE_MS],
+    ]);
+    handle.stop();
+  });
+
+  it('schedules no start-up retry when stopped during the backoff', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    ids.queueAllPlacePage.mockRejectedValue(new Error('db'));
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(1);
+    handle.stop();
+    expect(vi.getTimerCount()).toBe(0);
+    await vi.advanceTimersByTimeAsync(WORKER_LEASE_MS * 2);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(1);
+  });
+
+  it('logs a start-up failure that settles after stop without a retry', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    let fail: (() => void) | undefined;
+    ids.queueAllPlacePage.mockImplementationOnce(
+      () =>
+        new Promise((_, reject) => {
+          fail = () => reject(new Error('db'));
+        }),
+    );
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    handle.stop();
+    fail?.();
+    await vi.advanceTimersByTimeAsync(WORKER_LEASE_MS * 2);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(1);
+    expect(vi.getTimerCount()).toBe(0);
+    const [line] = logged('ocp.place.failed');
+    expect(line).toEqual(expect.objectContaining({ pass: 'startup', attempt: 1, name: 'Error' }));
+    expect(line).not.toHaveProperty('retryInMs');
   });
 
   it('defaults to the worker interval', async () => {

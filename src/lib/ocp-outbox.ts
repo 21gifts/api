@@ -405,9 +405,12 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
  * Start-up pass: queue the place push of every `shop_identity` row with
  * keyset paging by `message_id` ({@link OCP_STARTUP_PAGE} per page). It
  * decides nothing; the place sender does at send time.
+ * {@link startOcpOutboxWorker} runs it and retries it from the first page
+ * until one attempt succeeds.
  *
  * @param identities - Shop identity store.
  * @returns Number of rows queued.
+ * @throws When a page read fails; the rows of earlier pages stay queued.
  */
 export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise<number> {
   let cursor: string | null = null;
@@ -422,23 +425,51 @@ export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise
 }
 
 /**
- * Start both outbox lanes, each serialised: a lane schedules its next pass
- * `intervalMs` after the previous one settled (also after a failure), so
- * each instance has at most one place pass and one photo upload in flight
- * and a slow pass never stacks database or HTTP work (a place pass settles
- * only after all its claimed rows settled). `stop` clears both
- * pending timers; a pass still in flight then settles without scheduling
- * another.
+ * Start the start-up pass and both outbox lanes.
+ *
+ * The start-up pass ({@link queueAllShopPlaces}) starts at once. When it
+ * fails (a page read throws), it logs `ocp.place.failed` with
+ * `pass: 'startup'`, the attempt number, `retryInMs` and the safe error
+ * fields, and runs again from the first page after `intervalMs`, doubling the
+ * delay per failed attempt up to `WORKER_LEASE_MS`, until one attempt
+ * succeeds. Queueing a row twice is harmless, so a retry does not resume at
+ * the failed page. A failure after `stop` is logged without `retryInMs` and
+ * not retried.
+ *
+ * Each lane is serialised: it schedules its next pass `intervalMs` after the
+ * previous one settled (also after a failure), so each instance has at most
+ * one place pass and one photo upload in flight and a slow pass never stacks
+ * database or HTTP work (a place pass settles only after all its claimed rows
+ * settled). `stop` clears the pending retry of the start-up pass and both
+ * pending lane timers; a pass still in flight then settles without
+ * scheduling another.
  *
  * @param deps - Identities, messages and the map target.
- * @param intervalMs - Delay between passes of a lane (default `WORKER_INTERVAL_MS`).
- * @returns Handle whose `stop` ends both lanes.
+ * @param intervalMs - Delay between passes of a lane and first retry delay
+ *   of the start-up pass (default `WORKER_INTERVAL_MS`).
+ * @returns Handle whose `stop` ends the start-up retries and both lanes.
  */
 export function startOcpOutboxWorker(
   deps: OcpOutboxDeps,
   intervalMs: number = WORKER_INTERVAL_MS,
 ): { stop: () => void } {
   let stopped = false;
+  let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  const startup = (attempt: number): void => {
+    void queueAllShopPlaces(deps.identities).catch((error: unknown) => {
+      const fields = { pass: 'startup', attempt, ...errorLogFields(error) };
+      if (stopped) {
+        logEvent('ocp.place.failed', fields);
+        return;
+      }
+      const retryInMs = Math.min(intervalMs * 2 ** (attempt - 1), WORKER_LEASE_MS);
+      logEvent('ocp.place.failed', { ...fields, retryInMs });
+      startupTimer = setTimeout(() => {
+        startup(attempt + 1);
+      }, retryInMs);
+    });
+  };
+  startup(1);
   const lane = (pass: (deps: OcpOutboxDeps) => Promise<void>, failed: string): (() => void) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = (): void => {
@@ -458,6 +489,7 @@ export function startOcpOutboxWorker(
   return {
     stop: () => {
       stopped = true;
+      clearTimeout(startupTimer);
       stopPlace();
       stopPhoto();
     },

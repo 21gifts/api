@@ -20,7 +20,7 @@ import { InMemoryMessageStore } from './lib/message-store';
 import { seedDevShopPlaces } from './lib/dev-shop-places';
 import { resolveMapPush } from './lib/ocp-place';
 import { InMemoryShopIdentityStore } from './lib/shop-identity';
-import { queueAllShopPlaces, startOcpOutboxWorker } from './lib/ocp-outbox';
+import { startOcpOutboxWorker } from './lib/ocp-outbox';
 import { resolveSpendPing } from './lib/spend-ping';
 import { syncWelcomePing } from './lib/welcome-media';
 import { resolveZapRelays, resolveZapReadRelays } from './lib/nostr/relays';
@@ -187,9 +187,7 @@ if (import.meta.main) {
   });
   const mapPush = resolveMapPush(process.env, globalThis.fetch);
   if (mapPush !== undefined) {
-    void queueAllShopPlaces(shopIdentities).catch(() => {
-      console.warn(JSON.stringify({ event: 'ocp.place.failed' }));
-    });
+    // Also runs the start-up pass (queueAllShopPlaces) and retries it until it succeeds.
     startOcpOutboxWorker({ identities: shopIdentities, messages: forumMessages, mapPush });
   }
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();

@@ -3,6 +3,7 @@
  */
 
 import type { Account, AuthStore } from '@/lib/auth/store';
+import { logEvent } from '@/lib/log';
 import { resolveWriteSet, writeRelayUrls } from '@/lib/nostr/relays';
 import type { MessageStore } from '@/lib/message-store';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
@@ -211,11 +212,18 @@ function allocateAccountLocals(accounts: readonly Account[]): {
  * username and a skipped/blank name are included. Nameless accounts
  * without a username are skipped.
  *
- * @param auth - Auth store.
+ * @param auth - Auth store (pubkeys; also the accounts when `accounts` is omitted).
+ * @param accounts - Optional snapshot of every account. A caller that also
+ *   allocates shop locals passes the snapshot it gives
+ *   {@link listShopNip05Entries}, so both allocations see the same accounts.
+ *   Omitted, the accounts are read once with `auth.listAccounts()`.
  * @returns Directory rows.
  */
-export async function listNip05Entries(auth: AuthStore): Promise<Nip05Entry[]> {
-  const { rows } = allocateAccountLocals(await auth.listAccounts());
+export async function listNip05Entries(
+  auth: AuthStore,
+  accounts?: readonly Account[],
+): Promise<Nip05Entry[]> {
+  const { rows } = allocateAccountLocals(accounts ?? (await auth.listAccounts()));
   const entries: Nip05Entry[] = [];
   for (const { account, local } of rows) {
     const pubkey = await auth.getNostrPublicKey(account.id);
@@ -251,21 +259,28 @@ export interface ShopNip05Entry {
  * the current shop name. Shops that are not listed get no local.
  *
  * Cost per call, like the account directory of `/.well-known/nostr.json`
- * that it extends: one read of every account, one of every shop identity and
- * one bulk read of their notes ({@link MessageStore.getByIds}), no read per
- * shop.
+ * that it extends: one read of every account (none when `accounts` is
+ * given), one of every shop identity and one bulk read of their notes
+ * ({@link MessageStore.getByIds}), no read per shop.
  *
- * @param auth - Auth store.
+ * @param auth - Auth store (read only when `accounts` is omitted).
  * @param shops - Shop identities (ordered by key creation).
  * @param messages - Forum store that decides whether a shop is listed.
+ * @param accounts - Optional snapshot of every account. A caller that
+ *   combines these entries with the account entries of
+ *   {@link listNip05Entries} passes both the same snapshot; a second read
+ *   could miss an account renamed or merged in between, and a shop could then
+ *   get the local part that account already holds. Omitted, the accounts are
+ *   read once with `auth.listAccounts()`.
  * @returns One entry per listed shop with a key.
  */
 export async function listShopNip05Entries(
   auth: AuthStore,
   shops: ShopIdentityStore,
   messages: MessageStore,
+  accounts?: readonly Account[],
 ): Promise<ShopNip05Entry[]> {
-  const { taken } = allocateAccountLocals(await auth.listAccounts());
+  const { taken } = allocateAccountLocals(accounts ?? (await auth.listAccounts()));
   const identities = await shops.listAll();
   // One bulk read of every shop note instead of one read per shop.
   const notes = new Map(
@@ -289,6 +304,14 @@ export async function listShopNip05Entries(
 /**
  * NIP-05 `nostr.json` body (names + recommended relays).
  *
+ * Reads every account once per call and gives that one snapshot to the
+ * account allocation ({@link listNip05Entries}) and the shop allocation
+ * ({@link listShopNip05Entries}), so a rename or merge between two reads
+ * cannot give a shop the local part of an account in the same body. Account
+ * entries are written first; a shop entry whose local part an account
+ * already holds is never written over it (it is skipped and logged as
+ * `nip05.shop.collision` with the shop's message id).
+ *
  * @param auth - Auth store.
  * @param env - Process env for write-set relays.
  * @param nameFilter - Optional `?name=` filter (NIP-05 clients send this).
@@ -302,18 +325,28 @@ export async function buildNostrJson(
   nameFilter?: string,
   shops?: { identities: ShopIdentityStore; messages: MessageStore },
 ): Promise<{ names: Record<string, string>; relays: Record<string, string[]> }> {
-  const entries: Array<{ local: string; pubkey: string }> = await listNip05Entries(auth);
-  if (shops !== undefined) {
-    entries.push(...(await listShopNip05Entries(auth, shops.identities, shops.messages)));
-  }
-  const filtered =
-    nameFilter === undefined || nameFilter.trim() === ''
-      ? entries
-      : entries.filter((row) => row.local === nameFilter.trim().toLowerCase());
+  const accounts = await auth.listAccounts();
+  const accountEntries = await listNip05Entries(auth, accounts);
+  const shopEntries =
+    shops === undefined
+      ? []
+      : await listShopNip05Entries(auth, shops.identities, shops.messages, accounts);
+  const needle = nameFilter?.trim().toLowerCase() ?? '';
+  const keep = (row: { local: string }): boolean => needle === '' || row.local === needle;
   const names: Record<string, string> = {};
   const relays: Record<string, string[]> = {};
   const relayList = writeRelayUrls(resolveWriteSet(env));
-  for (const row of filtered) {
+  for (const row of accountEntries.filter(keep)) {
+    names[row.local] = row.pubkey;
+    relays[row.pubkey] = relayList;
+  }
+  for (const row of shopEntries.filter(keep)) {
+    /* v8 ignore start -- both allocations share one account snapshot and every account local seeds the shop allocation, so a shop never gets an account's local part */
+    if (Object.hasOwn(names, row.local)) {
+      logEvent('nip05.shop.collision', { messageId: row.messageId });
+      continue;
+    }
+    /* v8 ignore stop */
     names[row.local] = row.pubkey;
     relays[row.pubkey] = relayList;
   }

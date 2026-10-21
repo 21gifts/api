@@ -80,7 +80,7 @@
 
 ## Endpoint: GET /.well-known/nostr.json
 
-- **Purpose:** NIP-05 directory `{ names, relays }`. Account locals are allocated first (stored username wins over display-name slug; nameless accounts with a stored username are included), then currently listed shops in stable shop-key creation order. CORS `*`. Optional `?name=` filters either kind.
+- **Purpose:** NIP-05 directory `{ names, relays }`. Account locals are allocated first (stored username wins over display-name slug; nameless accounts with a stored username are included), then currently listed shops in stable shop-key creation order. Both allocations use one read of the accounts per request, so a shop never takes an account's local. CORS `*`. Optional `?name=` filters either kind.
 - **Errors:** 503 `{ error: 'Directory is unavailable' }`.
 - **Used by:** Damus verification; app proxies this from the site apex.
 - **Auth:** none.

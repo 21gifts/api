@@ -1169,7 +1169,7 @@
 - **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
 - **Inputs:** `event` string, optional `LogFields`.
 - **Returns / side effects:** void.
-- **Used by:** Auth, me, lightning-address, requestLog; the shop key paths (`shop.nostr_key.failed` from worker `backfillShopKeys`, `ensureShopIdentity` in `messagesRoutes`, `PUT /me/about`, and `POST /debug/messages/:id/restore`); worker `publishShopProfiles` and `publishShopRelayLists` (`nostr.profile.*`, `nostr.relays.*`); the OpenCryptoPay outbox (`ocp.place.*`, `ocp.photos.*`); `shopRoutes` (`shops.detail.failed`).
+- **Used by:** Auth, me, lightning-address, requestLog; the shop key paths (`shop.nostr_key.failed` from worker `backfillShopKeys`, `ensureShopIdentity` in `messagesRoutes`, `PUT /me/about`, and `POST /debug/messages/:id/restore`); worker `publishShopProfiles` and `publishShopRelayLists` (`nostr.profile.*`, `nostr.relays.*`); the OpenCryptoPay outbox (`ocp.place.*` including the start-up retries of `startOcpOutboxWorker`, `ocp.photos.*`); `shopRoutes` (`shops.detail.failed`); `buildNostrJson` (`nip05.shop.collision`, defensive).
 
 ## Function: setDiagnosticSink
 
@@ -1182,7 +1182,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass; `ocp.place.failed`, `ocp.photos.failed`), and `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), and `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`).
 
 ## Function: meRoutes
 
@@ -2766,9 +2766,9 @@
 
 ## Function: buildNostrJson
 
-- **Purpose:** NIP-05 `names` + `relays` map for `GET /.well-known/nostr.json`, with account locals allocated before listed-shop locals.
+- **Purpose:** NIP-05 `names` + `relays` map for `GET /.well-known/nostr.json`, with account locals allocated before listed-shop locals. Reads every account once per call (`auth.listAccounts()`) and passes that one snapshot to `listNip05Entries` and `listShopNip05Entries`, so a username change or merge between two reads cannot give a shop the local part of an account in the same body.
 - **Inputs:** auth store, env, optional name filter, and optional `{ identities, messages }` (shop identities and the forum store).
-- **Returns / side effects:** JSON body. With shops, the locals of `listShopNip05Entries` follow the account locals of `listNip05Entries`; `?name=` filters both kinds.
+- **Returns / side effects:** JSON body. With shops, the locals of `listShopNip05Entries` follow the account locals of `listNip05Entries`; `?name=` filters both kinds. Account entries are written first and a shop entry never overwrites one: a shop whose local an account already holds is skipped and logged as `nip05.shop.collision` with its `messageId` (defensive; the shared snapshot already prevents it). Reads only.
 - **Used by:** `wellKnownRoutes`.
 
 ## Function: readVideoTakenAt
@@ -2830,8 +2830,8 @@
 ## Function: listNip05Entries
 
 - **Purpose:** Named accounts with pubkeys, oldest first, unique locals.
-- **Inputs:** auth store.
-- **Returns / side effects:** `Nip05Entry[]`.
+- **Inputs:** auth store, optional snapshot of every account. Without the snapshot it reads the accounts once with `auth.listAccounts()`; `buildNostrJson` passes the snapshot it also gives `listShopNip05Entries`.
+- **Returns / side effects:** `Nip05Entry[]`. Reads only (the accounts unless given, and one pubkey read per eligible account).
 - **Used by:** `buildNostrJson`.
 
 ## Function: normalizeIsoBmffDisplayMatrix
@@ -3575,8 +3575,8 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 ## Function: listShopNip05Entries
 
 - **Purpose:** NIP-05 locals of listed shops. Allocates the account locals first with the set and order of `listNip05Entries` (every account with a stored username or a name, oldest first, stored usernames reserved first), then each listed shop in `nostr_key_created_at`, then `message_id` order with `allocateNip05Local(shopName, messageId, taken)`. An account never loses its local to a shop; a rename or a new account that takes the slug gives the shop a new local.
-- **Inputs:** Auth store, shop identity store, message store.
-- **Returns / side effects:** `[{ messageId, name, pubkey, local }]` for listed shops with a key. Reads only: like the account directory of `/.well-known/nostr.json`, every call reads every account and every shop identity, and then every shop note in one bulk read (`MessageStore.getByIds`), not one read per shop.
+- **Inputs:** Auth store, shop identity store, message store, optional snapshot of every account. A caller that combines the result with the account entries of `listNip05Entries` passes both the same snapshot (`buildNostrJson` does); without it the accounts are read once with `auth.listAccounts()`.
+- **Returns / side effects:** `[{ messageId, name, pubkey, local }]` for listed shops with a key. Reads only: like the account directory of `/.well-known/nostr.json`, every call reads every account (not when the snapshot is given) and every shop identity, and then every shop note in one bulk read (`MessageStore.getByIds`), not one read per shop.
 - **Used by:** `buildNostrJson`, the shop kind 0 (`nip05`; only when a visited shop is listed, at most twice per worker tick: once, and once more when a listed shop's name no longer matches the allocation), `shopRoutes` (`nip05`).
 
 ## Function: signEventForShop
@@ -3618,14 +3618,14 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 
 - **Purpose:** Start-up pass: queue the place push of every `shop_identity` row with keyset pages of 200 by `message_id`. It decides nothing; the place sender does at send time.
 - **Inputs:** Shop identity store.
-- **Returns / side effects:** Number of queued rows.
-- **Used by:** `src/index.ts` when the map target is configured.
+- **Returns / side effects:** Number of queued rows. Rejects when a page read fails; the rows of earlier pages stay queued. Queueing a row again is harmless, so a caller may simply run it again.
+- **Used by:** `startOcpOutboxWorker` (runs it at start and retries it until one attempt succeeds).
 
 ## Function: startOcpOutboxWorker
 
-- **Purpose:** Start both senders, each serialised: the place pass and the photo pass are each scheduled `intervalMs` after that lane's previous pass settled (also after a failure), so each instance has at most one place pass and one photo upload in flight and a slow pass never stacks database or HTTP work (a place pass settles only after all its claimed rows settled, also when one of them throws). Pass failures log `ocp.place.failed` / `ocp.photos.failed`.
-- **Inputs:** `{ identities, messages, mapPush }`, optional interval (default `WORKER_INTERVAL_MS`).
-- **Returns / side effects:** `{ stop }`, which clears both pending timers; a pass still in flight settles without scheduling another, so no pass starts after `stop`.
+- **Purpose:** Run the start-up pass and start both senders. The start-up pass (`queueAllShopPlaces`) starts at once; when it fails it logs `ocp.place.failed` with `pass: 'startup'`, `attempt`, `retryInMs` and the safe error fields (`errorLogFields`), and runs again from the first page after `intervalMs`, doubling the delay per failed attempt up to `WORKER_LEASE_MS`, until one attempt succeeds, so a transient database error on a later page does not leave the remaining identities unqueued until the next restart. The place pass and the photo pass are each scheduled `intervalMs` after that lane's previous pass settled (also after a failure), so each instance has at most one place pass and one photo upload in flight and a slow pass never stacks database or HTTP work (a place pass settles only after all its claimed rows settled, also when one of them throws). Pass failures log `ocp.place.failed` / `ocp.photos.failed`.
+- **Inputs:** `{ identities, messages, mapPush }`, optional interval (default `WORKER_INTERVAL_MS`; also the first start-up retry delay).
+- **Returns / side effects:** `{ stop }`, which clears the pending start-up retry and both pending lane timers; a pass still in flight settles without scheduling another, so no pass starts after `stop` (a start-up attempt that fails after `stop` is logged without `retryInMs` and not retried).
 - **Used by:** `src/index.ts` when `resolveMapPush` returns a target.
 
 ## Function: shopRoutes
