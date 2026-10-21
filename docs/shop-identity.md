@@ -249,11 +249,11 @@ photo 2. The worker reads them with `MessageStore.getPhotoContentTypes`, one
 statement that selects no `bytea` column, and not with `getPhoto` /
 `listExtraPhotos`: these reads run on every pass, before the unchanged-content
 skip, so reading the bytes would load up to ten photos per visited shop on
-every pass (up to 200 photos per 2 s tick). The shop kind 0 pass then reads no
-photo bytes; `PostgresShopIdentityStore` queues by triggers and reads none
-either, while `InMemoryShopIdentityStore` (memory boot only) still compares
-every identity's photos whenever a store call first syncs its queue (for
-example `listRound` and the claim and finish calls).
+every pass (up to 200 photos per 2 s tick). The worker's own reads in the
+shop kind 0 pass load no photo bytes, and `PostgresShopIdentityStore` reads
+none either. On a memory boot, `InMemoryShopIdentityStore` reads every
+identity's photos at the start of each store call, including the pass's own
+`listRound`, and in the claim and finish calls.
 
 Without a public origin, the shop profile does what an account profile does
 (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
