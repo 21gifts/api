@@ -4937,12 +4937,12 @@ pin change appends `message_edit`. An identical pin does not. When
 complete result to `/map/places`; an incomplete result after the write
 sends DELETE instead, and a pin cleared or a note gone or hidden
 concurrently sends DELETE. Clearing the pin also sends DELETE, unless a
-later write has set a pin again by the time the clear's turn comes. Map
-calls of `POST /messages`, `DELETE /messages/:id` and the three shop PATCH
-routes run one after another per note, and each create and PATCH call
-reads the row when its turn comes, so concurrent edits reach the map in
-order and the last of those calls matches the last write (the debug
-restore push is not queued).
+later write has set a complete shop pin again by the time the clear's turn
+comes (an incomplete pin set again still gets DELETE). Map calls of
+`POST /messages`, `DELETE /messages/:id` and the three shop PATCH routes run one
+after another per note, and each create and PATCH call reads the row when
+its turn comes, so concurrent edits reach the map in order and the last of
+those calls matches the last write (the debug restore push is not queued).
 
 ### `PATCH /messages/:id/shop-account`
 
@@ -4965,8 +4965,8 @@ is **404** `{ "error": "No account with that username" }`.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
-Success → **200** live public message JSON (optional `shopAccount` `{ id,
-username, name }`, omitted when cleared, reply count, no hide stamps).
+Success → **200** live public message JSON (optional `shopAccount`
+`{ id, username, name }`, omitted when cleared, reply count, no hide stamps).
 Logs `messages.shop_account.updated` with `messageId`, `accountId`, and
 `role` only. Text, place, and publish state are unchanged. The write
 stores only `shop_account_id`. A real change appends `message_edit`. An
