@@ -389,12 +389,12 @@ One answer, one state of the note:
   must carry the name of the note read by this request. A missing entry or
   an entry with another name (the shop was renamed or unlisted between the
   two reads) makes the route read the note again and allocate once more:
-  a note that is no longer listed then answers 410. When the entry still
-  does not match, the answer is the 503 above with
+  a note that is no longer listed then answers 410. A mismatch on the last
+  round (`READ_ROUNDS`) answers the 503 above with
   `reason: "nip05_stale"`, never a 200 that pairs a name with another
   name's NIP-05 or a listed shop with a `null` NIP-05.
 - After the photo set the route reads the note again and compares the
-  fields the answer is built from: text (name source and description), pin,
+  fields the answer is built from: text (listing tag and description), pin (name and place),
   till account id and `deletedAt` (the fields of the in-memory place
   fingerprint). When one differs (a rename, a text or pin change, a new till
   account or a hide while the photos were read), it goes round once more with

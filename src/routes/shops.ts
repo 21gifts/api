@@ -72,8 +72,8 @@ function photoRow(
 const READ_ROUNDS = 2;
 
 /**
- * The note fields that make up a `GET /shops/:npub` answer: text (name source
- * and description), pin (name, place), till account id (pay username) and
+ * The note fields that make up a `GET /shops/:npub` answer: text (listing tag
+ * and description), pin (name and place), till account id (pay username) and
  * `deletedAt` (listed). The same fields as the in-memory place fingerprint in
  * `src/lib/shop-identity.ts`; `parentId`, `createdAt` and the id do not change.
  */

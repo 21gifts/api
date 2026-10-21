@@ -1477,8 +1477,8 @@ shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
 `PUBLIC_BASE_URL` gives no NIP-05 domain. The allocation's entry must carry
 the name of the note this request read; when it is missing or carries
 another name (renamed or unlisted in between), the route reads the note again
-and allocates once more (a note no longer listed is then 410), and when it
-still does not match it answers the 503 with `reason: "nip05_stale"`. After
+and allocates once more (a note no longer listed is then 410), and a mismatch
+on the last round answers the 503 with `reason: "nip05_stale"`. After
 the photo set the route reads the note again; when its text, pin, till
 account id or `deletedAt` differ from the note the answer is built from (a
 rename, text or pin change while the photos were read), it goes round once
