@@ -8273,7 +8273,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
       await tick(ctx);
       const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
-      await ctx.messages.updateText(uuid(1), 'Too short #21GiftsShop');
+      await ctx.messages.updateText(uuid(1), 'Fresh coffee roasted here every morning.');
       await tick(ctx);
       await ctx.messages.markDeleted(uuid(1), new Date(0), 'staff');
       await tick(ctx);

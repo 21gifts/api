@@ -99,6 +99,13 @@
 - **Used by:** The forum composer suggestion list (`GET /forum/mentions` on the app, which proxies here).
 - **Auth:** Bearer session with `forum.read`.
 
+## Endpoint: GET /accounts/by-username/:username
+
+- **Purpose:** Exact lookup of one account by username for a signed-in forum reader. `:username` is trimmed and lowercased and must be a LUD-16 local-part (`normalizeUsername`); otherwise 400. The match is `lower(trim)` of the stored username. The response `username` is that stored string, not the normalised param. `name` is the stored display name, including `null`, and is not replaced by the username when blank. The body is exactly `{ id, username, name }`. A missing account, or a stored username that is not a non-empty string, is 404. Does not list suggestions.
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a usable bearer session; 409 `{ error: 'missing_requirements', missing }` when `forum.read` is not allowed yet; 400 `{ error: 'Username is not valid' }` when `normalizeUsername` returns null; 404 `{ error: 'No account with that username' }` when no account matches or the stored username is blank.
+- **Used by:** A client that already has the exact handle and needs that account's id and display name.
+- **Auth:** Bearer session with `forum.read`.
+
 ## Endpoint: GET /pay/:username
 
 - **Purpose:** Public, unauthenticated pay-link card for a member. Normalises `:username`, loads the account, and returns `name`, `username`, `minSats`, `maxSats`, and `charge` from the linked Lightning Address LNURL-pay metadata. `name` is the trimmed display name, or the normalised username when the display name is blank. No charge → `charge: null` and the wallet sat range. Unexpired pending → both bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only. A bad wallet window is still 502 before any pin. Does not return the callback, the Lightning Address, or provider metadata. No spend token.

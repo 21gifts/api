@@ -12,6 +12,7 @@ import { bannerRoutes } from '@/routes/banner';
 import { pictureRoutes } from '@/routes/pictures';
 import { InMemoryBannerStore, type BannerStore } from '@/lib/banner-store';
 import { membersRoutes } from '@/routes/members';
+import { accountsByUsernameRoutes } from '@/routes/accounts';
 import { mentionsRoutes } from '@/routes/mentions';
 import { linksRoutes } from '@/routes/links';
 import { viewRoutes } from '@/routes/view';
@@ -565,6 +566,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/mentions', mentionsRoutes({ auth: store, now }));
+  app.route('/accounts', accountsByUsernameRoutes({ auth: store, now }));
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',

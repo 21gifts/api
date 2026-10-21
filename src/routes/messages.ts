@@ -2261,10 +2261,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           if (problem !== null) {
             return c.json({ error: problem }, 400);
           }
-          const textProblem = shopTextProblem(row.text, parsed.value);
-          if (textProblem !== null) {
-            return c.json({ error: textProblem }, 400);
-          }
         }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
@@ -2278,6 +2274,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               after: parsed.value,
             })
           : await deps.store.setPlace(id, parsed.value);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -2472,12 +2471,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
-        if (row.place !== null && row.place !== undefined && shopPlaceProblem(row.place) === null) {
-          const problem = shopTextProblem(ensured, row.place);
-          if (problem !== null) {
-            return c.json({ error: problem }, 400);
-          }
-        }
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
@@ -2505,6 +2498,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           before: row.text,
           after: ensured,
         });
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (written === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
