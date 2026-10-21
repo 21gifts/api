@@ -1461,9 +1461,9 @@ and validates it inside the handler.
 `name` is the pin label, `description` the note text without the
 `#21GiftsShop` token. `lat` and `lng` are as in `GET /messages/places`.
 `address` is always present (a listed shop is complete). `photos` are the
-note's photos in note order (at most 10): photo 1 is
-`/messages/:id/photo.<ext>` and photo n ≥ 2 is
-`/messages/:id/photo/<n-1>.<ext>`, absolute from the public API base or the
+note's photos in note order (at most 10): photo 0 is
+`/messages/:id/photo.<ext>` and extra still n ≥ 1 is
+`/messages/:id/photo/<n>.<ext>`, absolute from the public API base or the
 path alone when no public origin is set. `width` and `height` come from the
 image header only (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`), swapped
 for a JPEG with EXIF orientation 5 to 8, and are `null` when the header

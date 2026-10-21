@@ -394,8 +394,8 @@ accounts.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
 its kind 0 leaves the field out. Otherwise it comes from the allocation of
 `listShopNip05Entries`, computed for this request (see the cost under S2
-NIP-05). Photo 1 is `/messages/:id/photo.<ext>` and
-photo n ≥ 2 is `/messages/:id/photo/<n-1>.<ext>` (the routes `forumPhotoUrl`
+NIP-05). Photo 0 is `/messages/:id/photo.<ext>` and
+extra still n ≥ 1 is `/messages/:id/photo/<n>.<ext>` (the routes `forumPhotoUrl`
 and `forumExtraPhotoUrl` in `src/lib/nostr/event.ts` use), absolute from
 `resolvePublicApiBase`, or the path alone when that is empty.
 Photos are the note's photos in note order. `width` and `height` come from a
@@ -619,7 +619,7 @@ Rules for every claim:
   transaction as the photo write, only when the note is listed, so a crash
   cannot lose the change, and the worker never reads the old set under the
   new generation. Implemented as the row triggers `trg_shop_identity_cover`
-  (photo 1 on `message`) and `trg_shop_identity_extra_photo`
+  (photo 0 on `message`) and `trg_shop_identity_extra_photo`
   (`message_extra_photo`); they check the listed shape the database can see
   (live, top-level, till account, complete pin columns, shop tag), and the
   photo sender clears the flag without a request for a note that the text
