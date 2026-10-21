@@ -1196,6 +1196,22 @@ describe('shop identity on Postgres', () => {
   });
 
   /**
+   * Whether the photo claim was released without a request: the release ends
+   * the lease at the database's now, so it is set and already over.
+   */
+  async function photoLeaseEnded(
+    ctx: Awaited<ReturnType<typeof setup>>,
+    id: string,
+  ): Promise<boolean> {
+    const rows = await ctx.client.query<{ ended: boolean }>(
+      `SELECT ocp_photos_claimed_until IS NOT NULL AND ocp_photos_claimed_until <= now() AS ended
+       FROM shop_identity WHERE message_id = $1`,
+      [id],
+    );
+    return rows[0]?.ended === true;
+  }
+
+  /**
    * A listed shop with a confirmed place and pending photos, and outbox deps
    * whose `getPhotoSet` runs `between` once, after the photo pass
    * claimed the row and read the photos and before it reserves a revision.
@@ -1268,8 +1284,8 @@ describe('shop identity on Postgres', () => {
         ocpRevision: 1,
         ocpPlacePending: true,
         ocpPhotosPending: true,
-        ocpPhotosClaimedUntil: null,
       });
+      expect(await photoLeaseEnded(ctx, race.id)).toBe(true);
       await runOcpPlaceOutboxPass(race.deps);
       await runOcpPhotoOutboxPass(race.deps);
       expect(race.sent.map((request) => [request.method, request.revision])).toEqual([
@@ -1302,8 +1318,8 @@ describe('shop identity on Postgres', () => {
         ocpRevision: 2,
         ocpPlacePending: false,
         ocpPhotosPending: false,
-        ocpPhotosClaimedUntil: null,
       });
+      expect(await photoLeaseEnded(ctx, race.id)).toBe(true);
     } finally {
       await ctx.cleanup();
     }
