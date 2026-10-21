@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { nip19 } from 'nostr-tools';
+import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import type { SqlClient } from '@/lib/auth/sql';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
@@ -532,30 +533,6 @@ describe('InMemoryShopIdentityStore queueing', () => {
     expect((await store.getByMessageId(ID_A))?.ocpPlaceGeneration).toBe(2);
   });
 });
-
-/** Methods of `MessageStore` that return photo bytes. */
-const BYTE_READS = new Set<PropertyKey>([
-  'getPhoto',
-  'getExtraPhoto',
-  'listExtraPhotos',
-  'getPhotoSet',
-]);
-
-/** The same store behind a proxy that records every photo byte read as `method:id`. */
-function countingBytes(store: InMemoryMessageStore, reads: string[]): InMemoryMessageStore {
-  return new Proxy(store, {
-    get(target, key) {
-      const value: unknown = Reflect.get(target, key, target);
-      if (typeof value !== 'function') return value;
-      const bound = (value as (...args: unknown[]) => unknown).bind(target);
-      if (!BYTE_READS.has(key)) return bound;
-      return (id: string, ...rest: unknown[]) => {
-        reads.push(`${String(key)}:${id}`);
-        return bound(id, ...rest);
-      };
-    },
-  });
-}
 
 describe('InMemoryShopIdentityStore photo fingerprint', () => {
   it('reads no photo bytes on its reads, with several shops that have photos', async () => {

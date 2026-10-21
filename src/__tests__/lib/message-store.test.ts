@@ -3139,11 +3139,12 @@ describe('InMemoryMessageStore', () => {
     const gif = { contentType: 'image/gif', bytes: new Uint8Array([1]) } as unknown as ForumPhoto;
     expect(store.photoRevision('a')).toBe(0);
     expect(store.photoRevision('missing')).toBe(0);
-    // A write that stores the same stills (a fresh copy of the bytes) is no change.
+    // A write that stores the same stills is no change.
     await store.replacePhotos('a', []);
     expect(store.photoRevision('a')).toBe(0);
     await store.replacePhotos('a', [png]);
     expect(store.photoRevision('a')).toBe(1);
+    // The same still again, as a fresh copy of the bytes.
     await store.updatePhoto('a', { ...png, bytes: png.bytes.slice() });
     expect(store.photoRevision('a')).toBe(1);
     // Same count, other bytes / other type / other stored index.

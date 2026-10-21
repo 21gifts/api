@@ -649,8 +649,9 @@ Rules for every claim:
   no photo bytes, so a public read (`GET /shops/:npub`, the NIP-05 list)
   does not read the photos of every shop. A change and its exact revert
   between two syncs queue once, as the triggers queue each write. Only over
-  a message store of another class (a test double) does the adapter hash the
-  set from one read of the whole set (`MessageStore.getPhotoSet`).
+  a message store of another class (a test double, or a store a caller
+  passes to `createApp` without a shop store) does the adapter hash the set
+  from one read of the whole set (`MessageStore.getPhotoSet`).
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is

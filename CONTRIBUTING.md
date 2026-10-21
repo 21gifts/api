@@ -174,6 +174,7 @@ api/
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
 │       ├── server.test.ts
 │       ├── helpers/
+│       │   ├── counting-bytes.ts # MessageStore proxy that records photo byte reads
 │       │   └── fake-passkey.ts   # PasskeyCeremony test double
 │       ├── integration/
 │       │   └── auth-flow.test.ts

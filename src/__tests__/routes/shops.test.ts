@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import { Hono } from 'hono';
 import { nip19 } from 'nostr-tools';
+import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import { InMemoryAuthStore, type Account, type AuthStore } from '@/lib/auth/store';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
@@ -156,25 +157,8 @@ describe('GET /shops/:npub', () => {
       );
     }
     const reads: string[] = [];
-    const byteReads = new Set<PropertyKey>([
-      'getPhoto',
-      'getExtraPhoto',
-      'listExtraPhotos',
-      'getPhotoSet',
-    ]);
     // Built before the identity store, so its own reads are counted too.
-    const messages = new Proxy(base, {
-      get(target, key) {
-        const value: unknown = Reflect.get(target, key, target);
-        if (typeof value !== 'function') return value;
-        const bound = (value as (...args: unknown[]) => unknown).bind(target);
-        if (!byteReads.has(key)) return bound;
-        return (id: string, ...rest: unknown[]) => {
-          reads.push(`${String(key)}:${id}`);
-          return bound(id, ...rest);
-        };
-      },
-    });
+    const messages = countingBytes(base, reads);
     const identities = new InMemoryShopIdentityStore(messages);
     let created: string | undefined;
     for (const [n, id] of ids.entries()) {
