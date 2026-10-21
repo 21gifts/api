@@ -7,14 +7,14 @@ import { Hono } from 'hono';
 import { nip19 } from 'nostr-tools';
 import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import type { ForumPhoto, MessageRow } from '@/lib/message';
+import type { ForumPhoto } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { forumExtraPhotoUrl, forumPhotoUrl } from '@/lib/nostr/event';
 import { imageHeaderSize } from '@/lib/nostr/image';
 import { resolvePublicApiBase } from '@/lib/nostr/relays';
 import { nip05Directory, nip05Domain } from '@/lib/nip05';
 import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
-import { listedShop, shopDescription } from '@/lib/shop-place';
+import { listedShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 
 /** Collaborators for `GET /shops/:npub`. */
 export interface ShopRouteDeps {
@@ -77,17 +77,6 @@ function photoRow(
  * ({@link nip05Directory}), and a request asks for at most one forced refresh.
  */
 const READ_ROUNDS = 2;
-
-/**
- * The note fields that make up a `GET /shops/:npub` answer: text (listing tag
- * and description), pin (name and place), till account id (pay username) and
- * `deletedAt` (listed). The same fields as the in-memory place fingerprint in
- * `src/lib/shop-identity.ts`; `parentId`, `createdAt` and the id do not change.
- */
-function answerFields(note: MessageRow | undefined): string {
-  if (note === undefined) return 'missing';
-  return JSON.stringify([note.text, note.place, note.shopAccount?.id, note.deletedAt]);
-}
 
 /**
  * Build the `/shops` route group with `GET /:npub`.
@@ -167,7 +156,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
         }
         const set = await deps.messages.getPhotoSet(note.id);
         const after = await deps.messages.getById(identity.messageId);
-        if (answerFields(after) !== answerFields(note)) {
+        if (shopListingFingerprint(after) !== shopListingFingerprint(note)) {
           // Renamed, rewritten, re-pinned or unlisted while the photos were read.
           if (round < READ_ROUNDS) {
             read = after;

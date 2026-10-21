@@ -53,6 +53,7 @@ import {
   type ShopIdentityRow,
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
+import { shopDescription } from '@/lib/shop-place';
 import { removeForumVideo } from '@/lib/video';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -8180,12 +8181,92 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       await tick(ctx, ENV, { shopIdentities: racing });
       expect(seen).toEqual(['Roastery']);
       expect((await ctx.shops.getByMessageId(uuid(1)))?.profileName).toBe('Bakery');
+      // The build outlived its read: no kind 0 with the older name Roastery.
+      const raced = shopEvents(ctx, (await ctx.shops.getByMessageId(uuid(1)))!, 0);
+      expect(raced.map((event) => content(event)['name'])).toEqual(['Coffee Lab']);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
       // Unlisted before the next tick: the kind 0 keeps the newest name.
       await ctx.messages.setShopAccount(uuid(1), null);
       await tick(ctx);
       const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
       const events = shopEvents(ctx, identity, 0);
       expect(content(events.at(-1))).toMatchObject({ name: 'Bakery' });
+    });
+
+    /** Messages whose `getPhotoContentTypes` (late in the kind 0 build) runs `change` once first. */
+    function changeDuringBuild(ctx: Ctx, change: () => Promise<void>): MessageStore {
+      let done = false;
+      return override<MessageStore>(ctx.messages, {
+        getPhotoContentTypes: async (id) => {
+          if (!done) {
+            done = true;
+            await change();
+          }
+          return ctx.messages.getPhotoContentTypes(id);
+        },
+      });
+    }
+
+    it('publishes no kind 0 from a note renamed during the build, and the new name next', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1)) }]);
+      const messages = changeDuringBuild(ctx, async () => {
+        await ctx.messages.setPlace(uuid(1), { ...shopNote(uuid(1)).place!, label: 'Roastery' });
+      });
+      await tick(ctx, ENV, { messages });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      // The build read Coffee Lab; the rename came in before the reservation.
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
+      await tick(ctx, ENV, { messages });
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      expect(content(events[0])).toMatchObject({
+        name: 'Roastery',
+        nip05: 'roastery@21.gifts',
+        about: shopDescription(TEXT),
+      });
+    });
+
+    it('publishes no listed kind 0 from a note hidden during the build, and the hidden one next', async () => {
+      const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG] }]);
+      const messages = changeDuringBuild(ctx, async () => {
+        await ctx.messages.markDeleted(uuid(1), new Date(0), 'staff');
+      });
+      await tick(ctx, ENV, { messages });
+      const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+      expect(shopEvents(ctx, identity, 0)).toEqual([]);
+      expect(logged('nostr.profile.nack')).toEqual([
+        {
+          ts: expect.any(String),
+          event: 'nostr.profile.nack',
+          messageId: uuid(1),
+          reason: 'note_changed',
+        },
+      ]);
+      await tick(ctx, ENV, { messages });
+      const events = shopEvents(ctx, identity, 0);
+      expect(events).toHaveLength(1);
+      // Hidden: no listed name, description, photos or NIP-05 from the older read.
+      expect(content(events[0])).toEqual({
+        name: 'Shop',
+        display_name: 'Shop',
+        website: `https://21.gifts/${shopNpub(identity)}`,
+        about: 'This shop is no longer listed on 21.gifts.',
+      });
     });
 
     it('keeps the last listed name for an unlisted shop and uses Shop once it is hidden', async () => {

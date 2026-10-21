@@ -249,7 +249,16 @@ not, in the same loop and with the same rules as account profiles
   otherwise gives the cached directory. When the entry still does not
   match, that shop gets no kind 0 and no cache entry, the tick logs
   `nostr.profile.nack` with `reason: "nip05_stale"` and the shop is tried
-  again on its next turn.
+  again on its next turn. After the last read of the build (directory,
+  rename, till account, photo types) and right before the reservation, a
+  listed shop's note is read again and compared with the first read by
+  `shopListingFingerprint` (text, pin, till account id, `deletedAt`, the
+  check of `GET /shops/:npub` after its photo read). When it differs (a
+  rename, a text or pin change or a staff hide during the build), that shop
+  likewise gets no kind 0 and no cache entry, the tick logs
+  `nostr.profile.nack` with `reason: "note_changed"`, and the next turn
+  publishes the new state, so no kind 0 carries the name, listing,
+  description or photos of a read the build outlived.
   When a directory read fails, the tick logs `nostr.profile.nack` with
   `reason: "nip05"`, publishes no further shop kind 0 in that tick (shops
   already published in that tick keep theirs; never one without its NIP-05)
@@ -444,8 +453,9 @@ One answer, one state of the note:
   name's NIP-05 or a listed shop with a `null` NIP-05.
 - After the photo set the route reads the note again and compares the
   fields the answer is built from: text (listing tag and description), pin (name and place),
-  till account id and `deletedAt` (the fields of the in-memory place
-  fingerprint). When one differs (a rename, a text or pin change, a new till
+  till account id and `deletedAt` (`shopListingFingerprint`, also the
+  fingerprint of the in-memory place queue and of the shop kind 0
+  re-read). When one differs (a rename, a text or pin change, a new till
   account or a hide while the photos were read), it goes round once more with
   that re-read: a NIP-05 check against the new name, a new photo set read and
   another re-read. When the note still differs on that last round, the answer

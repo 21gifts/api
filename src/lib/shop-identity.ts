@@ -25,7 +25,7 @@ import {
   zeroizeSecret,
   type NostrKeygen,
 } from '@/lib/nostr/keys';
-import { isListedShop, listedShop, listedShopName } from '@/lib/shop-place';
+import { isListedShop, listedShop, listedShopName, shopListingFingerprint } from '@/lib/shop-place';
 
 /** One persisted shop key and its two OpenCryptoPay outboxes. */
 export interface ShopIdentityRow {
@@ -564,12 +564,6 @@ async function freshIdentity(
   }
 }
 
-/** Fields the Postgres place trigger compares. */
-function placeFingerprint(note: MessageRow | undefined): string {
-  if (note === undefined) return 'missing';
-  return JSON.stringify([note.text, note.place, note.shopAccount?.id, note.deletedAt]);
-}
-
 /**
  * Photo fingerprint of one note for the queue sync.
  *
@@ -626,7 +620,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     for (const row of this.#rows.values()) {
       const note = await this.#messages.getById(row.messageId);
       const seen = this.#seen.get(row.messageId) as { place: string; photos: string };
-      const place = placeFingerprint(note);
+      const place = shopListingFingerprint(note);
       if (place !== seen.place) {
         seen.place = place;
         row.ocpPlacePending = true;
@@ -676,7 +670,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     }
     created.profileName = latestName;
     this.#rows.set(messageId, created);
-    this.#seen.set(messageId, { place: placeFingerprint(latest), photos });
+    this.#seen.set(messageId, { place: shopListingFingerprint(latest), photos });
     if (this.#messages instanceof InMemoryMessageStore) {
       this.#messages.setShopNpub(messageId, shopNpub(created));
     }

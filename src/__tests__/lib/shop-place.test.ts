@@ -9,6 +9,7 @@ import {
   isListedShop,
   listedShop,
   listedShopName,
+  shopListingFingerprint,
 } from '@/lib/shop-place';
 
 const ADDRESS = {
@@ -204,6 +205,37 @@ describe('listedShop', () => {
       expect(listedShop(row)).toBeNull();
       expect(listedShopName(row)).toBeNull();
       expect(isListedShop(row)).toBe(false);
+    }
+  });
+});
+
+describe('shopListingFingerprint', () => {
+  const note = {
+    parentId: null,
+    deletedAt: null,
+    text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+    place: PIN,
+    shopAccount: { id: 'till' },
+  };
+
+  it('is missing for no note and equal for the same listing fields', () => {
+    expect(shopListingFingerprint(undefined)).toBe('missing');
+    expect(shopListingFingerprint({ ...note, place: { ...PIN } })).toBe(
+      shopListingFingerprint(note),
+    );
+  });
+
+  it('changes with the text, the pin, the till account and deletedAt', () => {
+    const base = shopListingFingerprint(note);
+    for (const changed of [
+      { ...note, text: `${note.text} More beans.` },
+      { ...note, place: { ...PIN, label: 'Roastery' } },
+      { ...note, place: null },
+      { ...note, shopAccount: { id: 'other' } },
+      { ...note, shopAccount: null },
+      { ...note, deletedAt: new Date(0) },
+    ]) {
+      expect(shopListingFingerprint(changed)).not.toBe(base);
     }
   });
 });

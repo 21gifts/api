@@ -236,6 +236,26 @@ test('Function: InMemoryShopIdentityStore — the memory boot keeps one key per 
   expect(((await edited.json()) as { shopNpub: string | null }).shopNpub).toBe(shop.npub);
 });
 
+test('Function: shopListingFingerprint — GET /shops/:npub answers from one state of the edited note', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Fpr');
+  const before = await getShop(request, shop.npub);
+  const text = `Fresh coffee and cake served all day long at ${shop.name}.`;
+  const edited = await request.patch(`/messages/${shop.noteId}/text`, {
+    headers: { ...shop.auth, 'content-type': 'application/json' },
+    data: { text: `${text}\n\n#21GiftsShop` },
+  });
+  expect(edited.status()).toBe(200);
+  // The re-read after the photos sees the same fingerprint, so the answer is
+  // the edited state with the unchanged name and photos.
+  const after = await getShop(request, shop.npub);
+  expect(after.shop.description).toBe(text);
+  expect(after.shop.description).not.toBe(before.shop.description);
+  expect(after.shop.name).toBe(shop.name);
+  expect(after.shop.photos).toEqual(before.shop.photos);
+});
+
 test('Function: listedShop — GET /shops/:npub carries the name, pin and description', async ({
   request,
 }) => {

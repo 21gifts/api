@@ -66,7 +66,7 @@ import {
   type ShopIdentityRow,
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
-import { listedShop, shopDescription } from '@/lib/shop-place';
+import { listedShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
@@ -1484,7 +1484,13 @@ interface ShopKind0Args {
  * only called for a listed shop and only when `domain` is set, before any
  * write; it returns the NIP-05 directory entry only when it carries the name this
  * read sees. Without such an entry the shop gets no kind 0 this time: the
- * result is `null` and nothing was written.
+ * result is `'nip05_stale'` and nothing was written. A listed shop's note is
+ * read again after the last await of the build (directory, rename, till
+ * account, photo types); when its {@link shopListingFingerprint} (text, pin,
+ * till account, `deletedAt`) differs from the first read (a rename, text or
+ * pin change, or a hide inside the build), the result is `'note_changed'`,
+ * so no kind 0 is built from the older read and the shop is tried again on
+ * its next turn.
  */
 async function shopKind0Args(
   deps: NostrWorkerDeps,
@@ -1492,7 +1498,7 @@ async function shopKind0Args(
   identity: ShopIdentityRow,
   nip05Entry: (messageId: string, name: string) => Promise<ShopNip05Entry | undefined>,
   domain: string | null,
-): Promise<ShopKind0Args | null> {
+): Promise<ShopKind0Args | 'nip05_stale' | 'note_changed'> {
   const note = await deps.messages.getById(identity.messageId);
   const website = `${shopSiteOrigin(deps.env)}/${shopNpub(identity)}`;
   const shop = listedShop(note);
@@ -1512,7 +1518,7 @@ async function shopKind0Args(
   let nip05: string | null = null;
   if (domain !== null) {
     const entry = await nip05Entry(note.id, shop.name);
-    if (entry === undefined) return null;
+    if (entry === undefined) return 'nip05_stale';
     nip05 = `${entry.local}@${domain}`;
   }
   if (shop.name !== identity.profileName) {
@@ -1547,6 +1553,11 @@ async function shopKind0Args(
       banner = forumExtraPhotoUrl(apiBase, note.id, 1, second.contentType);
     }
   }
+  // Same check as GET /shops/:npub after its photo read: a kind 0 comes from
+  // one state of the note, never the name or listing of a read the build
+  // outlived.
+  const after = await deps.messages.getById(identity.messageId);
+  if (shopListingFingerprint(after) !== shopListingFingerprint(note)) return 'note_changed';
   return {
     name: shop.name,
     lud16,
@@ -1580,7 +1591,12 @@ async function shopKind0Args(
  * otherwise returns the cached directory. When that entry still does not
  * match, the shop gets no kind 0 and no cache
  * entry: the tick logs `nostr.profile.nack` with `reason: 'nip05_stale'` and
- * the shop is tried again on its next turn. When a directory read throws, the
+ * the shop is tried again on its next turn. A listed shop's note is read
+ * again right before the reservation; when its text, pin, till account or
+ * `deletedAt` changed during the build (a rename or a staff hide), the shop
+ * likewise gets no kind 0 and no cache entry, the tick logs
+ * `nostr.profile.nack` with `reason: 'note_changed'`, and the next turn
+ * publishes the new state. When a directory read throws, the
  * tick logs `nostr.profile.nack` with `reason: 'nip05'` for that shop and
  * publishes no further shop kind 0 in that tick (shops already published in
  * that tick keep theirs; never one without its NIP-05); the rest of the tick
@@ -1630,9 +1646,9 @@ async function publishShopProfiles(
     let reservation: Kind0Reservation | undefined;
     try {
       const args = await shopKind0Args(deps, shops, identity, nip05Entry, domain);
-      if (args === null) {
+      if (typeof args === 'string') {
         // No reservation was made, so the shop is tried again on its next turn.
-        logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05_stale' });
+        logEvent('nostr.profile.nack', { messageId: id, reason: args });
         return true;
       }
       const content = buildKind0Content(

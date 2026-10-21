@@ -203,3 +203,19 @@ export function listedShopName(row: ShopListingFields | undefined): string | nul
 export function isListedShop(row: ShopListingFields | undefined): boolean {
   return listedShop(row) !== null;
 }
+
+/**
+ * The note fields a shop's public state is built from, as one comparable
+ * string: text (listing tag, description), pin (name, place), till account id
+ * and `deletedAt` (listed). Two reads of a note with the same fingerprint
+ * give the same listing, name, description and till account; `parentId`,
+ * `createdAt` and the id do not change. `GET /shops/:npub`, the shop kind 0
+ * and the in-memory place queue compare reads with it.
+ *
+ * @param row - Forum note, or `undefined` when it does not exist.
+ * @returns `'missing'` for `undefined`, otherwise the JSON of those fields.
+ */
+export function shopListingFingerprint(row: ShopListingFields | undefined): string {
+  if (row === undefined) return 'missing';
+  return JSON.stringify([row.text, row.place, row.shopAccount?.id, row.deletedAt]);
+}
