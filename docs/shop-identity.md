@@ -744,8 +744,9 @@ Rules for every claim:
     the generation check leaves no hash that could hide a different set on
     OpenCryptoPay. Then it sends up to 10 photos, in note order (every
     still the set returns, by stored index; a still with an unrecognized
-    type drops only itself, photo 0 included, so a valid set hashes as
-    before), with
+    type drops only itself, photo 0 included, so a set with only recognized
+    types gives the same list, and the same `ocpPhotoSetHash`, as the stored
+    order), with
     `PUT /map/places/photos` as
     `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10

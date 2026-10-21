@@ -674,9 +674,10 @@ export interface MessageStore {
 
   /**
    * Content types of the stills of a message id, without reading any photo
-   * bytes: what {@link MessageStore.getPhoto} and
-   * {@link MessageStore.listExtraPhotos} would return, reduced to
-   * `contentType`. Shop kind 0 uses it to build its picture and banner URLs.
+   * bytes: photo 0 and the extra stills, with the same type filter as the
+   * Postgres {@link MessageStore.getPhoto} and
+   * {@link MessageStore.listExtraPhotos}, each extra with its stored index.
+   * Shop kind 0 uses it to build its picture and banner URLs.
    * A still with an unrecognized type is left out; each extra keeps the index
    * it is stored under, so a left-out still never shifts the ones after it.
    *
