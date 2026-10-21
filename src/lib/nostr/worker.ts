@@ -394,10 +394,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * When a conversation store is present, `'all'` / `'fast'` also
  * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
  * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
- * (`setInterval` does not await the previous tick), except the shop kind 0
- * and kind 10002 passes, each skipped while its previous pass for the same
- * store is in flight and bounded to `WORKER_BATCH` identity rows read with
- * `listRound`; the ingest lane waits for
+ * (`setInterval` does not await the previous tick), except the S1 shop key
+ * backfill and the shop kind 0 and kind 10002 passes, each skipped while its
+ * previous pass for the same store is in flight and bounded to `WORKER_BATCH`
+ * rows (`listCandidates` / `listRound`); the ingest lane waits for
  * each pass to settle before scheduling the next. When public publish is on
  * and the space ACK succeeded, kind:1 is also sent best-effort to the search
  * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
@@ -2116,9 +2116,9 @@ async function indexInboundDirectMessages(
  * Fast lane: `setInterval(intervalMs)` (default {@link WORKER_INTERVAL_MS})
  * runs `runNostrWorkerTick(deps, 'fast')` with no in-flight guard — overlapping
  * ticks stay safe via sign/publish leases, and a guard would couple unpaid
- * latency to 5 s publish timeouts. Only the shop kind 0 and kind 10002 passes
- * inside a tick skip while their previous pass for the same store is still
- * in flight. A rejecting fast tick logs
+ * latency to 5 s publish timeouts. Only the S1 shop key backfill and the shop
+ * kind 0 and kind 10002 passes inside a tick skip while their previous pass
+ * for the same store is still in flight. A rejecting fast tick logs
  * `nostr.worker.tick.failed`.
  *
  * Ingest lane: starts one `runNostrWorkerTick(deps, 'ingest')` pass
