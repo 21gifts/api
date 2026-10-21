@@ -12167,6 +12167,38 @@ describe('shop OCP place hook', () => {
     expect(meta[0]?.method).toBe('DELETE');
   });
 
+  it.each([
+    ['gone', undefined],
+    ['hidden', new Date(0)],
+  ])(
+    'sends nothing for a new shop note whose row is %s at its map turn',
+    async (_label, hidden) => {
+      const { mapPush, calls } = recordingMap();
+      const messages = new InMemoryMessageStore();
+      const store = new Proxy(messages, {
+        get(target, property) {
+          if (property === 'getById') {
+            return async (id: string): Promise<MessageRow | undefined> => {
+              const row = await target.getById(id);
+              return hidden === undefined || row === undefined
+                ? undefined
+                : { ...row, deletedAt: hidden };
+            };
+          }
+          const value: unknown = Reflect.get(target, property, target);
+          return typeof value === 'function' ? value.bind(target) : value;
+        },
+      });
+      const post = await mount(await namedStore('Ada'), store, { mapPush }).request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: SHOP_TEXT, place: PIN }),
+      });
+      expect(post.status).toBe(200);
+      expect(calls).toHaveLength(0);
+    },
+  );
+
   it('deletes the map pin when a place write reloads an incomplete concurrent place', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const messages = new InMemoryMessageStore();
@@ -12510,6 +12542,19 @@ describe('shop OCP place hook', () => {
     expect(meta[0]?.method).toBe('DELETE');
   });
 
+  it('deletes the map pin when a top-level shop without a place is hidden', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const res = await mount(await staffStore('Ada'), messages, { mapPush }).request(
+      '/messages/' + SHOP_ID,
+      { method: 'DELETE', headers: AUTH },
+    );
+    expect(res.status).toBe(204);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+  });
+
   it('hides a shop pin when the map push is not configured', async () => {
     const messages = new InMemoryMessageStore();
     await shopNote(messages);
@@ -12521,16 +12566,7 @@ describe('shop OCP place hook', () => {
     expect(res.status).toBe(204);
   });
 
-  it('does not call the map when deleting a shop with no place or a note that is not a shop', async () => {
-    const shopNoPlace = recordingMap();
-    const shopMessages = new InMemoryMessageStore();
-    await shopNote(shopMessages);
-    const shopRes = await mount(await staffStore('Ada'), shopMessages, {
-      mapPush: shopNoPlace.mapPush,
-    }).request('/messages/' + SHOP_ID, { method: 'DELETE', headers: AUTH });
-    expect(shopRes.status).toBe(204);
-    expect(shopNoPlace.calls).toEqual([]);
-
+  it('does not call the map when deleting a note that is not a shop', async () => {
     const plain = recordingMap();
     const plainMessages = new InMemoryMessageStore();
     await shopNote(plainMessages, { text: 'plain note' });

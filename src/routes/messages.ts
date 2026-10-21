@@ -972,7 +972,7 @@ async function queueShopMapPush(
   push: (latest: MessageRow | undefined) => Promise<void>,
   readRow = true,
 ): Promise<void> {
-  const turn = (shopMapQueue.get(id) ?? Promise.resolve()).then(async () => {
+  const run = async (): Promise<void> => {
     if (!readRow) {
       await push(undefined);
       return;
@@ -985,7 +985,10 @@ async function queueShopMapPush(
       return;
     }
     await push(latest);
-  });
+  };
+  // A failed earlier turn must not skip this one.
+  const previous = shopMapQueue.get(id) ?? Promise.resolve();
+  const turn = previous.then(run, run);
   shopMapQueue.set(id, turn);
   try {
     await turn;
@@ -1249,21 +1252,20 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await queueShopMapPush(
-        deps.store,
-        published.id,
-        async () => {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: published.id,
-            text: published.text,
-            parentId: published.parentId ?? null,
-            place: published.place ?? null,
-            textHasHashtagToken,
-          });
-        },
-        false,
-      );
+      // The push reads the row in turn: a shop hidden or edited meanwhile is not overwritten.
+      await queueShopMapPush(deps.store, published.id, async (latest) => {
+        if (latest === undefined || latest.deletedAt !== null) {
+          return;
+        }
+        await syncShopOcpPlace({
+          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+          messageId: latest.id,
+          text: latest.text,
+          parentId: latest.parentId ?? null,
+          place: latest.place ?? null,
+          textHasHashtagToken,
+        });
+      });
     }
     return c.json(
       serializeMessage(
@@ -2206,12 +2208,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'An open credit cannot be deleted' }, 409);
           }
         }
-        if (
-          target.parentId === null &&
-          target.place !== null &&
-          target.place !== undefined &&
-          textHasHashtagToken(target.text, '21GiftsShop')
-        ) {
+        // Every top-level shop gets the DELETE: a pin set concurrently may already be on the map.
+        if (target.parentId === null && textHasHashtagToken(target.text, '21GiftsShop')) {
           await queueShopMapPush(
             deps.store,
             target.id,
