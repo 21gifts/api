@@ -8257,6 +8257,30 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       });
     });
 
+    it.each([0, 1, 2])(
+      'takes picture from photo 0 and banner from the still stored at index 1 when index %i has an unrecognized type',
+      async (bad) => {
+        const WEBP: ForumPhoto = { contentType: 'image/webp', bytes: new Uint8Array([6]) };
+        const stills: ForumPhoto[] = [PNG, JPEG, WEBP, PNG];
+        stills[bad] = {
+          contentType: 'image/gif',
+          bytes: new Uint8Array([7]),
+        } as unknown as ForumPhoto;
+        const ctx = await context([{ row: shopNote(uuid(1), { hasPhoto: true }), photos: stills }]);
+        await tick(ctx);
+        const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
+        // Each field reads its own stored index: an unrecognized photo 0
+        // keeps the banner, and an unrecognized still 1 is not replaced by
+        // still 2.
+        expect(content(shopEvents(ctx, identity, 0)[0])).toMatchObject({
+          picture:
+            bad === 0 ? KIND0_PICTURE_URL : `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
+          banner:
+            bad === 1 ? KIND0_BANNER_URL : `https://api.21.gifts/messages/${uuid(1)}/photo/1.jpg`,
+        });
+      },
+    );
+
     it('omits lud16 when the till account has no kind 0 address or no username', async () => {
       for (const till of [
         account({ lightningAddress: null }),

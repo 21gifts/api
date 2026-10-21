@@ -32,6 +32,8 @@ import {
   type ForumFeedMode,
   type ForumPhoto,
   type ForumPhotoContentType,
+  type IndexedForumPhoto,
+  type IndexedForumPhotoType,
   type MessageRow,
   type MessageShopAccount,
   type NostrPublishState,
@@ -675,14 +677,17 @@ export interface MessageStore {
    * bytes: what {@link MessageStore.getPhoto} and
    * {@link MessageStore.listExtraPhotos} would return, reduced to
    * `contentType`. Shop kind 0 uses it to build its picture and banner URLs.
+   * A still with an unrecognized type is left out; each extra keeps the index
+   * it is stored under, so a left-out still never shifts the ones after it.
    *
    * @param id - Message id.
-   * @returns `photo` for photo 0 (`null` when missing / no photo) and `extras`
-   *   for the extra stills, ordered by index ascending (empty when none).
+   * @returns `photo` for photo 0 (`null` when missing / no photo / bad type)
+   *   and `extras` for the extra stills with their stored index (1–9),
+   *   ordered by index ascending (empty when none).
    */
   getPhotoContentTypes(
     id: string,
-  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }>;
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: IndexedForumPhotoType[] }>;
 
   /**
    * Photo 0 and the extra stills of a message id with their bytes, as one
@@ -691,13 +696,16 @@ export interface MessageStore {
    * {@link MessageStore.replacePhotos} swaps photo 0 and the extras together,
    * so two separate reads can return photo 0 of one set and the extras of
    * another; this read cannot. `GET /shops/:npub`, the OpenCryptoPay photo
-   * push and the in-memory shop photo fingerprint use it.
+   * push and the in-memory shop photo fingerprint use it. A still with an
+   * unrecognized type is left out; each extra keeps the index it is stored
+   * under, so a left-out still never shifts the ones after it.
    *
    * @param id - Message id.
-   * @returns `photo` for photo 0 (`null` when missing / no photo) and `extras`
-   *   ordered by index ascending (empty when none); copies.
+   * @returns `photo` for photo 0 (`null` when missing / no photo / bad type)
+   *   and `extras` with their stored index (1–9), ordered by index ascending
+   *   (empty when none); copies.
    */
-  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }>;
+  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: IndexedForumPhoto[] }>;
 
   /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
@@ -3176,33 +3184,55 @@ export class InMemoryMessageStore implements MessageStore {
 
   /**
    * Content types of photo 0 and of the extra stills for `id`, without
-   * copying any bytes.
+   * copying any bytes. Same rule as {@link PostgresMessageStore.getPhotoContentTypes}:
+   * an unrecognized type is left out and each extra keeps its stored index
+   * (its list position plus one).
    *
    * @param id - Message id.
-   * @returns `photo` (`null` when none) and `extras` in index order.
+   * @returns `photo` (`null` when none / bad type) and `extras` with their
+   *   index, in index order.
    */
   getPhotoContentTypes(
     id: string,
-  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }> {
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: IndexedForumPhotoType[] }> {
+    const { photo, extras } = this.#knownStills(id);
     return Promise.resolve({
-      photo: this.#photos.get(id)?.contentType ?? null,
-      extras: (this.#extraPhotos.get(id) ?? []).map((photo) => photo.contentType),
+      photo: photo?.contentType ?? null,
+      extras: extras.map(({ index, photo: still }) => ({ index, contentType: still.contentType })),
     });
   }
 
   /**
    * Photo 0 and the extra stills for `id`, copied in one synchronous step,
-   * so no other call can swap the set between the two.
+   * so no other call can swap the set between the two. Same rule as
+   * {@link PostgresMessageStore.getPhotoSet}: an unrecognized type is left
+   * out and each extra keeps its stored index (its list position plus one).
    *
    * @param id - Message id.
-   * @returns `photo` copy (`null` when none) and `extras` copies in index order.
+   * @returns `photo` copy (`null` when none / bad type) and `extras` copies
+   *   with their index, in index order.
    */
-  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }> {
-    const photo = this.#photos.get(id);
+  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: IndexedForumPhoto[] }> {
+    const { photo, extras } = this.#knownStills(id);
     return Promise.resolve({
-      photo: photo === undefined ? null : copyPhoto(photo),
-      extras: (this.#extraPhotos.get(id) ?? []).map(copyPhoto),
+      photo: photo === null ? null : copyPhoto(photo),
+      extras: extras.map(({ index, photo: still }) => ({ index, photo: copyPhoto(still) })),
     });
+  }
+
+  /** Stored stills of `id` with a recognized type (not copied), extras with their index. */
+  #knownStills(id: string): { photo: ForumPhoto | null; extras: IndexedForumPhoto[] } {
+    const photo = this.#photos.get(id);
+    const extras: IndexedForumPhoto[] = [];
+    for (const [position, still] of (this.#extraPhotos.get(id) ?? []).entries()) {
+      if (FORUM_PHOTO_TYPES.has(still.contentType)) {
+        extras.push({ index: position + 1, photo: still });
+      }
+    }
+    return {
+      photo: photo !== undefined && FORUM_PHOTO_TYPES.has(photo.contentType) ? photo : null,
+      extras,
+    };
   }
 
   getById(id: string): Promise<MessageRow | undefined> {
@@ -7393,14 +7423,16 @@ export class PostgresMessageStore implements MessageStore {
    * statement that selects no `bytea` column (`photo IS NOT NULL` reads only
    * the null bitmap). Same filters as {@link PostgresMessageStore.getPhoto}
    * and {@link PostgresMessageStore.listExtraPhotos}: a null photo or an
-   * unrecognized type is left out.
+   * unrecognized type is left out. Each extra keeps its `idx`, so a left-out
+   * still never shifts the ones after it.
    *
    * @param id - Message id (`$1`).
-   * @returns `photo` (`null` when missing) and `extras` ordered by index ascending.
+   * @returns `photo` (`null` when missing) and `extras` with their `idx`,
+   *   ordered by index ascending.
    */
   async getPhotoContentTypes(
     id: string,
-  ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }> {
+  ): Promise<{ photo: ForumPhotoContentType | null; extras: IndexedForumPhotoType[] }> {
     const rows = await this.#sql.query<{ idx: number | string; photo_content_type: string }>(
       `SELECT 0 AS idx, photo_content_type FROM message
        WHERE id = $1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL
@@ -7411,16 +7443,17 @@ export class PostgresMessageStore implements MessageStore {
       [id],
     );
     let photo: ForumPhotoContentType | null = null;
-    const extras: ForumPhotoContentType[] = [];
+    const extras: IndexedForumPhotoType[] = [];
     for (const row of rows) {
       if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
         continue;
       }
       const contentType = row.photo_content_type as ForumPhotoContentType;
-      if (Number(row.idx) === 0) {
+      const index = Number(row.idx);
+      if (index === 0) {
         photo = contentType;
       } else {
-        extras.push(contentType);
+        extras.push({ index, contentType });
       }
     }
     return { photo, extras };
@@ -7433,12 +7466,16 @@ export class PostgresMessageStore implements MessageStore {
    * is seen either completely or not at all. Same filters as
    * {@link PostgresMessageStore.getPhoto} and
    * {@link PostgresMessageStore.listExtraPhotos}: a null photo, a missing
-   * type or an unrecognized type is left out.
+   * type or an unrecognized type is left out. Each extra keeps its `idx`, so
+   * a left-out still never shifts the ones after it.
    *
    * @param id - Message id (`$1`).
-   * @returns `photo` (`null` when missing) and `extras` ordered by index ascending.
+   * @returns `photo` (`null` when missing) and `extras` with their `idx`,
+   *   ordered by index ascending.
    */
-  async getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }> {
+  async getPhotoSet(
+    id: string,
+  ): Promise<{ photo: ForumPhoto | null; extras: IndexedForumPhoto[] }> {
     // Both branches filter null bytes and a null type in SQL.
     const rows = await this.#sql.query<{
       idx: number | string;
@@ -7455,7 +7492,7 @@ export class PostgresMessageStore implements MessageStore {
       [id],
     );
     let photo: ForumPhoto | null = null;
-    const extras: ForumPhoto[] = [];
+    const extras: IndexedForumPhoto[] = [];
     for (const row of rows) {
       if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
         continue;
@@ -7467,10 +7504,11 @@ export class PostgresMessageStore implements MessageStore {
       if (typeof row.photo_taken_at === 'string') {
         still.takenAt = row.photo_taken_at;
       }
-      if (Number(row.idx) === 0) {
+      const index = Number(row.idx);
+      if (index === 0) {
         photo = still;
       } else {
-        extras.push(still);
+        extras.push({ index, photo: still });
       }
     }
     return { photo, extras };

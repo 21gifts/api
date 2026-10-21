@@ -554,8 +554,9 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
   // the extras of another.
   const { photo: first, extras } = await messages.getPhotoSet(messageId);
   const hash = createHash('sha256');
-  for (const photo of first === null ? extras : [first, ...extras]) {
-    hash.update(`${photo.contentType}:${String(photo.bytes.byteLength)}:`);
+  const stills = [...(first === null ? [] : [{ index: 0, photo: first }]), ...extras];
+  for (const { index, photo } of stills) {
+    hash.update(`${String(index)}:${photo.contentType}:${String(photo.bytes.byteLength)}:`);
     hash.update(photo.bytes);
   }
   return hash.digest('hex');

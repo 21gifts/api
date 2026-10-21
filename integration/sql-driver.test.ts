@@ -1261,7 +1261,10 @@ describe('shop identity on Postgres', () => {
       ]);
       expect(await ctx.messages.getPhotoContentTypes(row.id)).toEqual({
         photo: 'image/png',
-        extras: ['image/jpeg', 'image/webp'],
+        extras: [
+          { index: 1, contentType: 'image/jpeg' },
+          { index: 2, contentType: 'image/webp' },
+        ],
       });
       // Same answer as the byte reads it replaces in shop kind 0.
       expect((await ctx.messages.getPhoto(row.id))?.contentType).toBe('image/png');
@@ -1284,6 +1287,50 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  for (const bad of [0, 1, 2]) {
+    test(`leaves out an unrecognized type at index ${String(bad)} and keeps the stored index of the stills after it`, async () => {
+      const ctx = await setup();
+      try {
+        const row = ctx.note({ hasPhoto: true });
+        const stills = [
+          PNG,
+          { contentType: 'image/jpeg' as const, bytes: new Uint8Array([4, 5]) },
+          { contentType: 'image/webp' as const, bytes: new Uint8Array([6]) },
+          { contentType: 'image/png' as const, bytes: new Uint8Array([7]) },
+        ];
+        await ctx.messages.create(row, PNG, undefined, stills.slice(1));
+        if (bad === 0) {
+          await ctx.client.execute(
+            `UPDATE message SET photo_content_type = 'image/gif' WHERE id = $1`,
+            [row.id],
+          );
+        } else {
+          await ctx.client.execute(
+            `UPDATE message_extra_photo SET photo_content_type = 'image/gif'
+             WHERE message_id = $1 AND idx = $2`,
+            [row.id, bad],
+          );
+        }
+        const extras = [1, 2, 3].filter((index) => index !== bad);
+        expect(await ctx.messages.getPhotoContentTypes(row.id)).toEqual({
+          photo: bad === 0 ? null : 'image/png',
+          extras: extras.map((index) => ({ index, contentType: stills[index]!.contentType })),
+        });
+        const set = await ctx.messages.getPhotoSet(row.id);
+        expect(set.photo === null ? null : [set.photo.contentType, [...set.photo.bytes]]).toEqual(
+          bad === 0 ? null : ['image/png', [1, 2, 3]],
+        );
+        expect(
+          set.extras.map(({ index, photo }) => [index, photo.contentType, [...photo.bytes]]),
+        ).toEqual(
+          extras.map((index) => [index, stills[index]!.contentType, [...stills[index]!.bytes]]),
+        );
+      } finally {
+        await ctx.cleanup();
+      }
+    });
+  }
+
   test('reads the whole photo set of a note in one statement, never a mixed set', async () => {
     const ctx = await setup();
     try {
@@ -1296,13 +1343,19 @@ describe('shop identity on Postgres', () => {
       // The same stills as the two separate reads.
       expect(await ctx.messages.getPhotoSet(row.id)).toEqual({
         photo: await ctx.messages.getPhoto(row.id),
-        extras: await ctx.messages.listExtraPhotos(row.id),
+        extras: (await ctx.messages.listExtraPhotos(row.id)).map((photo, position) => ({
+          index: position + 1,
+          photo,
+        })),
       });
       // Plain arrays, so Bun's Buffer and a Uint8Array compare by content.
       const plainStills = (photos: readonly ForumPhoto[]): unknown =>
         photos.map((photo) => ({ contentType: photo.contentType, bytes: [...photo.bytes] }));
       const asList = (set: Awaited<ReturnType<PostgresMessageStore['getPhotoSet']>>): unknown =>
-        plainStills(set.photo === null ? [] : [set.photo, ...set.extras]);
+        plainStills([
+          ...(set.photo === null ? [] : [set.photo]),
+          ...set.extras.map((extra) => extra.photo),
+        ]);
       // replacePhotos swaps photo 0 and the extras in one transaction: every
       // read during the swaps is one whole set.
       for (let round = 0; round < 10; round += 1) {

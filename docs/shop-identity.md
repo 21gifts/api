@@ -278,7 +278,12 @@ Kind 0 content of a listed shop:
 | `lud16`        | the till account's Lightning address, see below                             |
 
 The `picture` and `banner` URLs need only the content types of photo 0
-(`photo.<ext>`) and of the first extra still (`photo/1.<ext>`). The worker reads them with `MessageStore.getPhotoContentTypes`, one
+(`photo.<ext>`) and of the extra still stored at index 1 (`photo/1.<ext>`).
+Each field depends on its own still only: an unrecognized type on photo 0
+gives the `picture` fallback and keeps the banner, and an unrecognized type
+on still 1 gives the `banner` fallback and never moves still 2 into it,
+because `getPhotoContentTypes` returns each extra with its stored index.
+The worker reads them with `MessageStore.getPhotoContentTypes`, one
 statement that selects no `bytea` column, and not with `getPhoto` /
 `listExtraPhotos`: these reads run on every pass, before the unchanged-content
 skip, so reading the bytes would load up to ten photos per visited shop on
@@ -419,7 +424,9 @@ One answer, one state of the note:
   change inside the gap needs no round: the unchanged note with either set
   is a state that existed. The photo count of the note is not compared with
   the set read, because `getPhotoSet` leaves out a photo with an unrecognized
-  type that the note's `photo_count` still counts.
+  type that the note's `photo_count` still counts. Each extra of the set
+  carries its stored index, so a left-out still never shifts the ones after
+  it.
 - Read bound: at most two rounds, so at most three note reads (the first,
   and one re-read per round, which the next round takes as its note), two
   NIP-05 allocations and two photo set reads per request. A 503 does not
@@ -471,7 +478,11 @@ NIP-05). Photo 0 is `/messages/:id/photo.<ext>` and
 extra still n ≥ 1 is `/messages/:id/photo/<n>.<ext>` (the routes `forumPhotoUrl`
 and `forumExtraPhotoUrl` in `src/lib/nostr/event.ts` use), absolute from
 `resolvePublicApiBase`, or the path alone when that is empty.
-Photos are the note's photos in note order. `width` and `height` come from a
+Photos are the note's photos in note order. `n` is the index the still is
+stored under (`message_extra_photo.idx`), not its position in the list: a
+still with an unrecognized type is left out of the set and drops only its
+own entry, so the stills after it keep their URLs, and an unrecognized
+photo 0 leaves the list with the extras alone. `width` and `height` come from a
 header-only reader (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`) that
 never decodes the image, so an unauthenticated request cannot make the api
 decode up to ten photos. It is new code next to `imageDisplaySize`
@@ -731,7 +742,10 @@ Rules for every claim:
     not sent again. After the reservation it sets `ocp_photos_hash` to null,
     conditional only on the token `c`, so an answer that is lost or loses
     the generation check leaves no hash that could hide a different set on
-    OpenCryptoPay. Then it sends up to 10 photos, in note order, with
+    OpenCryptoPay. Then it sends up to 10 photos, in note order (every
+    still the set returns, by stored index; a still with an unrecognized
+    type drops only itself, photo 0 included, so a valid set hashes as
+    before), with
     `PUT /map/places/photos` as
     `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10

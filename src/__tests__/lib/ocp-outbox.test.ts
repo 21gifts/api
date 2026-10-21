@@ -507,6 +507,35 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(logged('ocp.photos.skipped')).toEqual([]);
   });
 
+  it.each([0, 1, 2])(
+    'sends the recognized stills in stored index order when index %i has an unrecognized type',
+    async (bad) => {
+      const photos: ForumPhoto[] = Array.from({ length: 4 }, (_, index) => ({
+        contentType: 'image/png',
+        bytes: new Uint8Array([index]),
+      }));
+      const stills = [...photos];
+      stills[bad] = {
+        contentType: 'image/gif',
+        bytes: new Uint8Array([9]),
+      } as unknown as ForumPhoto;
+      const messages = await messagesWith(shopNote({ hasPhoto: true }), stills);
+      const ids = stubIdentities();
+      const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      // Only the unrecognized still is left out: an unrecognized photo 0
+      // does not empty the list, and the order stays the stored order.
+      const kept = photos.filter((_, index) => index !== bad);
+      expect(sent[0]?.body['photos']).toEqual(
+        kept.map((photo) => ({
+          contentType: 'image/png',
+          data: Buffer.from(photo.bytes).toString('base64'),
+        })),
+      );
+      expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash(kept));
+    },
+  );
+
   it('sends an empty list for a shop without photos', async () => {
     const messages = await messagesWith(shopNote());
     const ids = stubIdentities();

@@ -1468,7 +1468,10 @@ note's photos in note order (at most 10), from one read of the whole set
 another: photo 0 is
 `/messages/:id/photo.<ext>` and extra still n ≥ 1 is
 `/messages/:id/photo/<n>.<ext>`, absolute from the public API base or the
-path alone when no public origin is set. `width` and `height` come from the
+path alone when no public origin is set. `n` is the index the still is
+stored under, so a still that the set leaves out (an unrecognized type)
+drops only its own entry and never shifts the URLs after it; an
+unrecognized photo 0 leaves the list with the extras alone. `width` and `height` come from the
 image header only (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`), swapped
 for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
 cannot be read. `payUsername` is the till account's username when it has a

@@ -47,6 +47,10 @@ function segmentPubkey(segment: string): string | null {
   }
 }
 
+/**
+ * One `photos` entry: photo 0 is `photo.<ext>`, the extra still stored at
+ * `index` n ≥ 1 is `photo/<n>.<ext>`.
+ */
 function photoRow(
   apiBase: string,
   messageId: string,
@@ -90,7 +94,9 @@ function answerFields(note: MessageRow | undefined): string {
  * 404 for anything else, 503 on a store failure (`shops.detail.failed`).
  *
  * One answer comes from one state of the note. The photos come from one read
- * of the whole set ({@link MessageStore.getPhotoSet}). While the NIP-05
+ * of the whole set ({@link MessageStore.getPhotoSet}); each URL carries the
+ * still's stored index, and a still the set leaves out (an unrecognized
+ * type, photo 0 included) drops only itself. While the NIP-05
  * domain is set, the allocation's entry must carry the name of the note this
  * round read; a missing entry or another name (renamed or unlisted between
  * the two reads) goes round once more with a re-read of the note, and on the
@@ -156,9 +162,14 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
           return c.json({ error: 'Shops are unavailable' }, 503, NO_STORE);
         }
         const apiBase = resolvePublicApiBase(env);
-        const photos = (set.photo === null ? [] : [set.photo, ...set.extras])
+        // Each still keeps its stored index in its URL; one that the set
+        // leaves out (an unrecognized type) drops only itself.
+        const photos = [
+          ...(set.photo === null ? [] : [{ index: 0, photo: set.photo }]),
+          ...set.extras,
+        ]
           .slice(0, 10)
-          .map((photo, index) => photoRow(apiBase, note.id, index, photo));
+          .map(({ index, photo }) => photoRow(apiBase, note.id, index, photo));
         const till = await deps.authStore.getAccount(shop.tillAccountId);
         const username = till?.username?.trim() ?? '';
         const address = till?.lightningAddress?.trim() ?? '';

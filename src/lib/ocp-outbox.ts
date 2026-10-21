@@ -273,12 +273,16 @@ export function ocpPhotoSetHash(photos: readonly ForumPhoto[]): string {
  * The note's photos in note order from one read of the whole set, so the
  * hash and the request never mix photo 0 of one set with the extras of
  * another (the generation check of `nextRevision` would already hold such a
- * set back; this keeps the hash itself one real set).
+ * set back; this keeps the hash itself one real set). The list is every
+ * still the set returns, in stored index order: a still with an unrecognized
+ * type drops only itself, photo 0 included.
  */
 async function notePhotos(messages: MessageStore, messageId: string): Promise<ForumPhoto[]> {
   const { photo, extras } = await messages.getPhotoSet(messageId);
-  if (photo === null) return [];
-  return [photo, ...extras].slice(0, OCP_PHOTO_LIMIT);
+  return [...(photo === null ? [] : [photo]), ...extras.map((extra) => extra.photo)].slice(
+    0,
+    OCP_PHOTO_LIMIT,
+  );
 }
 
 async function skippedCount(response: Response): Promise<number> {

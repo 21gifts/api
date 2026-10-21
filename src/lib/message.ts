@@ -61,6 +61,27 @@ export interface ForumPhoto {
   takenAt?: string | null;
 }
 
+/**
+ * An extra still with the index it is stored under (`message_extra_photo.idx`,
+ * 1–9), which is the `n` of `/messages/:id/photo/<n>.<ext>`. A still that is
+ * left out (for example an unrecognized type) does not shift the indices of
+ * the stills after it.
+ */
+export interface IndexedForumPhoto {
+  /** Stored index (1–9). */
+  index: number;
+  /** The still. */
+  photo: ForumPhoto;
+}
+
+/** Content type of an extra still with the index it is stored under (1–9). */
+export interface IndexedForumPhotoType {
+  /** Stored index (1–9). */
+  index: number;
+  /** MIME type of the still. */
+  contentType: ForumPhotoContentType;
+}
+
 /** Till account of a shop note as stored on the message row. */
 export interface MessageShopAccount {
   /** Account id (`message.shop_account_id`). */

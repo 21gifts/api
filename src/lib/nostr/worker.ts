@@ -1542,12 +1542,14 @@ async function shopKind0Args(
     // Content types only: this runs before the unchanged-content skip, so
     // reading the photo bytes here would load them for every visited shop.
     const types = await deps.messages.getPhotoContentTypes(note.id);
+    // picture = photo 0 and banner = the still stored at index 1, each on
+    // its own: a left-out photo 0 does not move another still into either.
     if (types.photo !== null) {
       picture = forumPhotoUrl(apiBase, note.id, types.photo);
-      const second = types.extras[0];
-      if (second !== undefined) {
-        banner = forumExtraPhotoUrl(apiBase, note.id, 1, second);
-      }
+    }
+    const second = types.extras.find((extra) => extra.index === 1);
+    if (second !== undefined) {
+      banner = forumExtraPhotoUrl(apiBase, note.id, 1, second.contentType);
     }
   }
   return {

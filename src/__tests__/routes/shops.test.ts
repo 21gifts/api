@@ -148,6 +148,37 @@ describe('GET /shops/:npub', () => {
     expect(body.shop.nip05).toBeNull();
   });
 
+  it.each([0, 1, 2])(
+    'builds each photo URL from its stored index when the still at index %i has an unrecognized type',
+    async (bad) => {
+      const stills: ForumPhoto[] = [
+        { contentType: 'image/png', bytes: png(10, 1) },
+        { contentType: 'image/png', bytes: png(11, 1) },
+        { contentType: 'image/png', bytes: png(12, 1) },
+        { contentType: 'image/png', bytes: png(13, 1) },
+      ];
+      stills[bad] = { contentType: 'image/gif', bytes: png(99, 1) } as unknown as ForumPhoto;
+      const { app, npub } = await setup({ photos: stills });
+      const body = (await (await app.request(`/shops/${npub}`)).json()) as {
+        shop: { photos: unknown[] };
+      };
+      // Only the left-out still is missing; the others keep their own URL,
+      // and an unrecognized photo 0 does not drop the extras.
+      expect(body.shop.photos).toEqual(
+        [0, 1, 2, 3]
+          .filter((index) => index !== bad)
+          .map((index) => ({
+            url:
+              index === 0
+                ? `/messages/${ID}/photo.png`
+                : `/messages/${ID}/photo/${String(index)}.png`,
+            width: 10 + index,
+            height: 1,
+          })),
+      );
+    },
+  );
+
   it('answers payUsername null without a username, a Lightning address, or the account', async () => {
     for (const till of [
       account({ username: null }),

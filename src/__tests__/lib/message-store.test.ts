@@ -3099,10 +3099,39 @@ describe('InMemoryMessageStore', () => {
     ]);
     expect(await store.getPhotoContentTypes('a')).toEqual({
       photo: 'image/png',
-      extras: ['image/jpeg', 'image/webp'],
+      extras: [
+        { index: 1, contentType: 'image/jpeg' },
+        { index: 2, contentType: 'image/webp' },
+      ],
     });
     expect(await store.getPhotoContentTypes('missing')).toEqual({ photo: null, extras: [] });
   });
+
+  it.each([0, 1, 2])(
+    'getPhotoContentTypes and getPhotoSet leave out an unrecognized type at index %i and keep the stored index of the stills after it',
+    async (bad) => {
+      const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+      const gif = { contentType: 'image/gif', bytes: new Uint8Array([7]) } as unknown as ForumPhoto;
+      const stills: ForumPhoto[] = [
+        { contentType: 'image/png', bytes: new Uint8Array([1]) },
+        JPEG2,
+        { contentType: 'image/webp', bytes: new Uint8Array([2]) },
+        { contentType: 'image/png', bytes: new Uint8Array([3]) },
+      ];
+      stills[bad] = gif;
+      await store.replacePhotos('a', stills);
+      const kept = [0, 1, 2, 3].filter((index) => index !== bad);
+      const extras = kept.filter((index) => index > 0);
+      expect(await store.getPhotoContentTypes('a')).toEqual({
+        photo: bad === 0 ? null : 'image/png',
+        extras: extras.map((index) => ({ index, contentType: stills[index]!.contentType })),
+      });
+      expect(await store.getPhotoSet('a')).toEqual({
+        photo: bad === 0 ? null : stills[0],
+        extras: extras.map((index) => ({ index, photo: stills[index] })),
+      });
+    },
+  );
 
   it('getPhotoSet copies photo 0 and the extras in one step', async () => {
     const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
@@ -3115,7 +3144,13 @@ describe('InMemoryMessageStore', () => {
     const pending = store.getPhotoSet('a');
     await store.replacePhotos('a', [webp]);
     const set = await pending;
-    expect(set).toEqual({ photo: png, extras: [JPEG2, webp] });
+    expect(set).toEqual({
+      photo: png,
+      extras: [
+        { index: 1, photo: JPEG2 },
+        { index: 2, photo: webp },
+      ],
+    });
     const current = await store.getPhotoSet('a');
     expect(current).toEqual({ photo: webp, extras: [] });
     // Copies: changing the result does not change the store.
@@ -7170,9 +7205,13 @@ describe('PostgresMessageStore', () => {
       { idx: 3, photo_content_type: 'image/webp' },
     ];
     const store = new PostgresMessageStore(sql);
+    // The gif at idx 2 is left out; the webp keeps its stored idx 3.
     expect(await store.getPhotoContentTypes('m1')).toEqual({
       photo: 'image/png',
-      extras: ['image/jpeg', 'image/webp'],
+      extras: [
+        { index: 1, contentType: 'image/jpeg' },
+        { index: 3, contentType: 'image/webp' },
+      ],
     });
     expect(sql.queries).toHaveLength(1);
     const text = sql.queries[0]!.text;
@@ -7184,6 +7223,25 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['m1']);
     sql.nextRows = [{ idx: 0, photo_content_type: 'image/gif' }];
     expect(await store.getPhotoContentTypes('m1')).toEqual({ photo: null, extras: [] });
+    // An unrecognized photo 0 does not take the valid extras with it.
+    sql.nextRows = [
+      { idx: 0, photo_content_type: 'image/gif' },
+      { idx: 1, photo_content_type: 'image/webp' },
+    ];
+    expect(await store.getPhotoContentTypes('m1')).toEqual({
+      photo: null,
+      extras: [{ index: 1, contentType: 'image/webp' }],
+    });
+    // An unrecognized still at idx 1 leaves no extra at idx 1.
+    sql.nextRows = [
+      { idx: 0, photo_content_type: 'image/png' },
+      { idx: 1, photo_content_type: 'image/gif' },
+      { idx: 2, photo_content_type: 'image/jpeg' },
+    ];
+    expect(await store.getPhotoContentTypes('m1')).toEqual({
+      photo: 'image/png',
+      extras: [{ index: 2, contentType: 'image/jpeg' }],
+    });
   });
 
   it('getPhotoSet reads photo 0 and the extras with their bytes in one statement', async () => {
@@ -7201,11 +7259,12 @@ describe('PostgresMessageStore', () => {
       { idx: 3, photo: new Uint8Array([3]), photo_content_type: 'image/webp' },
     ];
     const store = new PostgresMessageStore(sql);
+    // The gif at idx 2 is left out; the webp keeps its stored idx 3.
     expect(await store.getPhotoSet('m1')).toEqual({
       photo: png,
       extras: [
-        { ...JPEG2, takenAt: '2026-09-22T11:41:00' },
-        { contentType: 'image/webp', bytes: new Uint8Array([3]) },
+        { index: 1, photo: { ...JPEG2, takenAt: '2026-09-22T11:41:00' } },
+        { index: 3, photo: { contentType: 'image/webp', bytes: new Uint8Array([3]) } },
       ],
     });
     expect(sql.queries).toHaveLength(1);
@@ -7221,6 +7280,15 @@ describe('PostgresMessageStore', () => {
     // An unrecognized type for photo 0 is left out, like getPhoto does.
     sql.nextRows = [{ idx: 0, photo: png.bytes, photo_content_type: 'image/gif' }];
     expect(await store.getPhotoSet('m1')).toEqual({ photo: null, extras: [] });
+    // ...without taking the valid extras with it.
+    sql.nextRows = [
+      { idx: 0, photo: png.bytes, photo_content_type: 'image/gif' },
+      { idx: 1, photo: JPEG2.bytes, photo_content_type: 'image/jpeg' },
+    ];
+    expect(await store.getPhotoSet('m1')).toEqual({
+      photo: null,
+      extras: [{ index: 1, photo: JPEG2 }],
+    });
     sql.nextRows = [];
     expect(await store.getPhotoSet('m1')).toEqual({ photo: null, extras: [] });
   });
