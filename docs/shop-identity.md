@@ -374,8 +374,9 @@ spec adds no zap receipts for a shop key.
   computes at most once per 60 s. `nostr.json`, `GET /shops/:npub` and the
   shop kind 0 all read it, so the three carry the same names. A caller whose
   note does not match the cached entry (`GET /shops/:npub`, the shop
-  kind 0) or a `nostr.json?name=` that the cache does not hold asks for one
-  forced refresh, which bypasses and replaces the cache. Forced refreshes
+  kind 0), a `nostr.json?name=` that the cache does not hold, or a
+  `nostr.json?name=` the cache gives a shop while an account now holds it as
+  its username, asks for one forced refresh, which bypasses and replaces the cache. Forced refreshes
   are single flight too and start at most once per
   `NIP05_DIRECTORY_REFRESH_MS` = 10 s per store set; inside that gap a
   forced read gets the forced computation in flight or the cached directory.
@@ -384,7 +385,10 @@ spec adds no zap receipts for a shop key.
   minute), however many requests and ticks ask. The price is staleness: the
   full `nostr.json` may be up to 60 s old, and a shop renamed twice within
   10 s answers 503 `nip05_stale` (and its kind 0 waits) until the gap ends.
-  A failed computation is not cached; its callers get the error.
+  A failed computation is not cached; its callers get the error. Results
+  are ordered by the order their computations started, not by the clock,
+  and a clock that steps back counts as elapsed, so a clock step never
+  freezes the cache.
 
 ## S3 API
 

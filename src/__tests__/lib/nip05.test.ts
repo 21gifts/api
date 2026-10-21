@@ -457,5 +457,62 @@ describe('nip05', () => {
       expect((await buildNostrJson(auth, {}, 'nobody', stores, 5)).names).toEqual({});
       expect(computations()).toBe(2);
     });
+
+    it('treats a clock that stepped back as expired and keeps the newer result', async () => {
+      const { auth, stores, computations } = await fixture();
+      const late = await nip05Directory(auth, stores, 100_000);
+      const forcedLate = await nip05Directory(auth, stores, 100_001, true);
+      expect(computations()).toBe(2);
+      // The clock steps back 50 s: the cache counts as expired, not as fresh.
+      const plain = await nip05Directory(auth, stores, 50_000);
+      expect(plain).not.toBe(late);
+      expect(plain).not.toBe(forcedLate);
+      expect(computations()).toBe(3);
+      // Started later with an earlier reading, it still replaced the cache.
+      expect(await nip05Directory(auth, stores, 50_001)).toBe(plain);
+      // A forced start after `now` does not block a forced refresh either.
+      const forced = await nip05Directory(auth, stores, 50_002, true);
+      expect(forced).not.toBe(plain);
+      expect(computations()).toBe(4);
+      expect(await nip05Directory(auth, stores, 50_003)).toBe(forced);
+    });
+
+    it('refreshes a ?name= the cache gives a shop once an account holds it as its username', async () => {
+      const { auth, shops, stores, computations } = await fixture();
+      const shopKey = (await shops.getByMessageId(SHOP_ID))!.nostrPubkey;
+      expect((await buildNostrJson(auth, {}, 'bakery', stores, 0)).names).toEqual({
+        bakery: shopKey,
+      });
+      // An account name match answers from the cache without a username lookup.
+      const byUsername = vi.spyOn(auth, 'getAccountByUsername');
+      expect((await buildNostrJson(auth, {}, 'ada', stores, 1)).names).toEqual({
+        ada: 'aa'.repeat(32),
+      });
+      expect(byUsername).not.toHaveBeenCalled();
+      expect(computations()).toBe(1);
+      // An account takes the username the cached directory gives the shop.
+      const bea = account({
+        id: '00000000-0000-4000-8000-000000000002',
+        name: 'Bea',
+        username: 'bakery',
+        createdAt: 2,
+      });
+      await auth.createAccount(bea);
+      await auth.setNostrKeyIfAbsent(bea.id, {
+        pubkey: 'bb'.repeat(32),
+        ciphertext: new Uint8Array(16),
+        kekId: 1,
+        custody: 'custodial',
+      });
+      expect((await buildNostrJson(auth, {}, 'bakery', stores, 2)).names).toEqual({
+        bakery: 'bb'.repeat(32),
+      });
+      expect(byUsername).toHaveBeenCalledWith('bakery');
+      expect(computations()).toBe(2);
+      // The shop moved to a suffixed local in the refreshed directory.
+      const moved = (await nip05Directory(auth, stores, 3)).shops.get(SHOP_ID);
+      expect(moved?.local).not.toBe('bakery');
+      expect(moved?.local.startsWith('bakery')).toBe(true);
+    });
   });
 });

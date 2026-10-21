@@ -79,7 +79,9 @@ async function debugPhotoMeta(store: MessageStore, id: string): Promise<DebugMes
  * `GET /debug/messages/:id`, `GET /debug/messages/:id/photo`,
  * `PUT /debug/messages/:id/video`, and `POST /debug/messages/:id/restore`.
  *
- * @param deps - Message store, optional debug token, and optional map push.
+ * @param deps - Message store, optional debug token, and optional shop
+ *   identities and key encryption key (a restore that lists a shop creates
+ *   its key; the store write queues the OpenCryptoPay outbox).
  * @returns A Hono app exposing the debug message GETs, `PUT /:id/video`,
  *   and `POST /:id/restore`.
  */

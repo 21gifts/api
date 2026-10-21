@@ -339,8 +339,10 @@ interface Nip05ShopStores {
 
 /** Cache state of one store set. */
 interface DirectorySlot {
-  /** Last directory computed, with the clock reading at its start. */
-  value?: { directory: Nip05Directory; startedAt: number };
+  /** Last directory computed, with the clock reading and the sequence number of its start. */
+  value?: { directory: Nip05Directory; startedAt: number; seq: number };
+  /** Sequence number of the last computation started (orders results; the clock may step). */
+  seq: number;
   /** Computation in flight for a plain read (expired or empty cache). */
   pending: Promise<Nip05Directory> | undefined;
   /** Forced computation in flight. */
@@ -369,7 +371,7 @@ function directorySlot(auth: AuthStore, shops: Nip05ShopStores): DirectorySlot {
   }
   let slot = byMessages.get(shops.messages);
   if (slot === undefined) {
-    slot = { pending: undefined, forced: undefined, forcedAt: Number.NEGATIVE_INFINITY };
+    slot = { seq: 0, pending: undefined, forced: undefined, forcedAt: Number.NEGATIVE_INFINITY };
     byMessages.set(shops.messages, slot);
   }
   return slot;
@@ -377,7 +379,9 @@ function directorySlot(auth: AuthStore, shops: Nip05ShopStores): DirectorySlot {
 
 /**
  * Compute the directory from one account read, store it in the slot unless a
- * computation that started later already did, and return it.
+ * computation that started later already did, and return it. "Later" is the
+ * slot's start sequence, not the clock, so a clock step cannot keep a newer
+ * result out.
  */
 async function computeDirectory(
   slot: DirectorySlot,
@@ -385,6 +389,8 @@ async function computeDirectory(
   shops: Nip05ShopStores,
   startedAt: number,
 ): Promise<Nip05Directory> {
+  slot.seq += 1;
+  const seq = slot.seq;
   const accounts = await auth.listAccounts();
   const accountEntries = await listNip05Entries(auth, accounts);
   const shopEntries = await listShopNip05Entries(auth, shops.identities, shops.messages, accounts);
@@ -392,8 +398,8 @@ async function computeDirectory(
     accounts: accountEntries,
     shops: new Map(shopEntries.map((row) => [row.messageId, row] as const)),
   };
-  if (slot.value === undefined || slot.value.startedAt <= startedAt) {
-    slot.value = { directory, startedAt };
+  if (slot.value === undefined || slot.value.seq < seq) {
+    slot.value = { directory, startedAt, seq };
   }
   return directory;
 }
@@ -413,7 +419,9 @@ async function computeDirectory(
  * {@link NIP05_DIRECTORY_REFRESH_MS}; inside that gap a forced read gets the
  * forced computation in flight, else the cached directory (computed as a
  * plain read when it expired). A failed computation is not cached: its
- * callers get the error and the next read computes again.
+ * callers get the error and the next read computes again. A clock that steps
+ * back counts as elapsed: a cached directory or a forced start with a reading
+ * after `now` is treated as expired, so a clock step never freezes the cache.
  *
  * @param auth - Auth store.
  * @param shops - Shop identities and forum store.
@@ -430,7 +438,8 @@ export async function nip05Directory(
 ): Promise<Nip05Directory> {
   const slot = directorySlot(auth, shops);
   if (refresh) {
-    if (slot.forced === undefined && now - slot.forcedAt >= NIP05_DIRECTORY_REFRESH_MS) {
+    const sinceForced = now - slot.forcedAt;
+    if (slot.forced === undefined && (sinceForced < 0 || sinceForced >= NIP05_DIRECTORY_REFRESH_MS)) {
       slot.forcedAt = now;
       const forced = computeDirectory(slot, auth, shops, now).finally(() => {
         slot.forced = undefined;
@@ -439,8 +448,11 @@ export async function nip05Directory(
     }
     if (slot.forced !== undefined) return slot.forced;
   }
-  if (slot.value !== undefined && now - slot.value.startedAt < NIP05_DIRECTORY_TTL_MS) {
-    return slot.value.directory;
+  if (slot.value !== undefined) {
+    const age = now - slot.value.startedAt;
+    if (age >= 0 && age < NIP05_DIRECTORY_TTL_MS) {
+      return slot.value.directory;
+    }
   }
   if (slot.pending === undefined) {
     slot.pending = computeDirectory(slot, auth, shops, now).finally(() => {
@@ -462,7 +474,10 @@ export async function nip05Directory(
  * full body may be up to {@link NIP05_DIRECTORY_TTL_MS} old. A `?name=`
  * that the cached directory does not hold forces one fresh directory
  * (rate-limited by {@link NIP05_DIRECTORY_REFRESH_MS}) before the answer, so
- * a new username or shop is found as soon as the refresh gap allows. Without
+ * a new username or shop is found as soon as the refresh gap allows. So does
+ * a `?name=` the cache gives a shop while an account now holds it as its
+ * username (`auth.getAccountByUsername`): accounts win, so the cached shop
+ * entry is stale and the account's key is served once the gap allows. Without
  * `shops` (accounts only) every call reads every account itself. Account
  * entries are written first; a shop entry whose local part an account already
  * holds is never written over it (it is skipped and logged as
@@ -495,8 +510,12 @@ export async function buildNostrJson(
     let directory = await nip05Directory(auth, shops, now);
     const holds = (dir: Nip05Directory): boolean =>
       dir.accounts.some(keep) || [...dir.shops.values()].some(keep);
-    if (needle !== '' && !holds(directory)) {
-      // A name the cache may not have seen yet (new username or shop).
+    // Called only when the directory holds the name: no account entry means a shop holds it.
+    const claimedByAccount = async (dir: Nip05Directory): Promise<boolean> =>
+      !dir.accounts.some(keep) && (await auth.getAccountByUsername(needle)) !== undefined;
+    if (needle !== '' && (!holds(directory) || (await claimedByAccount(directory)))) {
+      // A name the cache may not have seen yet (new username or shop), or a
+      // cached shop name an account took as its username since.
       directory = await nip05Directory(auth, shops, now, true);
     }
     accountEntries = directory.accounts;
