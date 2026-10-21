@@ -55,8 +55,8 @@ BEGIN
 END;
 $shop_identity$;
 
--- Backfill candidates (ShopIdentityStore.listCandidates): every fast worker
--- tick reads one keyset page by (created_at, id) of live top-level pinned
+-- Backfill candidates (ShopIdentityStore.listCandidates): every 'all' or
+-- 'fast' worker tick reads one keyset page by (created_at, id) of live top-level pinned
 -- notes with a till account and no key. The partial index holds only those
 -- notes, so the page does not scan every live note, also once every shop has
 -- its key. The query's WHERE implies the index predicate.

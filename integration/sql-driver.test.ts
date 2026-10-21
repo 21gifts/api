@@ -30,8 +30,11 @@ if (databaseUrl === undefined || databaseUrl === '') {
  * `query` / `execute` body matches `createBunDatabase(...).client` in `src/index.ts`.
  * `sql` is that same instance so the test can close it.
  */
-function createBunSqlClient(databaseUrl: string): { client: SqlClient; sql: SQL } {
-  const sql = new SQL(databaseUrl);
+function createBunSqlClient(
+  databaseUrl: string,
+  options: { max?: number } = {},
+): { client: SqlClient; sql: SQL } {
+  const sql = new SQL({ url: databaseUrl, ...options });
   const client: SqlClient = {
     async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
       const rows = (await sql.unsafe(text, [...params])) as T[];
@@ -612,8 +615,10 @@ describe('shop identity on Postgres', () => {
   test('18 concurrent migrations from scratch all succeed and leave each object once', async () => {
     const ctx = await setup();
     try {
-      // From scratch: the race of CREATE TABLE / CREATE INDEX IF NOT EXISTS and
-      // of CREATE OR REPLACE FUNCTION is only open while the objects are new.
+      // From scratch: the duplicate-key race of CREATE TABLE / CREATE INDEX IF
+      // NOT EXISTS and of a new function is only open while the objects are
+      // new; the queued boots then replace the existing functions one after
+      // another, which also covers "tuple concurrently updated".
       await ctx.client.execute('DROP TABLE shop_identity');
       await ctx.client.execute(
         `DROP FUNCTION queue_shop_identity_place(), queue_shop_identity_cover(),
@@ -621,16 +626,9 @@ describe('shop identity on Postgres', () => {
       );
       await ctx.client.execute('DROP INDEX message_shop_candidate_idx');
       // One connection per boot, as 18 processes would open.
-      const boots = Array.from({ length: 18 }, () => {
-        const sql = new SQL({ url: String(databaseUrl), max: 1 });
-        const client: SqlClient = {
-          query: async <T>(text: string): Promise<T[]> => (await sql.unsafe(text)) as T[],
-          execute: async (text: string): Promise<void> => {
-            await sql.unsafe(text);
-          },
-        };
-        return { client, sql };
-      });
+      const boots = Array.from({ length: 18 }, () =>
+        createBunSqlClient(String(databaseUrl), { max: 1 }),
+      );
       try {
         const results = await Promise.allSettled(
           boots.map(({ client }) => migrateShopIdentitySchema(client)),
