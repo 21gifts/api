@@ -611,6 +611,17 @@ for one shop must never be in flight at once:
   existing claims need no token because their writes are idempotent; here a
   request that outlived its lease could otherwise overwrite newer state on
   OpenCryptoPay.
+- A claim takes the least recently claimed rows first
+  (`ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id`, and the
+  same with `ocp_photos_claimed_until` for photos): rows never claimed, or
+  whose claim was released or settled (`claimed_until` null), then the
+  earliest lease end, then the message id. A failed send keeps its claim
+  until the lease ends; ordered by `message_id` alone, the same lowest ids
+  would be picked again each time their leases end, and with more failing
+  rows than one lease window holds (30 photo claims, 600 place claims at
+  `WORKER_BATCH` 20 every `WORKER_INTERVAL_MS` 2 s within `WORKER_LEASE_MS`
+  60 s) the shops behind them would never be sent. With this order every
+  pending row is claimed before a failed one is claimed again.
 
 Rules for every claim:
 

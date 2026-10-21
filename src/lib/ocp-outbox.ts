@@ -3,7 +3,9 @@
  * (`docs/shop-identity.md` S5).
  *
  * Both lanes claim rows of `shop_identity` with a lease by the database
- * clock and a claim token. Every request carries the next `revision` of the
+ * clock and a claim token, least recently claimed first, so rows whose sends
+ * keep failing (and keep their claims until the lease ends) never hold the
+ * place of later shops. Every request carries the next `revision` of the
  * shop's shared counter. The worker decides at send time from the note as
  * it is then: a listed shop gets `PUT /map/places`, anything else
  * `DELETE /map/places`.
@@ -209,7 +211,8 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
 }
 
 /**
- * Claim and send at most `WORKER_BATCH` pending OpenCryptoPay place writes.
+ * Claim and send at most `WORKER_BATCH` pending OpenCryptoPay place writes,
+ * least recently claimed first ({@link ShopIdentityStore.claimPlaces}).
  *
  * Results: `PUT` 2xx clears the place flag (generation-checked) and queues
  * the photos; 201 also nulls the photo hash; `DELETE` 2xx clears the flag;
@@ -295,7 +298,8 @@ async function skippedCount(response: Response): Promise<number> {
 }
 
 /**
- * Claim and send one pending OpenCryptoPay photo set (`PUT /map/places/photos`).
+ * Claim and send one pending OpenCryptoPay photo set (`PUT /map/places/photos`),
+ * least recently claimed first ({@link ShopIdentityStore.claimPhoto}).
  *
  * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
  * cleared without a request. Otherwise the revision is reserved first, only

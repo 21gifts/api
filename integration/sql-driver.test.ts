@@ -900,6 +900,46 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  test('claims the least recently claimed places and photo sets first, so failing rows never starve later shops', async () => {
+    const ctx = await setup();
+    try {
+      const ids: string[] = [];
+      for (let index = 0; index < 3; index += 1) {
+        const row = ctx.note();
+        await ctx.messages.create(row);
+        await ctx.shops.ensureListed(row.id, KEK);
+        ids.push(row.id);
+      }
+      const [a, b, c] = [...ids].sort() as [string, string, string];
+      // Leases of 1 ms: after the pause every claim of the round before has
+      // ended, as the claim of a failed send ends with its lease.
+      const places = async (): Promise<string[]> => {
+        await Bun.sleep(5);
+        return (await ctx.shops.claimPlaces(2, 1)).map((claim) => claim.messageId).sort();
+      };
+      expect(await places()).toEqual([a, b]);
+      // C, never claimed, goes before both; A and B share a lease end, so the id decides.
+      expect(await places()).toEqual([a, c]);
+      // B's lease ended a round before those of A and C.
+      expect(await places()).toEqual([a, b]);
+      // Confirm every place, which queues every photo set.
+      await Bun.sleep(5);
+      const confirmed = await ctx.shops.claimPlaces(20, 60_000);
+      expect(confirmed.map((claim) => claim.messageId).sort()).toEqual([a, b, c]);
+      for (const claim of confirmed) await ctx.shops.finishPlace(claim, 'put');
+      const photo = async (): Promise<string | undefined> => {
+        await Bun.sleep(5);
+        return (await ctx.shops.claimPhoto(1))?.messageId;
+      };
+      // Every claim fails and ends with its lease; the photo lane still visits
+      // every shop before it picks a failed one again.
+      expect([await photo(), await photo(), await photo()]).toEqual([a, b, c]);
+      expect([await photo(), await photo(), await photo()]).toEqual([a, b, c]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test('creates no key for an incomplete or changed note', async () => {
     const ctx = await setup();
     try {

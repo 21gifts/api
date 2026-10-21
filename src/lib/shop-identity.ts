@@ -207,7 +207,12 @@ export interface ShopIdentityStore {
    */
   queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
   /**
-   * Claim pending places (lease by the database clock).
+   * Claim pending places (lease by the database clock), least recently
+   * claimed first: rows never claimed or released (`ocp_place_claimed_until`
+   * null) first, then by the end of their last lease, then by `message_id`.
+   * A row whose send failed keeps its lease until it ends, so the next
+   * claims take the rows behind it before it is picked again, and rows that
+   * keep failing never hold the place of later shops.
    *
    * @param limit - Most rows to claim.
    * @param leaseMs - Lease length.
@@ -215,7 +220,10 @@ export interface ShopIdentityStore {
    */
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
   /**
-   * Claim one pending photo set whose place is not pending.
+   * Claim one pending photo set whose place is not pending, least recently
+   * claimed first (`ocp_photos_claimed_until` null first, then by the end of
+   * the last lease, then by `message_id`), so a set that keeps failing never
+   * holds the place of later shops.
    *
    * @param leaseMs - Lease length.
    * @returns The claim, or `undefined` when nothing is due.
@@ -759,7 +767,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     await this.#sync();
     const nowMs = this.#now();
     const claims: ShopOcpClaim[] = [];
-    for (const row of this.#byMessageId()) {
+    for (const row of this.#leastRecentlyClaimed((item) => item.ocpPlaceClaimedUntil)) {
       if (claims.length >= limit) break;
       if (!row.ocpPlacePending || !leaseFree(row.ocpPlaceClaimedUntil, nowMs)) continue;
       row.ocpPlaceClaim += 1;
@@ -776,7 +784,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   async claimPhoto(leaseMs: number): Promise<ShopOcpClaim | undefined> {
     await this.#sync();
     const nowMs = this.#now();
-    const row = this.#byMessageId().find(
+    const row = this.#leastRecentlyClaimed((item) => item.ocpPhotosClaimedUntil).find(
       (item) =>
         item.ocpPhotosPending &&
         !item.ocpPlacePending &&
@@ -910,6 +918,16 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
 
   #byMessageId(): ShopIdentityRow[] {
     return [...this.#rows.values()].sort((a, b) => a.messageId.localeCompare(b.messageId));
+  }
+
+  /**
+   * Rows in claim order (the `ORDER BY … claimed_until ASC NULLS FIRST,
+   * message_id` of the Postgres adapter): a null lease first, then the
+   * earliest lease end, then the message id (the sort is stable).
+   */
+  #leastRecentlyClaimed(until: (row: ShopIdentityRow) => Date | null): ShopIdentityRow[] {
+    const key = (row: ShopIdentityRow): number => until(row)?.getTime() ?? Number.MIN_SAFE_INTEGER;
+    return this.#byMessageId().sort((a, b) => key(a) - key(b));
   }
 
   #claimed(lane: ShopOcpLane, claim: ShopOcpClaim): ShopIdentityRow | undefined {
@@ -1260,7 +1278,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          SELECT message_id FROM shop_identity
          WHERE ocp_place_pending
            AND (ocp_place_claimed_until IS NULL OR ocp_place_claimed_until <= now())
-         ORDER BY message_id
+         ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id
          LIMIT $1
          FOR UPDATE SKIP LOCKED
        )
@@ -1288,7 +1306,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          SELECT message_id FROM shop_identity
          WHERE ocp_photos_pending AND NOT ocp_place_pending
            AND (ocp_photos_claimed_until IS NULL OR ocp_photos_claimed_until <= now())
-         ORDER BY message_id
+         ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id
          LIMIT 1
          FOR UPDATE SKIP LOCKED
        )

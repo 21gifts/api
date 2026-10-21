@@ -629,6 +629,59 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect((await store.claimPlaces(5, 60_000)).map((c) => c.claim)).toEqual([2, 2]);
   });
 
+  it('claims the least recently claimed places first, so failing rows never starve later shops', async () => {
+    const { store, clock } = setup([shopRow(ID_A), shopRow(ID_B), shopRow(ID_C)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    await store.ensureListed(ID_C, KEK, keygenFrom(4));
+    const round = async (): Promise<string[]> =>
+      (await store.claimPlaces(2, 60_000)).map((claim) => claim.messageId);
+    // A and B are claimed and fail: they keep their claims until the lease ends.
+    expect(await round()).toEqual([ID_A, ID_B]);
+    clock.now += 60_000;
+    // C, never claimed, goes before both; A and B share a lease end, so the id decides.
+    expect(await round()).toEqual([ID_C, ID_A]);
+    clock.now += 60_000;
+    // B's lease ended a round before those of A and C.
+    expect(await round()).toEqual([ID_B, ID_A]);
+    clock.now += 60_000;
+    expect(await round()).toEqual([ID_C, ID_A]);
+    // A released claim (null lease) is due before every expired one.
+    const [released] = await store.claimPlaces(1, 60_000);
+    expect(released?.messageId).toBe(ID_B);
+    await store.release('place', released!);
+    clock.now += 60_000;
+    // A and C share a lease end again, so the id decides.
+    expect(await round()).toEqual([ID_B, ID_A]);
+  });
+
+  it('claims the least recently claimed photo set first, so failing sets never starve later shops', async () => {
+    const { store, clock } = setup([shopRow(ID_A), shopRow(ID_B), shopRow(ID_C)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    await store.ensureListed(ID_C, KEK, keygenFrom(4));
+    for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.finishPlace(claim, 'put');
+    }
+    const next = async (): Promise<string | undefined> =>
+      (await store.claimPhoto(60_000))?.messageId;
+    // A is claimed and fails: it keeps its claim until the lease ends.
+    expect(await next()).toBe(ID_A);
+    clock.now += 60_000;
+    // B and C, never claimed, go before A although A's lease has ended.
+    expect(await next()).toBe(ID_B);
+    clock.now += 1_000;
+    expect(await next()).toBe(ID_C);
+    clock.now += 1_000;
+    expect(await next()).toBe(ID_A);
+    expect(await next()).toBeUndefined();
+    clock.now += 60_000;
+    // Every lease has ended: the earliest lease end goes first.
+    expect(await next()).toBe(ID_B);
+    expect(await next()).toBe(ID_C);
+    expect(await next()).toBe(ID_A);
+  });
+
   it('checks the remaining lease and the token', async () => {
     const { store, clock, claim } = await claimed();
     expect(await store.leaseHasTime('place', claim, 60_000)).toBe(true);
@@ -1099,9 +1152,16 @@ describe('PostgresShopIdentityStore', () => {
     ]);
     expect(calls[0]?.text).toContain('FOR UPDATE SKIP LOCKED');
     expect(calls[0]?.text).toContain('ocp_place_claimed_until <= now()');
+    expect(calls[0]?.text).toContain(
+      'ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id',
+    );
     expect(calls[0]?.params).toEqual([20, 60_000]);
     expect(await store.claimPhoto(60_000)).toEqual({ messageId: ID_A, generation: 3, claim: 5 });
     expect(calls[1]?.text).toContain('NOT ocp_place_pending');
+    expect(calls[1]?.text).toContain(
+      'ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id',
+    );
+    expect(calls[1]?.text).toContain('FOR UPDATE SKIP LOCKED');
     expect(await store.claimPhoto(60_000)).toBeUndefined();
   });
 
