@@ -2219,15 +2219,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
         }
         // Every top-level shop gets the DELETE: a pin set concurrently may already be on the map.
-        if (target.parentId === null && textHasHashtagToken(target.text, '21GiftsShop')) {
+        const mapPush = deps.mapPush;
+        if (
+          mapPush !== undefined &&
+          target.parentId === null &&
+          textHasHashtagToken(target.text, '21GiftsShop')
+        ) {
           await queueShopMapPush(
             deps.store,
             target.id,
             async () => {
-              await removeShopOcpPlace({
-                ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-                messageId: target.id,
-              });
+              await removeShopOcpPlace({ mapPush, messageId: target.id });
             },
             false,
           );

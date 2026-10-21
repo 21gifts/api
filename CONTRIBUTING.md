@@ -347,7 +347,7 @@ api/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
 │   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
-│   ├── ocp-places.spec.ts    # Playwright Function: shop pin put and delete
+│   ├── ocp-places.spec.ts    # Playwright Function: shop checks on real notes; map functions at default boot
 │   └── helpers/
 │       └── pin-session.ts    # Verified debug-account session for pin and shop Function tests
 ├── playwright.config.ts

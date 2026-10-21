@@ -12135,6 +12135,46 @@ describe('shop OCP place hook', () => {
     ['place', { place: { lat: 47.3, lng: 8.5, label: 'Stall', address: ADDRESS } }],
     ['text', { text: 'Coffee roasted on site and served at the bar all day long.' }],
     ['shop-account', { username: 'shopkeep' }],
+  ])(
+    'does not read the row again for the %s map turn without a map push',
+    async (route, payload) => {
+      const auth = await staffStore('Ada');
+      await addShopkeep(auth);
+      const messages = new InMemoryMessageStore();
+      await shopNote(messages);
+      await messages.setPlace(SHOP_ID, PIN);
+      const before = await messages.getById(SHOP_ID);
+      if (before === undefined) {
+        throw new Error('expected shop');
+      }
+      let reads = 0;
+      const store = throwingStore({
+        getById: async () => {
+          reads += 1;
+          if (reads > 2) {
+            throw new Error('unexpected read');
+          }
+          return before;
+        },
+        setPlace: async () => true,
+        setShopAccount: async () => true,
+        updateText: async () => before,
+        countAttributedReplies: async () => 0,
+      });
+      const res = await mount(auth, store).request(`/messages/${SHOP_ID}/${route}`, {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      expect(res.status).toBe(200);
+      expect(reads).toBe(2);
+    },
+  );
+
+  it.each([
+    ['place', { place: { lat: 47.3, lng: 8.5, label: 'Stall', address: ADDRESS } }],
+    ['text', { text: 'Coffee roasted on site and served at the bar all day long.' }],
+    ['shop-account', { username: 'shopkeep' }],
   ])('deletes the map pin when the %s push finds the note gone', async (route, payload) => {
     const { mapPush, calls, meta } = recordingMap();
     const auth = await staffStore('Ada');
