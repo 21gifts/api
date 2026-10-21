@@ -8028,7 +8028,8 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       const ctx = await context([
         { row: shopNote(uuid(1), { hasPhoto: true }), photos: [PNG, JPEG] },
       ]);
-      // Byte reads of the shop note only: the tick also builds other notes.
+      // Byte reads of the shop note only: the kind 1 sign path of the same tick
+      // (signBatch) reads another fixture note's photo.
       const byteReads: string[] = [];
       const typeReads: string[] = [];
       const metadataOnly = override<MessageStore>(ctx.messages, {

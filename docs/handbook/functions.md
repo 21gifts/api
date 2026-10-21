@@ -2454,17 +2454,17 @@
 
 ## Function: forumPhotoUrl
 
-- **Purpose:** Absolute `GET /messages/:id/photo.jpg` (or `.png` / `.webp`) URL for kind:1 content and `imeta`. The extension matches the stored MIME so Damus treats the URL as an image, not a website.
+- **Purpose:** Absolute `GET /messages/:id/photo.jpg` (or `.png` / `.webp`) URL for kind:1 content and `imeta`, the shop kind 0 `picture` and the photos of `GET /shops/:npub`. The extension matches the stored MIME so Damus treats the URL as an image, not a website.
 - **Inputs:** API origin, message id, optional MIME (default JPEG).
 - **Returns / side effects:** URL string.
-- **Used by:** Worker sign path.
+- **Used by:** Worker sign path; shop kind 0 `picture` (`shopKind0Args`); `GET /shops/:npub` photo URLs.
 
 ## Function: forumExtraPhotoUrl
 
 - **Purpose:** Absolute extra-still URL `/messages/:id/photo/:index.jpg|.png|.webp` for indices 1–9 so Damus treats the URL as an image. Extension from MIME (default JPEG).
 - **Inputs:** API origin, message id, extra still index (1–9), optional MIME (default JPEG).
 - **Returns / side effects:** URL string `{apiBase}/messages/{id}/photo/{index}.{ext}`.
-- **Used by:** Worker sign path (still branch, `listExtraPhotos` mapped with `i+1`).
+- **Used by:** Worker sign path (still branch, `listExtraPhotos` mapped with `i+1`); shop kind 0 `banner` (`shopKind0Args`); `GET /shops/:npub` photo URLs.
 
 ## Function: buildKind1Event
 
