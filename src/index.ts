@@ -9,6 +9,10 @@
  */
 import { SQL } from 'bun';
 import { openBootStores } from './lib/boot-stores';
+import {
+  installPostgresConnectionClosedGuard,
+  retryWhilePostgresConnectionClosed,
+} from './lib/postgres-connection-closed';
 import type { MergeDb, MergeTx } from './lib/account-merge';
 import type { SqlClient } from './lib/auth/sql';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
@@ -33,24 +37,40 @@ import { resolveMediaDir } from './lib/video';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
-function createBunDatabase(databaseUrl: string): { client: SqlClient; mergeDb: MergeDb } {
+const POSTGRES_REOPEN_MS = 1000;
+
+interface BunDatabase {
+  client: SqlClient;
+  mergeDb: MergeDb;
+  close(): Promise<void>;
+}
+
+/** Keep a rejection handler on the driver query. The caller still sees the rejection. */
+function retain<T>(pending: Promise<T>): Promise<T> {
+  void pending.catch(() => undefined);
+  return pending;
+}
+
+function createBunDatabase(databaseUrl: string): BunDatabase {
   const sql = new SQL(databaseUrl);
   const client: SqlClient = {
     async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
-      return (await sql.unsafe(text, [...params])) as T[];
+      return (await retain(sql.unsafe(text, [...params]))) as T[];
     },
     async execute(text: string, params: readonly unknown[] = []): Promise<void> {
-      await sql.unsafe(text, [...params]);
+      await retain(sql.unsafe(text, [...params]));
     },
     async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
-      return sql.begin(async (tx) =>
-        run({
-          query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
-            (await tx.unsafe(text, [...params])) as R[],
-          execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
-            await tx.unsafe(text, [...params]);
-          },
-        }),
+      return retain(
+        sql.begin(async (tx) =>
+          run({
+            query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+              (await retain(tx.unsafe(text, [...params]))) as R[],
+            execute: async (text: string, params: readonly unknown[] = []): Promise<void> => {
+              await retain(tx.unsafe(text, [...params]));
+            },
+          }),
+        ),
       );
     },
   };
@@ -58,34 +78,64 @@ function createBunDatabase(databaseUrl: string): { client: SqlClient; mergeDb: M
     client,
     mergeDb: {
       async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
-        return sql.begin(async (tx) =>
-          run({
-            query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
-              (await tx.unsafe(text, [...params])) as R[],
-          }),
+        return retain(
+          sql.begin(async (tx) =>
+            run({
+              query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> =>
+                (await retain(tx.unsafe(text, [...params]))) as R[],
+            }),
+          ),
         );
       },
+    },
+    close(): Promise<void> {
+      return sql.close({ timeout: 0 });
     },
   };
 }
 
 if (import.meta.main) {
+  // Closed connections reject the query and can also surface as unhandled.
+  // The guard keeps a listening process up. Boot retries the open. Writes are not retried.
+  installPostgresConnectionClosedGuard();
   const addr = resolveBindAddr(undefined, process.env);
   const { host, port } = parseBindAddr(addr);
   resolveMediaDir(process.env);
   const databaseUrl = process.env['DATABASE_URL'];
   const trimmedDatabaseUrl = databaseUrl?.trim() ?? '';
-  const bun = trimmedDatabaseUrl === '' ? undefined : createBunDatabase(trimmedDatabaseUrl);
   // BTC_USD_CANDLES_URL and FRANKFURTER_RATES_URL are optional — resolvers
   // inside openBootStores fall back to Coinbase / Frankfurter ECB; unset
   // does not fail boot.
   const querier = new WebsocketNostrQuerier();
-  const boot = await openBootStores(databaseUrl, bun === undefined ? undefined : () => bun.client, {
+  const bootFx = {
     nostrQuerier: querier,
     zapRelayUrls: resolveZapRelays(process.env),
     nostrRelayTimeoutMs: RELAY_TIMEOUT_MS,
     now: Date.now,
-  });
+  };
+  let bun: BunDatabase | undefined;
+  const boot =
+    trimmedDatabaseUrl === ''
+      ? await openBootStores(databaseUrl, undefined, bootFx)
+      : await retryWhilePostgresConnectionClosed(
+          async () => {
+            const next = createBunDatabase(trimmedDatabaseUrl);
+            try {
+              const stores = await openBootStores(databaseUrl, () => next.client, bootFx);
+              bun = next;
+              return stores;
+            } catch (error) {
+              try {
+                await next.close();
+              } catch {
+                // The pool is already closed.
+              }
+              throw error;
+            }
+          },
+          (ms) => Bun.sleep(ms),
+          POSTGRES_REOPEN_MS,
+        );
   const {
     authStore,
     giftStore,
