@@ -4923,8 +4923,8 @@ count, no hide stamps). Logs `messages.place.updated` with
 unchanged. A real pin change appends `message_edit`. An identical pin
 does not. When `mapPush` is set, a non-null place write re-reads the row
 and PUTs a complete result to `/map/places`; an incomplete result after
-the write sends DELETE instead, and a pin cleared or a note hidden
-concurrently sends DELETE. Clearing the pin also sends DELETE, unless a
+the write sends DELETE instead, and a pin cleared or a note gone or
+hidden concurrently sends DELETE. Clearing the pin also sends DELETE, unless a
 later write has set a pin again by the time the clear's turn comes. Map calls of `POST /messages`, `DELETE /messages/:id` and the three
 shop PATCH routes run one after another per note, and each create and
 PATCH call reads the row when its turn comes, so concurrent edits reach
@@ -4959,7 +4959,7 @@ stamps). Logs `messages.shop_account.updated` with `messageId`,
 unchanged. The write stores only `shop_account_id`. A real change appends
 `message_edit`. An unchanged account does not. The same account id with a new
 name or username is unchanged.
-When `mapPush` is set, a note hidden concurrently at the re-read sends DELETE;
+When `mapPush` is set, a note gone or hidden concurrently at the re-read sends DELETE;
 otherwise a re-read row with a complete shop place PUTs the current pin, while
 no place or an incomplete shop sends nothing. Map calls of `POST /messages`, `DELETE /messages/:id` and the three
 shop PATCH routes run one after another per note, and each create and
@@ -4969,7 +4969,7 @@ debug restore push is not queued).
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then re-reads the row and, when `mapPush` is set, PUTs a complete shop pin to `/map/places` or sends DELETE when a present pin makes the result incomplete; a note hidden concurrently sends DELETE; map calls for one note run one after another (create, hide and the shop PATCH routes) and each create and PATCH call reads the row when its turn comes; it is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then re-reads the row and, when `mapPush` is set, PUTs a complete shop pin to `/map/places` or sends DELETE when a present pin makes the result incomplete; a note gone or hidden concurrently sends DELETE; map calls for one note run one after another (create, hide and the shop PATCH routes) and each create and PATCH call reads the row when its turn comes; it is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 
