@@ -629,11 +629,13 @@ Rules for every claim:
   at most 1000 pins by `publishExistingShopPlaces`. It decides nothing itself; the worker does at send
   time. `startOcpOutboxWorker` runs it at boot and, when a page read fails,
   logs `ocp.place.failed` with `pass: 'startup'`, `attempt`, `retryInMs` and
-  the safe error fields, and runs it again from the first page after
-  `WORKER_INTERVAL_MS`, doubling the delay up to `WORKER_LEASE_MS`, until one
-  attempt succeeds. Queueing a row twice is harmless, so a transient error
-  on a later page no longer leaves the remaining rows unqueued until the
-  next restart. Its `stop` cancels a pending retry.
+  the safe error fields, and runs it again after `WORKER_INTERVAL_MS`,
+  doubling the delay up to `WORKER_LEASE_MS`, until one attempt succeeds. A
+  retry resumes at the failed page (after the last message id of the last
+  queued page), so a transient error on a later page no longer leaves the
+  remaining rows unqueued until the next restart, and the earlier pages are
+  queued once, not re-sent with new revisions. Its `stop` cancels a pending
+  retry.
 - **Places without a key.** Places the old push sent without a key stay on
   OpenCryptoPay as stored rows, and its step 1a keeps them off the public
   list. When such a note gets a key, its first `PUT` carries the same

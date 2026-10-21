@@ -942,6 +942,25 @@ describe('queueAllShopPlaces', () => {
     ]);
   });
 
+  it('resumes after the given cursor and reports the last id of each page', async () => {
+    const page = Array.from({ length: 200 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const ids = stubIdentities();
+    ids.queueAllPlacePage
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(['z'])
+      .mockResolvedValueOnce([]);
+    const reported: string[] = [];
+    const store = ids as unknown as ShopIdentityStore;
+    expect(await queueAllShopPlaces(store, 'id-x', (last) => reported.push(last))).toBe(201);
+    expect(await queueAllShopPlaces(store, 'z', (last) => reported.push(last))).toBe(0);
+    expect(ids.queueAllPlacePage.mock.calls).toEqual([
+      ['id-x', 200],
+      ['id-199', 200],
+      ['z', 200],
+    ]);
+    expect(reported).toEqual(['id-199', 'z']);
+  });
+
   it('queues the real store and stops at an empty page', async () => {
     const messages = await messagesWith(shopNote());
     const store = new InMemoryShopIdentityStore(messages);
@@ -1103,17 +1122,59 @@ describe('startOcpOutboxWorker', () => {
     ]);
     expect(JSON.stringify(logged('ocp.place.failed'))).not.toContain('upstream body text');
     await vi.advanceTimersByTimeAsync(100);
-    // The retry starts again at the first page and queues the rest.
+    // The retry resumes at the failed page and queues the rest.
     expect(ids.queueAllPlacePage.mock.calls.map((call) => call[0])).toEqual([
       null,
       'id-199',
-      null,
       'id-199',
     ]);
     expect([...queued].sort()).toEqual(all);
     await vi.advanceTimersByTimeAsync(10_000);
-    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(4);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(3);
     expect(logged('ocp.place.failed')).toHaveLength(1);
+    handle.stop();
+  });
+
+  it('queues each earlier page once when the same page fails twice before a success', async () => {
+    vi.useFakeTimers();
+    const ids = stubIdentities();
+    ids.claimPlaces.mockResolvedValue([]);
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const all = Array.from({ length: 450 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const queued = new Map<string, number>();
+    let failures = 0;
+    ids.queueAllPlacePage.mockImplementation((after: string | null, limit: number) => {
+      if (after === 'id-399' && failures < 2) {
+        failures += 1;
+        return Promise.reject(new Error('db'));
+      }
+      const page = all.filter((id) => after === null || id > after).slice(0, limit);
+      for (const id of page) queued.set(id, (queued.get(id) ?? 0) + 1);
+      return Promise.resolve(page);
+    });
+    const handle = startOcpOutboxWorker(
+      deps(ids, new InMemoryMessageStore(), mapPush(() => new Response('{}')).push),
+      100,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(queued.size).toBe(400);
+    await vi.advanceTimersByTimeAsync(200);
+    expect(ids.queueAllPlacePage.mock.calls.map((call) => call[0])).toEqual([
+      null,
+      'id-199',
+      'id-399',
+      'id-399',
+      'id-399',
+    ]);
+    expect([...queued.keys()].sort()).toEqual(all);
+    expect([...queued.values()].every((count) => count === 1)).toBe(true);
+    expect(logged('ocp.place.failed').map((line) => [line['attempt'], line['retryInMs']])).toEqual([
+      [1, 100],
+      [2, 200],
+    ]);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(ids.queueAllPlacePage).toHaveBeenCalledTimes(5);
     handle.stop();
   });
 

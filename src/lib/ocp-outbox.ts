@@ -405,21 +405,31 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
  * Start-up pass: queue the place push of every `shop_identity` row with
  * keyset paging by `message_id` ({@link OCP_STARTUP_PAGE} per page). It
  * decides nothing; the place sender does at send time.
- * {@link startOcpOutboxWorker} runs it and retries it from the first page
- * until one attempt succeeds.
+ * {@link startOcpOutboxWorker} runs it and, after a failed page, retries it
+ * from the last queued page until one attempt succeeds.
  *
  * @param identities - Shop identity store.
- * @returns Number of rows queued.
+ * @param after - Message id to resume after (`null` starts at the first
+ *   page).
+ * @param onPage - Called with the last message id of each queued page, so a
+ *   caller can resume after it.
+ * @returns Number of rows queued by this call.
  * @throws When a page read fails; the rows of earlier pages stay queued.
  */
-export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise<number> {
-  let cursor: string | null = null;
+export async function queueAllShopPlaces(
+  identities: ShopIdentityStore,
+  after: string | null = null,
+  onPage?: (last: string) => void,
+): Promise<number> {
+  let cursor = after;
   let total = 0;
   for (;;) {
     const page = await identities.queueAllPlacePage(cursor, OCP_STARTUP_PAGE);
     total += page.length;
     const last = page[page.length - 1];
-    if (page.length < OCP_STARTUP_PAGE || last === undefined) return total;
+    if (last === undefined) return total;
+    onPage?.(last);
+    if (page.length < OCP_STARTUP_PAGE) return total;
     cursor = last;
   }
 }
@@ -430,11 +440,12 @@ export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise
  * The start-up pass ({@link queueAllShopPlaces}) starts at once. When it
  * fails (a page read throws), it logs `ocp.place.failed` with
  * `pass: 'startup'`, the attempt number, `retryInMs` and the safe error
- * fields, and runs again from the first page after `intervalMs`, doubling the
- * delay per failed attempt up to `WORKER_LEASE_MS`, until one attempt
- * succeeds. Queueing a row twice is harmless, so a retry does not resume at
- * the failed page. A failure after `stop` is logged without `retryInMs` and
- * not retried.
+ * fields, and runs again after `intervalMs`, doubling the delay per failed
+ * attempt up to `WORKER_LEASE_MS`, until one attempt succeeds. A retry
+ * resumes at the failed page (after the last message id of the last queued
+ * page), so the rows of earlier pages are queued once and are not re-sent,
+ * given a new revision or have their photos held back again. A failure after
+ * `stop` is logged without `retryInMs` and not retried.
  *
  * Each lane is serialised: it schedules its next pass `intervalMs` after the
  * previous one settled (also after a failure), so each instance has at most
@@ -455,8 +466,11 @@ export function startOcpOutboxWorker(
 ): { stop: () => void } {
   let stopped = false;
   let startupTimer: ReturnType<typeof setTimeout> | undefined;
+  let startupAfter: string | null = null;
   const startup = (attempt: number): void => {
-    void queueAllShopPlaces(deps.identities).catch((error: unknown) => {
+    void queueAllShopPlaces(deps.identities, startupAfter, (last) => {
+      startupAfter = last;
+    }).catch((error: unknown) => {
       const fields = { pass: 'startup', attempt, ...errorLogFields(error) };
       if (stopped) {
         logEvent('ocp.place.failed', fields);

@@ -1169,7 +1169,7 @@
 - **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
 - **Inputs:** `event` string, optional `LogFields`.
 - **Returns / side effects:** void.
-- **Used by:** Auth, me, lightning-address, requestLog; the shop key paths (`shop.nostr_key.failed` from worker `backfillShopKeys`, `ensureShopIdentity` in `messagesRoutes`, `PUT /me/about`, and `POST /debug/messages/:id/restore`); worker `publishShopProfiles` and `publishShopRelayLists` (`nostr.profile.*`, `nostr.relays.*`); the OpenCryptoPay outbox (`ocp.place.*` including the start-up retries of `startOcpOutboxWorker`, `ocp.photos.*`); `shopRoutes` (`shops.detail.failed`); `buildNostrJson` (`nip05.shop.collision`, defensive).
+- **Used by:** every non-test `src/` file below (`.ts` omitted). routes: `auth`, `contact`, `conversations`, `debug`, `debug-api-log`, `debug-catalog`, `debug-contacts`, `debug-db`, `debug-diagnostics`, `debug-external`, `debug-messages`, `debug-passkey-renew`, `debug-payments`, `debug-trust`, `funding`, `gifts`, `grant-continuation`, `invoices`, `lightning-address`, `me`, `members`, `messages`, `notifications`, `pay`, `repayment`, `shop-activity`, `shops`, `stats`, `trust`, `trust-chain`, `view`, `well-known`; lib: `account-activity`, `boot-stores`, `conversation-push`, `dev-shop-places`, `log` (`requestLog`), `nip05`, `notification`, `ocp-activity`, `ocp-outbox`, `pos-store`, `push-worker`, `spend-ping`, `username`, `video`, `welcome-media`; lib/auth: `passkey`; lib/nostr: `external-profile`, `keys`, `retract`, `worker`, `zap-index`.
 
 ## Function: setDiagnosticSink
 
@@ -2762,7 +2762,7 @@
 - **Purpose:** Unique NIP-05 local-part; first slug wins, collisions append account-id hex (a shop passes its message id).
 - **Inputs:** name, account id (or shop message id), taken set.
 - **Returns / side effects:** local-part string.
-- **Used by:** `nip05Identifier`, `listNip05Entries`, `listShopNip05Entries` (shop locals, seeded with the account locals).
+- **Used by:** `nip05Identifier`, `listNip05Entries`, `listShopNip05Entries` (shop locals, seeded with the account locals), `backfillAccountUsernames`, `debugRoutes` through `provisionUsername` (`POST /` provisioning).
 
 ## Function: buildNostrJson
 
@@ -3617,13 +3617,13 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 ## Function: queueAllShopPlaces
 
 - **Purpose:** Start-up pass: queue the place push of every `shop_identity` row with keyset pages of 200 by `message_id`. It decides nothing; the place sender does at send time.
-- **Inputs:** Shop identity store.
-- **Returns / side effects:** Number of queued rows. Rejects when a page read fails; the rows of earlier pages stay queued. Queueing a row again is harmless, so a caller may simply run it again.
-- **Used by:** `startOcpOutboxWorker` (runs it at start and retries it until one attempt succeeds).
+- **Inputs:** Shop identity store, optional message id to resume after (default `null`, the first page), optional `onPage` callback that receives the last message id of each queued page.
+- **Returns / side effects:** Number of rows queued by this call. Rejects when a page read fails; the rows of earlier pages stay queued and `onPage` has reported the last of them, so a caller resumes at the failed page instead of queueing the earlier pages again (which would re-send their places, reserve new revisions and hold their photos back again).
+- **Used by:** `startOcpOutboxWorker` (runs it at start and, after a failed page, retries it from the last queued page until one attempt succeeds).
 
 ## Function: startOcpOutboxWorker
 
-- **Purpose:** Run the start-up pass and start both senders. The start-up pass (`queueAllShopPlaces`) starts at once; when it fails it logs `ocp.place.failed` with `pass: 'startup'`, `attempt`, `retryInMs` and the safe error fields (`errorLogFields`), and runs again from the first page after `intervalMs`, doubling the delay per failed attempt up to `WORKER_LEASE_MS`, until one attempt succeeds, so a transient database error on a later page does not leave the remaining identities unqueued until the next restart. The place pass and the photo pass are each scheduled `intervalMs` after that lane's previous pass settled (also after a failure), so each instance has at most one place pass and one photo upload in flight and a slow pass never stacks database or HTTP work (a place pass settles only after all its claimed rows settled, also when one of them throws). Pass failures log `ocp.place.failed` / `ocp.photos.failed`.
+- **Purpose:** Run the start-up pass and start both senders. The start-up pass (`queueAllShopPlaces`) starts at once; when it fails it logs `ocp.place.failed` with `pass: 'startup'`, `attempt`, `retryInMs` and the safe error fields (`errorLogFields`), and runs again after `intervalMs`, doubling the delay per failed attempt up to `WORKER_LEASE_MS`, until one attempt succeeds, so a transient database error on a later page does not leave the remaining identities unqueued until the next restart. It keeps the last message id that `onPage` reported across attempts and passes it as the resume cursor, so a retry starts at the failed page and each earlier page is queued once. The place pass and the photo pass are each scheduled `intervalMs` after that lane's previous pass settled (also after a failure), so each instance has at most one place pass and one photo upload in flight and a slow pass never stacks database or HTTP work (a place pass settles only after all its claimed rows settled, also when one of them throws). Pass failures log `ocp.place.failed` / `ocp.photos.failed`.
 - **Inputs:** `{ identities, messages, mapPush }`, optional interval (default `WORKER_INTERVAL_MS`; also the first start-up retry delay).
 - **Returns / side effects:** `{ stop }`, which clears the pending start-up retry and both pending lane timers; a pass still in flight settles without scheduling another, so no pass starts after `stop` (a start-up attempt that fails after `stop` is logged without `retryInMs` and not retried).
 - **Used by:** `src/index.ts` when `resolveMapPush` returns a target.
