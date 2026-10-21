@@ -458,23 +458,28 @@ describe('nip05', () => {
       expect(computations()).toBe(2);
     });
 
-    it('treats a clock that stepped back as expired and keeps the newer result', async () => {
+    it('treats a clock that stepped back past the TTL or gap as expired and keeps the newer result', async () => {
       const { auth, stores, computations } = await fixture();
-      const late = await nip05Directory(auth, stores, 100_000);
-      const forcedLate = await nip05Directory(auth, stores, 100_001, true);
+      const late = await nip05Directory(auth, stores, 200_000);
+      const forcedLate = await nip05Directory(auth, stores, 200_001, true);
       expect(computations()).toBe(2);
-      // The clock steps back 50 s: the cache counts as expired, not as fresh.
+      // The clock steps back 150 s, past the TTL: the cache counts as expired, not as fresh.
       const plain = await nip05Directory(auth, stores, 50_000);
       expect(plain).not.toBe(late);
       expect(plain).not.toBe(forcedLate);
       expect(computations()).toBe(3);
       // Started later with an earlier reading, it still replaced the cache.
       expect(await nip05Directory(auth, stores, 50_001)).toBe(plain);
-      // A forced start after `now` does not block a forced refresh either.
+      // A forced start further than the gap after `now` does not block a forced refresh either.
       const forced = await nip05Directory(auth, stores, 50_002, true);
       expect(forced).not.toBe(plain);
       expect(computations()).toBe(4);
       expect(await nip05Directory(auth, stores, 50_003)).toBe(forced);
+      // A reading taken shortly before the last start (a caller that read the
+      // clock before an await) still gets the cache and the gap.
+      expect(await nip05Directory(auth, stores, 50_000, true)).toBe(forced);
+      expect(await nip05Directory(auth, stores, 49_999)).toBe(forced);
+      expect(computations()).toBe(4);
     });
 
     it('refreshes a ?name= the cache gives a shop once an account holds it as its username', async () => {

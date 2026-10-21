@@ -420,8 +420,10 @@ async function computeDirectory(
  * forced computation in flight, else the cached directory (computed as a
  * plain read when it expired). A failed computation is not cached: its
  * callers get the error and the next read computes again. A clock that steps
- * back counts as elapsed: a cached directory or a forced start with a reading
- * after `now` is treated as expired, so a clock step never freezes the cache.
+ * back by more than the TTL (cache) or the refresh gap (forced start) counts
+ * as elapsed, so a clock step never freezes the cache; a reading only
+ * slightly before the cached one (a caller that read the clock before an
+ * await) still gets the cache and the gap.
  *
  * @param auth - Auth store.
  * @param shops - Shop identities and forum store.
@@ -441,7 +443,7 @@ export async function nip05Directory(
     const sinceForced = now - slot.forcedAt;
     if (
       slot.forced === undefined &&
-      (sinceForced < 0 || sinceForced >= NIP05_DIRECTORY_REFRESH_MS)
+      (sinceForced < -NIP05_DIRECTORY_REFRESH_MS || sinceForced >= NIP05_DIRECTORY_REFRESH_MS)
     ) {
       slot.forcedAt = now;
       const forced = computeDirectory(slot, auth, shops, now).finally(() => {
@@ -453,7 +455,7 @@ export async function nip05Directory(
   }
   if (slot.value !== undefined) {
     const age = now - slot.value.startedAt;
-    if (age >= 0 && age < NIP05_DIRECTORY_TTL_MS) {
+    if (age >= -NIP05_DIRECTORY_TTL_MS && age < NIP05_DIRECTORY_TTL_MS) {
       return slot.value.directory;
     }
   }
