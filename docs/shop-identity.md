@@ -487,8 +487,8 @@ failures); that path is removed.
 ### Claiming
 
 Both outboxes claim like the existing worker claims (`claimUnsigned` in
-`src/lib/conversation-store.ts`): at most `WORKER_BATCH` rows per tick (the
-photo sender one row per pass, see below), a lease of `WORKER_LEASE_MS`
+`src/lib/conversation-store.ts`): at most `WORKER_BATCH` rows per place pass
+(the photo sender one row per pass, see below), a lease of `WORKER_LEASE_MS`
 (`src/lib/nostr/worker.ts`) on a `claimed_until` column,
 `SELECT … FOR UPDATE SKIP LOCKED`. Two things differ, because two requests
 for one shop must never be in flight at once:
@@ -524,7 +524,7 @@ Rules for every claim:
   follow once the place is confirmed again.
 - Right before sending, the worker checks, by the database clock, that the
   lease still has at least the request timeout plus 10 s left; otherwise it
-  releases the claim and skips the row this tick (for photos, this pass).
+  releases the claim and skips the row for this pass.
   The 10 s cover the time between that check and the request starting, so a
   request that runs to its full timeout still ends before another worker can
   claim the row. For photos the check runs before the bytes are read and
