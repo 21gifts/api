@@ -722,6 +722,88 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  test('the backfill pages past keyed candidates one bounded raw page at a time', async () => {
+    const ctx = await setup();
+    try {
+      for (let index = 0; index < 300; index += 1) {
+        await ctx.messages.create(
+          ctx.note({ text: `Plain note number ${index}.`, place: null, shopAccount: null }),
+        );
+      }
+      const base = Date.UTC(2031, 0, 1);
+      const keyed: string[] = [];
+      for (let index = 0; index < 25; index += 1) {
+        const row = ctx.note({ createdAt: new Date(base + index * 1000) });
+        await ctx.messages.create(row);
+        await ctx.shops.ensureListed(row.id, KEK);
+        keyed.push(row.id);
+      }
+      const unkeyed = ctx.note({ createdAt: new Date(base + 25 * 1000) });
+      await ctx.messages.create(unkeyed);
+      await ctx.client.execute('ANALYZE message');
+      const seen: { text: string; params: readonly unknown[] }[] = [];
+      const spy: SqlClient = {
+        query: <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+          seen.push({ text, params });
+          return ctx.client.query<T>(text, params);
+        },
+        execute: (text, params) => ctx.client.execute(text, params),
+      };
+      const store = new PostgresShopIdentityStore(spy, ctx.messages);
+      // The worker's walk: advance on the raw page, key only unkeyed rows,
+      // stop after a short raw page.
+      let cursor = { createdAt: new Date(base - 1), id: unkeyed.id };
+      const pages: { id: string; keyed: boolean }[][] = [];
+      for (;;) {
+        const page = await store.listCandidates(cursor, 20);
+        expect(page.length).toBeLessThanOrEqual(20);
+        pages.push(page.map((row) => ({ id: row.id, keyed: row.keyed })));
+        for (const candidate of page) {
+          if (!candidate.keyed) await ctx.shops.ensureListed(candidate.id, KEK);
+        }
+        const last = page[page.length - 1];
+        if (page.length < 20 || last === undefined) break;
+        cursor = { createdAt: last.createdAt, id: last.id };
+      }
+      const ids = [...keyed, unkeyed.id];
+      expect(pages.flat().filter((row) => ids.includes(row.id))).toEqual([
+        ...keyed.map((id) => ({ id, keyed: true })),
+        { id: unkeyed.id, keyed: false },
+      ]);
+      expect(pages.length).toBeGreaterThanOrEqual(2);
+      expect(await ctx.shops.getByMessageId(unkeyed.id)).toBeDefined();
+      // The bounded raw page reads the partial index.
+      const [read] = seen;
+      expect(read!.text).toContain('LIMIT $3');
+      const plan = await ctx.client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON) ${read!.text}`,
+        read!.params,
+      );
+      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_candidate_idx"');
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('the operator dump read of shop identities is limited', async () => {
+    const ctx = await setup();
+    try {
+      for (let index = 0; index < 3; index += 1) {
+        const row = ctx.note();
+        await ctx.messages.create(row);
+        await ctx.shops.ensureListed(row.id, KEK);
+      }
+      const all = await ctx.shops.listAll();
+      expect(all.length).toBeGreaterThanOrEqual(3);
+      const limited = await ctx.shops.listDebug(2);
+      expect(limited.map((row) => row.messageId)).toEqual(
+        all.slice(0, 2).map((row) => row.messageId),
+      );
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test('creates one key per listed note, keeps it, and queues every write by trigger', async () => {
     const ctx = await setup();
     try {

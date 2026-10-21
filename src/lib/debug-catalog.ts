@@ -293,7 +293,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
     case 'message_extra_photo':
       return (await deps.messages.listExtraPhotoMeta?.(MESSAGE_LIST_LIMIT)) ?? [];
     case 'shop_identity':
-      return ((await deps.shops?.listAll()) ?? []).map((row) => ({
+      return ((await deps.shops?.listDebug(MESSAGE_LIST_LIMIT)) ?? []).map((row) => ({
         messageId: row.messageId,
         nostrPubkey: row.nostrPubkey,
         nostrKekId: row.nostrKekId,

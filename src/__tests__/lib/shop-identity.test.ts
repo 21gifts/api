@@ -364,10 +364,47 @@ describe('InMemoryShopIdentityStore reads', () => {
       ),
     ).toEqual([ID_B, ID_C]);
     expect(await store.listCandidates(null, 1)).toEqual([
-      { id: ID_A, createdAt: t('2026-01-01T00:00:00Z') },
+      { id: ID_A, createdAt: t('2026-01-01T00:00:00Z'), keyed: false },
     ]);
+    // A keyed note stays on the raw page, flagged, so the cursor can pass it.
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
-    expect((await store.listCandidates(null, 10)).map((row) => row.id)).toEqual([ID_B, ID_C]);
+    expect(
+      (await store.listCandidates(null, 10)).map((row) => [row.id, row.keyed] as const),
+    ).toEqual([
+      [ID_A, true],
+      [ID_B, false],
+      [ID_C, false],
+    ]);
+  });
+
+  it('bounds the raw candidate page before the key check', async () => {
+    const ids = Array.from(
+      { length: 26 },
+      (_, index) => `00000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, '0')}`,
+    );
+    const rows = ids.map((id, index) =>
+      shopRow(id, { createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)) }),
+    );
+    const { store } = setup(rows);
+    for (const id of ids.slice(0, 25)) await store.ensureListed(id, KEK);
+    const first = await store.listCandidates(null, 20);
+    expect(first).toHaveLength(20);
+    expect(first.every((row) => row.keyed)).toBe(true);
+    const second = await store.listCandidates(first[19]!, 20);
+    expect(second.map((row) => [row.id, row.keyed] as const)).toEqual([
+      ...ids.slice(20, 25).map((id) => [id, true] as const),
+      [ids[25], false],
+    ]);
+  });
+
+  it('lists at most the limit for the operator dump in key order', async () => {
+    const { store, clock } = setup([shopRow(ID_C), shopRow(ID_B), shopRow(ID_A)]);
+    await store.ensureListed(ID_C, KEK, keygenFrom(4));
+    clock.now += 1;
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    expect((await store.listDebug(2)).map((row) => row.messageId)).toEqual([ID_C, ID_A]);
+    expect(await store.listDebug(10)).toHaveLength(3);
   });
 
   it('skips a candidate whose note vanished between the two reads', async () => {
@@ -836,6 +873,15 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[2]?.text).toContain('ORDER BY nostr_key_created_at ASC, message_id ASC');
   });
 
+  it('reads at most the limit for the operator dump', async () => {
+    const { sql, calls } = fakeSql([[sqlIdentity()]]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    expect((await store.listDebug(200)).map((row) => row.messageId)).toEqual([ID_A]);
+    expect(calls[0]?.params).toEqual([200]);
+    expect(calls[0]?.text).toContain('ORDER BY nostr_key_created_at ASC, message_id ASC');
+    expect(calls[0]?.text).toContain('LIMIT $1');
+  });
+
   it('reads one bounded round page and wraps with a second bounded read', async () => {
     const { sql, calls } = fakeSql([
       [sqlIdentity()],
@@ -930,18 +976,22 @@ describe('PostgresShopIdentityStore', () => {
     const created = new Date('2026-01-01T00:00:00Z');
     const { sql, calls } = fakeSql([
       [
-        { id: ID_A, created_at: created },
-        { id: ID_B, created_at: '2026-01-02T00:00:00.000Z' },
+        { id: ID_A, created_at: created, keyed: true },
+        { id: ID_B, created_at: '2026-01-02T00:00:00.000Z', keyed: false },
       ],
       [],
     ]);
     const store = new PostgresShopIdentityStore(sql, messages);
     expect(await store.listCandidates(null, 20)).toEqual([
-      { id: ID_A, createdAt: created },
-      { id: ID_B, createdAt: new Date('2026-01-02T00:00:00Z') },
+      { id: ID_A, createdAt: created, keyed: true },
+      { id: ID_B, createdAt: new Date('2026-01-02T00:00:00Z'), keyed: false },
     ]);
     expect(calls[0]?.params).toEqual([null, null, 20]);
-    expect(calls[0]?.text).toContain('NOT EXISTS (SELECT 1 FROM shop_identity');
+    // The key check is per returned row, after the LIMIT, not a filter.
+    expect(calls[0]?.text).toContain(
+      'EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed',
+    );
+    expect(calls[0]?.text).not.toContain('NOT EXISTS');
     expect(calls[0]?.text).toContain("m.text ~* '#21giftsshop([^a-z0-9_]|$)'");
     await store.listCandidates({ createdAt: created, id: ID_A }, 5);
     expect(calls[1]?.params).toEqual([created, ID_A, 5]);

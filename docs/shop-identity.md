@@ -81,17 +81,23 @@ builds on that change.
     returns the stored row.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
-  - The worker backfill also picks up listed shops without a key, at most 20
-    per tick (one page of 20 candidates), next to the existing account backfill. Completeness under
-    #478 is checked in code, not in SQL, so it walks candidate notes with a
-    keyset cursor by (`created_at`, `id`) that moves past rejected
-    (incomplete) notes and wraps around at the end. An older incomplete
-    note can therefore never hold the slot of a listed shop behind it.
-    The page walks the partial index `message_shop_candidate_idx` on
-    `message` (`created_at`, `id`), limited to live top-level notes with a
-    till account and a pin (`parent_id IS NULL`, `deleted_at IS NULL`,
-    `shop_account_id IS NOT NULL`, `place_lat IS NOT NULL`), so a tick does
-    not scan every live note, also once every shop has its key.
+  - The worker backfill also picks up listed shops without a key, next to
+    the existing account backfill. Each tick reads one raw page of at most
+    20 candidate notes (live, top-level, pinned `#21GiftsShop` notes with a
+    till account), keyed or not: the `LIMIT` bounds the page before the key
+    check, which is an `EXISTS` on `shop_identity` per returned row. The
+    keyset cursor by (`created_at`, `id`) advances to the last note of that
+    raw page, keyed notes are skipped without generating a key, and the
+    cursor resets to the start only after a short raw page. Completeness
+    under #478 is checked in code, not in SQL, so the cursor also moves past
+    rejected (incomplete) notes. An older incomplete note or a run of keyed
+    shops can therefore never hold the slot of an unkeyed listed shop behind
+    it, and a lap where every shop has its key reads one page per tick
+    instead of every candidate. The page walks the partial index
+    `message_shop_candidate_idx` on `message` (`created_at`, `id`), limited
+    to live top-level notes with a till account and a pin
+    (`parent_id IS NULL`, `deleted_at IS NULL`, `shop_account_id IS NOT NULL`,
+    `place_lat IS NOT NULL`), so a tick does not scan every live note.
     Ticks start without waiting for the previous one, so the backfill
     holds a per-store in-flight mark (cleared also when the page read
     fails): a tick that finds it set skips the backfill without reading.
@@ -152,7 +158,10 @@ older name back (which the kind 0 of a shop that is later unlisted would
 otherwise keep).
 
 The operator dump (`GET /debug/dump/shop_identity`) shows every column
-except `nostr_nsec_ciphertext`; the encrypted secret is never dumped.
+except `nostr_nsec_ciphertext`; the encrypted secret is never dumped. Like
+every other dump table it is capped at 200 rows: it reads
+`ShopIdentityStore.listDebug(200)`, the first 200 identities by
+`nostr_key_created_at`, then `message_id` (`LIMIT $1` on Postgres).
 
 `MessageStore.deleteById` can hard-delete a top-level note, for example when
 its video file is missing. It deletes nothing for a note that has a

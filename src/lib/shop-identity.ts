@@ -84,6 +84,15 @@ export interface ShopCandidateCursor {
 }
 
 /**
+ * One raw key-backfill candidate: its keyset cursor and whether the note
+ * already has a key, so the caller can advance past it without generating one.
+ */
+export interface ShopCandidate extends ShopCandidateCursor {
+  /** The note already has a row in `shop_identity`. */
+  keyed: boolean;
+}
+
+/**
  * Keyset cursor of the shop publishers' round robin, in the `listAll()` order:
  * `nostr_key_created_at`, then `message_id`. It is a key, not a row, so it
  * still works when no row has it any more.
@@ -145,6 +154,13 @@ export interface ShopIdentityStore {
    */
   listAll(): Promise<ShopIdentityRow[]>;
   /**
+   * The first `limit` identities for the operator dump (`GET /debug/dump`).
+   *
+   * @param limit - Most rows to return.
+   * @returns At most `limit` rows in the `listAll()` order.
+   */
+  listDebug(limit: number): Promise<ShopIdentityRow[]>;
+  /**
    * One bounded page of a lap over every identity in the `listAll()` order:
    * up to `limit` rows after `cursor`, and when fewer than `limit` follow it,
    * the lap wraps with a second bounded read of the rows at or before
@@ -169,13 +185,17 @@ export interface ShopIdentityStore {
    */
   renameIfListed(note: MessageRow): Promise<void>;
   /**
-   * Live top-level pinned `#21GiftsShop` notes with a till account and no key.
+   * One raw page of key-backfill candidates: live top-level pinned
+   * `#21GiftsShop` notes with a till account, whether or not they already
+   * have a key. The page is bounded before the key check, so a lap where
+   * every candidate has a key still reads at most `limit` notes per call;
+   * the caller advances its cursor on this raw page and skips `keyed` rows.
    *
    * @param cursor - Last row of the previous page, or `null` for the first page.
    * @param limit - Page size.
-   * @returns Up to `limit` cursors after `cursor`, by `created_at` then `id`.
+   * @returns Up to `limit` candidates after `cursor`, by `created_at` then `id`.
    */
-  listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidateCursor[]>;
+  listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidate[]>;
   /**
    * Queue the place push of one page of identities.
    *
@@ -646,6 +666,11 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     return this.#byKeyOrder().map(copyIdentity);
   }
 
+  async listDebug(limit: number): Promise<ShopIdentityRow[]> {
+    await this.#sync();
+    return this.#byKeyOrder().slice(0, limit).map(copyIdentity);
+  }
+
   async listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]> {
     await this.#sync();
     const rows = this.#byKeyOrder();
@@ -672,14 +697,13 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   async listCandidates(
     cursor: ShopCandidateCursor | null,
     limit: number,
-  ): Promise<ShopCandidateCursor[]> {
+  ): Promise<ShopCandidate[]> {
     const refs = await this.#messages.listLiveAssignedShops();
     const notes = await Promise.all(refs.map((ref) => this.#messages.getById(ref.id)));
     return notes
       .filter((row): row is MessageRow => row !== undefined)
       .filter(
         (row) =>
-          !this.#rows.has(row.id) &&
           row.place !== undefined &&
           row.place !== null &&
           textHasHashtagToken(row.text, '21GiftsShop'),
@@ -695,7 +719,11 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
         return time !== 0 ? time : a.id < b.id ? -1 : 1;
       })
       .slice(0, limit)
-      .map((row) => ({ id: row.id, createdAt: new Date(row.createdAt) }));
+      .map((row) => ({
+        id: row.id,
+        createdAt: new Date(row.createdAt),
+        keyed: this.#rows.has(row.id),
+      }));
   }
 
   async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {
@@ -1101,6 +1129,16 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     return rows.map(mapIdentity);
   }
 
+  async listDebug(limit: number): Promise<ShopIdentityRow[]> {
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `SELECT ${IDENTITY_COLUMNS} FROM shop_identity
+       ORDER BY nostr_key_created_at ASC, message_id ASC
+       LIMIT $1`,
+      [limit],
+    );
+    return rows.map(mapIdentity);
+  }
+
   async listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]> {
     // Both reads walk shop_identity_key_order_idx and stop after `limit`
     // rows. Keys are written from a JavaScript Date, so millisecond cursors
@@ -1132,19 +1170,26 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   async listCandidates(
     cursor: ShopCandidateCursor | null,
     limit: number,
-  ): Promise<ShopCandidateCursor[]> {
+  ): Promise<ShopCandidate[]> {
     // Walks the partial index message_shop_candidate_idx: the WHERE implies
-    // its predicate, so a page never scans every live note.
-    const rows = await this.#sql.query<{ id: string; created_at: Date | string }>(
-      `SELECT m.id, m.created_at FROM message m
+    // its predicate, and LIMIT bounds the raw page before the key check (an
+    // EXISTS in the select list, evaluated per returned row only), so a page
+    // reads at most `limit` notes even when every candidate has a key.
+    const rows = await this.#sql.query<{ id: string; created_at: Date | string; keyed: boolean }>(
+      `SELECT m.id, m.created_at,
+         EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed
+       FROM message m
        WHERE ${LISTED_SHAPE_SQL('m')}
-         AND NOT EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id)
          AND ($1::timestamptz IS NULL OR (m.created_at, m.id) > ($1::timestamptz, $2::uuid))
        ORDER BY m.created_at ASC, m.id ASC
        LIMIT $3`,
       [cursor?.createdAt ?? null, cursor?.id ?? null, limit],
     );
-    return rows.map((row) => ({ id: row.id, createdAt: sqlDate(row.created_at) }));
+    return rows.map((row) => ({
+      id: row.id,
+      createdAt: sqlDate(row.created_at),
+      keyed: row.keyed,
+    }));
   }
 
   async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {

@@ -972,4 +972,52 @@ describe('loadDebugTables shop_identity', () => {
     ]);
     expect(JSON.stringify(rows)).not.toContain('Ciphertext');
   });
+
+  it('caps the dump at MESSAGE_LIST_LIMIT identities like every other table', async () => {
+    const ids = Array.from(
+      { length: MESSAGE_LIST_LIMIT + 1 },
+      (_, index) => `00000000-0000-4000-8000-${(index + 1).toString(16).padStart(12, '0')}`,
+    );
+    const messages = new InMemoryMessageStore(
+      ids.map((id) => ({
+        id,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+        createdAt: new Date(0),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        place: {
+          lat: 47.3,
+          lng: 8.5,
+          label: 'Coffee Lab',
+          address: {
+            street: 'Main Street',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      })),
+    );
+    const shops = new InMemoryShopIdentityStore(messages, () => 5_000);
+    for (const id of ids) await shops.ensureListed(id, new Uint8Array(32).fill(7));
+    expect(await shops.listAll()).toHaveLength(MESSAGE_LIST_LIMIT + 1);
+    const deps = {
+      auth: new InMemoryAuthStore(),
+      messages,
+      contacts: new InMemoryContactStore(),
+      shops,
+    };
+    const { shop_identity: rows } = await loadDebugTables(deps, 'shop_identity');
+    expect(rows).toHaveLength(MESSAGE_LIST_LIMIT);
+    // The first MESSAGE_LIST_LIMIT in key order (equal key times, then message id).
+    expect((rows as Array<{ messageId: string }>).map((row) => row.messageId)).toEqual(
+      ids.slice(0, MESSAGE_LIST_LIMIT),
+    );
+    const all = await loadDebugTables(deps);
+    expect(all.shop_identity).toHaveLength(MESSAGE_LIST_LIMIT);
+  }, 30_000);
 });

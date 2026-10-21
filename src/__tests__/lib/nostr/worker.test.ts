@@ -7974,6 +7974,47 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(await ctx.shops.getByMessageId(uuid(1))).toBeDefined();
     });
 
+    it('pages past keyed shops one bounded raw page per tick', async () => {
+      const notes = Array.from({ length: 26 }, (_, index) => ({
+        row: shopNote(uuid(index + 1), { createdAt: new Date(Date.UTC(2026, 0, 1, 0, index)) }),
+      }));
+      const ctx = await context(notes);
+      for (let n = 1; n <= 25; n += 1) await ctx.shops.ensureListed(uuid(n), KEK);
+      const reads: Array<{ cursor: string | null; ids: string[] }> = [];
+      const keyed: string[] = [];
+      const shops = override<ShopIdentityStore>(ctx.shops, {
+        listCandidates: async (cursor, limit) => {
+          const page = await ctx.shops.listCandidates(cursor, limit);
+          reads.push({ cursor: cursor?.id ?? null, ids: page.map((row) => row.id) });
+          return page;
+        },
+        ensureListed: (id, kek) => {
+          keyed.push(id);
+          return ctx.shops.ensureListed(id, kek);
+        },
+      });
+      // First tick: one raw page of WORKER_BATCH keyed shops, no key generated.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads).toEqual([
+        { cursor: null, ids: Array.from({ length: 20 }, (_, index) => uuid(index + 1)) },
+      ]);
+      expect(keyed).toEqual([]);
+      expect(await ctx.shops.getByMessageId(uuid(26))).toBeUndefined();
+      // Second tick: the cursor advanced on the raw page; the short page holds
+      // the unkeyed shop, which alone gets its key.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads[1]).toEqual({
+        cursor: uuid(20),
+        ids: Array.from({ length: 6 }, (_, index) => uuid(index + 21)),
+      });
+      expect(keyed).toEqual([uuid(26)]);
+      expect(await ctx.shops.getByMessageId(uuid(26))).toBeDefined();
+      // The short raw page reset the cursor to the start.
+      await tick(ctx, {}, { shopIdentities: shops });
+      expect(reads[2]?.cursor).toBeNull();
+      expect(reads.every((read) => read.ids.length <= 20)).toBe(true);
+    });
+
     it('logs shop.nostr_key.failed and continues', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
       let calls = 0;

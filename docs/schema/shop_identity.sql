@@ -56,10 +56,12 @@ END;
 $shop_identity$;
 
 -- Backfill candidates (ShopIdentityStore.listCandidates): every 'all' or
--- 'fast' worker tick reads one keyset page by (created_at, id) of live top-level pinned
--- notes with a till account and no key. The partial index holds only those
--- notes, so the page does not scan every live note, also once every shop has
--- its key. The query's WHERE implies the index predicate.
+-- 'fast' worker tick reads one raw keyset page by (created_at, id) of live
+-- top-level pinned notes with a till account, keyed or not; the key check is
+-- an EXISTS in the select list, evaluated only for the rows the LIMIT returns.
+-- The partial index holds only those notes, so the page does not scan every
+-- live note, and it reads at most one page also once every shop has its key.
+-- The query's WHERE implies the index predicate.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);

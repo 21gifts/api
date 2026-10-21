@@ -939,13 +939,16 @@ const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor |
 const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
 
 /**
- * Create keys for listed shops that have none (S1 backfill), at most
- * `WORKER_BATCH` candidates per tick. Candidates are live top-level pinned
- * `#21GiftsShop` notes with a till account and no key; completeness is
- * checked in code by `ensureListed`. The keyset cursor by (`created_at`,
- * `id`) moves past rejected notes and wraps around after a short page, so
- * an incomplete note never holds the slot of a listed shop behind it. A new
- * key queues the place push. A failure logs `shop.nostr_key.failed`.
+ * Create keys for listed shops that have none (S1 backfill), reading at most
+ * `WORKER_BATCH` raw candidates per tick. Candidates are live top-level
+ * pinned `#21GiftsShop` notes with a till account, keyed or not; the page is
+ * bounded before the key check, the cursor advances on that raw page, and
+ * only the candidates without a key go to `ensureListed`, which checks
+ * completeness in code. The keyset cursor by (`created_at`, `id`) moves past
+ * keyed and rejected notes and resets to the start only after a short raw
+ * page, so neither an incomplete note nor a run of keyed shops holds the slot
+ * of an unkeyed listed shop behind it, and a lap over keyed shops never reads
+ * more than one page per tick. A new key queues the place push. A failure logs `shop.nostr_key.failed`.
  * While a backfill for the same store is still in flight (ticks start
  * without waiting for the previous one), the tick skips it, reading
  * nothing, so overlapping ticks never stack scans or key generation and an
@@ -963,8 +966,14 @@ async function backfillShopKeys(deps: NostrWorkerDeps): Promise<void> {
     const cursor = shopBackfillCursors.get(shops) ?? null;
     const page = await shops.listCandidates(cursor, WORKER_BATCH);
     const last = page[page.length - 1];
-    shopBackfillCursors.set(shops, page.length < WORKER_BATCH || last === undefined ? null : last);
+    shopBackfillCursors.set(
+      shops,
+      page.length < WORKER_BATCH || last === undefined
+        ? null
+        : { createdAt: last.createdAt, id: last.id },
+    );
     for (const candidate of page) {
+      if (candidate.keyed) continue;
       try {
         await shops.ensureListed(candidate.id, deps.kek);
       } catch {

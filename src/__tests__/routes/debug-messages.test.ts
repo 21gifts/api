@@ -2,7 +2,6 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
-import type { MapPush } from '@/lib/ocp-place';
 import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -89,15 +88,8 @@ function videoRow(overrides: Partial<MessageRow> = {}): MessageRow {
   };
 }
 
-function mount(store: MessageStore, debugToken: string | undefined, mapPush?: MapPush): Hono {
-  return new Hono().route(
-    '/debug/messages',
-    debugMessagesRoutes({
-      store,
-      debugToken,
-      ...(mapPush === undefined ? {} : { mapPush }),
-    }),
-  );
+function mount(store: MessageStore, debugToken: string | undefined): Hono {
+  return new Hono().route('/debug/messages', debugMessagesRoutes({ store, debugToken }));
 }
 
 describe('debugMessagesRoutes', () => {
@@ -918,11 +910,12 @@ describe('debugMessagesRoutes', () => {
     );
   });
 
-  it('does not use the removed direct map push on restore', async () => {
+  it('queues the place push of a keyed shop on restore', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
       forumRow({
         text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
       }),
     );
     await store.setPlace(HIDDEN_ID, {
@@ -937,26 +930,29 @@ describe('debugMessagesRoutes', () => {
         country: 'CH',
       },
     });
+    const kek = new Uint8Array(32).fill(7);
+    const shops = new InMemoryShopIdentityStore(store);
+    await shops.ensureListed(HIDDEN_ID, kek);
     await store.markDeleted(HIDDEN_ID, HIDDEN_AT, 'staff');
-    const calls: Array<{ method: string; body: string }> = [];
-    const mapPush: MapPush = {
-      baseUrl: 'http://map.test',
-      token: 'ingest',
-      fetchImpl: async (_input, init) => {
-        calls.push({ method: String(init.method), body: String(init.body) });
-        return new Response('{}', { status: 201 });
-      },
-    };
-    const app = mount(store, 'secret', mapPush);
+    // The hide raised the place generation once.
+    expect((await shops.getByMessageId(HIDDEN_ID))?.ocpPlaceGeneration).toBe(2);
+    const app = new Hono().route(
+      '/debug/messages',
+      debugMessagesRoutes({ store, debugToken: 'secret', shopIdentities: shops, shopKek: kek }),
+    );
     const res = await app.request(`/debug/messages/${HIDDEN_ID}/restore`, {
       method: 'POST',
       headers: { authorization: 'Bearer secret' },
     });
     expect(res.status).toBe(204);
-    expect(calls).toHaveLength(0);
+    // The restore raised it again: the place request re-lists the shop.
+    expect(await shops.getByMessageId(HIDDEN_ID)).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 3,
+    });
   });
 
-  it('returns 204 on shop restore when mapPush is omitted', async () => {
+  it('returns 204 on shop restore without a shop identity store', async () => {
     const store = new InMemoryMessageStore();
     await store.create(
       forumRow({
