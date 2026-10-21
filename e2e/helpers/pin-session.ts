@@ -3,10 +3,16 @@ import { expect, type APIRequestContext } from '@playwright/test';
 /** Operator headers configured by the Playwright web server. */
 export const DEBUG = { authorization: 'Bearer e2e-debug-token' };
 
-async function pinSession(
+/**
+ * Create a verified account and return its authenticated request headers.
+ *
+ * @param request - Playwright request context for the booted API.
+ * @param stamp - Unique suffix for the debug account and Lightning Address.
+ * @returns Bearer headers for the verified account session.
+ */
+export async function verifiedPinSession(
   request: APIRequestContext,
   stamp: string,
-  role: 'verified' | 'moderator',
 ): Promise<{ authorization: string }> {
   const name = `E2ePin${stamp}`;
   const provision = await request.post('/debug/accounts', {
@@ -36,22 +42,8 @@ async function pinSession(
   expect(agreed.status()).toBe(200);
   const promoted = await request.patch(`/debug/accounts/${id}`, {
     headers: DEBUG,
-    data: { role },
+    data: { role: 'verified' },
   });
   expect(promoted.status()).toBe(200);
   return auth;
-}
-
-/**
- * Create a verified account and return its authenticated request headers.
- *
- * @param request - Playwright request context for the booted API.
- * @param stamp - Unique suffix for the debug account and Lightning Address.
- * @returns Bearer headers for the verified account session.
- */
-export async function verifiedPinSession(
-  request: APIRequestContext,
-  stamp: string,
-): Promise<{ authorization: string }> {
-  return pinSession(request, stamp, 'verified');
 }
