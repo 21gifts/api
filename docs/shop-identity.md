@@ -244,16 +244,17 @@ Kind 0 content of a listed shop:
 | `nip05`        | `<local>@<domain>`, see below                                               |
 | `lud16`        | the till account's Lightning address, see below                             |
 
-The `picture` and `banner` URLs need only the content types of photo 1 and
-photo 2. The worker reads them with `MessageStore.getPhotoContentTypes`, one
+The `picture` and `banner` URLs need only the content types of photo 0
+(`photo.<ext>`) and of the first extra still (`photo/1.<ext>`). The worker reads them with `MessageStore.getPhotoContentTypes`, one
 statement that selects no `bytea` column, and not with `getPhoto` /
 `listExtraPhotos`: these reads run on every pass, before the unchanged-content
 skip, so reading the bytes would load up to ten photos per visited shop on
 every pass (up to 200 photos per 2 s tick). The worker's own reads in the
 shop kind 0 pass load no photo bytes, and `PostgresShopIdentityStore` reads
 none either. On a memory boot, `InMemoryShopIdentityStore` reads every
-identity's photos at the start of each store call, including the pass's own
-`listRound`, and in the claim and finish calls.
+identity's photos (`photoFingerprint`) at the start of each store call that
+syncs its queue, including the pass's own `listRound`; `renameIfListed` and
+`getNostrCiphertext` do not sync.
 
 Without a public origin, the shop profile does what an account profile does
 (`publishProfiles`, `buildKind0Content`): when `nip05Domain`

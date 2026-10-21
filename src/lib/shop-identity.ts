@@ -508,7 +508,7 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
  * In-memory shop identity and outbox adapter for memory boots and tests.
  *
  * Postgres queues through row triggers inside each writing transaction. This
- * adapter has no transactions, so before every call it compares each
+ * adapter has no transactions, so before every call that syncs it compares each
  * identity's note (text, pin, till account, `deletedAt`) and photo set with
  * the last fingerprint it saw and queues a change the same way the triggers
  * do: a place change always, a photo change only while the note is listed.
