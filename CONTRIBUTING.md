@@ -355,8 +355,10 @@ api/
 │   ├── http.spec.ts          # Playwright endpoint smokes against bun src/index.ts
 │   ├── forum-replies.spec.ts # Playwright: provision, session, note, public GET, reply, replyCount
 │   ├── functions.spec.ts     # Playwright Function: <Name> tests against the booted process
-│   ├── ocp-places.spec.ts    # Playwright Function: shop pin body, map target, dev seed and activity ping (default boot)
-│   └── shop-identity.spec.ts # Playwright: listed shop, GET /shops/:npub 200/301/410/404, shopNpub on notes and places
+│   ├── ocp-places.spec.ts    # Playwright Function: shop checks on real notes; shop pin body, map target, dev seed and activity ping (default boot)
+│   ├── shop-identity.spec.ts # Playwright: listed shop, GET /shops/:npub 200/301/410/404, shopNpub on notes and places
+│   └── helpers/
+│       └── pin-session.ts    # Verified debug-account session for pin and shop Function tests
 ├── playwright.config.ts
 ├── public/                   # Brand mark files served at origin root
 │   ├── favicon.ico

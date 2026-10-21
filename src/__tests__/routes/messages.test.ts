@@ -23,6 +23,8 @@ import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryShopIdentityStore, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
+import { runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
+import type { MapPush } from '@/lib/ocp-place';
 import { removeForumVideo, resolveMediaDir, videoFilePath } from '@/lib/video';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -12094,6 +12096,127 @@ describe('shop place outbox after forum writes', () => {
     });
     expect(plainRes.status).toBe(204);
     expect(await plain.shops.listAll()).toEqual([]);
+  });
+
+  type SentPlace = { method: string; body: Record<string, unknown> };
+
+  /** One place pass of the outbox against a recording map; returns what it sent. */
+  async function placePass(
+    shops: InMemoryShopIdentityStore,
+    messages: InMemoryMessageStore,
+  ): Promise<SentPlace[]> {
+    const sent: SentPlace[] = [];
+    const mapPush: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'ingest',
+      fetchImpl: (_input, init) => {
+        sent.push({
+          method: String(init.method),
+          body: JSON.parse(String(init.body)) as Record<string, unknown>,
+        });
+        return Promise.resolve(new Response('{}', { status: 200 }));
+      },
+    };
+    await runOcpPlaceOutboxPass({ identities: shops, messages, mapPush });
+    return sent;
+  }
+
+  /** A listed, keyed shop whose place the map already confirmed. */
+  async function confirmedShop(): Promise<{
+    app: Hono;
+    shops: InMemoryShopIdentityStore;
+    messages: InMemoryMessageStore;
+  }> {
+    const auth = await staffStore('Ada');
+    await addShopkeep(auth);
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages, { shopAccount: SHOP_ACCOUNT, place: PIN });
+    const { app, shops } = mountShops(auth, messages);
+    await shops.ensureListed(SHOP_ID, SHOP_KEK);
+    expect((await placePass(shops, messages)).map((call) => call.method)).toEqual(['PUT']);
+    return { app, shops, messages };
+  }
+
+  const LONG_TEXT = 'Coffee roasted on site and served at the bar all day long.';
+  const MOVED = { lat: 47.31, lng: 8.51, label: 'Stall', address: ADDRESS };
+
+  it.each([
+    ['place', '/place', { place: MOVED }],
+    ['text', '/text', { text: LONG_TEXT }],
+    ['shop-account', '/shop-account', { username: 'shopkeep' }],
+  ])(
+    'sends DELETE when a listed shop is hidden after a %s write and before the send',
+    async (_label, path, payload) => {
+      const { app, shops, messages } = await confirmedShop();
+      expect((await patch(app, path, payload)).status).toBe(200);
+      expect(await messages.markDeleted(SHOP_ID, new Date(now()), 'staff')).toBe(true);
+      const sent = await placePass(shops, messages);
+      expect(sent).toHaveLength(1);
+      expect(sent[0]?.method).toBe('DELETE');
+      expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
+    },
+  );
+
+  it('sends DELETE when a place write is followed by an incomplete concurrent pin', async () => {
+    const { app, shops, messages } = await confirmedShop();
+    expect((await patch(app, '/place', { place: MOVED })).status).toBe(200);
+    // A concurrent writer leaves the pin without its address.
+    expect(await messages.setPlace(SHOP_ID, { ...MOVED, address: null })).toBe(true);
+    const sent = await placePass(shops, messages);
+    expect(sent.map((call) => call.method)).toEqual(['DELETE']);
+    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
+  });
+
+  it('sends DELETE when the text of a listed shop whose pin lost its address changes', async () => {
+    const { app, shops, messages } = await confirmedShop();
+    expect(await messages.setPlace(SHOP_ID, { ...PIN, address: null })).toBe(true);
+    // An incomplete pin skips the description check, so the short text is stored.
+    const res = await patch(app, '/text', { text: 'Cafe Sol' });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
+    const sent = await placePass(shops, messages);
+    expect(sent.map((call) => call.method)).toEqual(['DELETE']);
+    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
+  });
+
+  it('sends nothing for a text write on a shop without an address that was never listed', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages, {
+      shopAccount: SHOP_ACCOUNT,
+      place: { ...PIN, label: 'Neighborhood Espresso House', address: null },
+    });
+    const { app, shops } = mountShops(auth, messages);
+    expect((await patch(app, '/text', { text: 'Cafe Sol' })).status).toBe(200);
+    expect(await shops.listAll()).toEqual([]);
+    expect(await placePass(shops, messages)).toEqual([]);
+  });
+
+  it('sends one request matching the last write when a clear and a set queue before a send', async () => {
+    const cleared = await confirmedShop();
+    expect((await patch(cleared.app, '/place', { place: MOVED })).status).toBe(200);
+    expect((await patch(cleared.app, '/place', { place: null })).status).toBe(200);
+    expect((await placePass(cleared.shops, cleared.messages)).map((call) => call.method)).toEqual([
+      'DELETE',
+    ]);
+
+    const setAgain = await confirmedShop();
+    expect((await patch(setAgain.app, '/place', { place: null })).status).toBe(200);
+    expect((await patch(setAgain.app, '/place', { place: MOVED })).status).toBe(200);
+    const sent = await placePass(setAgain.shops, setAgain.messages);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.method).toBe('PUT');
+    expect(sent[0]?.body).toMatchObject({ externalId: SHOP_ID, lat: MOVED.lat, revision: 2 });
+  });
+
+  it('sends DELETE when a listed shop is hidden after its pin was cleared', async () => {
+    const { app, shops, messages } = await confirmedShop();
+    expect((await patch(app, '/place', { place: null })).status).toBe(200);
+    const res = await app.request('/messages/' + SHOP_ID, { method: 'DELETE', headers: AUTH });
+    expect(res.status).toBe(204);
+    const sent = await placePass(shops, messages);
+    expect(sent.map((call) => call.method)).toEqual(['DELETE']);
+    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
   });
 });
 
