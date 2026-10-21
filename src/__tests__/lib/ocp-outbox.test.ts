@@ -803,7 +803,8 @@ describe('OpenCryptoPay main without the photo route', () => {
       ocpPlacePending: false,
       ocpPhotosPending: false,
       ocpPhotosHash: ocpPhotoSetHash([PNG]),
-      ocpPhotosClaimedUntil: null,
+      // The settle ends the claim with its time, never null.
+      ocpPhotosClaimedUntil: expect.any(Date),
     });
     for (let pass = 0; pass < 40; pass += 1) await tick();
     expect(sent).toHaveLength(4);
@@ -817,7 +818,8 @@ describe('OpenCryptoPay main without the photo route', () => {
     expect(sent.map((request) => request.url)).toEqual([PLACE, PHOTOS]);
     expect(await store.getByMessageId(ID)).toMatchObject({
       ocpPlacePending: true,
-      ocpPlaceClaimedUntil: null,
+      // The lease end of the last place claim, already past: claimable at once.
+      ocpPlaceClaimedUntil: expect.any(Date),
       ocpPhotosPending: false,
       ocpPhotosHash: null,
     });

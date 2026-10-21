@@ -765,9 +765,10 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect((await store.getByMessageId(ID_A))?.ocpPlacePending).toBe(true);
     await store.finishPlace(claim, 'put');
     let row = (await store.getByMessageId(ID_A))!;
+    // Every end of a claim stores its time as the lease end, also a settle.
     expect(row).toMatchObject({
       ocpPlacePending: false,
-      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaimedUntil: new Date(clock.now),
       ocpPhotosPending: true,
       ocpPhotosGeneration: 1,
     });
@@ -777,7 +778,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await messages.updateText(ID_A, `${TEXT} Change two.`);
     await store.finishPlace(second, 'put');
     row = (await store.getByMessageId(ID_A))!;
-    // A newer change keeps the place pending: the lease ends now instead of null.
+    // A newer change keeps the place pending; the lease ends now as well.
     expect(row).toMatchObject({
       ocpPlacePending: true,
       ocpPlaceClaimedUntil: new Date(clock.now),
@@ -847,10 +848,10 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.clearPhotoWithoutSend(photo);
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosPending: false,
-      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaimedUntil: new Date(clock.now),
     });
 
-    // A newer photo change keeps the set pending: every result ends the lease now.
+    // A newer photo change keeps the set pending; every result ends the lease now.
     await messages.replacePhotos(ID_A, [PNG]);
     photo = (await store.claimPhoto(60_000))!;
     await messages.replacePhotos(ID_A, [JPEG]);
@@ -865,7 +866,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosHash: 'hash-1',
       ocpPhotosPending: false,
-      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaimedUntil: new Date(clock.now),
     });
 
     await messages.replacePhotos(ID_A, [PNG]);
@@ -883,7 +884,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.missingPhotoPlace(photo, false);
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosPending: false,
-      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaimedUntil: new Date(clock.now),
       ocpPlacePending: false,
     });
 
@@ -932,6 +933,39 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect((await store.claimPlaces(1, 60_000)).map((claim) => claim.messageId)).toEqual([ID_A]);
   });
 
+  it('puts a photo set changed after its settle behind a set never claimed', async () => {
+    const { messages, store } = setup([shopRow(ID_A, { hasPhoto: true }), shopRow(ID_B)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.finishPlace(claim, 'put');
+    }
+    const photo = (await store.claimPhoto(60_000))!;
+    expect(photo.messageId).toBe(ID_A);
+    await store.finishPhotos(photo, 'hash');
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(false);
+    // The shop changes its photos right after the settle: the queue write
+    // keeps the lease end, so B goes first; a null lease would give A the lane.
+    await messages.replacePhotos(ID_A, [JPEG]);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
+    expect((await store.claimPhoto(60_000))?.messageId).toBe(ID_B);
+    expect((await store.claimPhoto(60_000))?.messageId).toBe(ID_A);
+  });
+
+  it('puts a place changed after its settle behind a place never claimed', async () => {
+    const { messages, store } = setup([shopRow(ID_A), shopRow(ID_B)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    const [place] = await store.claimPlaces(1, 60_000);
+    expect(place?.messageId).toBe(ID_A);
+    await store.finishPlace(place!, 'put');
+    expect((await store.getByMessageId(ID_A))?.ocpPlacePending).toBe(false);
+    await messages.updateText(ID_A, `${TEXT} Changed.`);
+    expect((await store.getByMessageId(ID_A))?.ocpPlacePending).toBe(true);
+    expect((await store.claimPlaces(1, 60_000)).map((claim) => claim.messageId)).toEqual([ID_B]);
+    expect((await store.claimPlaces(1, 60_000)).map((claim) => claim.messageId)).toEqual([ID_A]);
+  });
+
   it('defers photos: keeps the photo state and holds the queued place until the photo lease ends', async () => {
     const { store, clock, claim } = await claimed();
     await store.finishPlace(claim, 'put');
@@ -939,9 +973,10 @@ describe('InMemoryShopIdentityStore claims', () => {
     const photoUntil = new Date(clock.now + 60_000);
     await store.deferPhotos({ ...photo, claim: 9 }, true);
     await store.deferPhotos(photo, false);
+    // The settled place keeps the lease end of its finish.
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPlacePending: false,
-      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaimedUntil: new Date(clock.now),
     });
 
     await store.deferPhotos(photo, true);
@@ -978,12 +1013,13 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPhotosClaimedUntil: new Date(clock.now),
     });
 
-    // A settled photo claim (null lease) leaves the place lease as it is.
+    // A settled photo claim ends its lease at the settle: a later end lifts the place lease too.
+    clock.now += 1_000;
     await store.clearPhotoWithoutSend(photo);
     await store.deferPhotos(photo, true);
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPlaceClaimedUntil: new Date(clock.now),
-      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaimedUntil: new Date(clock.now),
     });
   });
 });
@@ -1290,14 +1326,10 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[0]?.text).toContain('ocp_place_claimed_until = now()');
     expect(calls[1]?.text).toContain('ocp_photos_claimed_until = now()');
     expect(calls[2]?.text).toContain('ocp_place_claim = $2');
-    // A claim-ending write nulls the lease only when the row settles, else ends it now.
-    expect(calls[3]?.text).toContain(
-      'ocp_place_claimed_until = CASE WHEN ocp_place_generation = $3 THEN NULL ELSE now() END',
-    );
+    // Every claim-ending write ends the lease now, also when the row settles.
+    expect(calls[3]?.text).toContain('ocp_place_claimed_until = now()');
     for (const call of [calls[6], calls[8], calls[9]]) {
-      expect(call?.text).toContain(
-        'ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END',
-      );
+      expect(call?.text).toContain('ocp_photos_claimed_until = now()');
     }
     expect(calls[3]?.params).toEqual([ID_A, 6, 4, false, true]);
     expect(calls[4]?.params).toEqual([ID_A, 6, 4, true, false]);

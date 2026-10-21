@@ -208,12 +208,13 @@ export interface ShopIdentityStore {
   queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
   /**
    * Claim pending places (lease by the database clock), least recently
-   * claimed first: rows never claimed or settled (`ocp_place_claimed_until`
-   * null) first, then by the end of their last lease, then by `message_id`.
-   * A row whose send failed keeps its lease until it ends, and a released
-   * row counts as a lease that ended at the release, so the next claims take
-   * the rows behind it before it is picked again, and rows that keep failing
-   * or keep being released never hold the place of later shops.
+   * claimed first: `ocp_place_claimed_until` null (never claimed) first, then
+   * by the stored end of the last claim, then by `message_id`. Every claim
+   * stores an end: a failed send keeps its lease end, and every other end of
+   * a claim (a result, a settle, a release, a change during the claim) stores
+   * its own time. A queue write keeps that end, so the next claims take the
+   * rows that waited longer first, and rows that keep failing, keep being
+   * released or keep changing never hold the place of later shops.
    *
    * @param limit - Most rows to claim.
    * @param leaseMs - Lease length.
@@ -222,10 +223,11 @@ export interface ShopIdentityStore {
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
   /**
    * Claim one pending photo set whose place is not pending, least recently
-   * claimed first (`ocp_photos_claimed_until` null first, then by the end of
-   * the last lease, a release counting as a lease that ended then, then by
-   * `message_id`), so a set that keeps failing or keeps being released never
-   * holds the place of later shops.
+   * claimed first (`ocp_photos_claimed_until` null, never claimed, first,
+   * then by the stored end of the last claim: the lease end of a failed send,
+   * the time of every other end of a claim; then by `message_id`), so a set
+   * that keeps failing, keeps being released or keeps changing never holds
+   * the place of later shops.
    *
    * @param leaseMs - Lease length.
    * @returns The claim, or `undefined` when nothing is due.
@@ -273,9 +275,9 @@ export interface ShopIdentityStore {
    */
   resetPhotosForDelete(claim: ShopOcpClaim): Promise<void>;
   /**
-   * Record a place result and end the claim: the lease becomes null when
-   * the place settles, or the current time (as `release`) when a newer
-   * place change keeps it pending, so the row goes behind never-claimed rows.
+   * Record a place result and end the claim at the current time (as
+   * `release`), also when the place settles, so a place queued again goes
+   * behind never-claimed rows and leases that ended earlier.
    *
    * @param claim - Place claim.
    * @param result - OpenCryptoPay outcome of the request.
@@ -284,8 +286,7 @@ export interface ShopIdentityStore {
   finishPlace(claim: ShopOcpClaim, result: 'put' | 'created' | 'delete' | 'reject'): Promise<void>;
   /**
    * Clear the photo flag (generation-checked) without a request and end the
-   * claim: null lease when the set settles, the current time (as `release`)
-   * when a newer photo change keeps it pending.
+   * claim at the current time (as `release`), also when the set settles.
    *
    * @param claim - Photo claim.
    * @returns Resolves when written.
@@ -300,8 +301,7 @@ export interface ShopIdentityStore {
   clearPhotoHash(claim: ShopOcpClaim): Promise<void>;
   /**
    * Store the sent hash, clear the flag (generation-checked) and end the
-   * claim: null lease when the set settles, the current time (as `release`)
-   * when a newer photo change keeps it pending.
+   * claim at the current time (as `release`), also when the set settles.
    *
    * @param claim - Photo claim.
    * @param hash - `ocpPhotoSetHash` of the sent set.
@@ -310,9 +310,8 @@ export interface ShopIdentityStore {
   finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void>;
   /**
    * Photo 404: null the hash, clear the flag (generation-checked), queue the
-   * place when still listed, and end the photo claim: null lease when the set
-   * settles, the current time (as `release`) when a newer photo change keeps
-   * it pending.
+   * place when still listed, and end the photo claim at the current time (as
+   * `release`), also when the set settles.
    *
    * @param claim - Photo claim.
    * @param listed - Whether the note is still a listed shop.
@@ -874,14 +873,14 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       row.ocpPhotosGeneration += 1;
     }
     if (current) row.ocpPlacePending = false;
-    row.ocpPlaceClaimedUntil = current ? null : new Date(this.#now());
+    row.ocpPlaceClaimedUntil = new Date(this.#now());
   }
 
   async clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void> {
     await this.#sync();
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
-    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
+    row.ocpPhotosClaimedUntil = this.#endPhotoClaim(row, claim);
   }
 
   clearPhotoHash(claim: ShopOcpClaim): Promise<void> {
@@ -895,7 +894,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
     if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosHash = hash;
-    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
+    row.ocpPhotosClaimedUntil = this.#endPhotoClaim(row, claim);
   }
 
   async missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void> {
@@ -903,7 +902,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
     row.ocpPhotosHash = null;
-    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
+    row.ocpPhotosClaimedUntil = this.#endPhotoClaim(row, claim);
     if (listed) {
       row.ocpPlacePending = true;
       row.ocpPlaceGeneration += 1;
@@ -935,9 +934,10 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
 
   /**
    * Rows in claim order (the `ORDER BY … claimed_until ASC NULLS FIRST,
-   * message_id` of the Postgres adapter): a null lease first, then the
-   * earliest lease end (a release stores its time as the end), then the
-   * message id (the sort is stable).
+   * message_id` of the Postgres adapter): a null lease (never claimed)
+   * first, then the earliest stored end of the last claim (the lease end of
+   * a failed send, the time of every other end of a claim), then the message
+   * id (the sort is stable).
    */
   #leastRecentlyClaimed(until: (row: ShopIdentityRow) => Date | null): ShopIdentityRow[] {
     const key = (row: ShopIdentityRow): number => until(row)?.getTime() ?? Number.MIN_SAFE_INTEGER;
@@ -946,13 +946,12 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
 
   /**
    * End a photo claim: clear the flag while the generation is still the
-   * claim's and return the new lease end, null for a settled set, the
-   * current time when a newer photo change keeps it pending (as `release`).
+   * claim's and return the new lease end, the current time either way (as
+   * `release`), so a set changed again goes behind sets that waited longer.
    */
-  #settlePhotos(row: ShopIdentityRow, claim: ShopOcpClaim): Date | null {
-    if (row.ocpPhotosGeneration !== claim.generation) return new Date(this.#now());
-    row.ocpPhotosPending = false;
-    return null;
+  #endPhotoClaim(row: ShopIdentityRow, claim: ShopOcpClaim): Date {
+    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosPending = false;
+    return new Date(this.#now());
   }
 
   #claimed(lane: ShopOcpLane, claim: ShopOcpClaim): ShopIdentityRow | undefined {
@@ -1416,7 +1415,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
            WHEN $4::boolean OR ($5::boolean AND ocp_place_generation = $3) THEN 1 ELSE 0
          END,
          ocp_place_pending = CASE WHEN ocp_place_generation = $3 THEN false ELSE ocp_place_pending END,
-         ocp_place_claimed_until = CASE WHEN ocp_place_generation = $3 THEN NULL ELSE now() END
+         ocp_place_claimed_until = now()
        WHERE message_id = $1 AND ocp_place_claim = $2`,
       [claim.messageId, claim.claim, claim.generation, created, put],
     );
@@ -1426,7 +1425,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     await this.#sql.execute(
       `UPDATE shop_identity SET
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END
+         ocp_photos_claimed_until = now()
        WHERE message_id = $1 AND ocp_photos_claim = $2`,
       [claim.messageId, claim.claim, claim.generation],
     );
@@ -1445,7 +1444,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `UPDATE shop_identity SET
          ocp_photos_hash = CASE WHEN ocp_photos_generation = $3 THEN $4 ELSE ocp_photos_hash END,
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END
+         ocp_photos_claimed_until = now()
        WHERE message_id = $1 AND ocp_photos_claim = $2`,
       [claim.messageId, claim.claim, claim.generation, hash],
     );
@@ -1456,7 +1455,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `UPDATE shop_identity SET
          ocp_photos_hash = NULL,
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END,
+         ocp_photos_claimed_until = now(),
          ocp_place_pending = CASE WHEN $4::boolean THEN true ELSE ocp_place_pending END,
          ocp_place_generation = ocp_place_generation + CASE WHEN $4::boolean THEN 1 ELSE 0 END
        WHERE message_id = $1 AND ocp_photos_claim = $2`,

@@ -865,10 +865,11 @@ describe('shop identity on Postgres', () => {
       expect(await ctx.shops.leaseHasTime('place', claim!, 120_000)).toBe(false);
       expect(await ctx.shops.nextRevision('place', claim!)).toBe(1);
       await ctx.shops.finishPlace(claim!, 'put');
+      // The settle stores its time as the lease end, never null.
+      expect(await leaseEnded(ctx, row.id, 'place')).toBe(true);
       let identity = (await ctx.shops.getByMessageId(row.id))!;
       expect(identity).toMatchObject({
         ocpPlacePending: false,
-        ocpPlaceClaimedUntil: null,
         ocpPhotosPending: true,
         ocpPhotosGeneration: 1,
         ocpRevision: 1,
@@ -984,6 +985,48 @@ describe('shop identity on Postgres', () => {
       expect(photo.messageId).toBe(first.id);
       await ctx.messages.replacePhotos(first.id, [PNG, PNG]);
       await ctx.shops.finishPhotos(photo, 'hash');
+      expect((await ctx.shops.getByMessageId(first.id))?.ocpPhotosPending).toBe(true);
+      expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(second.id);
+      expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(first.id);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('puts a place or photo set changed after its settle behind a row never claimed', async () => {
+    const ctx = await setup();
+    try {
+      const rows: MessageRow[] = [];
+      for (let index = 0; index < 2; index += 1) {
+        // Distinct text: a second live photo note with the same content returns the first.
+        const row = ctx.note({ hasPhoto: true, text: `${TEXT} Shop ${index}.` });
+        await ctx.messages.create(row, PNG, undefined, [PNG]);
+        await ctx.shops.ensureListed(row.id, KEK);
+        rows.push(row);
+      }
+      const [first, second] = [...rows].sort((left, right) =>
+        left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+      ) as [MessageRow, MessageRow];
+      // The first place settles, then its note changes: the trigger queues it
+      // again and keeps the lease end of the settle, so the never-claimed
+      // second place goes first.
+      const [place] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(place?.messageId).toBe(first.id);
+      await ctx.shops.finishPlace(place!, 'put');
+      await ctx.messages.updateText(first.id, `${TEXT} Changed.`);
+      expect((await ctx.shops.getByMessageId(first.id))?.ocpPlacePending).toBe(true);
+      const [secondPlace] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(secondPlace?.messageId).toBe(second.id);
+      const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(firstAgain?.messageId).toBe(first.id);
+      await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.finishPlace(firstAgain!, 'put');
+      // The same for the photos of the first shop.
+      const photo = (await ctx.shops.claimPhoto(60_000))!;
+      expect(photo.messageId).toBe(first.id);
+      await ctx.shops.finishPhotos(photo, 'hash');
+      expect((await ctx.shops.getByMessageId(first.id))?.ocpPhotosPending).toBe(false);
+      await ctx.messages.replacePhotos(first.id, [PNG, PNG]);
       expect((await ctx.shops.getByMessageId(first.id))?.ocpPhotosPending).toBe(true);
       expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(second.id);
       expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(first.id);
@@ -1238,15 +1281,17 @@ describe('shop identity on Postgres', () => {
   });
 
   /**
-   * Whether the photo claim was released without a request: the release ends
-   * the lease at the database's now, so it is set and already over.
+   * Whether the lane's last claim has ended: every end of a claim stores the
+   * database's now as the lease end, so it is set and already over.
    */
-  async function photoLeaseEnded(
+  async function leaseEnded(
     ctx: Awaited<ReturnType<typeof setup>>,
     id: string,
+    lane: 'place' | 'photos',
   ): Promise<boolean> {
+    const column = lane === 'place' ? 'ocp_place_claimed_until' : 'ocp_photos_claimed_until';
     const rows = await ctx.client.query<{ ended: boolean }>(
-      `SELECT ocp_photos_claimed_until IS NOT NULL AND ocp_photos_claimed_until <= now() AS ended
+      `SELECT ${column} IS NOT NULL AND ${column} <= now() AS ended
        FROM shop_identity WHERE message_id = $1`,
       [id],
     );
@@ -1327,7 +1372,7 @@ describe('shop identity on Postgres', () => {
         ocpPlacePending: true,
         ocpPhotosPending: true,
       });
-      expect(await photoLeaseEnded(ctx, race.id)).toBe(true);
+      expect(await leaseEnded(ctx, race.id, 'photos')).toBe(true);
       await runOcpPlaceOutboxPass(race.deps);
       await runOcpPhotoOutboxPass(race.deps);
       expect(race.sent.map((request) => [request.method, request.revision])).toEqual([
@@ -1361,7 +1406,7 @@ describe('shop identity on Postgres', () => {
         ocpPlacePending: false,
         ocpPhotosPending: false,
       });
-      expect(await photoLeaseEnded(ctx, race.id)).toBe(true);
+      expect(await leaseEnded(ctx, race.id, 'photos')).toBe(true);
     } finally {
       await ctx.cleanup();
     }

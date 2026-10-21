@@ -615,28 +615,26 @@ for one shop must never be in flight at once:
 The claim order also differs, because rows whose sends fail must not starve
 the shops behind them. A claim takes the least recently claimed rows first
 (`ORDER BY ocp_place_claimed_until ASC NULLS FIRST, message_id`, and the
-same with `ocp_photos_claimed_until` for photos): rows never claimed, or
-whose last claim settled (`claimed_until` null), then the earliest lease
-end, then the message id. Only a claim that settles its row (the flag is
-cleared because the generation is still the claim's) sets `claimed_until`
-to null; a row queued again after that sorts first, as a new change. A
-failed send keeps its claim until the lease ends. Every other end of a
-claim leaves the row pending and sets `claimed_until = now()`: a released
-claim (for example after 409 `Stale revision` or a lease too short to
-send), and a result or a path without a request whose generation moved on
-during the claim (a newer place or photo change). The row is then claimable
-at once, but it goes behind rows never claimed and behind leases that ended
-earlier, as if its lease had ended then. Ordered by `message_id` alone, the
-same lowest ids would be picked again each time their leases end, and with
-more failing rows than one lease window holds (30 photo claims, 600 place
-claims at `WORKER_BATCH` 20 every `WORKER_INTERVAL_MS` 2 s within
-`WORKER_LEASE_MS` 60 s) the shops behind them would never be sent. A null
-lease for a row left pending would put it ahead of every other row each
-time, so a repeated `Stale revision`, or a shop whose photos change once
-per send, would hold the photo lane (one row per pass) or, with as many
-such rows as a batch holds, every place batch. With this order every
-pending row is claimed before a failed, released or changed one is claimed
-again.
+same with `ocp_photos_claimed_until` for photos): rows never claimed
+(`claimed_until` null, only a new row), then the earliest lease end, then
+the message id. A failed send keeps its claim until the lease ends. Every
+other end of a claim sets `claimed_until = now()`: a released claim (for
+example after 409 `Stale revision` or a lease too short to send), a result,
+and a path without a request, whether the row settles or a newer change
+keeps it pending. A row that is pending again is then claimable at once,
+but it goes behind rows never claimed and behind leases that ended earlier,
+as if its lease had ended then; a change queued after the settle (the
+triggers leave `claimed_until` alone) does not move it forward. Ordered by
+`message_id` alone, the same lowest ids would be picked again each time
+their leases end, and with more failing rows than one lease window holds
+(30 photo claims, 600 place claims at `WORKER_BATCH` 20 every
+`WORKER_INTERVAL_MS` 2 s within `WORKER_LEASE_MS` 60 s) the shops behind
+them would never be sent. A null lease at the end of a claim would put the
+row ahead of every other row each time it is pending again, so a repeated
+`Stale revision`, or a shop whose photos change once per pass, would hold
+the photo lane (one row per pass) or, with as many such rows as a batch
+holds, every place batch. With this order every pending row is claimed
+before a failed, released or changed one is claimed again.
 
 Rules for every claim:
 
