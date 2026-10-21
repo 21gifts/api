@@ -641,8 +641,16 @@ Rules for every claim:
   trigger covers every write path, including the cascade hide, without
   changing `blockPubkeyAndHideRows`. The in-memory adapter has no
   transactions and derives the same queue from a fingerprint of each note
-  before every call that syncs its queue; the photo fingerprint comes from
-  one read of the whole set (`MessageStore.getPhotoSet`).
+  before every call that syncs its queue. The photo fingerprint is the
+  photo revision of the in-memory message store
+  (`InMemoryMessageStore.photoRevision`): a counter raised by every write
+  that changes photo 0 or an extra (index, content type or bytes) and left
+  unchanged by a write that stores the same stills. A sync therefore reads
+  no photo bytes, so a public read (`GET /shops/:npub`, the NIP-05 list)
+  does not read the photos of every shop. A change and its exact revert
+  between two syncs queue once, as the triggers queue each write. Only over
+  a message store of another class (a test double) does the adapter hash the
+  set from one read of the whole set (`MessageStore.getPhotoSet`).
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is

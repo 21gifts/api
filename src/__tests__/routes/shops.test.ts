@@ -137,6 +137,72 @@ describe('GET /shops/:npub', () => {
     });
   });
 
+  it('reads the photo bytes of the requested shop only, with several shops', async () => {
+    const base = new InMemoryMessageStore();
+    const ids = [
+      ID,
+      'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+    ];
+    const photo: ForumPhoto = { contentType: 'image/png', bytes: png(320, 200) };
+    const extra: ForumPhoto = { contentType: 'image/webp', bytes: new Uint8Array([1, 2, 3]) };
+    for (const [n, id] of ids.entries()) {
+      const label = `Coffee Lab ${String(n)}`;
+      await base.create(
+        note({ id, accountId: `author-${String(n)}`, place: { ...note().place!, label } }),
+        photo,
+        undefined,
+        [extra],
+      );
+    }
+    const reads: string[] = [];
+    const byteReads = new Set<PropertyKey>([
+      'getPhoto',
+      'getExtraPhoto',
+      'listExtraPhotos',
+      'getPhotoSet',
+    ]);
+    // Built before the identity store, so its own reads are counted too.
+    const messages = new Proxy(base, {
+      get(target, key) {
+        const value: unknown = Reflect.get(target, key, target);
+        if (typeof value !== 'function') return value;
+        const bound = (value as (...args: unknown[]) => unknown).bind(target);
+        if (!byteReads.has(key)) return bound;
+        return (id: string, ...rest: unknown[]) => {
+          reads.push(`${String(key)}:${id}`);
+          return bound(id, ...rest);
+        };
+      },
+    });
+    const identities = new InMemoryShopIdentityStore(messages);
+    let created: string | undefined;
+    for (const [n, id] of ids.entries()) {
+      const identity = (await identities.ensureListed(id, KEK, {
+        generateSecretKey: () => Uint8Array.from({ length: 32 }, (_, i) => (i === 31 ? n + 2 : 1)),
+      }))!;
+      created ??= shopNpub(identity);
+    }
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account());
+    const app = new Hono().route(
+      '/shops',
+      shopRoutes({
+        authStore: auth,
+        messages,
+        identities,
+        env: { PUBLIC_BASE_URL: 'https://21.gifts' },
+      }),
+    );
+    reads.length = 0;
+    const response = await app.request(`/shops/${created!}`);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { shop: { nip05: string } }).shop.nip05).toBe(
+      'coffee-lab-0@21.gifts',
+    );
+    expect(reads).toEqual([`getPhotoSet:${ID}`]);
+  });
+
   it('uses bare photo paths and a null NIP-05 without a public origin', async () => {
     const { app, npub } = await setup({
       photos: [{ contentType: 'image/png', bytes: png(1, 2) }],

@@ -8143,6 +8143,9 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
           return ctx.messages.getPhotoContentTypes(id);
         },
       });
+      // The shop store reads through the counting store as well, so its own
+      // queue syncs count towards the byte reads.
+      ctx.shops = new InMemoryShopIdentityStore(metadataOnly);
       await tick(ctx, ENV, { messages: metadataOnly });
       // Unchanged content: the second pass skips the publish after its reads.
       await tick(ctx, ENV, { messages: metadataOnly });

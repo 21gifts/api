@@ -549,7 +549,18 @@ function placeFingerprint(note: MessageRow | undefined): string {
   return JSON.stringify([note.text, note.place, note.shopAccount?.id, note.deletedAt]);
 }
 
+/**
+ * Photo fingerprint of one note for the queue sync.
+ *
+ * With an {@link InMemoryMessageStore} (every memory boot) it is the store's
+ * photo revision, so the sync reads no photo bytes. Another message store
+ * (a test double, or a store a caller passes to `createApp` without a shop
+ * store) has no revision, so the set is hashed from one `getPhotoSet` read.
+ */
 async function photoFingerprint(messages: MessageStore, messageId: string): Promise<string> {
+  if (messages instanceof InMemoryMessageStore) {
+    return `revision:${String(messages.photoRevision(messageId))}`;
+  }
   // One read of the whole set: two reads could mix photo 0 of one set with
   // the extras of another.
   const { photo: first, extras } = await messages.getPhotoSet(messageId);
@@ -570,6 +581,9 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
  * identity's note (text, pin, till account, `deletedAt`) and photo set with
  * the last fingerprint it saw and queues a change the same way the triggers
  * do: a place change always, a photo change only while the note is listed.
+ * The photo fingerprint of an {@link InMemoryMessageStore} is its
+ * `photoRevision`, so a sync reads no photo bytes; another message store is
+ * hashed from one `getPhotoSet` read per shop.
  * The lease clock is the process clock.
  */
 export class InMemoryShopIdentityStore implements ShopIdentityStore {

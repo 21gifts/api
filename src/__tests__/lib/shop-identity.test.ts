@@ -533,6 +533,96 @@ describe('InMemoryShopIdentityStore queueing', () => {
   });
 });
 
+/** Methods of `MessageStore` that return photo bytes. */
+const BYTE_READS = new Set<PropertyKey>([
+  'getPhoto',
+  'getExtraPhoto',
+  'listExtraPhotos',
+  'getPhotoSet',
+]);
+
+/** The same store behind a proxy that records every photo byte read as `method:id`. */
+function countingBytes(store: InMemoryMessageStore, reads: string[]): InMemoryMessageStore {
+  return new Proxy(store, {
+    get(target, key) {
+      const value: unknown = Reflect.get(target, key, target);
+      if (typeof value !== 'function') return value;
+      const bound = (value as (...args: unknown[]) => unknown).bind(target);
+      if (!BYTE_READS.has(key)) return bound;
+      return (id: string, ...rest: unknown[]) => {
+        reads.push(`${String(key)}:${id}`);
+        return bound(id, ...rest);
+      };
+    },
+  });
+}
+
+describe('InMemoryShopIdentityStore photo fingerprint', () => {
+  it('reads no photo bytes on its reads, with several shops that have photos', async () => {
+    const base = new InMemoryMessageStore();
+    for (const [n, id] of [ID_A, ID_B, ID_C].entries()) {
+      await base.create(shopRow(id, { accountId: `author-${String(n)}` }), PNG, undefined, [JPEG]);
+    }
+    const reads: string[] = [];
+    // The counting store is built before the identity store, so the identity
+    // store's own reads go through it.
+    const store = new InMemoryShopIdentityStore(countingBytes(base, reads));
+    for (const [n, id] of [ID_A, ID_B, ID_C].entries()) {
+      await store.ensureListed(id, KEK, keygenFrom(n + 2));
+    }
+    const first = (await store.getByMessageId(ID_A))!;
+    expect(await store.getByPubkey(first.nostrPubkey)).toMatchObject({ messageId: ID_A });
+    expect(await store.listAll()).toHaveLength(3);
+    expect(await store.listRound(null, 2)).toHaveLength(2);
+    expect(await store.listDebug(3)).toHaveLength(3);
+    expect(reads).toEqual([]);
+    // A photo change is still seen without a byte read and queues once.
+    const before = first.ocpPhotosGeneration;
+    await base.replacePhotos(ID_A, [JPEG]);
+    expect((await store.getByPubkey(first.nostrPubkey))?.ocpPhotosGeneration).toBe(before + 1);
+    expect((await store.listAll())[0]?.ocpPhotosGeneration).toBe(before + 1);
+    expect(reads).toEqual([]);
+  });
+
+  it('queues nothing for a write that stores the same photos, and once for a change and its revert', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    await messages.replacePhotos(ID_A, [PNG]);
+    const store = new InMemoryShopIdentityStore(messages);
+    const generation = (await store.ensureListed(ID_A, KEK, keygenFrom(2)))!.ocpPhotosGeneration;
+    await messages.replacePhotos(ID_A, [{ ...PNG, bytes: PNG.bytes.slice() }]);
+    await messages.updatePhoto(ID_A, PNG);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(generation);
+    // Two changes between two syncs queue once, as the triggers queue each
+    // write: the revert does not cancel the change.
+    await messages.replacePhotos(ID_A, [JPEG]);
+    await messages.replacePhotos(ID_A, [PNG]);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(generation + 1);
+  });
+
+  it('hashes the photo set of a message store that is not the in-memory class', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    await messages.replacePhotos(ID_A, [PNG, JPEG]);
+    const reads: string[] = [];
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: (id: string) => {
+        reads.push(id);
+        return messages.getPhotoSet(id);
+      },
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    const generation = (await store.ensureListed(ID_A, KEK, keygenFrom(2)))!.ocpPhotosGeneration;
+    expect(reads.length).toBeGreaterThan(0);
+    // The same bytes in a new write are no change; other bytes are.
+    await messages.replacePhotos(ID_A, [PNG, JPEG]);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(generation);
+    await messages.replacePhotos(ID_A, [JPEG]);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(generation + 1);
+    await messages.replacePhotos(ID_A, []);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(generation + 2);
+  });
+});
+
 describe('InMemoryShopIdentityStore claims', () => {
   async function claimed(): Promise<{
     messages: InMemoryMessageStore;

@@ -2279,6 +2279,28 @@ interface MemoryZapReceipt {
   recordedAt: Date;
 }
 
+/** Recognized stills of one note: photo 0 and the extras with their stored index. */
+interface StillSet {
+  photo: ForumPhoto | null;
+  extras: IndexedForumPhoto[];
+}
+
+/** Whether two still sets hold the same stills in order: stored index, content type and bytes. */
+function sameStills(a: StillSet, b: StillSet): boolean {
+  const left = [...(a.photo === null ? [] : [{ index: 0, photo: a.photo }]), ...a.extras];
+  const right = [...(b.photo === null ? [] : [{ index: 0, photo: b.photo }]), ...b.extras];
+  if (left.length !== right.length) return false;
+  return left.every((item, position) => {
+    const other = right[position] as IndexedForumPhoto;
+    const bytes = item.photo.bytes;
+    return (
+      item.index === other.index &&
+      item.photo.contentType === other.photo.contentType &&
+      Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).equals(other.photo.bytes)
+    );
+  });
+}
+
 /**
  * Process-local {@link MessageStore}. Used in tests and when no database URL
  * is configured — the process still boots. Photos live in a private map, not
@@ -2308,6 +2330,12 @@ export class InMemoryMessageStore implements MessageStore {
   readonly #photos = new Map<string, ForumPhoto>();
   /** Extra stills; array index 0 = idx 1. */
   readonly #extraPhotos = new Map<string, ForumPhoto[]>();
+  /**
+   * Photo revision per message id, raised by every write that changes the
+   * recognized stills (see {@link InMemoryMessageStore.photoRevision}).
+   * Never removed, so a revision never goes back.
+   */
+  readonly #photoRevisions = new Map<string, number>();
   readonly #invoiceAttempts: MessageInvoiceAttempt[] = [];
   readonly #zapIngests: ZapIngestRow[] = [];
   readonly #zappers = new Map<string, NostrZapperRow>();
@@ -2332,6 +2360,30 @@ export class InMemoryMessageStore implements MessageStore {
   setShopNpub(id: string, npub: string | null): void {
     const row = this.#rows.find((item) => item.id === id);
     if (row !== undefined) row.shopNpub = npub;
+  }
+
+  /**
+   * Photo revision of `id`, read without touching any photo bytes.
+   *
+   * `0` until a write changes the stills {@link InMemoryMessageStore.getPhotoSet}
+   * returns (photo 0 or an extra: index, content type or bytes), then raised
+   * by one per such write (`create`, `updatePhoto`, `replacePhotos`,
+   * `deleteById`). A write that stores the same stills leaves it unchanged.
+   * `InMemoryShopIdentityStore` uses it as its photo fingerprint, so its
+   * queue sync reads no photo bytes.
+   *
+   * @param id - Message id (unknown ids are `0`).
+   * @returns The current revision.
+   */
+  photoRevision(id: string): number {
+    return this.#photoRevisions.get(id) ?? 0;
+  }
+
+  /** Raise the photo revision of `id` when its recognized stills differ from `before`. */
+  #notePhotoWrite(id: string, before: StillSet): void {
+    if (!sameStills(before, this.#knownStills(id))) {
+      this.#photoRevisions.set(id, this.photoRevision(id) + 1);
+    }
   }
 
   /** Copy a row and set `hasPhoto` / `photoCount` from the photo maps. */
@@ -2821,6 +2873,7 @@ export class InMemoryMessageStore implements MessageStore {
       await writeForumVideo(stored.id, video);
     }
     this.#rows.push(stored);
+    const before = this.#knownStills(stored.id);
     if (photo !== undefined) {
       this.#photos.set(stored.id, copyPhoto(photo));
     }
@@ -2830,6 +2883,7 @@ export class InMemoryMessageStore implements MessageStore {
         extras.map((item) => copyPhoto(item)),
       );
     }
+    this.#notePhotoWrite(stored.id, before);
     return this.#withListedMedia(stored);
   }
 
@@ -3222,7 +3276,7 @@ export class InMemoryMessageStore implements MessageStore {
   }
 
   /** Stored stills of `id` with a recognized type (not copied), extras with their index. */
-  #knownStills(id: string): { photo: ForumPhoto | null; extras: IndexedForumPhoto[] } {
+  #knownStills(id: string): StillSet {
     const photo = this.#photos.get(id);
     const extras: IndexedForumPhoto[] = [];
     for (const [position, still] of (this.#extraPhotos.get(id) ?? []).entries()) {
@@ -3445,6 +3499,7 @@ export class InMemoryMessageStore implements MessageStore {
     if (row === undefined) {
       return Promise.resolve(undefined);
     }
+    const before = this.#knownStills(id);
     if (photo === null) {
       this.#photos.delete(id);
       row.hasPhoto = false;
@@ -3452,6 +3507,7 @@ export class InMemoryMessageStore implements MessageStore {
       this.#photos.set(id, copyPhoto(photo));
       row.hasPhoto = true;
     }
+    this.#notePhotoWrite(id, before);
     const extras = this.#extraPhotos.get(id) ?? [];
     const hasPhoto0 = this.#photos.has(id);
     row.photoCount = (hasPhoto0 ? 1 : 0) + extras.length;
@@ -3471,6 +3527,7 @@ export class InMemoryMessageStore implements MessageStore {
     const first = kept[0];
     const nextPrimary = first === undefined ? undefined : copyPhoto(first);
     const nextExtras = kept.slice(1).map((item) => copyPhoto(item));
+    const before = this.#knownStills(id);
     if (nextPrimary === undefined) {
       this.#photos.delete(id);
       row.hasPhoto = false;
@@ -3483,6 +3540,7 @@ export class InMemoryMessageStore implements MessageStore {
     } else {
       this.#extraPhotos.delete(id);
     }
+    this.#notePhotoWrite(id, before);
     const storedExtras = this.#extraPhotos.get(id) ?? [];
     row.photoCount = (first !== undefined ? 1 : 0) + storedExtras.length;
     row.photoTakenAts = [
@@ -4215,8 +4273,10 @@ export class InMemoryMessageStore implements MessageStore {
       if (item.hasVideo === true && mime !== undefined && mime !== null) {
         videos.push({ id: item.id, mime });
       }
+      const before = this.#knownStills(item.id);
       this.#photos.delete(item.id);
       this.#extraPhotos.delete(item.id);
+      this.#notePhotoWrite(item.id, before);
     }
     this.#rows.splice(0, this.#rows.length, ...this.#rows.filter((item) => !ids.has(item.id)));
     const kept = this.#invoiceAttempts.filter((item) => !ids.has(item.messageId));

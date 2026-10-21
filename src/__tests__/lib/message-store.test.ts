@@ -3133,6 +3133,51 @@ describe('InMemoryMessageStore', () => {
     },
   );
 
+  it('photoRevision rises once per write that changes the recognized stills', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+    const png: ForumPhoto = { contentType: 'image/png', bytes: new Uint8Array([1]) };
+    const gif = { contentType: 'image/gif', bytes: new Uint8Array([1]) } as unknown as ForumPhoto;
+    expect(store.photoRevision('a')).toBe(0);
+    expect(store.photoRevision('missing')).toBe(0);
+    // A write that stores the same stills (a fresh copy of the bytes) is no change.
+    await store.replacePhotos('a', []);
+    expect(store.photoRevision('a')).toBe(0);
+    await store.replacePhotos('a', [png]);
+    expect(store.photoRevision('a')).toBe(1);
+    await store.updatePhoto('a', { ...png, bytes: png.bytes.slice() });
+    expect(store.photoRevision('a')).toBe(1);
+    // Same count, other bytes / other type / other stored index.
+    await store.updatePhoto('a', { contentType: 'image/png', bytes: new Uint8Array([2]) });
+    expect(store.photoRevision('a')).toBe(2);
+    await store.updatePhoto('a', { contentType: 'image/webp', bytes: new Uint8Array([2]) });
+    expect(store.photoRevision('a')).toBe(3);
+    const dated: ForumPhoto = { ...png, takenAt: '2026-08-01T10:00:00' };
+    await store.replacePhotos('a', [gif, dated]);
+    expect(store.photoRevision('a')).toBe(4);
+    // An unrecognized still is not part of the set, so swapping it is no change.
+    await store.replacePhotos('a', [{ ...gif, bytes: new Uint8Array([9]) }, dated]);
+    expect(store.photoRevision('a')).toBe(4);
+    expect((await store.updatePhoto('a', null))?.photoTakenAts).toEqual(['2026-08-01T10:00:00']);
+    expect(store.photoRevision('a')).toBe(4);
+    await store.replacePhotos('a', [png, JPEG2]);
+    expect(store.photoRevision('a')).toBe(5);
+    expect((await store.updatePhoto('a', png))?.photoTakenAts).toEqual([null, null]);
+    expect(store.photoRevision('a')).toBe(5);
+    expect(await store.updatePhoto('missing', png)).toBeUndefined();
+    expect(await store.replacePhotos('missing', [png])).toBeUndefined();
+    expect(store.photoRevision('missing')).toBe(0);
+    // create stores the stills of a new note; a note without photos stays 0.
+    await store.create({ ...LATE, hasPhoto: true }, png, undefined, [JPEG2]);
+    expect(store.photoRevision('b')).toBe(1);
+    await store.create({ ...TIE_HIGH, text: 'plain' });
+    expect(store.photoRevision('z')).toBe(0);
+    // A delete removes the stills; the revision stays and still rises.
+    expect(await store.deleteById('b')).toBe(true);
+    expect(store.photoRevision('b')).toBe(2);
+    expect(await store.deleteById('z')).toBe(true);
+    expect(store.photoRevision('z')).toBe(0);
+  });
+
   it('getPhotoSet copies photo 0 and the extras in one step', async () => {
     const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
     expect(await store.getPhotoSet('a')).toEqual({ photo: null, extras: [] });
