@@ -542,7 +542,11 @@ Rules for every claim:
   next pass of at most `WORKER_BATCH` rows starts `WORKER_INTERVAL_MS`
   after the previous one settled, also after a failure. A slow pass
   (database or OpenCryptoPay) therefore never stacks further passes; each
-  instance has at most one place pass in flight. Stopping the worker
+  instance has at most one place pass in flight. A pass settles only after
+  every claimed row has settled: a row whose handling throws before its
+  request (a store read, say) logs `ocp.place.failed` with its message id
+  and keeps its flag, while the pass still waits for the other rows'
+  requests. Stopping the worker
   clears both timers, and a pass still in flight then schedules no other.
 - Every write after a claim that clears a pending flag or stores a hash is
   also conditional on the generation `g`, including the writes of the paths

@@ -159,6 +159,39 @@ function logged(event: string): Array<Record<string, unknown>> {
     .filter((line) => line['event'] === event);
 }
 
+const OTHER_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
+const OTHER_CLAIM: ShopOcpClaim = { messageId: OTHER_ID, generation: 1, claim: 1 };
+
+/**
+ * Two claimed rows: `ID` (a listed shop whose `PUT` is held until `answer`
+ * is called) and `OTHER_ID`, whose note read rejects before any request.
+ */
+async function heldPassWithFailingRead(): Promise<{
+  outbox: OcpOutboxDeps;
+  ids: Stub;
+  sent: Sent[];
+  answer: () => void;
+}> {
+  const messages = await messagesWith(shopNote());
+  const read = messages.getById.bind(messages);
+  vi.spyOn(messages, 'getById').mockImplementation((id: string) =>
+    id === OTHER_ID
+      ? Promise.reject(Object.assign(new Error('upstream body text'), { code: '57P01' }))
+      : read(id),
+  );
+  let answer: (() => void) | undefined;
+  const { push, sent } = mapPush(
+    () =>
+      new Promise<Response>((resolve) => {
+        answer = () => resolve(new Response('{}', { status: 200 }));
+      }),
+  );
+  const ids = stubIdentities();
+  ids.claimPlaces.mockResolvedValueOnce([CLAIM, OTHER_CLAIM]);
+  ids.claimPlaces.mockResolvedValue([]);
+  return { outbox: deps(ids, messages, push), ids, sent, answer: () => answer?.() };
+}
+
 describe('runOcpPlaceOutboxPass', () => {
   it('puts a listed shop with its key and revision, then queues its photos', async () => {
     const messages = await messagesWith(shopNote());
@@ -393,6 +426,28 @@ describe('runOcpPlaceOutboxPass', () => {
       expect.objectContaining({ messageId: ID, status: 503 }),
       expect.objectContaining({ messageId: ID }),
     ]);
+  });
+  it('settles only after every claim, logging a claim that throws with its message id', async () => {
+    const { outbox, ids, sent, answer } = await heldPassWithFailingRead();
+    let settled = false;
+    const pass = runOcpPlaceOutboxPass(outbox).then(() => {
+      settled = true;
+    });
+    await vi.waitFor(() => {
+      expect(sent).toHaveLength(1);
+      expect(logged('ocp.place.failed')).toHaveLength(1);
+    });
+    // The other claim's read already rejected; its request is still held.
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(settled).toBe(false);
+    const [line] = logged('ocp.place.failed');
+    expect(line).toMatchObject({ messageId: OTHER_ID, name: 'Error', code: '57P01' });
+    expect(JSON.stringify(line)).not.toContain('upstream body text');
+    answer();
+    await pass;
+    expect(settled).toBe(true);
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'put');
+    expect(logged('ocp.place.failed')).toHaveLength(1);
   });
 });
 
@@ -992,6 +1047,24 @@ describe('startOcpOutboxWorker', () => {
     await vi.advanceTimersByTimeAsync(500);
     expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
     expect(vi.getTimerCount()).toBe(0);
+  });
+
+  it('starts no place pass while a request of a pass with a throwing claim is in flight', async () => {
+    vi.useFakeTimers();
+    const { outbox, ids, sent, answer } = await heldPassWithFailingRead();
+    ids.claimPhoto.mockResolvedValue(undefined);
+    const handle = startOcpOutboxWorker(outbox, 100);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(sent).toHaveLength(1);
+    expect(logged('ocp.place.failed')).toEqual([expect.objectContaining({ messageId: OTHER_ID })]);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    answer();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(100);
+    expect(ids.claimPlaces).toHaveBeenCalledTimes(2);
+    handle.stop();
   });
 
   it('defaults to the worker interval', async () => {

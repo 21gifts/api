@@ -225,12 +225,28 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
  * `ocp.place.rejected` and clears the flag; anything else logs
  * `ocp.place.failed` and keeps the flag until the lease ends.
  *
+ * The pass waits until every claimed row has settled, so no request of this
+ * pass is still in flight when the next pass starts. A row whose handling
+ * throws (for example a store read before the request) logs
+ * `ocp.place.failed` with its message id and keeps the flag until the lease
+ * ends; the other rows of the pass are not affected.
+ *
  * @param deps - Identities, messages and the map target.
- * @returns Resolves when every claimed row was handled.
+ * @returns Resolves when every claimed row has settled; only a failed claim
+ * read rejects.
  */
 export async function runOcpPlaceOutboxPass(deps: OcpOutboxDeps): Promise<void> {
   const claims = await deps.identities.claimPlaces(WORKER_BATCH, WORKER_LEASE_MS);
-  await Promise.all(claims.map((claim) => sendPlace(deps, claim)));
+  // allSettled, not all: one rejecting claim must not settle the pass while
+  // the other claims' requests are still in flight (the lane would start the
+  // next pass and two passes' place requests would overlap).
+  await Promise.allSettled(
+    claims.map((claim) =>
+      sendPlace(deps, claim).catch((error: unknown) => {
+        logEvent('ocp.place.failed', { messageId: claim.messageId, ...errorLogFields(error) });
+      }),
+    ),
+  );
 }
 
 /**
@@ -408,7 +424,8 @@ export async function queueAllShopPlaces(identities: ShopIdentityStore): Promise
  * Start both outbox lanes, each serialised: a lane schedules its next pass
  * `intervalMs` after the previous one settled (also after a failure), so
  * each instance has at most one place pass and one photo upload in flight
- * and a slow pass never stacks database or HTTP work. `stop` clears both
+ * and a slow pass never stacks database or HTTP work (a place pass settles
+ * only after all its claimed rows settled). `stop` clears both
  * pending timers; a pass still in flight then settles without scheduling
  * another.
  *
