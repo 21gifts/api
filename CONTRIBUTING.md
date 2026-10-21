@@ -478,12 +478,6 @@ healthy process with `DATABASE_URL` blank). Playwright `webServer.env` pins
 `VAPID_SUBJECT`, `TRANSLATE_URL`, `TRANSLATE_API_KEY`, `OCP_MAP_BASE_URL`, and
 `OCP_PLACE_INGEST_TOKEN` to blank, and `NIP57_PROBE` to `0`,
 so those outcomes do not depend on the host environment.
-A second API instance on `127.0.0.1:3002` runs with `OCP_MAP_BASE_URL` and
-`OCP_PLACE_INGEST_TOKEN` pointing at the local authenticated map stub
-`e2e/ocp-map-stub.ts` on `127.0.0.1:3099` only for the map push tests in
-`e2e/ocp-places.spec.ts`; its empty boot store lets the
-`publishExistingShopPlaces` test assert that boot republishing makes zero map
-calls, and everything else uses the main instance.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.

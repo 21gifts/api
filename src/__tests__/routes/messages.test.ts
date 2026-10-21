@@ -12052,6 +12052,121 @@ describe('shop OCP place hook', () => {
     expect(meta.filter((item) => item.method === 'PUT')).toHaveLength(2);
   });
 
+  it('sends a later map push for a shop only after the earlier one', async () => {
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const methods: string[] = [];
+    let release: () => void = () => undefined;
+    const held = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const mapPush: MapPush = {
+      baseUrl: 'http://map.test',
+      token: 'ingest',
+      fetchImpl: async (_input, init) => {
+        methods.push(String(init.method));
+        if (methods.length === 1) {
+          await held;
+        }
+        return new Response('{}', { status: 201 });
+      },
+    };
+    const app = mount(await staffStore('Ada'), messages, { mapPush });
+    const textWrite = app.request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Coffee roasted on site and served at the bar all day long.' }),
+    });
+    await vi.waitFor(() => {
+      expect(methods).toEqual(['PUT']);
+    });
+    const placeClear = app.request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    await vi.waitFor(async () => {
+      expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(methods).toEqual(['PUT']);
+    release();
+    expect((await textWrite).status).toBe(200);
+    expect((await placeClear).status).toBe(200);
+    expect(methods).toEqual(['PUT', 'DELETE']);
+  });
+
+  it('skips the map push and still answers 200 when the queued read fails', async () => {
+    const { mapPush, calls } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        if (reads === 3) {
+          throw new Error('read failed');
+        }
+        return before;
+      },
+      setPlace: async () => true,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(await staffStore('Ada'), store, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/place',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ place: PIN }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(reads).toBe(3);
+    expect(calls).toHaveLength(0);
+  });
+
+  it.each([
+    ['place', { place: { lat: 47.3, lng: 8.5, label: 'Stall', address: ADDRESS } }],
+    ['text', { text: 'Coffee roasted on site and served at the bar all day long.' }],
+    ['shop-account', { username: 'shopkeep' }],
+  ])('deletes the map pin when the %s push finds the note gone', async (route, payload) => {
+    const { mapPush, calls, meta } = recordingMap();
+    const auth = await staffStore('Ada');
+    await addShopkeep(auth);
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    const before = await messages.getById(SHOP_ID);
+    if (before === undefined) {
+      throw new Error('expected shop');
+    }
+    let reads = 0;
+    const store = throwingStore({
+      getById: async () => {
+        reads += 1;
+        return reads === 3 ? undefined : before;
+      },
+      setPlace: async () => true,
+      setShopAccount: async () => true,
+      updateText: async () => before,
+      countAttributedReplies: async () => 0,
+    });
+    const res = await mount(auth, store, { mapPush }).request(`/messages/${SHOP_ID}/${route}`, {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
+  });
+
   it('deletes the map pin when a place write reloads an incomplete concurrent place', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const messages = new InMemoryMessageStore();

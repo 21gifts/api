@@ -11,14 +11,6 @@ const ADDRESS = {
 
 const PLACE = { lat: 47.376887, lng: 8.541694, label: 'Kiosk Lindenhof', address: ADDRESS };
 const SHOP_TEXT = 'Fresh coffee and snacks are served every day.\n\n#21GiftsShop';
-const MAP_STUB_URL = 'http://127.0.0.1:3099';
-const MAP_API_URL = 'http://127.0.0.1:3002';
-
-type MapCall = {
-  method: 'PUT' | 'DELETE';
-  body: Record<string, unknown>;
-};
-
 async function postCompleteShop(request: APIRequestContext): Promise<string> {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const auth = await verifiedPinSession(request, stamp);
@@ -28,34 +20,6 @@ async function postCompleteShop(request: APIRequestContext): Promise<string> {
   });
   expect(posted.status()).toBe(200);
   return ((await posted.json()) as { id: string }).id;
-}
-
-async function mapCalls(request: APIRequestContext, externalId: string): Promise<MapCall[]> {
-  const response = await request.get(
-    `${MAP_STUB_URL}/_calls?externalId=${encodeURIComponent(externalId)}`,
-  );
-  expect(response.status()).toBe(200);
-  return (await response.json()) as MapCall[];
-}
-
-function expectCompletePut(calls: MapCall[], externalId: string): void {
-  expect(calls).toHaveLength(1);
-  expect(calls[0]).toEqual({
-    method: 'PUT',
-    body: {
-      origin: '21gifts',
-      externalId,
-      name: PLACE.label,
-      description: 'Fresh coffee and snacks are served every day.',
-      lat: PLACE.lat,
-      lon: PLACE.lng,
-      category: 'shopping',
-      paymentMethods: 'lightning',
-      techProvider: '21.gifts',
-      shopType: 'Others',
-      ...ADDRESS,
-    },
-  });
 }
 
 test('Function: shopDescription — POST /messages preserves a valid shop address', async ({
@@ -126,58 +90,62 @@ test('Function: shopTextProblem — POST /messages rejects a short shop descript
   });
 });
 
-test.describe('configured map API', () => {
-  test.describe.configure({ mode: 'serial' });
-  test.use({ baseURL: MAP_API_URL });
+test('Function: publishExistingShopPlaces — default boot is healthy', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 
-  test('Function: publishExistingShopPlaces — boot republish of an empty store makes no map call', async ({
-    request,
-  }) => {
-    expect((await request.get('/healthz')).status()).toBe(200);
-    const response = await request.get(`${MAP_STUB_URL}/_boot`);
-    expect(response.status()).toBe(200);
-    expect(await response.json()).toEqual([]);
-  });
+test('Function: resolveMapPush — POST /messages stores a complete shop with the map unconfigured', async ({
+  request,
+}) => {
+  const id = await postCompleteShop(request);
+  const read = await request.get(`/messages/${id}`);
+  expect(read.status()).toBe(200);
+  expect(((await read.json()) as { place?: unknown }).place).toEqual(PLACE);
+});
 
-  test('Function: shopOcpPlaceInput — maps a complete shop note into the PUT body', async ({
-    request,
-  }) => {
-    const id = await postCompleteShop(request);
-    expectCompletePut(await mapCalls(request, id), id);
+test('Function: shopOcpPlaceInput — PATCH /messages/:id/text keeps a complete shop with the map unconfigured', async ({
+  request,
+}) => {
+  const id = await postCompleteShop(request);
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const auth = await staffPinSession(request, stamp);
+  const edited = await request.patch(`/messages/${id}/text`, {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { text: 'Fresh coffee, tea and snacks are served every day.' },
   });
+  expect(edited.status()).toBe(200);
+  const body = (await edited.json()) as { text: string; place?: unknown };
+  expect(body.text).toBe('Fresh coffee, tea and snacks are served every day.\n\n#21GiftsShop');
+  expect(body.place).toEqual(PLACE);
+});
 
-  test('Function: syncShopOcpPlace — sends one complete shop pin', async ({ request }) => {
-    const id = await postCompleteShop(request);
-    expectCompletePut(await mapCalls(request, id), id);
+test('Function: syncShopOcpPlace — PATCH /messages/:id/place replaces a shop pin with the map unconfigured', async ({
+  request,
+}) => {
+  const id = await postCompleteShop(request);
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const auth = await staffPinSession(request, stamp);
+  const moved = { ...PLACE, lat: 47.3, lng: 8.5 };
+  const replaced = await request.patch(`/messages/${id}/place`, {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { place: moved },
   });
+  expect(replaced.status()).toBe(200);
+  expect(((await replaced.json()) as { place?: unknown }).place).toEqual(moved);
+});
 
-  test('Function: removeShopOcpPlace — deletes a shop pin after a moderator clears it', async ({
-    request,
-  }) => {
-    const id = await postCompleteShop(request);
-    const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-    const auth = await staffPinSession(request, stamp);
-    const cleared = await request.patch(`/messages/${id}/place`, {
-      headers: { ...auth, 'content-type': 'application/json' },
-      data: { place: null },
-    });
-    expect(cleared.status()).toBe(200);
-    const calls = await mapCalls(request, id);
-    expect(calls).toHaveLength(2);
-    expect(calls[1]).toEqual({
-      method: 'DELETE',
-      body: { origin: '21gifts', externalId: id },
-    });
+test('Function: removeShopOcpPlace — PATCH /messages/:id/place clears a shop pin with the map unconfigured', async ({
+  request,
+}) => {
+  const id = await postCompleteShop(request);
+  const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
+  const auth = await staffPinSession(request, stamp);
+  const cleared = await request.patch(`/messages/${id}/place`, {
+    headers: { ...auth, 'content-type': 'application/json' },
+    data: { place: null },
   });
-
-  test('Function: resolveMapPush — configured bearer records an authorized PUT', async ({
-    request,
-  }) => {
-    const id = await postCompleteShop(request);
-    const calls = await mapCalls(request, id);
-    expect(calls).toHaveLength(1);
-    expect(calls[0]?.method).toBe('PUT');
-  });
+  expect(cleared.status()).toBe(200);
+  expect(((await cleared.json()) as { place?: unknown }).place).toBeUndefined();
 });
 
 test('Function: isDevShopSeedTarget — default boot is healthy', async ({ request }) => {

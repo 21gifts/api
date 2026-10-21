@@ -1634,6 +1634,38 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
+  // The last map push queued per note id; each push waits for the one before it.
+  const shopMapQueue = new Map<string, Promise<void>>();
+  /**
+   * Run one map push for a note after every earlier push for that note.
+   *
+   * The push reads the row when its turn comes, so concurrent edits of one shop
+   * reach the map in order and the last push sees the last write. A failed read
+   * logs `ocp.place.failed` and skips the push.
+   */
+  const queueShopMapPush = async (
+    id: string,
+    push: (latest: MessageRow | undefined) => Promise<void>,
+  ): Promise<void> => {
+    const turn = (shopMapQueue.get(id) ?? Promise.resolve()).then(async () => {
+      let latest: MessageRow | undefined;
+      try {
+        latest = await deps.store.getById(id);
+      } catch {
+        logEvent('ocp.place.failed', { messageId: id });
+        return;
+      }
+      await push(latest);
+    });
+    shopMapQueue.set(id, turn);
+    try {
+      await turn;
+    } finally {
+      if (shopMapQueue.get(id) === turn) {
+        shopMapQueue.delete(id);
+      }
+    }
+  };
 
   return new Hono()
     .get('/', async (c) => {
@@ -2160,9 +2192,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           target.place !== undefined &&
           textHasHashtagToken(target.text, '21GiftsShop')
         ) {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: target.id,
+          await queueShopMapPush(target.id, async () => {
+            await removeShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: target.id,
+            });
           });
         }
         if (target.accountId === null && target.authorPubkey !== null) {
@@ -2287,23 +2321,25 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // A shop hidden by a concurrent request stays off the map.
-        if (parsed.value !== null && updated.deletedAt === null) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place ?? null,
-            removeWhenIncomplete: true,
-            textHasHashtagToken,
-          });
-        } else {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        }
+        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
+        await queueShopMapPush(updated.id, async (latest) => {
+          if (parsed.value !== null && latest !== undefined && latest.deletedAt === null) {
+            await syncShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: latest.id,
+              text: latest.text,
+              parentId: latest.parentId ?? null,
+              place: latest.place ?? null,
+              removeWhenIncomplete: true,
+              textHasHashtagToken,
+            });
+          } else {
+            await removeShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: updated.id,
+            });
+          }
+        });
         return c.json(
           serializeMessage(
             updated,
@@ -2412,22 +2448,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // A shop hidden by a concurrent request stays off the map.
-        if (updated.deletedAt !== null) {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        } else if (updated.place !== null && updated.place !== undefined) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place,
-            textHasHashtagToken,
-          });
-        }
+        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
+        await queueShopMapPush(updated.id, async (latest) => {
+          if (latest === undefined || latest.deletedAt !== null) {
+            await removeShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: updated.id,
+            });
+          } else if (latest.place !== null && latest.place !== undefined) {
+            await syncShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: latest.id,
+              text: latest.text,
+              parentId: latest.parentId ?? null,
+              place: latest.place,
+              textHasHashtagToken,
+            });
+          }
+        });
         return c.json(
           serializeMessage(
             updated,
@@ -2543,23 +2581,25 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // A shop hidden by a concurrent request stays off the map.
-        if (updated.deletedAt === null) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place ?? null,
-            removeWhenIncomplete: true,
-            textHasHashtagToken,
-          });
-        } else {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        }
+        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
+        await queueShopMapPush(updated.id, async (latest) => {
+          if (latest === undefined || latest.deletedAt !== null) {
+            await removeShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: updated.id,
+            });
+          } else {
+            await syncShopOcpPlace({
+              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+              messageId: latest.id,
+              text: latest.text,
+              parentId: latest.parentId ?? null,
+              place: latest.place ?? null,
+              removeWhenIncomplete: true,
+              textHasHashtagToken,
+            });
+          }
+        });
         return c.json(
           serializeMessage(
             updated,
