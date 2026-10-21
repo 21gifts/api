@@ -251,10 +251,8 @@ statement that selects no `bytea` column, and not with `getPhoto` /
 skip, so reading the bytes would load up to ten photos per visited shop on
 every pass (up to 200 photos per 2 s tick). The worker's own reads in the
 shop kind 0 pass load no photo bytes, and `PostgresShopIdentityStore` reads
-none either. On a memory boot, `InMemoryShopIdentityStore` reads every
-identity's photos (`photoFingerprint`) at the start of each store call that
-syncs its queue, including the pass's own `listRound`; `renameIfListed` and
-`getNostrCiphertext` do not sync.
+none either. A memory boot runs no Nostr worker (`src/index.ts` starts it only
+with Postgres), so the in-memory shop store is never on this path.
 
 Without a public origin, the shop profile does what an account profile does
 (`publishProfiles`, `buildKind0Content`): when `nip05Domain`
