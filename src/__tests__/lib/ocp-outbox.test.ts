@@ -437,7 +437,7 @@ describe('runOcpPlaceOutboxPass', () => {
       expect(sent).toHaveLength(1);
       expect(logged('ocp.place.failed')).toHaveLength(1);
     });
-    // The other claim's read already rejected; its request is still held.
+    // OTHER_ID's read already rejected; ID's PUT is still held.
     await new Promise((resolve) => setTimeout(resolve, 20));
     expect(settled).toBe(false);
     const [line] = logged('ocp.place.failed');
