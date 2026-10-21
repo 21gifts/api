@@ -44,6 +44,7 @@ import {
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
+import { countingBytes } from '@/__tests__/helpers/counting-bytes';
 import { InMemoryPushStore } from '@/lib/push-store';
 import {
   InMemoryShopIdentityStore,
@@ -8125,23 +8126,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       // reads that note's photo in the second tick.
       const byteReads: string[] = [];
       const typeReads: string[] = [];
-      const metadataOnly = override<MessageStore>(ctx.messages, {
-        getPhoto: (id) => {
-          if (id === uuid(1)) byteReads.push('getPhoto');
-          return ctx.messages.getPhoto(id);
-        },
-        listExtraPhotos: (id) => {
-          if (id === uuid(1)) byteReads.push('listExtraPhotos');
-          return ctx.messages.listExtraPhotos(id);
-        },
-        getExtraPhoto: (id, index) => {
-          if (id === uuid(1)) byteReads.push('getExtraPhoto');
-          return ctx.messages.getExtraPhoto(id, index);
-        },
-        getPhotoSet: (id) => {
-          if (id === uuid(1)) byteReads.push('getPhotoSet');
-          return ctx.messages.getPhotoSet(id);
-        },
+      const metadataOnly = override<MessageStore>(countingBytes(ctx.messages, byteReads), {
         getPhotoContentTypes: (id) => {
           typeReads.push(id);
           return ctx.messages.getPhotoContentTypes(id);
@@ -8161,7 +8146,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
         picture: `https://api.21.gifts/messages/${uuid(1)}/photo.png`,
       });
       expect(typeReads).toEqual([uuid(1), uuid(1)]);
-      expect(byteReads).toEqual([]);
+      expect(byteReads.filter((read) => read.endsWith(`:${uuid(1)}`))).toEqual([]);
     });
 
     it('follows a rename with a new local part and profile_name', async () => {
