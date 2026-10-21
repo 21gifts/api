@@ -376,7 +376,11 @@ spec adds no zap receipts for a shop key.
   note does not match the cached entry (`GET /shops/:npub`, the shop
   kind 0), a `nostr.json?name=` that the cache does not hold, or a
   `nostr.json?name=` the cache gives a shop while an account now holds it as
-  its username, asks for one forced refresh, which bypasses and replaces the cache. Forced refreshes
+  its username, asks for one forced refresh, which bypasses and replaces the cache. Each
+  computation also builds lookup maps by local part (`accountsByLocal`,
+  `shopsByLocal`), so a `nostr.json?name=` answers with map lookups (hold
+  check, account-claim check, answer) and never walks every account or
+  shop; only the full body walks the cached entries. Forced refreshes
   are single flight too and start at most once per
   `NIP05_DIRECTORY_REFRESH_MS` = 10 s per store set; inside that gap a
   forced read gets the forced computation in flight or the cached directory.

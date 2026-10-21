@@ -323,12 +323,25 @@ export const NIP05_DIRECTORY_TTL_MS = 60_000;
  */
 export const NIP05_DIRECTORY_REFRESH_MS = 10_000;
 
-/** The NIP-05 allocation of one account snapshot: every account, then every listed shop. */
+/**
+ * The NIP-05 allocation of one account snapshot: every account, then every
+ * listed shop. The lookup maps by local part are built once per computation,
+ * so a `nostr.json?name=` answer is a map lookup, not a walk over every
+ * entry.
+ */
 export interface Nip05Directory {
   /** Account entries in `nostr.json` order ({@link listNip05Entries}). */
   accounts: readonly Nip05Entry[];
   /** Listed shop entries by message id, in allocation order ({@link listShopNip05Entries}). */
   shops: ReadonlyMap<string, ShopNip05Entry>;
+  /** Account entries by local part (stored usernames are unique, so one entry per local). */
+  accountsByLocal: ReadonlyMap<string, Nip05Entry>;
+  /**
+   * Listed shop entries by local part. Shop locals are unique among shops;
+   * one that equals an account local is still listed here and never served
+   * over the account ({@link buildNostrJson}).
+   */
+  shopsByLocal: ReadonlyMap<string, ShopNip05Entry>;
 }
 
 /** Shop identities and the forum store that decides whether a shop is listed. */
@@ -378,10 +391,10 @@ function directorySlot(auth: AuthStore, shops: Nip05ShopStores): DirectorySlot {
 }
 
 /**
- * Compute the directory from one account read, store it in the slot unless a
- * computation that started later already did, and return it. "Later" is the
- * slot's start sequence, not the clock, so a clock step cannot keep a newer
- * result out.
+ * Compute the directory from one account read, with its lookup maps by local
+ * part, store it in the slot unless a computation that started later already
+ * did, and return it. "Later" is the slot's start sequence, not the clock, so
+ * a clock step cannot keep a newer result out.
  */
 async function computeDirectory(
   slot: DirectorySlot,
@@ -397,6 +410,8 @@ async function computeDirectory(
   const directory: Nip05Directory = {
     accounts: accountEntries,
     shops: new Map(shopEntries.map((row) => [row.messageId, row] as const)),
+    accountsByLocal: new Map(accountEntries.map((row) => [row.local, row] as const)),
+    shopsByLocal: new Map(shopEntries.map((row) => [row.local, row] as const)),
   };
   if (slot.value === undefined || slot.value.seq < seq) {
     slot.value = { directory, startedAt, seq };
@@ -429,7 +444,8 @@ async function computeDirectory(
  * @param shops - Shop identities and forum store.
  * @param now - Clock reading in epoch milliseconds.
  * @param refresh - Force a fresh computation (rate-limited, see above).
- * @returns The directory.
+ * @returns The directory, with its lookup maps by local part
+ *   (`accountsByLocal`, `shopsByLocal`) built once per computation.
  * @throws When the computation it waits for fails (a store read throws).
  */
 export async function nip05Directory(
@@ -467,6 +483,12 @@ export async function nip05Directory(
   return slot.pending;
 }
 
+/** The entry under `key`, as a list of zero or one entries. */
+function atMostOne<T>(byLocal: ReadonlyMap<string, T>, key: string): T[] {
+  const row = byLocal.get(key);
+  return row === undefined ? [] : [row];
+}
+
 /**
  * NIP-05 `nostr.json` body (names + recommended relays).
  *
@@ -482,10 +504,14 @@ export async function nip05Directory(
  * a new username or shop is found as soon as the refresh gap allows. So does
  * a `?name=` the cache gives a shop while an account now holds it as its
  * username (`auth.getAccountByUsername`): accounts win, so the cached shop
- * entry is stale and the account's key is served once the gap allows. Without
- * `shops` (accounts only) every call reads every account itself. Account
- * entries are written first; a shop entry whose local part an account already
- * holds is never written over it (it is skipped and logged as
+ * entry is stale and the account's key is served once the gap allows. A
+ * `?name=` with `shops` reads only the directory's lookup maps
+ * (`accountsByLocal`, `shopsByLocal`) for the hold check, the account-claim
+ * check and the answer, so its cost does not grow with the number of accounts
+ * or shops; the full body walks the cached entries without copying them.
+ * Without `shops` (accounts only) every call reads every account itself.
+ * Account entries are written first; a shop entry whose local part an account
+ * already holds is never written over it (it is skipped and logged as
  * `nip05.shop.collision` with the shop's message id).
  *
  * @param auth - Auth store.
@@ -505,35 +531,40 @@ export async function buildNostrJson(
   now: number = Date.now(),
 ): Promise<{ names: Record<string, string>; relays: Record<string, string[]> }> {
   const needle = nameFilter?.trim().toLowerCase() ?? '';
-  const keep = (row: { local: string }): boolean => needle === '' || row.local === needle;
-  let accountEntries: readonly Nip05Entry[];
-  let shopEntries: readonly ShopNip05Entry[];
+  let accountEntries: Iterable<Nip05Entry>;
+  let shopEntries: Iterable<ShopNip05Entry>;
   if (shops === undefined) {
-    accountEntries = await listNip05Entries(auth);
+    accountEntries = (await listNip05Entries(auth)).filter(
+      (row) => needle === '' || row.local === needle,
+    );
     shopEntries = [];
   } else {
     let directory = await nip05Directory(auth, shops, now);
-    const holds = (dir: Nip05Directory): boolean =>
-      dir.accounts.some(keep) || [...dir.shops.values()].some(keep);
-    // Called only when the directory holds the name: no account entry means a shop holds it.
-    const claimedByAccount = async (dir: Nip05Directory): Promise<boolean> =>
-      !dir.accounts.some(keep) && (await auth.getAccountByUsername(needle)) !== undefined;
-    if (needle !== '' && (!holds(directory) || (await claimedByAccount(directory)))) {
+    if (
+      needle !== '' &&
+      !directory.accountsByLocal.has(needle) &&
+      (!directory.shopsByLocal.has(needle) ||
+        (await auth.getAccountByUsername(needle)) !== undefined)
+    ) {
       // A name the cache may not have seen yet (new username or shop), or a
       // cached shop name an account took as its username since.
       directory = await nip05Directory(auth, shops, now, true);
     }
-    accountEntries = directory.accounts;
-    shopEntries = [...directory.shops.values()];
+    // The full body walks the cached entries; a `?name=` answer is two map
+    // lookups, whatever the number of accounts and shops.
+    accountEntries =
+      needle === '' ? directory.accounts : atMostOne(directory.accountsByLocal, needle);
+    shopEntries =
+      needle === '' ? directory.shops.values() : atMostOne(directory.shopsByLocal, needle);
   }
   const names: Record<string, string> = {};
   const relays: Record<string, string[]> = {};
   const relayList = writeRelayUrls(resolveWriteSet(env));
-  for (const row of accountEntries.filter(keep)) {
+  for (const row of accountEntries) {
     names[row.local] = row.pubkey;
     relays[row.pubkey] = relayList;
   }
-  for (const row of shopEntries.filter(keep)) {
+  for (const row of shopEntries) {
     /* v8 ignore start -- both allocations share one account snapshot and every account local seeds the shop allocation, so a shop never gets an account's local part */
     if (Object.hasOwn(names, row.local)) {
       logEvent('nip05.shop.collision', { messageId: row.messageId });

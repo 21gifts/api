@@ -486,6 +486,38 @@ describe('nip05', () => {
       expect(computations()).toBe(5);
     });
 
+    it('answers a ?name= from the lookup maps without walking the cached entries', async () => {
+      const { auth, shops, stores, computations } = await fixture();
+      const directory = await nip05Directory(auth, stores, 0);
+      const shopKey = (await shops.getByMessageId(SHOP_ID))!.nostrPubkey;
+      // The lookup maps are built once per computation from the same entries.
+      expect([...directory.accountsByLocal]).toEqual([['ada', directory.accounts[0]]]);
+      expect([...directory.shopsByLocal]).toEqual([['bakery', directory.shops.get(SHOP_ID)]]);
+      // Every walk over the cached entries now throws.
+      const trap = (target: object, keys: readonly PropertyKey[]): void => {
+        for (const key of keys) {
+          Object.defineProperty(target, key, {
+            configurable: true,
+            value: () => {
+              throw new Error(`walked ${String(key)}`);
+            },
+          });
+        }
+      };
+      trap(directory.accounts, [Symbol.iterator, 'filter', 'some', 'find', 'map', 'forEach']);
+      trap(directory.shops, [Symbol.iterator, 'values', 'entries', 'forEach']);
+      // A held account name and a held shop name answer from the maps alone.
+      expect((await buildNostrJson(auth, {}, 'ada', stores, 1)).names).toEqual({
+        ada: 'aa'.repeat(32),
+      });
+      expect((await buildNostrJson(auth, {}, ' Bakery ', stores, 2)).names).toEqual({
+        bakery: shopKey,
+      });
+      expect(computations()).toBe(1);
+      // The full body walks the cached entries (and copies none).
+      await expect(buildNostrJson(auth, {}, undefined, stores, 3)).rejects.toThrow('walked');
+    });
+
     it('refreshes a ?name= the cache gives a shop once an account holds it as its username', async () => {
       const { auth, shops, stores, computations } = await fixture();
       const shopKey = (await shops.getByMessageId(SHOP_ID))!.nostrPubkey;
