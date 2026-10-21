@@ -731,7 +731,13 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
         }
-        await deps.messages.updateText(noteId, normalized);
+        const written = await deps.messages.updateText(noteId, normalized);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
         if (photoKeyPresent && !createdThisRequest) {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }

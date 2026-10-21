@@ -1747,6 +1747,13 @@ so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
 
+When the live profile note already has a complete pin and the new text
+fails `shopTextProblem`, the response is **400**
+`{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`.
+The note text stays, and a photo in the same request is not written.
+When `updateText` finds that note missing or hidden, the response is
+**404** `{ "error": "Not found" }`.
+
 Success → **Response** `200` with the account (same shape as `GET /me`).
 About me is the profile-note text when it is a real bio, else null (auto
 name-copy is not a bio, including after a display-name rename when the

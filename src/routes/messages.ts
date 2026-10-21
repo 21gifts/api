@@ -2471,6 +2471,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
+        const pinned = row.place ?? null;
+        if (pinned !== null && shopPlaceProblem(pinned) === null) {
+          const textProblem = shopTextProblem(ensured, pinned);
+          if (textProblem !== null) {
+            return c.json({ error: textProblem }, 400);
+          }
+        }
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);

@@ -12435,6 +12435,32 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
   });
 
+  it('returns 400 when an unchanged description is too short for a complete pin', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages, {
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Stall',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe\n\n#21GiftsShop' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
   it('lets a short shop text stay when the note has no pin', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
@@ -12457,6 +12483,20 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
     expect(res.status).toBe(200);
     expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
+  });
+
+  it('returns 400 when the store rejects the shop pair after the route has accepted the pin', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const pairError =
+      'Shop description must be 20 to 1000 characters and longer than the shop name';
+    messages.updateText = () => Promise.resolve(pairError);
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: pairError });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
   });
 
   it('returns 400 when a pinned shop description is not longer than the name', async () => {
