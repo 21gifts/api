@@ -955,7 +955,8 @@ describe('shop identity on Postgres', () => {
     try {
       const rows: MessageRow[] = [];
       for (let index = 0; index < 2; index += 1) {
-        const row = ctx.note({ hasPhoto: true });
+        // Distinct text: a second live photo note with the same content returns the first.
+        const row = ctx.note({ hasPhoto: true, text: `${TEXT} Shop ${index}.` });
         await ctx.messages.create(row, PNG, undefined, [PNG]);
         await ctx.shops.ensureListed(row.id, KEK);
         rows.push(row);
@@ -963,6 +964,7 @@ describe('shop identity on Postgres', () => {
       const [first, second] = [...rows].sort((left, right) =>
         left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
       ) as [MessageRow, MessageRow];
+      expect(await ctx.shops.getByMessageId(second.id)).toBeDefined();
       // The place of the first shop changes while it is sent: it stays
       // pending with its lease ended now, so the never-claimed second goes first.
       const [place] = await ctx.shops.claimPlaces(1, 60_000);
