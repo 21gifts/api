@@ -288,15 +288,28 @@ describe('syncShopOcpPlace', () => {
       textHasHashtagToken: base.textHasHashtagToken,
       parentId: null,
     });
-    await syncShopOcpPlace({
+    expect(calls).toEqual([]);
+  });
+
+  it('deletes an incomplete shop only when removeWhenIncomplete is set', async () => {
+    const { mapPush, calls } = recordingPush();
+    const opts = {
       mapPush,
-      messageId: base.messageId,
+      messageId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
       text: SHOP_TEXT,
       parentId: null,
       place: { ...STALL, address: null },
-      textHasHashtagToken: base.textHasHashtagToken,
-    });
+      textHasHashtagToken: (text: string, name: string) => text.includes(`#${name}`),
+    };
+    await syncShopOcpPlace(opts);
     expect(calls).toEqual([]);
+    await syncShopOcpPlace({ ...opts, removeWhenIncomplete: true });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.method).toBe('DELETE');
+    expect(JSON.parse(calls[0]?.body ?? '{}')).toEqual({
+      origin: '21gifts',
+      externalId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+    });
   });
 
   it('logs ocp.place.failed when the map answers an error or the call throws', async () => {

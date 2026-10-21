@@ -1,6 +1,5 @@
 import { expect, test, type APIRequestContext } from '@playwright/test';
-
-const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+import { DEBUG, verifiedPinSession } from './helpers/pin-session';
 
 async function memberSession(
   request: APIRequestContext,
@@ -2777,42 +2776,11 @@ test('Function: debugExternalRoutes — GET /debug/external-pubkeys without bear
   expect((await request.get('/debug/external-pubkeys')).status()).toBe(401);
 });
 
-test('Function: normalizePlace — POST /messages stores a pin and GET /messages/places lists it', async ({
+test('Function: normalizePlace — POST /messages stores a pin and rejects an invalid address', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
-  const adaName = `E2ePin${stamp}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
-    data: {
-      accounts: [
-        {
-          name: adaName,
-          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
-        },
-      ],
-    },
-  });
-  expect(provision.status()).toBe(200);
-
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const ada = accounts.find((row) => row.name === adaName);
-  expect(ada).toBeDefined();
-
-  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
-  expect(agreed.status()).toBe(200);
-  const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
-    headers: DEBUG,
-    data: { role: 'verified' },
-  });
-  expect(promoted.status()).toBe(200);
+  const auth = await verifiedPinSession(request, stamp);
 
   const unauth = await request.get('/messages/places');
   expect(unauth.status()).toBe(401);
@@ -2838,44 +2806,29 @@ test('Function: normalizePlace — POST /messages stores a pin and GET /messages
       (row) => row.id === note.id && row.lat === 47.3 && row.lng === 8.5 && row.label === 'Zürich',
     ),
   ).toBe(true);
-});
 
-async function verifiedPinSession(
-  request: APIRequestContext,
-  stamp: string,
-): Promise<{ authorization: string }> {
-  const adaName = `E2ePin${stamp}`;
-  const provision = await request.post('/debug/accounts', {
-    headers: DEBUG,
+  const invalidAddress = await request.post('/messages', {
+    headers: { ...auth, 'content-type': 'application/json' },
     data: {
-      accounts: [
-        {
-          name: adaName,
-          lightningAddress: `e2e-pin-${stamp}@walletofsatoshi.com`,
+      text: 'pin',
+      place: {
+        lat: 47.3,
+        lng: 8.5,
+        label: 'Zürich',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+          extra: 'not allowed',
         },
-      ],
+      },
     },
   });
-  expect(provision.status()).toBe(200);
-  const listed = await request.get('/debug/accounts', { headers: DEBUG });
-  expect(listed.status()).toBe(200);
-  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
-    .accounts;
-  const ada = accounts.find((row) => row.name === adaName);
-  expect(ada).toBeDefined();
-  const session = await request.post(`/debug/accounts/${ada?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const token = ((await session.json()) as { token: string }).token;
-  const auth = { authorization: `Bearer ${token}` };
-  const agreed = await request.post('/me/rules-agreement', { headers: auth });
-  expect(agreed.status()).toBe(200);
-  const promoted = await request.patch(`/debug/accounts/${ada!.id}`, {
-    headers: DEBUG,
-    data: { role: 'verified' },
-  });
-  expect(promoted.status()).toBe(200);
-  return auth;
-}
+  expect(invalidAddress.status()).toBe(400);
+  expect(await invalidAddress.json()).toEqual({ error: 'Place address is invalid' });
+});
 
 test('Function: placesMatch — a repeated photo with a different pin is 409', async ({
   request,
