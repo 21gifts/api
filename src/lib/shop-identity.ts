@@ -273,7 +273,9 @@ export interface ShopIdentityStore {
    */
   resetPhotosForDelete(claim: ShopOcpClaim): Promise<void>;
   /**
-   * Record a place result and release the lease.
+   * Record a place result and end the claim: the lease becomes null when
+   * the place settles, or the current time (as `release`) when a newer
+   * place change keeps it pending, so the row goes behind never-claimed rows.
    *
    * @param claim - Place claim.
    * @param result - OpenCryptoPay outcome of the request.
@@ -281,7 +283,9 @@ export interface ShopIdentityStore {
    */
   finishPlace(claim: ShopOcpClaim, result: 'put' | 'created' | 'delete' | 'reject'): Promise<void>;
   /**
-   * Clear the photo flag (generation-checked) without a request and release.
+   * Clear the photo flag (generation-checked) without a request and end the
+   * claim: null lease when the set settles, the current time (as `release`)
+   * when a newer photo change keeps it pending.
    *
    * @param claim - Photo claim.
    * @returns Resolves when written.
@@ -295,7 +299,9 @@ export interface ShopIdentityStore {
    */
   clearPhotoHash(claim: ShopOcpClaim): Promise<void>;
   /**
-   * Store the sent hash, clear the flag (generation-checked) and release.
+   * Store the sent hash, clear the flag (generation-checked) and end the
+   * claim: null lease when the set settles, the current time (as `release`)
+   * when a newer photo change keeps it pending.
    *
    * @param claim - Photo claim.
    * @param hash - `ocpPhotoSetHash` of the sent set.
@@ -303,7 +309,10 @@ export interface ShopIdentityStore {
    */
   finishPhotos(claim: ShopOcpClaim, hash: string): Promise<void>;
   /**
-   * Photo 404: null the hash, clear the flag, queue the place when still listed, release.
+   * Photo 404: null the hash, clear the flag (generation-checked), queue the
+   * place when still listed, and end the photo claim: null lease when the set
+   * settles, the current time (as `release`) when a newer photo change keeps
+   * it pending.
    *
    * @param claim - Photo claim.
    * @param listed - Whether the note is still a listed shop.
@@ -865,15 +874,14 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       row.ocpPhotosGeneration += 1;
     }
     if (current) row.ocpPlacePending = false;
-    row.ocpPlaceClaimedUntil = null;
+    row.ocpPlaceClaimedUntil = current ? null : new Date(this.#now());
   }
 
   async clearPhotoWithoutSend(claim: ShopOcpClaim): Promise<void> {
     await this.#sync();
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
-    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosPending = false;
-    row.ocpPhotosClaimedUntil = null;
+    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
   }
 
   clearPhotoHash(claim: ShopOcpClaim): Promise<void> {
@@ -886,11 +894,8 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     await this.#sync();
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
-    if (row.ocpPhotosGeneration === claim.generation) {
-      row.ocpPhotosHash = hash;
-      row.ocpPhotosPending = false;
-    }
-    row.ocpPhotosClaimedUntil = null;
+    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosHash = hash;
+    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
   }
 
   async missingPhotoPlace(claim: ShopOcpClaim, listed: boolean): Promise<void> {
@@ -898,12 +903,11 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const row = this.#claimed('photos', claim);
     if (row === undefined) return;
     row.ocpPhotosHash = null;
-    if (row.ocpPhotosGeneration === claim.generation) row.ocpPhotosPending = false;
+    row.ocpPhotosClaimedUntil = this.#settlePhotos(row, claim);
     if (listed) {
       row.ocpPlacePending = true;
       row.ocpPlaceGeneration += 1;
     }
-    row.ocpPhotosClaimedUntil = null;
   }
 
   async deferPhotos(claim: ShopOcpClaim, listed: boolean): Promise<void> {
@@ -938,6 +942,17 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   #leastRecentlyClaimed(until: (row: ShopIdentityRow) => Date | null): ShopIdentityRow[] {
     const key = (row: ShopIdentityRow): number => until(row)?.getTime() ?? Number.MIN_SAFE_INTEGER;
     return this.#byMessageId().sort((a, b) => key(a) - key(b));
+  }
+
+  /**
+   * End a photo claim: clear the flag while the generation is still the
+   * claim's and return the new lease end, null for a settled set, the
+   * current time when a newer photo change keeps it pending (as `release`).
+   */
+  #settlePhotos(row: ShopIdentityRow, claim: ShopOcpClaim): Date | null {
+    if (row.ocpPhotosGeneration !== claim.generation) return new Date(this.#now());
+    row.ocpPhotosPending = false;
+    return null;
   }
 
   #claimed(lane: ShopOcpLane, claim: ShopOcpClaim): ShopIdentityRow | undefined {
@@ -1401,7 +1416,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
            WHEN $4::boolean OR ($5::boolean AND ocp_place_generation = $3) THEN 1 ELSE 0
          END,
          ocp_place_pending = CASE WHEN ocp_place_generation = $3 THEN false ELSE ocp_place_pending END,
-         ocp_place_claimed_until = NULL
+         ocp_place_claimed_until = CASE WHEN ocp_place_generation = $3 THEN NULL ELSE now() END
        WHERE message_id = $1 AND ocp_place_claim = $2`,
       [claim.messageId, claim.claim, claim.generation, created, put],
     );
@@ -1411,7 +1426,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     await this.#sql.execute(
       `UPDATE shop_identity SET
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = NULL
+         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END
        WHERE message_id = $1 AND ocp_photos_claim = $2`,
       [claim.messageId, claim.claim, claim.generation],
     );
@@ -1430,7 +1445,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `UPDATE shop_identity SET
          ocp_photos_hash = CASE WHEN ocp_photos_generation = $3 THEN $4 ELSE ocp_photos_hash END,
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = NULL
+         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END
        WHERE message_id = $1 AND ocp_photos_claim = $2`,
       [claim.messageId, claim.claim, claim.generation, hash],
     );
@@ -1441,7 +1456,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `UPDATE shop_identity SET
          ocp_photos_hash = NULL,
          ocp_photos_pending = CASE WHEN ocp_photos_generation = $3 THEN false ELSE ocp_photos_pending END,
-         ocp_photos_claimed_until = NULL,
+         ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END,
          ocp_place_pending = CASE WHEN $4::boolean THEN true ELSE ocp_place_pending END,
          ocp_place_generation = ocp_place_generation + CASE WHEN $4::boolean THEN 1 ELSE 0 END
        WHERE message_id = $1 AND ocp_photos_claim = $2`,

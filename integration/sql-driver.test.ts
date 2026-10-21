@@ -950,6 +950,46 @@ describe('shop identity on Postgres', () => {
     }
   });
 
+  test('puts a place or photo set changed during its claim behind the other pending rows', async () => {
+    const ctx = await setup();
+    try {
+      const rows: MessageRow[] = [];
+      for (let index = 0; index < 2; index += 1) {
+        const row = ctx.note({ hasPhoto: true });
+        await ctx.messages.create(row, PNG, undefined, [PNG]);
+        await ctx.shops.ensureListed(row.id, KEK);
+        rows.push(row);
+      }
+      const [first, second] = [...rows].sort((left, right) =>
+        left.id < right.id ? -1 : left.id > right.id ? 1 : 0,
+      ) as [MessageRow, MessageRow];
+      // The place of the first shop changes while it is sent: it stays
+      // pending with its lease ended now, so the never-claimed second goes first.
+      const [place] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(place?.messageId).toBe(first.id);
+      await ctx.messages.updateText(first.id, `${TEXT} Changed.`);
+      await ctx.shops.finishPlace(place!, 'put');
+      expect((await ctx.shops.getByMessageId(first.id))?.ocpPlacePending).toBe(true);
+      const [secondPlace] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(secondPlace?.messageId).toBe(second.id);
+      const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
+      expect(firstAgain?.messageId).toBe(first.id);
+      // Both places settle, which queues both photo sets.
+      await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.finishPlace(firstAgain!, 'put');
+      // The same for the photos of the first shop.
+      const photo = (await ctx.shops.claimPhoto(60_000))!;
+      expect(photo.messageId).toBe(first.id);
+      await ctx.messages.replacePhotos(first.id, [PNG, PNG]);
+      await ctx.shops.finishPhotos(photo, 'hash');
+      expect((await ctx.shops.getByMessageId(first.id))?.ocpPhotosPending).toBe(true);
+      expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(second.id);
+      expect((await ctx.shops.claimPhoto(60_000))?.messageId).toBe(first.id);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
   test('creates no key for an incomplete or changed note', async () => {
     const ctx = await setup();
     try {

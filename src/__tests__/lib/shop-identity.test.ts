@@ -760,7 +760,7 @@ describe('InMemoryShopIdentityStore claims', () => {
   });
 
   it('records each place result', async () => {
-    const { messages, store, claim } = await claimed();
+    const { messages, store, clock, claim } = await claimed();
     await store.finishPlace({ ...claim, claim: 9 }, 'put');
     expect((await store.getByMessageId(ID_A))?.ocpPlacePending).toBe(true);
     await store.finishPlace(claim, 'put');
@@ -777,7 +777,12 @@ describe('InMemoryShopIdentityStore claims', () => {
     await messages.updateText(ID_A, `${TEXT} Change two.`);
     await store.finishPlace(second, 'put');
     row = (await store.getByMessageId(ID_A))!;
-    expect(row).toMatchObject({ ocpPlacePending: true, ocpPhotosGeneration: 1 });
+    // A newer change keeps the place pending: the lease ends now instead of null.
+    expect(row).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceClaimedUntil: new Date(clock.now),
+      ocpPhotosGeneration: 1,
+    });
 
     const third = (await store.claimPlaces(1, 60_000))[0]!;
     await messages.updateText(ID_A, `${TEXT} Change three.`);
@@ -830,7 +835,7 @@ describe('InMemoryShopIdentityStore claims', () => {
   });
 
   it('settles a photo claim by generation', async () => {
-    const { messages, store, claim } = await claimed();
+    const { messages, store, clock, claim } = await claimed();
     await store.finishPlace(claim, 'put');
     let photo = (await store.claimPhoto(60_000))!;
     await store.clearPhotoHash({ ...photo, claim: 9 });
@@ -840,19 +845,27 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
 
     await store.clearPhotoWithoutSend(photo);
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(false);
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      ocpPhotosPending: false,
+      ocpPhotosClaimedUntil: null,
+    });
 
+    // A newer photo change keeps the set pending: every result ends the lease now.
     await messages.replacePhotos(ID_A, [PNG]);
     photo = (await store.claimPhoto(60_000))!;
     await messages.replacePhotos(ID_A, [JPEG]);
     await store.clearPhotoWithoutSend(photo);
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
+    expect(await store.getByMessageId(ID_A)).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosClaimedUntil: new Date(clock.now),
+    });
 
     photo = (await store.claimPhoto(60_000))!;
     await store.finishPhotos(photo, 'hash-1');
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosHash: 'hash-1',
       ocpPhotosPending: false,
+      ocpPhotosClaimedUntil: null,
     });
 
     await messages.replacePhotos(ID_A, [PNG]);
@@ -863,12 +876,14 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosHash: null,
       ocpPhotosPending: true,
+      ocpPhotosClaimedUntil: new Date(clock.now),
     });
 
     photo = (await store.claimPhoto(60_000))!;
     await store.missingPhotoPlace(photo, false);
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosPending: false,
+      ocpPhotosClaimedUntil: null,
       ocpPlacePending: false,
     });
 
@@ -880,8 +895,41 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPhotosHash: null,
       ocpPhotosPending: true,
       ocpPlacePending: true,
-      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaimedUntil: new Date(clock.now),
     });
+  });
+
+  it('puts a photo set changed during its claim behind the other pending sets', async () => {
+    const { messages, store } = setup([shopRow(ID_A, { hasPhoto: true }), shopRow(ID_B)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.finishPlace(claim, 'put');
+    }
+    const photo = (await store.claimPhoto(60_000))!;
+    expect(photo.messageId).toBe(ID_A);
+    // The shop changes its photos while the set is sent.
+    await messages.replacePhotos(ID_A, [JPEG]);
+    await store.finishPhotos(photo, 'hash');
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
+    // B, never claimed, goes first; a null lease would give A the lane again.
+    expect((await store.claimPhoto(60_000))?.messageId).toBe(ID_B);
+    expect((await store.claimPhoto(60_000))?.messageId).toBe(ID_A);
+  });
+
+  it('puts a place changed during its claim behind the other pending places', async () => {
+    const { messages, store } = setup([shopRow(ID_A), shopRow(ID_B)]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    await store.ensureListed(ID_B, KEK, keygenFrom(3));
+    const [place] = await store.claimPlaces(1, 60_000);
+    expect(place?.messageId).toBe(ID_A);
+    // The note changes while the place is sent.
+    await messages.updateText(ID_A, `${TEXT} Changed.`);
+    await store.finishPlace(place!, 'put');
+    expect((await store.getByMessageId(ID_A))?.ocpPlacePending).toBe(true);
+    // B, never claimed, goes first; a null lease would give A the batch slot again.
+    expect((await store.claimPlaces(1, 60_000)).map((claim) => claim.messageId)).toEqual([ID_B]);
+    expect((await store.claimPlaces(1, 60_000)).map((claim) => claim.messageId)).toEqual([ID_A]);
   });
 
   it('defers photos: keeps the photo state and holds the queued place until the photo lease ends', async () => {
@@ -1242,6 +1290,15 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[0]?.text).toContain('ocp_place_claimed_until = now()');
     expect(calls[1]?.text).toContain('ocp_photos_claimed_until = now()');
     expect(calls[2]?.text).toContain('ocp_place_claim = $2');
+    // A claim-ending write nulls the lease only when the row settles, else ends it now.
+    expect(calls[3]?.text).toContain(
+      'ocp_place_claimed_until = CASE WHEN ocp_place_generation = $3 THEN NULL ELSE now() END',
+    );
+    for (const call of [calls[6], calls[8], calls[9]]) {
+      expect(call?.text).toContain(
+        'ocp_photos_claimed_until = CASE WHEN ocp_photos_generation = $3 THEN NULL ELSE now() END',
+      );
+    }
     expect(calls[3]?.params).toEqual([ID_A, 6, 4, false, true]);
     expect(calls[4]?.params).toEqual([ID_A, 6, 4, true, false]);
     expect(calls[5]?.params).toEqual([ID_A, 6, 4, false, false]);
