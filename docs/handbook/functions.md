@@ -3530,3 +3530,17 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 - **Inputs:** A SQL client whose `query` returns `{ rows }`, and a Lightning address port.
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Adding a habit inserts the row and its first revision in one statement. Editing the wording updates the owned row and upserts that period's revision in one statement, matching the habit id and the owner together. A missing or unowned habit writes nothing. A failed statement leaves both unchanged. A comment id Postgres rejects as uuid text is missing, not an error. Revision `name` and `description` use the same `char_length` checks as the habit row.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: installPostgresConnectionClosedGuard
+
+- **Purpose:** Keep the process alive when Bun SQL reports `PostgresError` with code `ERR_POSTGRES_CONNECTION_CLOSED` on `uncaughtException` or `unhandledRejection`. That is the driver error for a closed Postgres connection. The event `sql.connection.closed` is written through `logEvent` with `errorLogFields` (name and code only, never the message). Any other uncaught exception still exits with status 1. Any other unhandled rejection is not exited by this listener. A second call does nothing. The handler does not throw.
+- **Inputs:** None.
+- **Returns / side effects:** void. Registers the two process listeners the first time. Does not open a connection and does not retry a write.
+- **Used by:** Process boot in `src/index.ts`, before the first SQL call.
+
+## Function: retryWhilePostgresConnectionClosed
+
+- **Purpose:** Call `open` until it resolves. When `open` rejects with `PostgresError` / `ERR_POSTGRES_CONNECTION_CLOSED`, log `sql.connection.closed` and wait `delayMs` via `wait`, then try again. Any other rejection propagates, so a failed write is not repeated. `sqlState` does not match this driver code; this function does not classify SQLSTATE `23505`.
+- **Inputs:** `open` returns the value to keep. `wait` receives the delay in milliseconds. `delayMs` is that delay.
+- **Returns / side effects:** The resolved value of `open`. One `sql.connection.closed` line per closed attempt. No connection of its own.
+- **Used by:** Process boot in `src/index.ts` when `DATABASE_URL` is set. A blank URL keeps the in-memory boot and does not call this function.
