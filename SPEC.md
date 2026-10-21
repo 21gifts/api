@@ -1445,13 +1445,14 @@ or invalid bearer gets the same answer. Registered after `/shops/activity`,
 so `activity` keeps its own handler. The route takes any single path segment
 and validates it inside the handler.
 
-| Request                                  | Response                                                                  |
-| ---------------------------------------- | ------------------------------------------------------------------------- |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                |
-| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                          |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`       |
-| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                        |
-| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` |
+| Request                                  | Response                                                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                             |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                       |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                    |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                     |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                              |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"` |
 
 `Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
 `Cache-Control: no-store` on 503. The 410 body carries no name.
@@ -1461,7 +1462,9 @@ and validates it inside the handler.
 `name` is the pin label, `description` the note text without the
 `#21GiftsShop` token. `lat` and `lng` are as in `GET /messages/places`.
 `address` is always present (a listed shop is complete). `photos` are the
-note's photos in note order (at most 10): photo 0 is
+note's photos in note order (at most 10), from one read of the whole set
+(`MessageStore.getPhotoSet`), never photo 0 of one set with the extras of
+another: photo 0 is
 `/messages/:id/photo.<ext>` and extra still n ≥ 1 is
 `/messages/:id/photo/<n>.<ext>`, absolute from the public API base or the
 path alone when no public origin is set. `width` and `height` come from the
@@ -1470,7 +1473,11 @@ for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
 cannot be read. `payUsername` is the till account's username when it has a
 username and a non-empty Lightning address, otherwise `null`. `nip05` is the
 shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
-`PUBLIC_BASE_URL` gives no NIP-05 domain. `createdAt` is the note's ISO-8601
+`PUBLIC_BASE_URL` gives no NIP-05 domain. The allocation's entry must carry
+the name of the note this request read; when it is missing or carries
+another name (renamed or unlisted in between), the route reads the note again
+and allocates once more (a note no longer listed is then 410), and when it
+still does not match it answers the 503 with `reason: "nip05_stale"`. `createdAt` is the note's ISO-8601
 creation time.
 
 A **listed shop** is a live top-level note with the `#21GiftsShop` token, a

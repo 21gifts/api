@@ -104,7 +104,8 @@ export interface ShopIdentityStore {
    * Create the key of a listed shop note once, or return the existing one.
    * A new key queues the place push. An existing key gets its
    * `profile_name` rewritten while the note is listed and still matches the
-   * snapshot this call read.
+   * snapshot this call read (the rule of {@link renameIfListed}), so a call
+   * with an older snapshot than a stored rename changes nothing.
    *
    * @param messageId - Shop note id.
    * @param kek - Key-encryption key for the new secret.
@@ -527,8 +528,9 @@ function placeFingerprint(note: MessageRow | undefined): string {
 }
 
 async function photoFingerprint(messages: MessageStore, messageId: string): Promise<string> {
-  const first = await messages.getPhoto(messageId);
-  const extras = await messages.listExtraPhotos(messageId);
+  // One read of the whole set: two reads could mix photo 0 of one set with
+  // the extras of another.
+  const { photo: first, extras } = await messages.getPhotoSet(messageId);
   const hash = createHash('sha256');
   for (const photo of first === null ? extras : [first, ...extras]) {
     hash.update(`${photo.contentType}:${String(photo.bytes.byteLength)}:`);
@@ -593,7 +595,11 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const name = listedShopName(note);
     const existing = this.#rows.get(messageId);
     if (existing !== undefined) {
-      if (name !== null) existing.profileName = name;
+      // The same conditional rename as `renameIfListed` (and the locked
+      // rename of the Postgres adapter): a snapshot older than a stored
+      // rename changes nothing, so it cannot put an older name back.
+      // `existing` is the stored row object, so the copy shows what is stored.
+      if (note !== undefined) await this.renameIfListed(note);
       return copyIdentity(existing);
     }
     if (name === null) return undefined;

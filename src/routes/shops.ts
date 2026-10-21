@@ -63,11 +63,26 @@ function photoRow(
 }
 
 /**
+ * Reads of the note before a NIP-05 entry that does not carry the shop's
+ * name ends in 503: the first read, and one re-read.
+ */
+const NOTE_READS = 2;
+
+/**
  * Build the `/shops` route group with `GET /:npub`.
  *
  * 200 `{ shop }` for a listed shop's npub, 301 to `/shops/{npub}` for the
  * hex form of a known key, 410 for a known key whose note is not listed,
  * 404 for anything else, 503 on a store failure (`shops.detail.failed`).
+ *
+ * The photos come from one read of the whole set
+ * ({@link MessageStore.getPhotoSet}). While the NIP-05 domain is set, the
+ * allocation's entry must carry the name of the note this request read; a
+ * missing entry or another name (renamed or unlisted between the two reads)
+ * re-reads the note and allocates once more, and when that still does not
+ * match the answer is 503 (`shops.detail.failed` with
+ * `reason: 'nip05_stale'`), so a 200 never pairs a name with another name's
+ * NIP-05 or a listed shop with a null NIP-05.
  *
  * @param deps - Stores and env.
  * @returns Hono sub-app mounted at `/shops`.
@@ -85,45 +100,52 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
       if (segment !== npub) {
         return c.body(null, 301, { ...PUBLIC_CACHE, Location: `/shops/${npub}` });
       }
-      const note = await deps.messages.getById(identity.messageId);
-      const shop = listedShop(note);
-      if (note === undefined || shop === null) {
-        return c.json({ error: 'Shop is no longer listed', npub }, 410, PUBLIC_CACHE);
-      }
-      const first = await deps.messages.getPhoto(note.id);
-      const extras = await deps.messages.listExtraPhotos(note.id);
-      const apiBase = resolvePublicApiBase(env);
-      const photos = (first === null ? [] : [first, ...extras])
-        .slice(0, 10)
-        .map((photo, index) => photoRow(apiBase, note.id, index, photo));
-      const till = await deps.authStore.getAccount(shop.tillAccountId);
-      const username = till?.username?.trim() ?? '';
-      const address = till?.lightningAddress?.trim() ?? '';
       const domain = nip05Domain(env);
-      let nip05: string | null = null;
-      if (domain !== null) {
-        const entry = (
-          await listShopNip05Entries(deps.authStore, deps.identities, deps.messages)
-        ).find((row) => row.messageId === note.id);
-        nip05 = entry === undefined ? null : `${entry.local}@${domain}`;
-      }
-      return c.json(
-        {
-          shop: {
-            npub,
-            messageId: note.id,
-            name: shop.name,
-            description: shopDescription(note.text),
-            place: shop.place,
-            photos,
-            payUsername: username !== '' && address !== '' ? username : null,
-            nip05,
-            createdAt: note.createdAt.toISOString(),
+      for (let read = 1; ; read += 1) {
+        const note = await deps.messages.getById(identity.messageId);
+        const shop = listedShop(note);
+        if (note === undefined || shop === null) {
+          return c.json({ error: 'Shop is no longer listed', npub }, 410, PUBLIC_CACHE);
+        }
+        let nip05: string | null = null;
+        if (domain !== null) {
+          const entry = (
+            await listShopNip05Entries(deps.authStore, deps.identities, deps.messages)
+          ).find((row) => row.messageId === note.id);
+          if (entry === undefined || entry.name !== shop.name) {
+            // Renamed or unlisted between the note read and the allocation.
+            if (read < NOTE_READS) continue;
+            logEvent('shops.detail.failed', { reason: 'nip05_stale' });
+            return c.json({ error: 'Shops are unavailable' }, 503, NO_STORE);
+          }
+          nip05 = `${entry.local}@${domain}`;
+        }
+        const set = await deps.messages.getPhotoSet(note.id);
+        const apiBase = resolvePublicApiBase(env);
+        const photos = (set.photo === null ? [] : [set.photo, ...set.extras])
+          .slice(0, 10)
+          .map((photo, index) => photoRow(apiBase, note.id, index, photo));
+        const till = await deps.authStore.getAccount(shop.tillAccountId);
+        const username = till?.username?.trim() ?? '';
+        const address = till?.lightningAddress?.trim() ?? '';
+        return c.json(
+          {
+            shop: {
+              npub,
+              messageId: note.id,
+              name: shop.name,
+              description: shopDescription(note.text),
+              place: shop.place,
+              photos,
+              payUsername: username !== '' && address !== '' ? username : null,
+              nip05,
+              createdAt: note.createdAt.toISOString(),
+            },
           },
-        },
-        200,
-        PUBLIC_CACHE,
-      );
+          200,
+          PUBLIC_CACHE,
+        );
+      }
     } catch {
       logEvent('shops.detail.failed');
       return c.json({ error: 'Shops are unavailable' }, 503, NO_STORE);

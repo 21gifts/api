@@ -75,7 +75,10 @@ builds on that change.
   - For an existing key, `ensureListed` rewrites `profile_name` under the
     same lock and the same unchanged-columns condition (`UPDATE … FROM` the
     locked note), so a request that read the note before a newer rename
-    committed changes nothing and cannot put the older name back.
+    committed changes nothing and cannot put the older name back. The
+    in-memory adapter applies the same rule as `renameIfListed`: it writes
+    the name only while the note read again still shows the snapshot, and
+    returns the stored row.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, at most 20
@@ -360,18 +363,35 @@ after `GET /shops/activity`, so `activity` keeps its own handler. It takes any
 single path segment and validates it inside the handler, so every other value
 gets the 404 body and headers below.
 
-| Request                                  | Response                                                                  |
-| ---------------------------------------- | ------------------------------------------------------------------------- |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                |
-| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`            |
-| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                        |
-| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` |
+| Request                                  | Response                                                                                               |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                             |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                                             |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`                                         |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                     |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                              |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"` |
 
 `Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
 `Cache-Control: no-store` on 503.
 
 The 410 body carries no name, so a hidden note's name is not served.
+
+One answer, one state of the note:
+
+- The photos come from one read of the whole set
+  (`MessageStore.getPhotoSet`, one `UNION ALL` statement on Postgres).
+  `replacePhotos` swaps photo 0 and the extras in one transaction, so
+  separate reads of photo 0 and the extras could serve photo 0 of one set
+  with the extras of another for 60 s.
+- While `nip05Domain` is set, the `listShopNip05Entries` entry for the note
+  must carry the name of the note read by this request. A missing entry or
+  an entry with another name (the shop was renamed or unlisted between the
+  two reads) makes the route read the note again and allocate once more:
+  a note that is no longer listed then answers 410. When the entry still
+  does not match, the answer is the 503 above with
+  `reason: "nip05_stale"`, never a 200 that pairs a name with another
+  name's NIP-05 or a listed shop with a `null` NIP-05.
 
 Error texts: the 404 reuses `Not found`, as `GET /pay/:username` does. The 503
 gets its own `Shops are unavailable`, following the per-route rule that each
@@ -578,7 +598,8 @@ Rules for every claim:
   trigger covers every write path, including the cascade hide, without
   changing `blockPubkeyAndHideRows`. The in-memory adapter has no
   transactions and derives the same queue from a fingerprint of each note
-  before every call that syncs its queue.
+  before every call that syncs its queue; the photo fingerprint comes from
+  one read of the whole set (`MessageStore.getPhotoSet`).
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
@@ -669,7 +690,9 @@ Rules for every claim:
 - **Sending.**
   - A shop that is not listed any more gets its flag cleared and nothing is
     sent.
-  - It computes the SHA-256 over the photo set. If it equals
+  - It computes the SHA-256 over the photo set, read in one statement
+    (`MessageStore.getPhotoSet`), so the hash and the request never mix
+    photo 0 of one set with the extras of another. If it equals
     `ocp_photos_hash`, it clears the flag and sends nothing.
   - Otherwise it first reserves the revision (see above). A refused
     reservation leaves `ocp_photos_hash` as it was, so an unchanged set is

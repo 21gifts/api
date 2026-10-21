@@ -19,7 +19,7 @@ import {
 import { isListedShop } from '@/lib/shop-place';
 import { runOcpPhotoOutboxPass, runOcpPlaceOutboxPass } from '@/lib/ocp-outbox';
 import { signEventForShop } from '@/lib/nostr/sign';
-import type { MessageRow } from '@/lib/message';
+import type { ForumPhoto, MessageRow } from '@/lib/message';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -1019,7 +1019,7 @@ describe('shop identity on Postgres', () => {
 
   /**
    * A listed shop with a confirmed place and pending photos, and outbox deps
-   * whose `listExtraPhotos` runs `between` once, after the photo pass
+   * whose `getPhotoSet` runs `between` once, after the photo pass
    * claimed the row and read the photos and before it reserves a revision.
    */
   async function photoRace(
@@ -1037,14 +1037,14 @@ describe('shop identity on Postgres', () => {
     let hooked = false;
     const messages = new Proxy(ctx.messages, {
       get(target, key) {
-        if (key === 'listExtraPhotos') {
+        if (key === 'getPhotoSet') {
           return async (id: string) => {
-            const extras = await target.listExtraPhotos(id);
+            const set = await target.getPhotoSet(id);
             if (!hooked) {
               hooked = true;
               await between(deps, id);
             }
-            return extras;
+            return set;
           };
         }
         const value: unknown = Reflect.get(target, key, target);
@@ -1156,6 +1156,51 @@ describe('shop identity on Postgres', () => {
         extras: [],
       });
       expect(await ctx.messages.getPhotoContentTypes(crypto.randomUUID())).toEqual({
+        photo: null,
+        extras: [],
+      });
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('reads the whole photo set of a note in one statement, never a mixed set', async () => {
+    const ctx = await setup();
+    try {
+      const row = ctx.note({ hasPhoto: true });
+      const jpeg = { contentType: 'image/jpeg' as const, bytes: new Uint8Array([4, 5]) };
+      const webp = { contentType: 'image/webp' as const, bytes: new Uint8Array([6]) };
+      const first = [PNG, jpeg, webp];
+      const second = [webp, PNG];
+      await ctx.messages.create(row, PNG, undefined, [jpeg, webp]);
+      // The same stills as the two separate reads.
+      expect(await ctx.messages.getPhotoSet(row.id)).toEqual({
+        photo: await ctx.messages.getPhoto(row.id),
+        extras: await ctx.messages.listExtraPhotos(row.id),
+      });
+      // Plain arrays, so Bun's Buffer and a Uint8Array compare by content.
+      const plainStills = (photos: readonly ForumPhoto[]): unknown =>
+        photos.map((photo) => ({ contentType: photo.contentType, bytes: [...photo.bytes] }));
+      const asList = (set: Awaited<ReturnType<PostgresMessageStore['getPhotoSet']>>): unknown =>
+        plainStills(set.photo === null ? [] : [set.photo, ...set.extras]);
+      // replacePhotos swaps photo 0 and the extras in one transaction: every
+      // read during the swaps is one whole set.
+      for (let round = 0; round < 10; round += 1) {
+        const reads = await Promise.all([
+          ctx.messages.replacePhotos(row.id, round % 2 === 0 ? second : first),
+          ctx.messages.getPhotoSet(row.id),
+          ctx.messages.getPhotoSet(row.id),
+        ]);
+        for (const set of reads.slice(1) as Array<
+          Awaited<ReturnType<PostgresMessageStore['getPhotoSet']>>
+        >) {
+          expect([plainStills(first), plainStills(second)]).toContainEqual(asList(set));
+        }
+      }
+      const plain = ctx.note();
+      await ctx.messages.create(plain);
+      expect(await ctx.messages.getPhotoSet(plain.id)).toEqual({ photo: null, extras: [] });
+      expect(await ctx.messages.getPhotoSet(crypto.randomUUID())).toEqual({
         photo: null,
         extras: [],
       });

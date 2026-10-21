@@ -203,30 +203,144 @@ describe('GET /shops/:npub', () => {
     expect((await app.request(`/shops/${npub}`)).status).toBe(410);
   });
 
-  it('answers a null NIP-05 when the shop stops being listed during the request', async () => {
-    const { identities, npub, messages, auth } = await setup();
-    // The route reads the listed note; the NIP-05 allocation's bulk read
-    // after it already sees the note hidden.
-    const flaky = {
-      getById: (id: string) => messages.getById(id),
-      getByIds: async (ids: readonly string[]) =>
-        (await messages.getByIds(ids)).map((row) => ({ ...row, deletedAt: new Date(0) })),
-      getPhoto: (id: string) => messages.getPhoto(id),
-      listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
+  /**
+   * Route over `messages` whose bulk note read (the NIP-05 allocation) runs
+   * `beforeAllocation` with the 1-based call number first, and counts the
+   * route's note reads.
+   */
+  function racingApp(
+    ctx: Awaited<ReturnType<typeof setup>>,
+    beforeAllocation: (call: number) => Promise<void>,
+    hideInAllocation = false,
+  ): { app: Hono; noteReads: () => number } {
+    let allocations = 0;
+    let noteReads = 0;
+    const racing = {
+      getById: (id: string) => {
+        noteReads += 1;
+        return ctx.messages.getById(id);
+      },
+      getByIds: async (ids: readonly string[]) => {
+        allocations += 1;
+        await beforeAllocation(allocations);
+        const rows = await ctx.messages.getByIds(ids);
+        return hideInAllocation ? rows.map((row) => ({ ...row, deletedAt: new Date(0) })) : rows;
+      },
+      getPhotoSet: (id: string) => ctx.messages.getPhotoSet(id),
     } as unknown as MessageStore;
     const app = new Hono().route(
       '/shops',
       shopRoutes({
-        authStore: auth,
-        messages: flaky,
-        identities,
+        authStore: ctx.auth,
+        messages: racing,
+        identities: ctx.identities,
         env: { PUBLIC_BASE_URL: 'https://21.gifts' },
       }),
     );
-    const body = (await (await app.request(`/shops/${npub}`)).json()) as {
-      shop: { nip05: unknown };
+    return { app, noteReads: () => noteReads };
+  }
+
+  async function rename(ctx: Awaited<ReturnType<typeof setup>>, label: string): Promise<void> {
+    await ctx.messages.setPlace(ID, { ...note().place!, label });
+  }
+
+  it('re-reads the note once when the shop is renamed between the note read and the NIP-05 allocation', async () => {
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(ctx, async (call) => {
+      if (call === 1) await rename(ctx, 'Roastery');
+    });
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      shop: { name: unknown; nip05: unknown; place: { label: unknown } };
     };
-    expect(body.shop.nip05).toBeNull();
+    // Never the old name with the new name's local part.
+    expect(body.shop).toMatchObject({
+      name: 'Roastery',
+      nip05: 'roastery@21.gifts',
+      place: { label: 'Roastery' },
+    });
+    expect(noteReads()).toBe(2);
+  });
+
+  it('answers 503 when the name still changes between the re-read and the allocation', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(ctx, (call) => rename(ctx, `Roastery ${String(call)}`));
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: 'Shops are unavailable' });
+    expect(noteReads()).toBe(2);
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          String(call[0]).includes('"event":"shops.detail.failed"') &&
+          String(call[0]).includes('"reason":"nip05_stale"'),
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('answers 410 when the shop is unlisted between the note read and the NIP-05 allocation', async () => {
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(ctx, async (call) => {
+      if (call === 1) await ctx.messages.markDeleted(ID, new Date(0), 'staff');
+    });
+    const response = await app.request(`/shops/${ctx.npub}`);
+    // The re-read sees the hidden note: 410, never a listed shop with a null NIP-05.
+    expect(response.status).toBe(410);
+    expect(noteReads()).toBe(2);
+  });
+
+  it('answers 503 when every allocation misses a shop that its note read still lists', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(ctx, () => Promise.resolve(), true);
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(503);
+    expect(noteReads()).toBe(2);
+    warn.mockRestore();
+  });
+
+  it('serves one whole photo set when the photos are swapped between the former two reads', async () => {
+    const before = [
+      { contentType: 'image/png' as const, bytes: png(320, 200) },
+      { contentType: 'image/png' as const, bytes: png(10, 20) },
+    ];
+    const after = [
+      { contentType: 'image/png' as const, bytes: png(640, 480) },
+      { contentType: 'image/png' as const, bytes: png(30, 40) },
+      { contentType: 'image/png' as const, bytes: png(50, 60) },
+    ];
+    const ctx = await setup({ photos: before });
+    // Photo 0 and the extras used to be two reads; a swap after the first
+    // gave photo 0 of one set and the extras of the other.
+    const swapping = {
+      getById: (id: string) => ctx.messages.getById(id),
+      getPhoto: async (id: string) => {
+        const first = await ctx.messages.getPhoto(id);
+        await ctx.messages.replacePhotos(id, after);
+        return first;
+      },
+      listExtraPhotos: (id: string) => ctx.messages.listExtraPhotos(id),
+      getPhotoSet: async (id: string) => {
+        const set = await ctx.messages.getPhotoSet(id);
+        await ctx.messages.replacePhotos(id, after);
+        return set;
+      },
+    } as unknown as MessageStore;
+    const app = new Hono().route(
+      '/shops',
+      shopRoutes({ authStore: ctx.auth, messages: swapping, identities: ctx.identities, env: {} }),
+    );
+    const body = (await (await app.request(`/shops/${ctx.npub}`)).json()) as {
+      shop: { photos: Array<{ width: unknown; height: unknown }> };
+    };
+    expect(body.shop.photos.map((photo) => [photo.width, photo.height])).toEqual([
+      [320, 200],
+      [10, 20],
+    ]);
   });
 
   it('answers 404 for every other segment', async () => {

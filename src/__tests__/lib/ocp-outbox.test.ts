@@ -611,8 +611,7 @@ describe('runOcpPhotoOutboxPass', () => {
         const row = await listed.getById(id);
         return reads === 1 ? row : undefined;
       },
-      getPhoto: (id: string) => listed.getPhoto(id),
-      listExtraPhotos: (id: string) => listed.listExtraPhotos(id),
+      getPhotoSet: (id: string) => listed.getPhotoSet(id),
     } as unknown as MessageStore;
     for (const [messages, expected] of [
       [listed, true],
@@ -803,7 +802,7 @@ describe('OpenCryptoPay main without the photo route', () => {
 describe('a photo pass that read the photos before a place change', () => {
   /**
    * A listed shop whose place is confirmed and whose photos are pending, and
-   * outbox deps whose `listExtraPhotos` runs `between` once, right after a
+   * outbox deps whose `getPhotoSet` runs `between` once, right after a
    * photo pass claimed and read the photos and before it reserves a revision:
    * in the photo pass after the first `passesBefore` ones.
    */
@@ -823,11 +822,11 @@ describe('a photo pass that read the photos before a place change', () => {
     let reads = 0;
     const hookedMessages = new Proxy(messages, {
       get(target, key) {
-        if (key === 'listExtraPhotos') {
+        if (key === 'getPhotoSet') {
           return async (id: string) => {
-            const extras = await target.listExtraPhotos(id);
+            const set = await target.getPhotoSet(id);
             if (reads++ === passesBefore) await between(outbox, messages);
-            return extras;
+            return set;
           };
         }
         const value: unknown = Reflect.get(target, key, target);

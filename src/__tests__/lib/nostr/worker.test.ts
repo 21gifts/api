@@ -8093,6 +8093,10 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
           if (id === uuid(1)) byteReads.push('listExtraPhotos');
           return ctx.messages.listExtraPhotos(id);
         },
+        getPhotoSet: (id) => {
+          if (id === uuid(1)) byteReads.push('getPhotoSet');
+          return ctx.messages.getPhotoSet(id);
+        },
         getPhotoContentTypes: (id) => {
           typeReads.push(id);
           return ctx.messages.getPhotoContentTypes(id);

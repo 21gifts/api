@@ -3104,6 +3104,26 @@ describe('InMemoryMessageStore', () => {
     expect(await store.getPhotoContentTypes('missing')).toEqual({ photo: null, extras: [] });
   });
 
+  it('getPhotoSet copies photo 0 and the extras in one step', async () => {
+    const store = new InMemoryMessageStore([{ ...EARLY, hasPhoto: true }]);
+    expect(await store.getPhotoSet('a')).toEqual({ photo: null, extras: [] });
+    const png: ForumPhoto = { contentType: 'image/png', bytes: new Uint8Array([1]) };
+    const webp: ForumPhoto = { contentType: 'image/webp', bytes: new Uint8Array([2]) };
+    await store.replacePhotos('a', [png, JPEG2, webp]);
+    // The set is taken when the call starts: a swap before the result is
+    // awaited does not mix photo 0 of one set with the extras of another.
+    const pending = store.getPhotoSet('a');
+    await store.replacePhotos('a', [webp]);
+    const set = await pending;
+    expect(set).toEqual({ photo: png, extras: [JPEG2, webp] });
+    const current = await store.getPhotoSet('a');
+    expect(current).toEqual({ photo: webp, extras: [] });
+    // Copies: changing the result does not change the store.
+    current.photo!.bytes[0] = 9;
+    expect((await store.getPhotoSet('a')).photo?.bytes).toEqual(new Uint8Array([2]));
+    expect(await store.getPhotoSet('missing')).toEqual({ photo: null, extras: [] });
+  });
+
   it('create keeps a top-level shop account and clears one on a reply', async () => {
     const store = new InMemoryMessageStore();
     const account = { id: 'shop-acc', username: 'luna', name: 'Luna' };
@@ -7164,6 +7184,45 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.params).toEqual(['m1']);
     sql.nextRows = [{ idx: 0, photo_content_type: 'image/gif' }];
     expect(await store.getPhotoContentTypes('m1')).toEqual({ photo: null, extras: [] });
+  });
+
+  it('getPhotoSet reads photo 0 and the extras with their bytes in one statement', async () => {
+    const sql = new MockSql();
+    const png: ForumPhoto = { contentType: 'image/png', bytes: new Uint8Array([1, 2]) };
+    sql.nextRows = [
+      { idx: 0, photo: png.bytes, photo_content_type: 'image/png', photo_taken_at: null },
+      {
+        idx: '1',
+        photo: [0xff, 0xd8, 0xff, 0x00],
+        photo_content_type: 'image/jpeg',
+        photo_taken_at: '2026-09-22T11:41:00',
+      },
+      { idx: 2, photo: JPEG2.bytes, photo_content_type: 'image/gif' },
+      { idx: 3, photo: new Uint8Array([3]), photo_content_type: 'image/webp' },
+    ];
+    const store = new PostgresMessageStore(sql);
+    expect(await store.getPhotoSet('m1')).toEqual({
+      photo: png,
+      extras: [
+        { ...JPEG2, takenAt: '2026-09-22T11:41:00' },
+        { contentType: 'image/webp', bytes: new Uint8Array([3]) },
+      ],
+    });
+    expect(sql.queries).toHaveLength(1);
+    const text = sql.queries[0]!.text;
+    expect(text).toMatch(
+      /SELECT 0 AS idx, photo, photo_content_type, photo_taken_at FROM message\s+WHERE id = \$1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL/,
+    );
+    expect(text).toMatch(
+      /UNION ALL\s+SELECT idx, photo, photo_content_type, photo_taken_at FROM message_extra_photo\s+WHERE message_id = \$1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL/,
+    );
+    expect(text).toMatch(/ORDER BY idx ASC/);
+    expect(sql.queries[0]?.params).toEqual(['m1']);
+    // An unrecognized type for photo 0 is left out, like getPhoto does.
+    sql.nextRows = [{ idx: 0, photo: png.bytes, photo_content_type: 'image/gif' }];
+    expect(await store.getPhotoSet('m1')).toEqual({ photo: null, extras: [] });
+    sql.nextRows = [];
+    expect(await store.getPhotoSet('m1')).toEqual({ photo: null, extras: [] });
   });
 
   it('getExtraPhoto returns null for an unrecognized content type', async () => {

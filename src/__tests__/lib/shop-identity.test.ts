@@ -261,13 +261,54 @@ describe('InMemoryShopIdentityStore key creation', () => {
     expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
   });
 
+  it('does not put back an older name when a newer rename is stored during the call', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    let reads = 0;
+    let armed = false;
+    let gone = false;
+    let reached!: () => void;
+    let release!: () => void;
+    const paused = new Promise<void>((resolve) => (reached = resolve));
+    const gate = new Promise<void>((resolve) => (release = resolve));
+    const wrapped = {
+      getById: async (id: string) => {
+        if (gone) return undefined;
+        const row = await messages.getById(id);
+        // Read 1 of an armed call is the queue sync, read 2 its snapshot.
+        if (armed && ++reads === 2) {
+          reached();
+          await gate;
+        }
+        return row;
+      },
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    armed = true;
+    // This call holds the snapshot with the old name 'Coffee Lab'.
+    const older = store.ensureListed(ID_A, KEK);
+    await paused;
+    armed = false;
+    await messages.setPlace(ID_A, { ...shopRow(ID_A).place!, label: 'Roastery' });
+    await store.renameIfListed((await messages.getById(ID_A))!);
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+    release();
+    expect((await older)?.profileName).toBe('Roastery');
+    expect((await store.getByMessageId(ID_A))?.profileName).toBe('Roastery');
+    // A current snapshot still renames, and a gone note keeps the stored name.
+    await messages.setPlace(ID_A, { ...shopRow(ID_A).place!, label: 'Bakery' });
+    expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Bakery');
+    gone = true;
+    expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Bakery');
+  });
+
   it('does not rename when the note is gone', async () => {
     const messages = new InMemoryMessageStore([shopRow(ID_A)]);
     let gone = false;
     const wrapped = {
       getById: (id: string) => (gone ? Promise.resolve(undefined) : messages.getById(id)),
-      getPhoto: (id: string) => messages.getPhoto(id),
-      listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
     } as unknown as MessageStore;
     const store = new InMemoryShopIdentityStore(wrapped);
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
@@ -282,8 +323,7 @@ describe('InMemoryShopIdentityStore key creation', () => {
     const messages = new InMemoryMessageStore([shopRow(ID_A)]);
     const wrapped = {
       getById: (id: string) => messages.getById(id),
-      getPhoto: (id: string) => messages.getPhoto(id),
-      listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
       listLiveAssignedShops: () => messages.listLiveAssignedShops(),
     } as unknown as MessageStore;
     const store = new InMemoryShopIdentityStore(wrapped);
@@ -433,8 +473,7 @@ describe('InMemoryShopIdentityStore queueing', () => {
     let gone = false;
     const wrapped = {
       getById: (id: string) => (gone ? Promise.resolve(undefined) : messages.getById(id)),
-      getPhoto: (id: string) => messages.getPhoto(id),
-      listExtraPhotos: (id: string) => messages.listExtraPhotos(id),
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
     } as unknown as MessageStore;
     const store = new InMemoryShopIdentityStore(wrapped);
     await store.ensureListed(ID_A, KEK, keygenFrom(2));

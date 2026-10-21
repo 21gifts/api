@@ -685,6 +685,21 @@ export interface MessageStore {
   ): Promise<{ photo: ForumPhotoContentType | null; extras: ForumPhotoContentType[] }>;
 
   /**
+   * Photo 0 and the extra stills of a message id with their bytes, as one
+   * consistent set: what {@link MessageStore.getPhoto} and
+   * {@link MessageStore.listExtraPhotos} would return, read at once.
+   * {@link MessageStore.replacePhotos} swaps photo 0 and the extras together,
+   * so two separate reads can return photo 0 of one set and the extras of
+   * another; this read cannot. `GET /shops/:npub`, the OpenCryptoPay photo
+   * push and the in-memory shop photo fingerprint use it.
+   *
+   * @param id - Message id.
+   * @returns `photo` for photo 0 (`null` when missing / no photo) and `extras`
+   *   ordered by index ascending (empty when none); copies.
+   */
+  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }>;
+
+  /**
    * Delete a note, its direct replies, invoice attempts, zap receipts, photos,
    * and on-disk videos. A credit note that has received sats is never removed.
    *
@@ -3172,6 +3187,21 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve({
       photo: this.#photos.get(id)?.contentType ?? null,
       extras: (this.#extraPhotos.get(id) ?? []).map((photo) => photo.contentType),
+    });
+  }
+
+  /**
+   * Photo 0 and the extra stills for `id`, copied in one synchronous step,
+   * so no other call can swap the set between the two.
+   *
+   * @param id - Message id.
+   * @returns `photo` copy (`null` when none) and `extras` copies in index order.
+   */
+  getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }> {
+    const photo = this.#photos.get(id);
+    return Promise.resolve({
+      photo: photo === undefined ? null : copyPhoto(photo),
+      extras: (this.#extraPhotos.get(id) ?? []).map(copyPhoto),
     });
   }
 
@@ -7391,6 +7421,56 @@ export class PostgresMessageStore implements MessageStore {
         photo = contentType;
       } else {
         extras.push(contentType);
+      }
+    }
+    return { photo, extras };
+  }
+
+  /**
+   * Photo 0 and the extra stills of a message id with their bytes in one
+   * `UNION ALL` statement ordered by index, so the set comes from one
+   * snapshot and a concurrent {@link PostgresMessageStore.replacePhotos}
+   * is seen either completely or not at all. Same filters as
+   * {@link PostgresMessageStore.getPhoto} and
+   * {@link PostgresMessageStore.listExtraPhotos}: a null photo, a missing
+   * type or an unrecognized type is left out.
+   *
+   * @param id - Message id (`$1`).
+   * @returns `photo` (`null` when missing) and `extras` ordered by index ascending.
+   */
+  async getPhotoSet(id: string): Promise<{ photo: ForumPhoto | null; extras: ForumPhoto[] }> {
+    // Both branches filter null bytes and a null type in SQL.
+    const rows = await this.#sql.query<{
+      idx: number | string;
+      photo: NonNullable<MessagePhotoSqlRow['photo']>;
+      photo_content_type: string;
+      photo_taken_at?: string | null;
+    }>(
+      `SELECT 0 AS idx, photo, photo_content_type, photo_taken_at FROM message
+       WHERE id = $1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL
+       UNION ALL
+       SELECT idx, photo, photo_content_type, photo_taken_at FROM message_extra_photo
+       WHERE message_id = $1 AND photo IS NOT NULL AND photo_content_type IS NOT NULL
+       ORDER BY idx ASC`,
+      [id],
+    );
+    let photo: ForumPhoto | null = null;
+    const extras: ForumPhoto[] = [];
+    for (const row of rows) {
+      if (!FORUM_PHOTO_TYPES.has(row.photo_content_type)) {
+        continue;
+      }
+      const still: ForumPhoto = {
+        contentType: row.photo_content_type as ForumPhotoContentType,
+        bytes: toUint8Array(row.photo),
+      };
+      if (typeof row.photo_taken_at === 'string') {
+        still.takenAt = row.photo_taken_at;
+      }
+      if (Number(row.idx) === 0) {
+        photo = still;
+      } else {
+        extras.push(still);
       }
     }
     return { photo, extras };
