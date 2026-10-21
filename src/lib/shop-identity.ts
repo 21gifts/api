@@ -301,28 +301,57 @@ const LISTED_SHAPE_SQL = (m: string): string =>
    AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
 
 /**
- * One `DO` block that drops and recreates a trigger in a single statement.
- * It first takes `ACCESS EXCLUSIVE` on the table, the lock `DROP TRIGGER`
- * needs, so concurrent boots queue behind each other instead of deadlocking
- * on a lock upgrade or failing with "already exists", and no writer sees the
- * table without the trigger.
+ * Fixed `pg_advisory_xact_lock` key of the shop identity migration. Every
+ * statement of {@link SHOP_IDENTITY_SCHEMA_SQL} takes it first, so the
+ * statements of concurrent boots run one at a time.
+ */
+const SHOP_IDENTITY_MIGRATION_LOCK = 21_499_001;
+
+/**
+ * Wrap one migration statement in a `DO` block that first takes the
+ * transaction-scoped advisory lock {@link SHOP_IDENTITY_MIGRATION_LOCK}.
+ * Concurrent boots queue behind each other instead of failing with
+ * "tuple concurrently updated" (`CREATE OR REPLACE FUNCTION`) or a duplicate
+ * catalog key (`CREATE TABLE` / `CREATE INDEX IF NOT EXISTS`). Each step is
+ * its own transaction, so no lock on one table is held while another is
+ * locked.
  *
- * @param table - Table the trigger is on.
- * @param drop - `DROP TRIGGER IF EXISTS …` statement.
- * @param create - `CREATE TRIGGER …` statement.
+ * @param body - Statements to run under the lock, without the final `;`.
  * @returns The `DO` statement.
  */
-function replaceTrigger(table: string, drop: string, create: string): string {
-  return `DO $trigger$
+function serializedStep(body: string): string {
+  return `DO $shop_identity$
 BEGIN
-  LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;
-  ${drop};
-  ${create};
+  PERFORM pg_advisory_xact_lock(${SHOP_IDENTITY_MIGRATION_LOCK});
+  ${body};
 END;
-$trigger$`;
+$shop_identity$`;
 }
 
-/** Idempotent SQL for `shop_identity`, its keyset index and queue triggers (matches `docs/schema/shop_identity.sql`). */
+/**
+ * Body of one migration step that replaces a trigger function and drops and
+ * recreates its trigger. It first takes `ACCESS EXCLUSIVE` on the table, the
+ * lock `DROP TRIGGER` needs, so no writer sees the table without the trigger
+ * and the step never upgrades a weaker lock it already holds.
+ *
+ * @param table - Table the trigger is on.
+ * @param fn - `CREATE OR REPLACE FUNCTION …` statement of the trigger function.
+ * @param drop - `DROP TRIGGER IF EXISTS …` statement.
+ * @param create - `CREATE TRIGGER …` statement.
+ * @returns Statements for {@link serializedStep}.
+ */
+function replaceTrigger(table: string, fn: string, drop: string, create: string): string {
+  return `LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;
+  ${fn};
+  ${drop};
+  ${create}`;
+}
+
+/**
+ * Idempotent SQL for `shop_identity`, its keyset index, the shop candidate
+ * index on `message` and the queue triggers (matches
+ * `docs/schema/shop_identity.sql`). Every entry is one {@link serializedStep}.
+ */
 export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS shop_identity (
      message_id uuid PRIMARY KEY REFERENCES message (id),
@@ -346,7 +375,13 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
    )`,
   `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx
      ON shop_identity (nostr_key_created_at, message_id)`,
-  `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
+  `CREATE INDEX IF NOT EXISTS message_shop_candidate_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND place_lat IS NOT NULL`,
+  replaceTrigger(
+    'message',
+    `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
    BEGIN
      UPDATE shop_identity SET ocp_place_pending = true,
        ocp_place_generation = ocp_place_generation + 1
@@ -354,8 +389,6 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  replaceTrigger(
-    'message',
     `DROP TRIGGER IF EXISTS trg_shop_identity_place ON message`,
     `CREATE TRIGGER trg_shop_identity_place
    AFTER UPDATE OF text, place_lat, place_lng, place_label, place_street, place_house_number,
@@ -374,7 +407,9 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
    )
    EXECUTE FUNCTION queue_shop_identity_place()`,
   ),
-  `CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
+  replaceTrigger(
+    'message',
+    `CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
    BEGIN
      IF ${LISTED_SHAPE_SQL('NEW')} THEN
        UPDATE shop_identity SET ocp_photos_pending = true,
@@ -384,8 +419,6 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  replaceTrigger(
-    'message',
     `DROP TRIGGER IF EXISTS trg_shop_identity_cover ON message`,
     `CREATE TRIGGER trg_shop_identity_cover
    AFTER UPDATE OF photo, photo_content_type ON message
@@ -395,7 +428,9 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
    )
    EXECUTE FUNCTION queue_shop_identity_cover()`,
   ),
-  `CREATE OR REPLACE FUNCTION queue_shop_identity_photo() RETURNS trigger AS $$
+  replaceTrigger(
+    'message_extra_photo',
+    `CREATE OR REPLACE FUNCTION queue_shop_identity_photo() RETURNS trigger AS $$
    DECLARE target uuid;
    BEGIN
      IF TG_OP = 'DELETE' THEN
@@ -412,13 +447,11 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
-  replaceTrigger(
-    'message_extra_photo',
     `DROP TRIGGER IF EXISTS trg_shop_identity_extra_photo ON message_extra_photo`,
     `CREATE TRIGGER trg_shop_identity_extra_photo AFTER INSERT OR UPDATE OR DELETE ON message_extra_photo
    FOR EACH ROW EXECUTE FUNCTION queue_shop_identity_photo()`,
   ),
-];
+].map(serializedStep);
 
 /**
  * Apply {@link SHOP_IDENTITY_SCHEMA_SQL} in order. Idempotent.
@@ -1094,6 +1127,8 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     cursor: ShopCandidateCursor | null,
     limit: number,
   ): Promise<ShopCandidateCursor[]> {
+    // Walks the partial index message_shop_candidate_idx: the WHERE implies
+    // its predicate, so a page never scans every live note.
     const rows = await this.#sql.query<{ id: string; created_at: Date | string }>(
       `SELECT m.id, m.created_at FROM message m
        WHERE ${LISTED_SHAPE_SQL('m')}

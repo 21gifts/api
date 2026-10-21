@@ -84,6 +84,11 @@ builds on that change.
     keyset cursor by (`created_at`, `id`) that moves past rejected
     (incomplete) notes and wraps around at the end. An older incomplete
     note can therefore never hold the slot of a listed shop behind it.
+    The page walks the partial index `message_shop_candidate_idx` on
+    `message` (`created_at`, `id`), limited to live top-level notes with a
+    till account and a pin (`parent_id IS NULL`, `deleted_at IS NULL`,
+    `shop_account_id IS NOT NULL`, `place_lat IS NOT NULL`), so a tick does
+    not scan every live note, also once every shop has its key.
     After it creates a key, it queues the OpenCryptoPay place push of S5
     for that shop, so a failed mint at the write is repaired without another
     edit. The key insert, outbox columns, write-path queueing, backfill
@@ -98,6 +103,11 @@ builds on that change.
     identity.
 - Two concurrent creators keep exactly one key: compare-and-set on insert,
   the same as `ensureAccountNostrKey`.
+- Concurrent boots cannot fail the schema migration: every statement of
+  `SHOP_IDENTITY_SCHEMA_SQL` (table, indexes, trigger functions and
+  triggers) runs in its own `DO` block that first takes the
+  transaction-scoped advisory lock `pg_advisory_xact_lock(21499001)`, so
+  the boots run each statement one after the other.
 
 ### Storage
 

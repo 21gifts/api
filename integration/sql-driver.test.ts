@@ -14,7 +14,6 @@ import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store'
 import {
   migrateShopIdentitySchema,
   PostgresShopIdentityStore,
-  SHOP_IDENTITY_SCHEMA_SQL,
   shopNpub,
 } from '@/lib/shop-identity';
 import { isListedShop } from '@/lib/shop-place';
@@ -610,29 +609,116 @@ describe('shop identity on Postgres', () => {
     }
   });
 
-  test('concurrent trigger installs all succeed and leave each trigger exactly once', async () => {
+  test('18 concurrent migrations from scratch all succeed and leave each object once', async () => {
     const ctx = await setup();
     try {
-      const installs = SHOP_IDENTITY_SCHEMA_SQL.filter((statement) =>
-        statement.startsWith('DO $trigger$'),
+      // From scratch: the race of CREATE TABLE / CREATE INDEX IF NOT EXISTS and
+      // of CREATE OR REPLACE FUNCTION is only open while the objects are new.
+      await ctx.client.execute('DROP TABLE shop_identity');
+      await ctx.client.execute(
+        `DROP FUNCTION queue_shop_identity_place(), queue_shop_identity_cover(),
+           queue_shop_identity_photo() CASCADE`,
       );
-      expect(installs).toHaveLength(3);
-      await Promise.all(
-        Array.from({ length: 6 }, () => installs).flatMap((batch) =>
-          batch.map((statement) => ctx.client.execute(statement)),
+      await ctx.client.execute('DROP INDEX message_shop_candidate_idx');
+      // One connection per boot, as 18 processes would open.
+      const boots = Array.from({ length: 18 }, () => {
+        const sql = new SQL({ url: String(databaseUrl), max: 1 });
+        const client: SqlClient = {
+          query: async <T>(text: string): Promise<T[]> => (await sql.unsafe(text)) as T[],
+          execute: async (text: string): Promise<void> => {
+            await sql.unsafe(text);
+          },
+        };
+        return { client, sql };
+      });
+      try {
+        const results = await Promise.allSettled(
+          boots.map(({ client }) => migrateShopIdentitySchema(client)),
+        );
+        expect(results.filter((result) => result.status === 'rejected')).toEqual([]);
+      } finally {
+        await Promise.all(boots.map(({ sql }) => closeIfPossible(sql)));
+      }
+      expect(
+        await ctx.client.query<{ tgname: string; n: string }>(
+          `SELECT tgname, count(*)::text AS n FROM pg_trigger
+           WHERE tgname IN ('trg_shop_identity_place', 'trg_shop_identity_cover',
+             'trg_shop_identity_extra_photo')
+           GROUP BY tgname ORDER BY tgname`,
         ),
-      );
-      const rows = await ctx.client.query<{ tgname: string; n: string }>(
-        `SELECT tgname, count(*)::text AS n FROM pg_trigger
-         WHERE tgname IN ('trg_shop_identity_place', 'trg_shop_identity_cover',
-           'trg_shop_identity_extra_photo')
-         GROUP BY tgname ORDER BY tgname`,
-      );
-      expect(rows).toEqual([
+      ).toEqual([
         { tgname: 'trg_shop_identity_cover', n: '1' },
         { tgname: 'trg_shop_identity_extra_photo', n: '1' },
         { tgname: 'trg_shop_identity_place', n: '1' },
       ]);
+      expect(
+        await ctx.client.query<{ proname: string; n: string }>(
+          `SELECT proname, count(*)::text AS n FROM pg_proc
+           WHERE proname IN ('queue_shop_identity_place', 'queue_shop_identity_cover',
+             'queue_shop_identity_photo')
+           GROUP BY proname ORDER BY proname`,
+        ),
+      ).toEqual([
+        { proname: 'queue_shop_identity_cover', n: '1' },
+        { proname: 'queue_shop_identity_photo', n: '1' },
+        { proname: 'queue_shop_identity_place', n: '1' },
+      ]);
+      expect(
+        await ctx.client.query<{ name: string; n: string }>(
+          `SELECT relname AS name, count(*)::text AS n FROM pg_class
+           WHERE relname IN ('shop_identity', 'shop_identity_key_order_idx',
+             'message_shop_candidate_idx')
+           GROUP BY relname ORDER BY relname`,
+        ),
+      ).toEqual([
+        { name: 'message_shop_candidate_idx', n: '1' },
+        { name: 'shop_identity', n: '1' },
+        { name: 'shop_identity_key_order_idx', n: '1' },
+      ]);
+    } finally {
+      await ctx.cleanup();
+    }
+  });
+
+  test('the backfill candidate read walks message_shop_candidate_idx', async () => {
+    const ctx = await setup();
+    try {
+      expect(
+        await ctx.client.query<{ indexdef: string }>(
+          `SELECT indexdef FROM pg_indexes WHERE indexname = 'message_shop_candidate_idx'`,
+        ),
+      ).toEqual([
+        {
+          indexdef:
+            'CREATE INDEX message_shop_candidate_idx ON public.message USING btree (created_at, id) WHERE ((parent_id IS NULL) AND (deleted_at IS NULL) AND (shop_account_id IS NOT NULL) AND (place_lat IS NOT NULL))',
+        },
+      ]);
+      // Many live top-level notes that are not shops, a few that are.
+      for (let index = 0; index < 300; index += 1) {
+        await ctx.messages.create(
+          ctx.note({ text: `Plain note number ${index}.`, place: null, shopAccount: null }),
+        );
+      }
+      for (let index = 0; index < 3; index += 1) {
+        await ctx.messages.create(ctx.note({ text: `${TEXT} Shop ${index}.` }));
+      }
+      await ctx.client.execute('ANALYZE message');
+      const seen: { text: string; params: readonly unknown[] }[] = [];
+      const spy: SqlClient = {
+        query: <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+          seen.push({ text, params });
+          return ctx.client.query<T>(text, params);
+        },
+        execute: (text, params) => ctx.client.execute(text, params),
+      };
+      const store = new PostgresShopIdentityStore(spy, ctx.messages);
+      expect(await store.listCandidates(null, 50)).toHaveLength(3);
+      const [read] = seen;
+      const plan = await ctx.client.query<{ 'QUERY PLAN': unknown }>(
+        `EXPLAIN (FORMAT JSON) ${read!.text}`,
+        read!.params,
+      );
+      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_candidate_idx"');
     } finally {
       await ctx.cleanup();
     }

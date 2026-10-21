@@ -97,32 +97,51 @@ describe('migrateShopIdentitySchema', () => {
     expect(run[0]).toContain('CREATE TABLE IF NOT EXISTS shop_identity');
     expect(run.join('\n')).toContain('trg_shop_identity_place');
     expect(run.join('\n')).toContain('trg_shop_identity_extra_photo');
-    expect(run).toContain(
+    expect(run[1]).toContain(
       `CREATE INDEX IF NOT EXISTS shop_identity_key_order_idx
-     ON shop_identity (nostr_key_created_at, message_id)`,
+     ON shop_identity (nostr_key_created_at, message_id);`,
+    );
+    expect(run[2]).toContain(
+      `CREATE INDEX IF NOT EXISTS message_shop_candidate_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND place_lat IS NOT NULL;`,
     );
   });
 
-  it('drops and recreates each trigger inside one DO block', () => {
-    expect(SHOP_IDENTITY_SCHEMA_SQL.some((s) => s.startsWith('DROP TRIGGER'))).toBe(false);
-    expect(SHOP_IDENTITY_SCHEMA_SQL.some((s) => s.startsWith('CREATE TRIGGER'))).toBe(false);
-    const blocks = SHOP_IDENTITY_SCHEMA_SQL.filter((s) => s.startsWith('DO $trigger$'));
-    expect(blocks).toHaveLength(3);
-    for (const [index, [name, table]] of [
-      ['trg_shop_identity_place', 'message'],
-      ['trg_shop_identity_cover', 'message'],
-      ['trg_shop_identity_extra_photo', 'message_extra_photo'],
-    ].entries()) {
-      const block = blocks[index] as string;
+  it('runs every statement under the migration advisory lock', () => {
+    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(6);
+    for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
       expect(
-        block.startsWith(
-          `DO $trigger$\nBEGIN\n  LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;\n  DROP TRIGGER IF EXISTS ${name} ON ${table};\n`,
+        statement.startsWith(
+          'DO $shop_identity$\nBEGIN\n  PERFORM pg_advisory_xact_lock(21499001);\n',
         ),
       ).toBe(true);
-      expect(block).toContain(`CREATE TRIGGER ${name}`);
-      expect(block.indexOf('DROP TRIGGER')).toBeLessThan(block.indexOf('CREATE TRIGGER'));
-      expect(block).toMatch(/;\nEND;\n\$trigger\$$/);
+      expect(statement).toMatch(/;\nEND;\n\$shop_identity\$$/);
     }
+  });
+
+  it('replaces each trigger function and trigger inside one locked step', () => {
+    const steps = SHOP_IDENTITY_SCHEMA_SQL.slice(3);
+    for (const [index, [fn, name, table]] of [
+      ['queue_shop_identity_place', 'trg_shop_identity_place', 'message'],
+      ['queue_shop_identity_cover', 'trg_shop_identity_cover', 'message'],
+      ['queue_shop_identity_photo', 'trg_shop_identity_extra_photo', 'message_extra_photo'],
+    ].entries()) {
+      const step = steps[index] as string;
+      const lock = step.indexOf(`  LOCK TABLE ${table} IN ACCESS EXCLUSIVE MODE;\n`);
+      const replace = step.indexOf(`CREATE OR REPLACE FUNCTION ${fn}()`);
+      const drop = step.indexOf(`DROP TRIGGER IF EXISTS ${name} ON ${table};`);
+      const create = step.indexOf(`CREATE TRIGGER ${name}`);
+      expect(step.indexOf('pg_advisory_xact_lock')).toBeLessThan(lock);
+      expect(lock).toBeGreaterThan(0);
+      expect(lock).toBeLessThan(replace);
+      expect(replace).toBeLessThan(drop);
+      expect(drop).toBeLessThan(create);
+    }
+    expect(
+      SHOP_IDENTITY_SCHEMA_SQL.filter((s) => s.includes('CREATE OR REPLACE FUNCTION')),
+    ).toHaveLength(3);
   });
 });
 
