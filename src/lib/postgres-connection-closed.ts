@@ -35,25 +35,37 @@ function absorbConnectionClosed(error: unknown): boolean {
   return true;
 }
 
-function onUncaughtException(error: Error): void {
-  if (absorbConnectionClosed(error)) {
-    return;
+function exitWithError(error: unknown): void {
+  try {
+    console.error(error);
+  } catch {
+    // A dead stderr must not leave another error running.
   }
   process.exit(1);
 }
 
+function onUncaughtException(error: Error): void {
+  if (absorbConnectionClosed(error)) {
+    return;
+  }
+  exitWithError(error);
+}
+
 function onUnhandledRejection(reason: unknown): void {
-  absorbConnectionClosed(reason);
+  if (absorbConnectionClosed(reason)) {
+    return;
+  }
+  exitWithError(reason);
 }
 
 /**
  * Keep the process alive when Bun SQL reports a closed Postgres connection
  * as an uncaught exception or an unhandled rejection.
  *
- * A second call does nothing. Any other uncaught exception still exits with
- * status 1. Any other unhandled rejection is not exited here, so this
- * listener does not start killing the process for rejections it does not
- * recognise. The handler does not throw.
+ * A second call does nothing. Any other uncaught exception or unhandled
+ * rejection is written to stderr and exits with status 1. Without that exit,
+ * the listener would replace Bun's default and keep the process up. The
+ * handler does not throw.
  *
  * @returns void
  */

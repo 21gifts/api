@@ -21,6 +21,7 @@ function closedError(message = 'Connection closed'): Error {
 
 describe('postgres connection closed', () => {
   let warn: ReturnType<typeof vi.spyOn>;
+  let errorOut: ReturnType<typeof vi.spyOn>;
   let exit: ReturnType<typeof vi.spyOn>;
   let uncaught: NodeJS.UncaughtExceptionListener | undefined;
   let rejection: NodeJS.UnhandledRejectionListener | undefined;
@@ -40,6 +41,7 @@ describe('postgres connection closed', () => {
   beforeEach(() => {
     setDiagnosticSink(null);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    errorOut = vi.spyOn(console, 'error').mockImplementation(() => undefined);
     exit = vi.spyOn(process, 'exit').mockImplementation((): never => {
       throw new Error('exit');
     }) as unknown as ReturnType<typeof vi.spyOn>;
@@ -47,6 +49,7 @@ describe('postgres connection closed', () => {
 
   afterEach(() => {
     warn.mockRestore();
+    errorOut.mockRestore();
     exit.mockRestore();
     setDiagnosticSink(null);
   });
@@ -95,6 +98,7 @@ describe('postgres connection closed', () => {
       code: 'ERR_POSTGRES_CONNECTION_CLOSED',
     });
     expect(JSON.stringify(events[0])).not.toContain('secret-fragment');
+    expect(errorOut).not.toHaveBeenCalled();
   });
 
   it('logs a plain closed-connection object without exiting', () => {
@@ -120,11 +124,23 @@ describe('postgres connection closed', () => {
   });
 
   it('exits on any other uncaught exception', () => {
+    const error = new Error('schema');
+    expect(() => {
+      emitUncaught(error);
+    }).toThrow('exit');
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(errorOut).toHaveBeenCalledWith(error);
+    expect(parsedEvents(warn)).toHaveLength(0);
+  });
+
+  it('still exits when printing the other error throws', () => {
+    errorOut.mockImplementation(() => {
+      throw new Error('stderr down');
+    });
     expect(() => {
       emitUncaught(new Error('schema'));
     }).toThrow('exit');
     expect(exit).toHaveBeenCalledWith(1);
-    expect(parsedEvents(warn)).toHaveLength(0);
   });
 
   it('exits when the uncaught value is not a closed connection', () => {
@@ -150,14 +166,25 @@ describe('postgres connection closed', () => {
   it('logs an unhandled closed connection and does not exit', () => {
     emitRejection(closedError());
     expect(exit).not.toHaveBeenCalled();
+    expect(errorOut).not.toHaveBeenCalled();
     expect(parsedEvents(warn)[0]?.['event']).toBe('sql.connection.closed');
   });
 
-  it('does not exit on an unrelated unhandled rejection', () => {
-    emitRejection(new Error('other'));
-    emitRejection('other');
-    emitRejection(null);
-    expect(exit).not.toHaveBeenCalled();
+  it('exits on an unrelated unhandled rejection', () => {
+    const error = new Error('other');
+    expect(() => {
+      emitRejection(error);
+    }).toThrow('exit');
+    expect(() => {
+      emitRejection('other');
+    }).toThrow('exit');
+    expect(() => {
+      emitRejection(null);
+    }).toThrow('exit');
+    expect(exit).toHaveBeenCalledWith(1);
+    expect(errorOut).toHaveBeenCalledWith(error);
+    expect(errorOut).toHaveBeenCalledWith('other');
+    expect(errorOut).toHaveBeenCalledWith(null);
     expect(parsedEvents(warn)).toHaveLength(0);
   });
 

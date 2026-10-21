@@ -3533,7 +3533,7 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 
 ## Function: installPostgresConnectionClosedGuard
 
-- **Purpose:** Keep the process alive when Bun SQL reports `PostgresError` with code `ERR_POSTGRES_CONNECTION_CLOSED` on `uncaughtException` or `unhandledRejection`. That is the driver error for a closed Postgres connection. The event `sql.connection.closed` is written through `logEvent` with `errorLogFields` (name and code only, never the message). Any other uncaught exception still exits with status 1. Any other unhandled rejection is not exited by this listener. A second call does nothing. The handler does not throw.
+- **Purpose:** Keep the process alive when Bun SQL reports `PostgresError` with code `ERR_POSTGRES_CONNECTION_CLOSED` on `uncaughtException` or `unhandledRejection`. That is the driver error for a closed Postgres connection. The event `sql.connection.closed` is written through `logEvent` with `errorLogFields` (name and code only, never the message). Any other uncaught exception or unhandled rejection is written to stderr and exits with status 1. A second call does nothing. The handler does not throw.
 - **Inputs:** None.
 - **Returns / side effects:** void. Registers the two process listeners the first time. Does not open a connection and does not retry a write.
 - **Used by:** Process boot in `src/index.ts`, before the first SQL call.
