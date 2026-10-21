@@ -12517,6 +12517,24 @@ describe('shop OCP place hook', () => {
     });
   });
 
+  it('sends nothing for a text write on a shop without a pin', async () => {
+    const { mapPush, calls } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const res = await mount(await staffStore('Ada'), messages, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/text',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'Coffee roasted on site and served at the bar all day long.',
+        }),
+      },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(0);
+  });
+
   it('sends the hide DELETE without reading the row again', async () => {
     const { mapPush, calls, meta } = recordingMap();
     const messages = new InMemoryMessageStore();

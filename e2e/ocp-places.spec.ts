@@ -11,20 +11,26 @@ const ADDRESS = {
 
 const PLACE = { lat: 47.376887, lng: 8.541694, label: 'Kiosk Lindenhof', address: ADDRESS };
 const SHOP_TEXT = 'Fresh coffee and snacks are served every day.\n\n#21GiftsShop';
-test('Function: shopDescription — POST /messages preserves a valid shop address', async ({
+
+test('Function: shopDescription — POST /messages strips the shop tag before the length rule', async ({
   request,
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const auth = await verifiedPinSession(request, stamp);
+  const description = 'Fresh coffee and snacks are served every day. '
+    .repeat(22)
+    .slice(0, 995)
+    .trim();
+  const text = `${description}\n\n#21GiftsShop`;
+  expect(description.length).toBeLessThanOrEqual(1000);
+  expect(text.length).toBeGreaterThan(1000);
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
-    data: {
-      text: SHOP_TEXT,
-      place: PLACE,
-    },
+    data: { text, place: PLACE },
   });
   expect(posted.status()).toBe(200);
-  const body = (await posted.json()) as { place?: { address?: unknown } };
+  const body = (await posted.json()) as { text: string; place?: { address?: unknown } };
+  expect(body.text).toBe(text);
   expect(body.place?.address).toEqual(ADDRESS);
 });
 
