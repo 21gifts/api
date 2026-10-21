@@ -35,12 +35,7 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { stillLook } from '@/lib/nostr/image';
-import {
-  listShopNip05Entries,
-  nip05Domain,
-  nip05Identifier,
-  type ShopNip05Entry,
-} from '@/lib/nip05';
+import { nip05Directory, nip05Domain, nip05Identifier, type ShopNip05Entry } from '@/lib/nip05';
 import {
   forumVideoUrl,
   isoBmffDisplaySize,
@@ -1487,7 +1482,7 @@ interface ShopKind0Args {
  * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
  * and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
  * only called for a listed shop and only when `domain` is set, before any
- * write; it returns the allocation entry only when it carries the name this
+ * write; it returns the NIP-05 directory entry only when it carries the name this
  * read sees. Without such an entry the shop gets no kind 0 this time: the
  * result is `null` and nothing was written.
  */
@@ -1513,7 +1508,7 @@ async function shopKind0Args(
       listed: false,
     };
   }
-  // Before any write, so a failing or stale allocation leaves no side effect.
+  // Before any write, so a failing or stale directory leaves no side effect.
   let nip05: string | null = null;
   if (domain !== null) {
     const entry = await nip05Entry(note.id, shop.name);
@@ -1573,16 +1568,19 @@ async function shopKind0Args(
  * for the store is still in flight, so ticks never overlap on a shop; a
  * nack, or an error after the reservation, clears the shop's cache entry (a
  * read that throws before it leaves the entry as it was). A tick reads at most
- * `WORKER_BATCH` shops, plus the NIP-05
- * allocation ({@link listShopNip05Entries}, the same listed names as
- * `/.well-known/nostr.json`). That allocation runs only when a visited shop
- * is listed and the NIP-05 domain is set, at first once per tick. Each later
- * shop reads its note fresh, so when the allocation has no entry for a listed
- * shop or one with another name (listed or renamed since the allocation), the
- * tick drops it and allocates once more (at most two allocations per tick).
- * When that entry still does not match, the shop gets no kind 0 and no cache
+ * `WORKER_BATCH` shops; their NIP-05 names come from the shared directory
+ * ({@link nip05Directory}, the same names as `/.well-known/nostr.json` and
+ * `GET /shops/:npub`, cached per store set), read only when a visited shop is
+ * listed and the NIP-05 domain is set. The directory is computed at most once
+ * per `NIP05_DIRECTORY_TTL_MS` (60 s) on expiry, not per tick, whatever the
+ * number of shops. Each shop reads its note fresh, so when the directory has
+ * no entry for a listed shop or one with another name (listed or renamed
+ * since the directory), the shop asks for a forced refresh, which computes at
+ * most once per `NIP05_DIRECTORY_REFRESH_MS` (10 s) per store set and
+ * otherwise returns the cached directory. When that entry still does not
+ * match, the shop gets no kind 0 and no cache
  * entry: the tick logs `nostr.profile.nack` with `reason: 'nip05_stale'` and
- * the shop is tried again on its next turn. When an allocation throws, the
+ * the shop is tried again on its next turn. When a directory read throws, the
  * tick logs `nostr.profile.nack` with `reason: 'nip05'` for that shop and
  * publishes no further shop kind 0 in that tick (shops already published in
  * that tick keep theirs; never one without its NIP-05); the rest of the tick
@@ -1601,18 +1599,14 @@ async function publishShopProfiles(
   const watermarks = shopCache(shopProfileWatermarks, shops);
   const urls = writeRelayUrls(writeSet);
   const domain = nip05Domain(deps.env);
-  let nip05Entries: Promise<ReadonlyMap<string, ShopNip05Entry>> | undefined;
-  let nip05Allocations = 0;
+  const stores = { identities: shops, messages: deps.messages };
   let nip05Failed = false;
-  const allocateNip05 = async (): Promise<ReadonlyMap<string, ShopNip05Entry>> => {
-    if (nip05Entries === undefined) {
-      nip05Allocations += 1;
-      nip05Entries = listShopNip05Entries(deps.auth, shops, deps.messages).then(
-        (rows) => new Map(rows.map((row) => [row.messageId, row] as const)),
-      );
-    }
+  const directoryEntry = async (
+    messageId: string,
+    refresh: boolean,
+  ): Promise<ShopNip05Entry | undefined> => {
     try {
-      return await nip05Entries;
+      return (await nip05Directory(deps.auth, stores, deps.now(), refresh)).shops.get(messageId);
     } catch (error) {
       nip05Failed = true;
       throw error;
@@ -1622,11 +1616,10 @@ async function publishShopProfiles(
     messageId: string,
     name: string,
   ): Promise<ShopNip05Entry | undefined> => {
-    let entry = (await allocateNip05()).get(messageId);
-    if (entry?.name !== name && nip05Allocations < 2) {
-      // Listed or renamed after the allocation: drop it and allocate again.
-      nip05Entries = undefined;
-      entry = (await allocateNip05()).get(messageId);
+    let entry = await directoryEntry(messageId, false);
+    if (entry?.name !== name) {
+      // Listed or renamed after the cached directory: ask for a fresh one.
+      entry = await directoryEntry(messageId, true);
     }
     return entry?.name === name ? entry : undefined;
   };
@@ -1696,7 +1689,7 @@ async function publishShopProfiles(
     } catch {
       if (reservation !== undefined) cache.delete(id);
       if (nip05Failed) {
-        // Every listed shop needs the allocation: stop kind 0 for this tick.
+        // Every listed shop needs the directory: stop kind 0 for this tick.
         logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05' });
         return false;
       }

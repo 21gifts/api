@@ -252,35 +252,67 @@ test('Function: listedShop — GET /shops/:npub carries the name, pin and descri
   );
 });
 
+/** NIP-05 local part of a fresh shop name (no collision: the name carries a stamp). */
+function shopLocal(name: string): string {
+  return name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+}
+
+/**
+ * `GET /.well-known/nostr.json?name=` until it answers `local`. The directory
+ * is cached; a name it does not hold forces one fresh directory, at most once
+ * per 10 s (`NIP05_DIRECTORY_REFRESH_MS`), so a parallel test's refresh can
+ * delay this one by that gap.
+ */
+async function pollNip05(
+  request: APIRequestContext,
+  local: string,
+): Promise<Record<string, string>> {
+  let names: Record<string, string> = {};
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`/.well-known/nostr.json?name=${local}`);
+        expect(response.status()).toBe(200);
+        names = ((await response.json()) as { names: Record<string, string> }).names;
+        return names[local] ?? null;
+      },
+      { timeout: 20_000, intervals: [250, 500, 1_000] },
+    )
+    .not.toBeNull();
+  return names;
+}
+
 test('Function: listedShopName — nostr.json names the shop after its pin label', async ({
   request,
 }) => {
   const shop = await listedShop(request, 'Nip');
-  const response = await request.get('/.well-known/nostr.json');
-  expect(response.status()).toBe(200);
-  const names = ((await response.json()) as { names: Record<string, string> }).names;
-  const local = Object.keys(names).find((key) => names[key] === shop.pubkey);
-  const slug = shop.name
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, '-')
-    .slice(0, 24);
-  expect(local?.startsWith(slug)).toBe(true);
+  const local = shopLocal(shop.name);
+  expect((await pollNip05(request, local))[local]).toBe(shop.pubkey);
 });
 
 test('Function: listShopNip05Entries — GET /.well-known/nostr.json?name= answers the shop key', async ({
   request,
 }) => {
   const shop = await listedShop(request, 'Dir');
-  const all = (await (await request.get('/.well-known/nostr.json')).json()) as {
-    names: Record<string, string>;
-  };
-  const local = Object.keys(all.names).find((key) => all.names[key] === shop.pubkey) as string;
-  expect(local).toBeTruthy();
-  const one = await request.get(`/.well-known/nostr.json?name=${local}`);
-  expect(one.status()).toBe(200);
-  expect(((await one.json()) as { names: Record<string, string> }).names).toEqual({
-    [local]: shop.pubkey,
-  });
+  const local = shopLocal(shop.name);
+  expect(await pollNip05(request, local)).toEqual({ [local]: shop.pubkey });
+});
+
+test('Function: nip05Directory — the full nostr.json carries a shop once a ?name= refresh found it', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Cache');
+  const local = shopLocal(shop.name);
+  await pollNip05(request, local);
+  // The forced refresh replaced the shared cache, so the full body has it too.
+  const all = await request.get('/.well-known/nostr.json');
+  expect(all.status()).toBe(200);
+  expect(((await all.json()) as { names: Record<string, string> }).names[local]).toBe(shop.pubkey);
 });
 
 test('Function: isListedShop — removing the till account unlists the shop', async ({ request }) => {

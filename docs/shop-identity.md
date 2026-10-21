@@ -229,23 +229,28 @@ not, in the same loop and with the same rules as account profiles
   read on the index `shop_identity_key_order_idx`); when fewer rows follow
   the cursor, the store wraps with a second bounded read from the first
   row. The round-robin page never reads the whole table; only the NIP-05
-  allocation below reads every identity. The cursor moves
+  directory below reads every identity, at most once per its cache TTL plus
+  one forced refresh per refresh gap. The cursor moves
   to every shop of the page before its visit, so up to 20 shops that keep
   failing cannot hold back the shops behind them. Every row of the page
   uses a slot, also a shop whose reads throw or whose content is unchanged
   (for kind 10002 too, so a lap visits every shop within
   ⌈shops / 20⌉ passes, unless a kind 0 pass stops early after a failed
-  NIP-05 allocation), and a pass reads at most `WORKER_BATCH` shops per
-  kind (a tick whose previous pass of that kind is still running reads none), also during an outage, plus the NIP-05 allocation: the same listed names as
-  `/.well-known/nostr.json` (every account and every shop note), read only
-  once a visited shop is listed and the NIP-05 domain is set, at first once
-  per tick. Each later shop reads its note fresh, so when the allocation has
-  no entry for a listed shop or one with another name (listed or renamed
-  since the allocation), the tick drops it and reads it once more (at most
-  two reads per tick). When the entry still does not match, that shop gets
-  no kind 0 and no cache entry, the tick logs `nostr.profile.nack` with
-  `reason: "nip05_stale"` and the shop is tried again on its next turn.
-  When a read fails, the tick logs `nostr.profile.nack` with
+  NIP-05 directory read), and a pass reads at most `WORKER_BATCH` shops per
+  kind (a tick whose previous pass of that kind is still running reads none), also during an outage. The NIP-05
+  names come from the shared directory (`nip05Directory`, see NIP-05
+  below): the same names as `/.well-known/nostr.json` and
+  `GET /shops/:npub`, read only once a visited shop is listed and the
+  NIP-05 domain is set. It is computed at most once per 60 s on expiry and
+  not per tick, whatever the number of shops. Each shop reads its note
+  fresh, so when the directory has no entry for a listed shop or one with
+  another name (listed or renamed since the directory), the shop asks for a
+  forced refresh, which computes at most once per 10 s per store set and
+  otherwise gives the cached directory. When the entry still does not
+  match, that shop gets no kind 0 and no cache entry, the tick logs
+  `nostr.profile.nack` with `reason: "nip05_stale"` and the shop is tried
+  again on its next turn.
+  When a directory read fails, the tick logs `nostr.profile.nack` with
   `reason: "nip05"`, publishes no further shop kind 0 in that tick (shops
   already published in that tick keep theirs; never one without its NIP-05)
   and goes on with kind 10002, kind 1 and conversations;
@@ -353,21 +358,33 @@ spec adds no zap receipts for a shop key.
 - The local part follows the current shop name. A rename, or a new account
   that takes the slug, gives the shop a new local part, and its kind 0 is
   published again.
-- Cost: the allocation is computed per request, as `/.well-known/nostr.json`
-  already does for accounts (one read of every account). `nostr.json` reads
-  the accounts once per request and gives that one snapshot to the account
-  and the shop allocation, so a username change or merge between two reads
-  cannot hand a shop the local part of an account in the same body; account
-  entries are written first and a shop entry never overwrites one (it would
-  be skipped and logged as `nip05.shop.collision`). For shops it adds
-  one read of every `shop_identity` row and one bulk read of their notes
+- Cost: one computation of the directory (`nip05Directory`) reads every
+  account once and gives that one snapshot to the account and the shop
+  allocation, so a username change or merge between two reads cannot hand a
+  shop the local part of an account in the same directory; account entries
+  are written first and a shop entry never overwrites one (it would be
+  skipped and logged as `nip05.shop.collision`). For shops it adds one read
+  of every `shop_identity` row and one bulk read of their notes
   (`MessageStore.getByIds`, `id = ANY($1::uuid[])`), not one read per shop.
-  `GET /shops/:npub` runs it at most twice per request while `nip05Domain`
-  is set (once per round, see S3), `nostr.json` once per request, and the worker at most twice per tick (see
-  S2). `GET /shops/:npub` and the worker use only the shop entries, and each
-  allocation reads the accounts once itself, so they combine no second
-  account read with it. There is no cache, so no answer can carry an allocation older than
-  the request.
+- Cache: the directory is kept in process per auth store, shop identity
+  store and message store (a `WeakMap`, so the memory and the Postgres boot
+  each have one per process) for `NIP05_DIRECTORY_TTL_MS` = 60 s, the
+  `max-age=60` that `nostr.json` and `GET /shops/:npub` already send.
+  Concurrent readers share one computation in flight, so a burst of requests
+  computes at most once per 60 s. `nostr.json`, `GET /shops/:npub` and the
+  shop kind 0 all read it, so the three carry the same names. A caller whose
+  note does not match the cached entry (`GET /shops/:npub`, the shop
+  kind 0) or a `nostr.json?name=` that the cache does not hold asks for one
+  forced refresh, which bypasses and replaces the cache. Forced refreshes
+  are single flight too and start at most once per
+  `NIP05_DIRECTORY_REFRESH_MS` = 10 s per store set; inside that gap a
+  forced read gets the forced computation in flight or the cached directory.
+  So, while computations succeed, a store set computes the directory at most
+  once per 60 s on expiry plus once per 10 s on demand (at most seven times a
+  minute), however many requests and ticks ask. The price is staleness: the
+  full `nostr.json` may be up to 60 s old, and a shop renamed twice within
+  10 s answers 503 `nip05_stale` (and its kind 0 waits) until the gap ends.
+  A failed computation is not cached; its callers get the error.
 
 ## S3 API
 
@@ -404,12 +421,15 @@ One answer, one state of the note:
   `replacePhotos` swaps photo 0 and the extras in one transaction, so
   separate reads of photo 0 and the extras could serve photo 0 of one set
   with the extras of another for 60 s.
-- While `nip05Domain` is set, the `listShopNip05Entries` entry for the note
-  must carry the name of the note read by this request. A missing entry or
-  an entry with another name (the shop was renamed or unlisted between the
-  two reads) makes the route read the note again and allocate once more:
-  a note that is no longer listed then answers 410. A mismatch on the last
-  round (`READ_ROUNDS`) answers the 503 above with
+- While `nip05Domain` is set, the entry of the shared NIP-05 directory
+  (`nip05Directory`, see S2 NIP-05) for the note must carry the name of the
+  note read by this request. On the first missing entry or entry with
+  another name the request asks once for a forced refresh of the directory
+  (at most one computation per 10 s per store set, so a stream of requests
+  for a renamed shop cannot each force one) and checks again. When it still
+  does not match (the shop was renamed or unlisted between the two reads),
+  the route reads the note again: a note that is no longer listed then
+  answers 410. A mismatch on the last round (`READ_ROUNDS`) answers the 503 above with
   `reason: "nip05_stale"`, never a 200 that pairs a name with another
   name's NIP-05 or a listed shop with a `null` NIP-05.
 - After the photo set the route reads the note again and compares the
@@ -428,9 +448,10 @@ One answer, one state of the note:
   carries its stored index, so a left-out still never shifts the ones after
   it.
 - Read bound: at most two rounds, so at most three note reads (the first,
-  and one re-read per round, which the next round takes as its note), two
-  NIP-05 allocations and two photo set reads per request. A 503 does not
-  retry further.
+  and one re-read per round, which the next round takes as its note) and
+  two photo set reads per request; the NIP-05 directory comes from the
+  shared cache, with at most one forced refresh per request (itself
+  rate-limited per store set). A 503 does not retry further.
 
 Error texts: the 404 reuses `Not found`, as `GET /pay/:username` does. The 503
 gets its own `Shops are unavailable`, following the per-route rule that each
@@ -472,8 +493,8 @@ Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does for
 accounts.
 `nip05` is `null` when `nip05Domain` gives `null`, the same case in which
-its kind 0 leaves the field out. Otherwise it comes from the allocation of
-`listShopNip05Entries`, computed for this request (see the cost under S2
+its kind 0 leaves the field out. Otherwise it comes from the shared NIP-05
+directory (`nip05Directory`, cached for 60 s, see the cost and cache under S2
 NIP-05). Photo 0 is `/messages/:id/photo.<ext>` and
 extra still n ≥ 1 is `/messages/:id/photo/<n>.<ext>` (the routes `forumPhotoUrl`
 and `forumExtraPhotoUrl` in `src/lib/nostr/event.ts` use), absolute from

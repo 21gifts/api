@@ -26,7 +26,7 @@ import {
   type MessageInvoiceAttempt,
   type MessageStore,
 } from '@/lib/message-store';
-import { buildNostrJson, listShopNip05Entries } from '@/lib/nip05';
+import { buildNostrJson, NIP05_DIRECTORY_TTL_MS, nip05Directory } from '@/lib/nip05';
 import { KIND0_BANNER_URL, KIND0_PICTURE_URL } from '@/lib/nostr/event';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { parseNostrKek } from '@/lib/nostr/kek';
@@ -41,6 +41,7 @@ import {
   runNostrWorkerTick,
   startNostrWorker,
   WORKER_BATCH,
+  WORKER_INTERVAL_MS,
   type NostrWorkerDeps,
 } from '@/lib/nostr/worker';
 import { ExternalIngestLimiter } from '@/lib/nostr/external';
@@ -58,10 +59,10 @@ vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
 }));
 
-// Pass-through spy: the shop kind 0 tests count and fail the NIP-05 allocation.
+// Pass-through spy: the shop kind 0 tests count and fail the worker's NIP-05 directory reads.
 vi.mock('@/lib/nip05', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/lib/nip05')>();
-  return { ...actual, listShopNip05Entries: vi.fn(actual.listShopNip05Entries) };
+  return { ...actual, nip05Directory: vi.fn(actual.nip05Directory) };
 });
 
 const mockedDecode = vi.mocked(decodeBolt11);
@@ -8304,28 +8305,32 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       await tick(ctx);
       const identity = (await ctx.shops.getByMessageId(uuid(1)))!;
       const nip05 = String(content(shopEvents(ctx, identity, 0)[0])['nip05']);
-      const json = await buildNostrJson(ctx.auth, ENV, undefined, {
-        identities: ctx.shops,
-        messages: ctx.messages,
-      });
+      // At the tick's clock: the same cached directory the tick read.
+      const json = await buildNostrJson(
+        ctx.auth,
+        ENV,
+        undefined,
+        { identities: ctx.shops, messages: ctx.messages },
+        clock,
+      );
       const local = nip05.split('@')[0]!;
       expect(local).toBe(`coffee-lab-${uuid(1).replace(/-/g, '').slice(0, 8)}`);
       expect(json.names[local]).toBe(identity.nostrPubkey);
       expect(json.names['coffee-lab']).not.toBe(identity.nostrPubkey);
     });
 
-    it('allocates NIP-05 once per tick, only for a visited listed shop with a domain', async () => {
-      const allocate = vi.mocked(listShopNip05Entries);
+    it('computes the NIP-05 directory once per tick, only for a visited listed shop with a domain', async () => {
+      const directory = vi.mocked(nip05Directory);
       const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
-      allocate.mockClear();
+      const computations = vi.spyOn(ctx.shops, 'listAll');
       await tick(ctx);
-      expect(allocate).toHaveBeenCalledTimes(1);
+      expect(computations).toHaveBeenCalledTimes(1);
       const identity = (await ctx.shops.getByMessageId(uuid(2)))!;
       expect(content(shopEvents(ctx, identity, 0)[0])['nip05']).toMatch(
         /^coffee-lab-.+@21\.gifts$/,
       );
 
-      allocate.mockClear();
+      directory.mockClear();
       const env = { NOSTR_PUBLISH: '1', NOSTR_RELAY_SPACE: 'wss://relay.nostr.space' };
       const noDomain = await context([{ row: shopNote(uuid(1)) }]);
       await tick(noDomain, env);
@@ -8339,11 +8344,11 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       await tick(unlisted);
       const gone = (await unlisted.shops.getByMessageId(uuid(1)))!;
       expect(content(shopEvents(unlisted, gone, 0)[0])['nip05']).toBeUndefined();
-      expect(allocate).not.toHaveBeenCalled();
+      expect(directory).not.toHaveBeenCalled();
     });
 
-    it('skips shop kind 0 for a tick whose NIP-05 allocation fails, and the tick goes on', async () => {
-      const allocate = vi.mocked(listShopNip05Entries);
+    it('skips shop kind 0 for a tick whose NIP-05 directory read fails, and the tick goes on', async () => {
+      const directory = vi.mocked(nip05Directory);
       const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
       for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
       const later: string[] = [];
@@ -8360,10 +8365,10 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
           return store.claimUnpublished(limit, nowMs, leaseMs);
         },
       });
-      allocate.mockClear();
-      allocate.mockRejectedValueOnce(new Error('db'));
+      directory.mockClear();
+      directory.mockRejectedValueOnce(new Error('db'));
       await tick(ctx, ENV, { messages, conversations });
-      expect(allocate).toHaveBeenCalledTimes(1);
+      expect(directory).toHaveBeenCalledTimes(1);
       const shops = await ctx.shops.listAll();
       for (const identity of shops) {
         expect(shopEvents(ctx, identity, 0)).toHaveLength(0);
@@ -8399,31 +8404,34 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       };
     }
 
-    it('allocates NIP-05 again for a shop renamed after the allocation in the same tick', async () => {
-      const allocate = vi.mocked(listShopNip05Entries);
+    it('refreshes the NIP-05 directory once for a shop renamed after it in the same tick', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
       for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
       const [first, second] = await ctx.shops.listAll();
       afterShopKind0(ctx, first!, async () => {
         await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
       });
-      allocate.mockClear();
+      const computations = vi.spyOn(ctx.shops, 'listAll');
       await tick(ctx);
-      expect(allocate).toHaveBeenCalledTimes(2);
+      // The tick's directory, then one forced refresh.
+      expect(computations).toHaveBeenCalledTimes(2);
       expect(content(shopEvents(ctx, first!, 0)[0])['nip05']).toBe('coffee-lab@21.gifts');
       const events = shopEvents(ctx, second!, 0);
       expect(events).toHaveLength(1);
       expect(content(events[0])).toMatchObject({ name: 'Roastery', nip05: 'roastery@21.gifts' });
-      const json = await buildNostrJson(ctx.auth, ENV, undefined, {
-        identities: ctx.shops,
-        messages: ctx.messages,
-      });
+      // At the tick's clock: the same cached directory the tick read.
+      const json = await buildNostrJson(
+        ctx.auth,
+        ENV,
+        undefined,
+        { identities: ctx.shops, messages: ctx.messages },
+        clock,
+      );
       expect(json.names['roastery']).toBe(second!.nostrPubkey);
       expect(logged('nostr.profile.nack')).toEqual([]);
     });
 
-    it('allocates NIP-05 again for a shop listed after the allocation in the same tick', async () => {
-      const allocate = vi.mocked(listShopNip05Entries);
+    it('refreshes the NIP-05 directory once for a shop listed after it in the same tick', async () => {
       const ctx = await context([{ row: shopNote(uuid(1)) }, { row: shopNote(uuid(2)) }]);
       for (const id of [uuid(1), uuid(2)]) await ctx.shops.ensureListed(id, KEK);
       await ctx.messages.updateText(uuid(2), 'Only coffee here, no tag at all.');
@@ -8431,9 +8439,9 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       afterShopKind0(ctx, first!, async () => {
         await ctx.messages.updateText(uuid(2), TEXT);
       });
-      allocate.mockClear();
+      const computations = vi.spyOn(ctx.shops, 'listAll');
       await tick(ctx);
-      expect(allocate).toHaveBeenCalledTimes(2);
+      expect(computations).toHaveBeenCalledTimes(2);
       const events = shopEvents(ctx, second!, 0);
       expect(events).toHaveLength(1);
       expect(content(events[0])).toMatchObject({
@@ -8443,9 +8451,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       expect(logged('nostr.profile.nack')).toEqual([]);
     });
 
-    it('publishes nothing for a shop whose NIP-05 is still stale after the second allocation', async () => {
-      const allocate = vi.mocked(listShopNip05Entries);
-      const actual = allocate.getMockImplementation()!;
+    it('publishes nothing for a shop whose NIP-05 is still stale after the forced refresh', async () => {
       const ctx = await context([
         { row: shopNote(uuid(1)) },
         { row: shopNote(uuid(2)) },
@@ -8457,16 +8463,19 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       afterShopKind0(ctx, first!, async () => {
         await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Roastery' });
       });
-      allocate.mockClear();
-      allocate.mockImplementationOnce(actual).mockImplementationOnce(async (...args) => {
-        // Renamed again before the second allocation, listed again after it.
+      const original = ctx.messages.getByIds.bind(ctx.messages);
+      const notes = vi.spyOn(ctx.messages, 'getByIds');
+      notes.mockImplementationOnce(original).mockImplementationOnce(async (ids) => {
+        // Renamed again before the forced refresh reads the notes, listed again after it.
         await ctx.messages.setPlace(uuid(2), { ...shopNote(uuid(2)).place!, label: 'Bakery' });
-        const rows = await actual(...args);
+        const rows = await original(ids);
         await ctx.messages.updateText(uuid(3), TEXT);
         return rows;
       });
       await tick(ctx);
-      expect(allocate).toHaveBeenCalledTimes(2);
+      // The tick's directory and one forced refresh; shop 3's miss inside the
+      // refresh gap gets the cached directory and computes nothing.
+      expect(notes).toHaveBeenCalledTimes(2);
       expect(shopEvents(ctx, first!, 0)).toHaveLength(1);
       expect(shopEvents(ctx, second!, 0)).toHaveLength(0);
       expect(shopEvents(ctx, third!, 0)).toHaveLength(0);
@@ -8708,7 +8717,7 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
           return rows;
         },
       });
-      // Without `PUBLIC_BASE_URL` there is no NIP-05 allocation, which reads
+      // Without `PUBLIC_BASE_URL` there is no NIP-05 directory, which reads
       // every shop like `/.well-known/nostr.json` does.
       const env = { ...ENV, PUBLIC_BASE_URL: '' };
       for (let round = 0; round < 3; round += 1) {
@@ -8726,6 +8735,51 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
       // No shop starves: every one of the 45 was visited by both kinds.
       expect(new Set(attemptsOf('nostr.profile.nack'))).toEqual(new Set(order));
       expect(new Set(attemptsOf('nostr.relays.nack'))).toEqual(new Set(order));
+    });
+
+    it('computes the NIP-05 directory once per TTL plus one forced refresh, whatever the shop count', async () => {
+      const count = WORKER_BATCH + 5;
+      const { ctx, order } = await listedShops(count);
+      const computations = vi.spyOn(ctx.shops, 'listAll');
+      const notes = vi.spyOn(ctx.messages, 'getByIds');
+      const base = clock + 60_000;
+      const at = async (now: number): Promise<void> => {
+        await runNostrWorkerTick({
+          messages: ctx.messages,
+          auth: ctx.auth,
+          kek: KEK,
+          publisher: ctx.publisher,
+          querier: new RecordingQuerier(),
+          fetchImpl: async () => new Response('{}', { status: 500 }),
+          now: () => now,
+          env: ENV,
+          shopIdentities: ctx.shops,
+        });
+      };
+      // Two ticks visit all 25 listed shops: one directory for both.
+      await at(base);
+      await at(base + WORKER_INTERVAL_MS);
+      expect(new Set(attemptsOf('nostr.profile.ok'))).toEqual(new Set(order));
+      expect(computations).toHaveBeenCalledTimes(1);
+      expect(notes).toHaveBeenCalledTimes(1);
+      // A rename of a shop on the next page forces one refresh; the other
+      // shops of that tick and the next tick read the refreshed cache.
+      const renamed = order[WORKER_BATCH + 1]!;
+      await ctx.messages.setPlace(renamed, { ...shopNote(renamed).place!, label: 'Roastery' });
+      await at(base + 2 * WORKER_INTERVAL_MS);
+      await at(base + 3 * WORKER_INTERVAL_MS);
+      expect(computations).toHaveBeenCalledTimes(2);
+      const identity = (await ctx.shops.getByMessageId(renamed))!;
+      const events = shopEvents(ctx, identity, 0);
+      expect(content(events[events.length - 1])).toMatchObject({
+        name: 'Roastery',
+        nip05: 'roastery@21.gifts',
+      });
+      expect(logged('nostr.profile.nack')).toEqual([]);
+      // The TTL ends: the next tick that needs it computes once more.
+      await at(base + 2 * WORKER_INTERVAL_MS + NIP05_DIRECTORY_TTL_MS);
+      expect(computations).toHaveBeenCalledTimes(3);
+      clock = base + 2 * WORKER_INTERVAL_MS + NIP05_DIRECTORY_TTL_MS;
     });
 
     it('visits unchanged kind 10002 shops too, so a changed one is reached within a lap', async () => {

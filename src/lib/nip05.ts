@@ -258,10 +258,11 @@ export interface ShopNip05Entry {
  * with the same slug and collision suffix ({@link allocateNip05Local}) from
  * the current shop name. Shops that are not listed get no local.
  *
- * Cost per call, like the account directory of `/.well-known/nostr.json`
- * that it extends: one read of every account (none when `accounts` is
+ * Cost per call: one read of every account (none when `accounts` is
  * given), one of every shop identity and one bulk read of their notes
- * ({@link MessageStore.getByIds}), no read per shop.
+ * ({@link MessageStore.getByIds}), no read per shop. Requests and worker
+ * ticks do not call it directly; they read the cached directory of
+ * {@link nip05Directory}, which calls it once per computation.
  *
  * @param auth - Auth store (read only when `accounts` is omitted).
  * @param shops - Shop identities (ordered by key creation).
@@ -302,14 +303,169 @@ export async function listShopNip05Entries(
 }
 
 /**
+ * How long one computed NIP-05 directory ({@link nip05Directory}) serves its
+ * callers: 60 s, the `max-age=60` that `/.well-known/nostr.json` and
+ * `GET /shops/:npub` already give every public answer, so the shared cache
+ * adds no staleness a client cache does not already allow.
+ */
+export const NIP05_DIRECTORY_TTL_MS = 60_000;
+
+/**
+ * Minimum gap between two forced recomputations ({@link nip05Directory} with
+ * `refresh`) of one store set: 10 s. A forced refresh inside the gap does not
+ * compute; it gets the cached directory (or joins the forced one in flight).
+ * Together with {@link NIP05_DIRECTORY_TTL_MS}, while computations succeed a
+ * store set computes the directory at most once per TTL on expiry plus at most
+ * once per this gap on demand (at most seven times a minute), however many
+ * requests and worker ticks ask for it. A rename waits at most this long for
+ * a fresh directory; until then `GET /shops/:npub` answers 503 `nip05_stale`
+ * and the worker skips the shop's kind 0 with `nip05_stale`.
+ */
+export const NIP05_DIRECTORY_REFRESH_MS = 10_000;
+
+/** The NIP-05 allocation of one account snapshot: every account, then every listed shop. */
+export interface Nip05Directory {
+  /** Account entries in `nostr.json` order ({@link listNip05Entries}). */
+  accounts: readonly Nip05Entry[];
+  /** Listed shop entries by message id, in allocation order ({@link listShopNip05Entries}). */
+  shops: ReadonlyMap<string, ShopNip05Entry>;
+}
+
+/** Shop identities and the forum store that decides whether a shop is listed. */
+interface Nip05ShopStores {
+  identities: ShopIdentityStore;
+  messages: MessageStore;
+}
+
+/** Cache state of one store set. */
+interface DirectorySlot {
+  /** Last directory computed, with the clock reading at its start. */
+  value?: { directory: Nip05Directory; startedAt: number };
+  /** Computation in flight for a plain read (expired or empty cache). */
+  pending: Promise<Nip05Directory> | undefined;
+  /** Forced computation in flight. */
+  forced: Promise<Nip05Directory> | undefined;
+  /** Clock reading at the start of the last forced computation. */
+  forcedAt: number;
+}
+
+/** Per auth store, shop identity store and message store: one {@link DirectorySlot}. */
+const directorySlots = new WeakMap<
+  AuthStore,
+  WeakMap<ShopIdentityStore, WeakMap<MessageStore, DirectorySlot>>
+>();
+
+/** The slot of one store set, created on first use. */
+function directorySlot(auth: AuthStore, shops: Nip05ShopStores): DirectorySlot {
+  let byIdentities = directorySlots.get(auth);
+  if (byIdentities === undefined) {
+    byIdentities = new WeakMap();
+    directorySlots.set(auth, byIdentities);
+  }
+  let byMessages = byIdentities.get(shops.identities);
+  if (byMessages === undefined) {
+    byMessages = new WeakMap();
+    byIdentities.set(shops.identities, byMessages);
+  }
+  let slot = byMessages.get(shops.messages);
+  if (slot === undefined) {
+    slot = { pending: undefined, forced: undefined, forcedAt: Number.NEGATIVE_INFINITY };
+    byMessages.set(shops.messages, slot);
+  }
+  return slot;
+}
+
+/**
+ * Compute the directory from one account read, store it in the slot unless a
+ * computation that started later already did, and return it.
+ */
+async function computeDirectory(
+  slot: DirectorySlot,
+  auth: AuthStore,
+  shops: Nip05ShopStores,
+  startedAt: number,
+): Promise<Nip05Directory> {
+  const accounts = await auth.listAccounts();
+  const accountEntries = await listNip05Entries(auth, accounts);
+  const shopEntries = await listShopNip05Entries(auth, shops.identities, shops.messages, accounts);
+  const directory: Nip05Directory = {
+    accounts: accountEntries,
+    shops: new Map(shopEntries.map((row) => [row.messageId, row] as const)),
+  };
+  if (slot.value === undefined || slot.value.startedAt <= startedAt) {
+    slot.value = { directory, startedAt };
+  }
+  return directory;
+}
+
+/**
+ * The NIP-05 directory of a store set from a shared in-process cache.
+ *
+ * One directory is computed from one account read (accounts with
+ * {@link listNip05Entries}, then listed shops with {@link listShopNip05Entries}
+ * on the same snapshot) and kept per auth store, shop identity store and
+ * message store for {@link NIP05_DIRECTORY_TTL_MS}. Callers that arrive while
+ * a computation runs share it (single flight), so a burst of reads computes
+ * at most once per TTL. `refresh` asks for a fresh computation that bypasses
+ * the cache and replaces it: a caller that read a note the cached entry does
+ * not match uses it once before giving up. Forced computations of a store set
+ * are single flight too and start at most once per
+ * {@link NIP05_DIRECTORY_REFRESH_MS}; inside that gap a forced read gets the
+ * forced computation in flight, else the cached directory (computed as a
+ * plain read when it expired). A failed computation is not cached: its
+ * callers get the error and the next read computes again.
+ *
+ * @param auth - Auth store.
+ * @param shops - Shop identities and forum store.
+ * @param now - Clock reading in epoch milliseconds.
+ * @param refresh - Force a fresh computation (rate-limited, see above).
+ * @returns The directory.
+ * @throws When the computation it waits for fails (a store read throws).
+ */
+export async function nip05Directory(
+  auth: AuthStore,
+  shops: { identities: ShopIdentityStore; messages: MessageStore },
+  now: number,
+  refresh = false,
+): Promise<Nip05Directory> {
+  const slot = directorySlot(auth, shops);
+  if (refresh) {
+    if (slot.forced === undefined && now - slot.forcedAt >= NIP05_DIRECTORY_REFRESH_MS) {
+      slot.forcedAt = now;
+      const forced = computeDirectory(slot, auth, shops, now).finally(() => {
+        slot.forced = undefined;
+      });
+      slot.forced = forced;
+    }
+    if (slot.forced !== undefined) return slot.forced;
+  }
+  if (slot.value !== undefined && now - slot.value.startedAt < NIP05_DIRECTORY_TTL_MS) {
+    return slot.value.directory;
+  }
+  if (slot.pending === undefined) {
+    slot.pending = computeDirectory(slot, auth, shops, now).finally(() => {
+      slot.pending = undefined;
+    });
+  }
+  return slot.pending;
+}
+
+/**
  * NIP-05 `nostr.json` body (names + recommended relays).
  *
- * Reads every account once per call and gives that one snapshot to the
- * account allocation ({@link listNip05Entries}) and the shop allocation
+ * With `shops`, the names come from the shared directory
+ * ({@link nip05Directory}): one account snapshot gives the account
+ * allocation ({@link listNip05Entries}) and the shop allocation
  * ({@link listShopNip05Entries}), so a rename or merge between two reads
- * cannot give a shop the local part of an account in the same body. Account
- * entries are written first; a shop entry whose local part an account
- * already holds is never written over it (it is skipped and logged as
+ * cannot give a shop the local part of an account in the same body, and the
+ * body carries the same names as `GET /shops/:npub` and the shop kind 0. The
+ * full body may be up to {@link NIP05_DIRECTORY_TTL_MS} old. A `?name=`
+ * that the cached directory does not hold forces one fresh directory
+ * (rate-limited by {@link NIP05_DIRECTORY_REFRESH_MS}) before the answer, so
+ * a new username or shop is found as soon as the refresh gap allows. Without
+ * `shops` (accounts only) every call reads every account itself. Account
+ * entries are written first; a shop entry whose local part an account already
+ * holds is never written over it (it is skipped and logged as
  * `nip05.shop.collision` with the shop's message id).
  *
  * @param auth - Auth store.
@@ -317,6 +473,8 @@ export async function listShopNip05Entries(
  * @param nameFilter - Optional `?name=` filter (NIP-05 clients send this).
  * @param shops - Optional shop identities and forum store; listed shops
  *   follow the accounts ({@link listShopNip05Entries}).
+ * @param now - Clock reading in epoch milliseconds for the directory cache.
+ *   Default `Date.now()`.
  * @returns JSON-serialisable directory.
  */
 export async function buildNostrJson(
@@ -324,15 +482,26 @@ export async function buildNostrJson(
   env: Record<string, string | undefined>,
   nameFilter?: string,
   shops?: { identities: ShopIdentityStore; messages: MessageStore },
+  now: number = Date.now(),
 ): Promise<{ names: Record<string, string>; relays: Record<string, string[]> }> {
-  const accounts = await auth.listAccounts();
-  const accountEntries = await listNip05Entries(auth, accounts);
-  const shopEntries =
-    shops === undefined
-      ? []
-      : await listShopNip05Entries(auth, shops.identities, shops.messages, accounts);
   const needle = nameFilter?.trim().toLowerCase() ?? '';
   const keep = (row: { local: string }): boolean => needle === '' || row.local === needle;
+  let accountEntries: readonly Nip05Entry[];
+  let shopEntries: readonly ShopNip05Entry[];
+  if (shops === undefined) {
+    accountEntries = await listNip05Entries(auth);
+    shopEntries = [];
+  } else {
+    let directory = await nip05Directory(auth, shops, now);
+    const holds = (dir: Nip05Directory): boolean =>
+      dir.accounts.some(keep) || [...dir.shops.values()].some(keep);
+    if (needle !== '' && !holds(directory)) {
+      // A name the cache may not have seen yet (new username or shop).
+      directory = await nip05Directory(auth, shops, now, true);
+    }
+    accountEntries = directory.accounts;
+    shopEntries = [...directory.shops.values()];
+  }
   const names: Record<string, string> = {};
   const relays: Record<string, string[]> = {};
   const relayList = writeRelayUrls(resolveWriteSet(env));

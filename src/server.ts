@@ -766,6 +766,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       messages: messageStore,
       identities: shopIdentityStore,
       env,
+      now,
     }),
   );
   app.route(

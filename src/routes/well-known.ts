@@ -31,7 +31,7 @@ export interface WellKnownRouteDeps {
   fetchImpl?: FetchFn;
   /** Open point-of-sale charges. Default empty in-memory store. */
   posStore?: PosStore;
-  /** Clock in epoch milliseconds. Default `Date.now`. */
+  /** Clock in epoch milliseconds (pending charges, NIP-05 directory cache). Default `Date.now`. */
   now?: () => number;
   /**
    * Shop identities and the forum store. Listed shops join `nostr.json`
@@ -68,7 +68,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
     .get('/nostr.json', async (c) => {
       try {
         const name = c.req.query('name') ?? undefined;
-        const body = await buildNostrJson(deps.auth, env, name, deps.shops);
+        const body = await buildNostrJson(deps.auth, env, name, deps.shops, now());
         return c.json(body, 200, WELL_KNOWN_CORS);
       } catch {
         logEvent('nostr.nip05.failed');

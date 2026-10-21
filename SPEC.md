@@ -1477,18 +1477,23 @@ for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
 cannot be read. `payUsername` is the till account's username when it has a
 username and a non-empty Lightning address, otherwise `null`. `nip05` is the
 shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
-`PUBLIC_BASE_URL` gives no NIP-05 domain. The allocation's entry must carry
-the name of the note this request read; when it is missing or carries
-another name (renamed or unlisted in between), the route reads the note again
-and allocates once more (a note no longer listed is then 410), and a mismatch
-on the last round answers the 503 with `reason: "nip05_stale"`. After
+`PUBLIC_BASE_URL` gives no NIP-05 domain. It is read from the NIP-05
+directory that `/.well-known/nostr.json` and the shop kind 0 share, cached in
+process for 60 s per store set. Its entry must carry the name of the note
+this request read; on the first missing entry or other name the request asks
+once for a forced refresh of the directory (at most one computation per 10 s
+per store set) and checks again, and when it still does not match (renamed
+or unlisted in between) the route reads the note again (a note no longer
+listed is then 410); a mismatch on the last round answers the 503 with
+`reason: "nip05_stale"`. After
 the photo set the route reads the note again; when its text, pin, till
 account id or `deletedAt` differ from the note the answer is built from (a
 rename, text or pin change while the photos were read), it goes round once
 more with that re-read, and when the note still differs on that last round it
 answers the 503 with `reason: "note_changed"`, so a 200 never pairs the old
 name with photos set after the change. A request reads the note at most three
-times, allocates NIP-05 at most twice and reads the photo set at most twice
+times, asks for at most one forced NIP-05 directory refresh and reads the
+photo set at most twice
 ([docs/shop-identity.md](docs/shop-identity.md) S3). `createdAt` is the note's
 ISO-8601 creation time.
 

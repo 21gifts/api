@@ -12,7 +12,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { forumExtraPhotoUrl, forumPhotoUrl } from '@/lib/nostr/event';
 import { imageHeaderSize } from '@/lib/nostr/image';
 import { resolvePublicApiBase } from '@/lib/nostr/relays';
-import { listShopNip05Entries, nip05Domain } from '@/lib/nip05';
+import { nip05Directory, nip05Domain } from '@/lib/nip05';
 import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { listedShop, shopDescription } from '@/lib/shop-place';
 
@@ -26,6 +26,8 @@ export interface ShopRouteDeps {
   identities: ShopIdentityStore;
   /** Process env (`PUBLIC_BASE_URL` for the NIP-05 domain and the photo URLs). Default `process.env`. */
   env?: Record<string, string | undefined>;
+  /** Clock in epoch milliseconds for the NIP-05 directory cache. Default `Date.now`. */
+  now?: () => number;
 }
 
 const PUBLIC_CACHE = { 'Cache-Control': 'public, max-age=60' } as const;
@@ -69,9 +71,10 @@ function photoRow(
 /**
  * Rounds of `GET /shops/:npub` before a changing note ends in 503. A round
  * reads the note (round 1) or takes the re-read of the round before, checks
- * the NIP-05 entry, reads the photo set and re-reads the note. Two rounds
- * read the note at most three times, build the NIP-05 directory at most
- * twice and read the photo set at most twice.
+ * the NIP-05 entry of the shared directory, reads the photo set and re-reads
+ * the note. Two rounds read the note at most three times and the photo set at
+ * most twice; the directory is read from the shared cache
+ * ({@link nip05Directory}), and a request asks for at most one forced refresh.
  */
 const READ_ROUNDS = 2;
 
@@ -97,10 +100,15 @@ function answerFields(note: MessageRow | undefined): string {
  * of the whole set ({@link MessageStore.getPhotoSet}); each URL carries the
  * still's stored index, and a still the set leaves out (an unrecognized
  * type, photo 0 included) drops only itself. While the NIP-05
- * domain is set, the allocation's entry must carry the name of the note this
- * round read; a missing entry or another name (renamed or unlisted between
- * the two reads) goes round once more with a re-read of the note, and on the
- * last round the answer is 503 (`shops.detail.failed` with
+ * domain is set, the entry of the shared NIP-05 directory
+ * ({@link nip05Directory}, cached per store set for 60 s, the same names as
+ * `/.well-known/nostr.json` and the shop kind 0) must carry the name of the
+ * note this round read. On the first missing entry or other name the request
+ * asks once for a forced refresh of the directory (rate-limited per store
+ * set, so a stream of requests for a renamed shop cannot each force one) and
+ * checks again; when it still does not match (renamed or unlisted between
+ * the two reads) it goes round once more with a re-read of the note, and on
+ * the last round the answer is 503 (`shops.detail.failed` with
  * `reason: 'nip05_stale'`), so a 200 never pairs a name with another name's
  * NIP-05 or a listed shop with a null NIP-05. After the photo set the note is
  * read again; when its text, pin, till account or `deletedAt` differ from the
@@ -108,13 +116,16 @@ function answerFields(note: MessageRow | undefined): string {
  * round once more with that re-read, and on the last round the answer is 503
  * (`shops.detail.failed` with `reason: 'note_changed'`), so a 200 never pairs
  * the old name with photos set after the change. At most {@link READ_ROUNDS}
- * rounds: three note reads, two NIP-05 directories, two photo set reads.
+ * rounds: three note reads, two photo set reads, and at most one forced
+ * directory refresh (the cached directory otherwise).
  *
  * @param deps - Stores and env.
  * @returns Hono sub-app mounted at `/shops`.
  */
 export function shopRoutes(deps: ShopRouteDeps): Hono {
   const env = deps.env ?? process.env;
+  const now = deps.now ?? Date.now;
+  const stores = { identities: deps.identities, messages: deps.messages };
   return new Hono().get('/:npub', async (c) => {
     const segment = c.req.param('npub');
     const pubkey = segmentPubkey(segment);
@@ -128,6 +139,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
       }
       const domain = nip05Domain(env);
       let read = await deps.messages.getById(identity.messageId);
+      let refreshed = false;
       for (let round = 1; ; round += 1) {
         const note = read;
         const shop = listedShop(note);
@@ -136,9 +148,12 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
         }
         let nip05: string | null = null;
         if (domain !== null) {
-          const entry = (
-            await listShopNip05Entries(deps.authStore, deps.identities, deps.messages)
-          ).find((row) => row.messageId === note.id);
+          let entry = (await nip05Directory(deps.authStore, stores, now())).shops.get(note.id);
+          if (entry?.name !== shop.name && !refreshed) {
+            // The cached directory may predate this note: ask once for a fresh one.
+            refreshed = true;
+            entry = (await nip05Directory(deps.authStore, stores, now(), true)).shops.get(note.id);
+          }
           if (entry === undefined || entry.name !== shop.name) {
             // Renamed or unlisted between the note read and the allocation.
             if (round < READ_ROUNDS) {

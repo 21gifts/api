@@ -7,6 +7,9 @@ import {
   buildNostrJson,
   listNip05Entries,
   listShopNip05Entries,
+  NIP05_DIRECTORY_REFRESH_MS,
+  NIP05_DIRECTORY_TTL_MS,
+  nip05Directory,
   nip05Domain,
   nip05Identifier,
   nip05Slug,
@@ -276,16 +279,183 @@ describe('nip05', () => {
     const shopKey = (await shops.getByMessageId(shopId))!.nostrPubkey;
     expect(body.names).toEqual({ bakery: 'aa'.repeat(32), 'bakery-00000003': shopKey });
     expect(body.relays[shopKey]).toBeDefined();
-    listAccounts.mockResolvedValueOnce(first);
+    // The filtered body comes from the same cached directory: no second account read.
     const filtered = await buildNostrJson(auth, {}, ' Bakery-00000003 ', {
       identities: shops,
       messages,
     });
     expect(filtered.names).toEqual({ 'bakery-00000003': shopKey });
+    expect(listAccounts).toHaveBeenCalledTimes(1);
     // Without a snapshot, each list reads the accounts itself.
     listAccounts.mockClear();
     expect(await listNip05Entries(auth)).toEqual([]);
     expect((await listShopNip05Entries(auth, shops, messages))[0]?.local).toBe('bakery');
     expect(listAccounts).toHaveBeenCalledTimes(2);
+  });
+
+  describe('nip05Directory', () => {
+    const SHOP_ID = '00000003-0000-4000-8000-000000000000';
+
+    /** One listed shop, one keyed account, counted directory reads. */
+    async function fixture(): Promise<{
+      auth: InMemoryAuthStore;
+      messages: InMemoryMessageStore;
+      shops: InMemoryShopIdentityStore;
+      stores: { identities: InMemoryShopIdentityStore; messages: InMemoryMessageStore };
+      computations: () => number;
+      reads: () => { accounts: number; identities: number; notes: number };
+    }> {
+      const messages = new InMemoryMessageStore([shop(SHOP_ID, 'Bakery')]);
+      const shops = new InMemoryShopIdentityStore(messages);
+      await shops.ensureListed(SHOP_ID, new Uint8Array(32).fill(7));
+      const auth = new InMemoryAuthStore();
+      const ada = account({ id: '00000000-0000-4000-8000-000000000001', name: 'Ada' });
+      await auth.createAccount(ada);
+      await auth.setNostrKeyIfAbsent(ada.id, {
+        pubkey: 'aa'.repeat(32),
+        ciphertext: new Uint8Array(16),
+        kekId: 1,
+        custody: 'custodial',
+      });
+      const listAccounts = vi.spyOn(auth, 'listAccounts');
+      const listAll = vi.spyOn(shops, 'listAll');
+      const getByIds = vi.spyOn(messages, 'getByIds');
+      return {
+        auth,
+        messages,
+        shops,
+        stores: { identities: shops, messages },
+        // A computation starts with the account read.
+        computations: () => listAccounts.mock.calls.length,
+        reads: () => ({
+          accounts: listAccounts.mock.calls.length,
+          identities: listAll.mock.calls.length,
+          notes: getByIds.mock.calls.length,
+        }),
+      };
+    }
+
+    it('computes once for a burst of concurrent reads and serves the cache until the TTL ends', async () => {
+      const { auth, stores, computations, reads } = await fixture();
+      const burst = await Promise.all(
+        Array.from({ length: 25 }, () => nip05Directory(auth, stores, 1_000)),
+      );
+      expect(reads()).toEqual({ accounts: 1, identities: 1, notes: 1 });
+      expect(new Set(burst).size).toBe(1);
+      expect(burst[0]?.accounts.map((row) => row.local)).toEqual(['ada']);
+      expect(burst[0]?.shops.get(SHOP_ID)?.local).toBe('bakery');
+      expect(await nip05Directory(auth, stores, 1_000 + NIP05_DIRECTORY_TTL_MS - 1)).toBe(burst[0]);
+      expect(computations()).toBe(1);
+      // Expired: the next read computes again.
+      const expired = await nip05Directory(auth, stores, 1_000 + NIP05_DIRECTORY_TTL_MS);
+      expect(expired).not.toBe(burst[0]);
+      expect(computations()).toBe(2);
+    });
+
+    it('forces at most one fresh computation per refresh gap, shared by concurrent callers', async () => {
+      const { auth, messages, stores, computations } = await fixture();
+      const cached = await nip05Directory(auth, stores, 0);
+      await messages.updateText(SHOP_ID, 'Renamed note. #21GiftsShop');
+      const forced = await Promise.all([
+        nip05Directory(auth, stores, 5, true),
+        nip05Directory(auth, stores, 6, true),
+      ]);
+      expect(computations()).toBe(2);
+      expect(forced[0]).toBe(forced[1]);
+      expect(forced[0]).not.toBe(cached);
+      // The forced result replaced the cache.
+      expect(await nip05Directory(auth, stores, 7)).toBe(forced[0]);
+      // Inside the gap a forced read gets the cache and computes nothing.
+      expect(await nip05Directory(auth, stores, 5 + NIP05_DIRECTORY_REFRESH_MS - 1, true)).toBe(
+        forced[0],
+      );
+      expect(computations()).toBe(2);
+      // After the gap it computes again.
+      const next = await nip05Directory(auth, stores, 5 + NIP05_DIRECTORY_REFRESH_MS, true);
+      expect(next).not.toBe(forced[0]);
+      expect(computations()).toBe(3);
+    });
+
+    it('computes an expired cache as a plain read when a forced read is rate-limited', async () => {
+      const { auth, stores, computations } = await fixture();
+      const first = await nip05Directory(auth, stores, 0);
+      vi.mocked(auth.listAccounts).mockRejectedValueOnce(new Error('db down'));
+      const failedAt = NIP05_DIRECTORY_TTL_MS + 5;
+      await expect(nip05Directory(auth, stores, failedAt, true)).rejects.toThrow('db down');
+      // Inside the gap after the failed forced read, with the cache expired.
+      const plain = await nip05Directory(auth, stores, failedAt + 1, true);
+      expect(plain).not.toBe(first);
+      expect(plain.shops.get(SHOP_ID)?.local).toBe('bakery');
+      expect(computations()).toBe(3);
+    });
+
+    it('keeps the newer directory when an older computation finishes last and does not cache a failure', async () => {
+      const { auth, stores, computations } = await fixture();
+      const accounts = await auth.listAccounts();
+      vi.mocked(auth.listAccounts).mockClear();
+      let release: (rows: Account[]) => void = () => undefined;
+      vi.mocked(auth.listAccounts).mockImplementationOnce(
+        () =>
+          new Promise<Account[]>((resolve) => {
+            release = resolve;
+          }),
+      );
+      const slow = nip05Directory(auth, stores, 0);
+      // Started later, finishes first.
+      const forced = await nip05Directory(auth, stores, 10, true);
+      release(accounts);
+      const older = await slow;
+      expect(older).not.toBe(forced);
+      expect(await nip05Directory(auth, stores, 20)).toBe(forced);
+      expect(computations()).toBe(2);
+
+      vi.mocked(auth.listAccounts).mockRejectedValueOnce(new Error('db down'));
+      await expect(
+        nip05Directory(auth, stores, 10 + NIP05_DIRECTORY_REFRESH_MS, true),
+      ).rejects.toThrow('db down');
+      // The failure is not cached; the cached directory still serves.
+      expect(await nip05Directory(auth, stores, 30)).toBe(forced);
+    });
+
+    it('keeps one cache per auth store, shop identity store and message store', async () => {
+      const { auth, messages, shops, stores } = await fixture();
+      const first = await nip05Directory(auth, stores, 0);
+      const otherShops = new InMemoryShopIdentityStore(messages);
+      const otherMessages = new InMemoryMessageStore();
+      const second = await nip05Directory(auth, { identities: otherShops, messages }, 0);
+      const third = await nip05Directory(auth, { identities: shops, messages: otherMessages }, 0);
+      expect(second).not.toBe(first);
+      expect(third).not.toBe(first);
+      expect(second.shops.size).toBe(0);
+      expect(third.shops.size).toBe(0);
+      expect(await nip05Directory(auth, stores, 1)).toBe(first);
+    });
+
+    it('serves nostr.json from the cache and forces one refresh for a ?name= it does not hold', async () => {
+      const { auth, messages, shops, stores, computations } = await fixture();
+      const full = await buildNostrJson(auth, {}, undefined, stores, 0);
+      const shopKey = (await shops.getByMessageId(SHOP_ID))!.nostrPubkey;
+      expect(full.names).toEqual({ ada: 'aa'.repeat(32), bakery: shopKey });
+      // Same names as the directory the shop route and the worker read.
+      const directory = await nip05Directory(auth, stores, 1);
+      expect(directory.shops.get(SHOP_ID)?.local).toBe('bakery');
+      expect(computations()).toBe(1);
+      // A held name answers from the cache.
+      expect((await buildNostrJson(auth, {}, 'bakery', stores, 2)).names).toEqual({
+        bakery: shopKey,
+      });
+      expect(computations()).toBe(1);
+      // Rename the shop: the cache still has the old name until a refresh.
+      const note = (await messages.getById(SHOP_ID))!;
+      await messages.setPlace(SHOP_ID, { ...note.place!, label: 'Roastery' });
+      expect((await buildNostrJson(auth, {}, undefined, stores, 3)).names['bakery']).toBe(shopKey);
+      expect((await buildNostrJson(auth, {}, 'roastery', stores, 4)).names).toEqual({
+        roastery: shopKey,
+      });
+      expect(computations()).toBe(2);
+      // An unknown name inside the gap forces nothing more.
+      expect((await buildNostrJson(auth, {}, 'nobody', stores, 5)).names).toEqual({});
+      expect(computations()).toBe(2);
+    });
   });
 });

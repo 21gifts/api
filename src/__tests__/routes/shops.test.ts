@@ -6,7 +6,9 @@ import { InMemoryAuthStore, type Account, type AuthStore } from '@/lib/auth/stor
 import { unsignedNostrDefaults, type ForumPhoto, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryShopIdentityStore, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
+import { NIP05_DIRECTORY_REFRESH_MS, NIP05_DIRECTORY_TTL_MS } from '@/lib/nip05';
 import { shopRoutes } from '@/routes/shops';
+import { wellKnownRoutes } from '@/routes/well-known';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const TILL = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -72,6 +74,7 @@ async function setup(
     till?: Account | null;
     photos?: ForumPhoto[];
     row?: Partial<MessageRow>;
+    now?: () => number;
   } = {},
 ): Promise<{
   app: Hono;
@@ -92,7 +95,13 @@ async function setup(
   }))!;
   const app = new Hono().route(
     '/shops',
-    shopRoutes({ authStore: auth, messages, identities, env: options.env ?? {} }),
+    shopRoutes({
+      authStore: auth,
+      messages,
+      identities,
+      env: options.env ?? {},
+      ...(options.now === undefined ? {} : { now: options.now }),
+    }),
   );
   return { app, messages, auth, identities, npub: shopNpub(identity), hex: identity.nostrPubkey };
 }
@@ -285,8 +294,9 @@ describe('GET /shops/:npub', () => {
   });
 
   /**
-   * Route over `messages` whose bulk note read (the NIP-05 allocation) runs
-   * `beforeAllocation` with the 1-based call number first, whose photo set
+   * Route over `messages` whose bulk note read (a NIP-05 directory computation) runs
+   * `beforeAllocation` with the 1-based call number first and
+   * `afterAllocation` with it after reading, whose photo set
    * read runs `afterPhotoRead` with its 1-based call number after reading,
    * and counts the route's note reads. `noteGoneFrom` makes every note read
    * from that 1-based number on answer `undefined`.
@@ -297,6 +307,7 @@ describe('GET /shops/:npub', () => {
     hideInAllocation = false,
     afterPhotoRead: (call: number) => Promise<void> = () => Promise.resolve(),
     noteGoneFrom = Number.POSITIVE_INFINITY,
+    afterAllocation: (call: number) => Promise<void> = () => Promise.resolve(),
   ): { app: Hono; noteReads: () => number } {
     let allocations = 0;
     let photoReads = 0;
@@ -310,6 +321,7 @@ describe('GET /shops/:npub', () => {
         allocations += 1;
         await beforeAllocation(allocations);
         const rows = await ctx.messages.getByIds(ids);
+        await afterAllocation(allocations);
         return hideInAllocation ? rows.map((row) => ({ ...row, deletedAt: new Date(0) })) : rows;
       },
       getPhotoSet: async (id: string) => {
@@ -335,7 +347,7 @@ describe('GET /shops/:npub', () => {
     await ctx.messages.setPlace(ID, { ...note().place!, label });
   }
 
-  it('re-reads the note once when the shop is renamed between the note read and the NIP-05 allocation', async () => {
+  it('refreshes the directory and re-reads the note once when the shop is renamed between the note read and the directory', async () => {
     const ctx = await setup();
     const { app, noteReads } = racingApp(ctx, async (call) => {
       if (call === 1) await rename(ctx, 'Roastery');
@@ -355,10 +367,18 @@ describe('GET /shops/:npub', () => {
     expect(noteReads()).toBe(3);
   });
 
-  it('answers 503 when the name still changes between the re-read and the allocation', async () => {
+  it('answers 503 when the name still changes after the forced refresh and the re-read', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const ctx = await setup();
-    const { app, noteReads } = racingApp(ctx, (call) => rename(ctx, `Roastery ${String(call)}`));
+    // Each directory reads one name, and the note moves on right after it.
+    const { app, noteReads } = racingApp(
+      ctx,
+      (call) => rename(ctx, `Roastery ${String(call)}`),
+      false,
+      undefined,
+      undefined,
+      (call) => rename(ctx, `Bakery ${String(call)}`),
+    );
     const response = await app.request(`/shops/${ctx.npub}`);
     expect(response.status).toBe(503);
     expect(response.headers.get('cache-control')).toBe('no-store');
@@ -374,7 +394,7 @@ describe('GET /shops/:npub', () => {
     warn.mockRestore();
   });
 
-  it('answers 410 when the shop is unlisted between the note read and the NIP-05 allocation', async () => {
+  it('answers 410 when the shop is unlisted between the note read and the directory', async () => {
     const ctx = await setup();
     const { app, noteReads } = racingApp(ctx, async (call) => {
       if (call === 1) await ctx.messages.markDeleted(ID, new Date(0), 'staff');
@@ -385,7 +405,7 @@ describe('GET /shops/:npub', () => {
     expect(noteReads()).toBe(2);
   });
 
-  it('answers 503 when every allocation misses a shop that its note read still lists', async () => {
+  it('answers 503 when every directory misses a shop that its note read still lists', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const ctx = await setup();
     const { app, noteReads } = racingApp(ctx, () => Promise.resolve(), true);
@@ -538,6 +558,120 @@ describe('GET /shops/:npub', () => {
       [320, 200],
       [10, 20],
     ]);
+  });
+
+  describe('shared NIP-05 directory', () => {
+    const ENV = { PUBLIC_BASE_URL: 'https://21.gifts' };
+
+    /** A listed shop on a clock the test moves, with counted directory reads. */
+    async function counted(): Promise<{
+      ctx: Awaited<ReturnType<typeof setup>>;
+      clock: { now: number };
+      reads: () => { accounts: number; identities: number; notes: number };
+    }> {
+      const clock = { now: 1_000 };
+      const ctx = await setup({ env: ENV, now: () => clock.now });
+      const listAccounts = vi.spyOn(ctx.auth, 'listAccounts');
+      const listAll = vi.spyOn(ctx.identities, 'listAll');
+      const getByIds = vi.spyOn(ctx.messages, 'getByIds');
+      return {
+        ctx,
+        clock,
+        reads: () => ({
+          accounts: listAccounts.mock.calls.length,
+          identities: listAll.mock.calls.length,
+          notes: getByIds.mock.calls.length,
+        }),
+      };
+    }
+
+    it('computes the directory once for many concurrent requests inside the TTL', async () => {
+      const { ctx, reads } = await counted();
+      const responses = await Promise.all(
+        Array.from({ length: 30 }, () => ctx.app.request(`/shops/${ctx.npub}`)),
+      );
+      for (const response of responses) {
+        expect(response.status).toBe(200);
+        expect(((await response.json()) as { shop: { nip05: unknown } }).shop.nip05).toBe(
+          'coffee-lab@21.gifts',
+        );
+      }
+      expect(reads()).toEqual({ accounts: 1, identities: 1, notes: 1 });
+    });
+
+    it('recomputes the directory once the TTL ends', async () => {
+      const { ctx, clock, reads } = await counted();
+      expect((await ctx.app.request(`/shops/${ctx.npub}`)).status).toBe(200);
+      clock.now += NIP05_DIRECTORY_TTL_MS - 1;
+      expect((await ctx.app.request(`/shops/${ctx.npub}`)).status).toBe(200);
+      expect(reads().accounts).toBe(1);
+      clock.now += 1;
+      expect((await ctx.app.request(`/shops/${ctx.npub}`)).status).toBe(200);
+      expect(reads()).toEqual({ accounts: 2, identities: 2, notes: 2 });
+    });
+
+    it('forces at most one fresh directory per refresh gap for a renamed shop', async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const { ctx, clock, reads } = await counted();
+      expect((await ctx.app.request(`/shops/${ctx.npub}`)).status).toBe(200);
+      await ctx.messages.setPlace(ID, { ...note().place!, label: 'Roastery' });
+      // A burst for the renamed shop shares one forced refresh.
+      clock.now += 1;
+      const burst = await Promise.all(
+        Array.from({ length: 10 }, () => ctx.app.request(`/shops/${ctx.npub}`)),
+      );
+      for (const response of burst) {
+        expect(response.status).toBe(200);
+        expect(((await response.json()) as { shop: { nip05: unknown } }).shop.nip05).toBe(
+          'roastery@21.gifts',
+        );
+      }
+      expect(reads().accounts).toBe(2);
+      // Renamed again inside the gap: no further computation, so the route
+      // answers per its rules with 503 nip05_stale.
+      await ctx.messages.setPlace(ID, { ...note().place!, label: 'Bakery' });
+      clock.now += NIP05_DIRECTORY_REFRESH_MS - 1;
+      for (let n = 0; n < 5; n += 1) {
+        const stale = await ctx.app.request(`/shops/${ctx.npub}`);
+        expect(stale.status).toBe(503);
+        expect(stale.headers.get('cache-control')).toBe('no-store');
+      }
+      expect(reads().accounts).toBe(2);
+      expect(
+        warn.mock.calls.some((call) => String(call[0]).includes('"reason":"nip05_stale"')),
+      ).toBe(true);
+      // After the gap one request refreshes and the shop answers again.
+      clock.now += 1;
+      const fresh = await ctx.app.request(`/shops/${ctx.npub}`);
+      expect(fresh.status).toBe(200);
+      expect(((await fresh.json()) as { shop: { nip05: unknown } }).shop.nip05).toBe(
+        'bakery@21.gifts',
+      );
+      expect(reads()).toEqual({ accounts: 3, identities: 3, notes: 3 });
+      warn.mockRestore();
+    });
+
+    it('answers the same NIP-05 name as nostr.json from one shared directory', async () => {
+      const { ctx, clock, reads } = await counted();
+      const app = new Hono().route('/shops', ctx.app).route(
+        '/.well-known',
+        wellKnownRoutes({
+          auth: ctx.auth,
+          env: ENV,
+          now: () => clock.now,
+          shops: { identities: ctx.identities, messages: ctx.messages },
+        }),
+      );
+      const json = (await (await app.request('/.well-known/nostr.json')).json()) as {
+        names: Record<string, string>;
+      };
+      const shop = (await (await app.request(`/shops/shops/${ctx.npub}`)).json()) as {
+        shop: { nip05: string };
+      };
+      const local = shop.shop.nip05.split('@')[0]!;
+      expect(json.names).toEqual({ [local]: ctx.hex });
+      expect(reads().accounts).toBe(1);
+    });
   });
 
   it('answers 404 for every other segment', async () => {
