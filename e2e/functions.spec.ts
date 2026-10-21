@@ -169,9 +169,7 @@ test('Function: errorLogFields — GET /healthz is ok while the worker logs no t
   expect(res.status()).toBe(200);
 });
 
-test('Function: installPostgresConnectionClosedGuard — GET /healthz is ok', async ({
-  request,
-}) => {
+test('Function: installPostgresConnectionClosedGuard — GET /healthz is ok', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });

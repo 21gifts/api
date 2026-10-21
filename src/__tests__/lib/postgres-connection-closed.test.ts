@@ -42,7 +42,7 @@ describe('postgres connection closed', () => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     exit = vi.spyOn(process, 'exit').mockImplementation((): never => {
       throw new Error('exit');
-    });
+    }) as unknown as ReturnType<typeof vi.spyOn>;
   });
 
   afterEach(() => {
@@ -64,7 +64,7 @@ describe('postgres connection closed', () => {
     if (uncaught === undefined) {
       throw new Error('uncaught listener missing');
     }
-    uncaught(error);
+    uncaught(error, 'uncaughtException');
   }
 
   function emitRejection(reason: unknown): void {
@@ -135,9 +135,7 @@ describe('postgres connection closed', () => {
       emitUncaught(null as unknown as Error);
     }).toThrow('exit');
     expect(() => {
-      emitUncaught(
-        Object.assign(new Error('unique'), { name: 'PostgresError', code: '23505' }),
-      );
+      emitUncaught(Object.assign(new Error('unique'), { name: 'PostgresError', code: '23505' }));
     }).toThrow('exit');
     expect(() => {
       emitUncaught(
