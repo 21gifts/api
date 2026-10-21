@@ -343,8 +343,8 @@ spec adds no zap receipts for a shop key.
   be skipped and logged as `nip05.shop.collision`). For shops it adds
   one read of every `shop_identity` row and one bulk read of their notes
   (`MessageStore.getByIds`, `id = ANY($1::uuid[])`), not one read per shop.
-  `GET /shops/:npub` runs it once per request while `nip05Domain` is set,
-  `nostr.json` once per request, and the worker at most twice per tick (see
+  `GET /shops/:npub` runs it at most twice per request while `nip05Domain`
+  is set (once per round, see S3), `nostr.json` once per request, and the worker at most twice per tick (see
   S2). `GET /shops/:npub` and the worker use only the shop entries, and each
   allocation reads the accounts once itself, so they combine no second
   account read with it. There is no cache, so no answer can carry an allocation older than
@@ -363,14 +363,15 @@ after `GET /shops/activity`, so `activity` keeps its own handler. It takes any
 single path segment and validates it inside the handler, so every other value
 gets the 404 body and headers below.
 
-| Request                                  | Response                                                                                               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                             |
-| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                                             |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`                                         |
-| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                     |
-| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                              |
-| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"` |
+| Request                                  | Response                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                              |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                                              |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`                                          |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
+| note still changing after the photo read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "note_changed"` |
 
 `Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
 `Cache-Control: no-store` on 503.
@@ -392,6 +393,23 @@ One answer, one state of the note:
   does not match, the answer is the 503 above with
   `reason: "nip05_stale"`, never a 200 that pairs a name with another
   name's NIP-05 or a listed shop with a `null` NIP-05.
+- After the photo set the route reads the note again and compares the
+  fields the answer is built from: text (name source and description), pin,
+  till account id and `deletedAt` (the fields of the in-memory place
+  fingerprint). When one differs (a rename, a text or pin change, a new till
+  account or a hide while the photos were read), it goes round once more with
+  that re-read: a NIP-05 check against the new name, a new photo set read and
+  another re-read. When the note still differs on that last round, the answer
+  is the 503 above with `reason: "note_changed"`, never a 200 that pairs the
+  old name with photos set after the change, cached for 60 s. A photo-only
+  change inside the gap needs no round: the unchanged note with either set
+  is a state that existed. The photo count of the note is not compared with
+  the set read, because `getPhotoSet` leaves out a photo with an unrecognized
+  type that the note's `photo_count` still counts.
+- Read bound: at most two rounds, so at most three note reads (the first,
+  and one re-read per round, which the next round takes as its note), two
+  NIP-05 allocations and two photo set reads per request. A 503 does not
+  retry further.
 
 Error texts: the 404 reuses `Not found`, as `GET /pay/:username` does. The 503
 gets its own `Shops are unavailable`, following the per-route rule that each

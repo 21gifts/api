@@ -1445,14 +1445,15 @@ or invalid bearer gets the same answer. Registered after `/shops/activity`,
 so `activity` keeps its own handler. The route takes any single path segment
 and validates it inside the handler.
 
-| Request                                  | Response                                                                                               |
-| ---------------------------------------- | ------------------------------------------------------------------------------------------------------ |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                             |
-| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                       |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                    |
-| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                     |
-| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                              |
-| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"` |
+| Request                                  | Response                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                              |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                        |
+| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                     |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
+| note still changing after the photo read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "note_changed"` |
 
 `Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
 `Cache-Control: no-store` on 503. The 410 body carries no name.
@@ -1477,8 +1478,16 @@ shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
 the name of the note this request read; when it is missing or carries
 another name (renamed or unlisted in between), the route reads the note again
 and allocates once more (a note no longer listed is then 410), and when it
-still does not match it answers the 503 with `reason: "nip05_stale"`. `createdAt` is the note's ISO-8601
-creation time.
+still does not match it answers the 503 with `reason: "nip05_stale"`. After
+the photo set the route reads the note again; when its text, pin, till
+account id or `deletedAt` differ from the note the answer is built from (a
+rename, text or pin change while the photos were read), it goes round once
+more with that re-read, and when the note still differs on that last round it
+answers the 503 with `reason: "note_changed"`, so a 200 never pairs the old
+name with photos set after the change. A request reads the note at most three
+times, allocates NIP-05 at most twice and reads the photo set at most twice
+([docs/shop-identity.md](docs/shop-identity.md) S3). `createdAt` is the note's
+ISO-8601 creation time.
 
 A **listed shop** is a live top-level note with the `#21GiftsShop` token, a
 pin, a till account (`shop_account_id`) and a complete pin and description

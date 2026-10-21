@@ -7,7 +7,7 @@ import { Hono } from 'hono';
 import { nip19 } from 'nostr-tools';
 import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
-import type { ForumPhoto } from '@/lib/message';
+import type { ForumPhoto, MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { forumExtraPhotoUrl, forumPhotoUrl } from '@/lib/nostr/event';
 import { imageHeaderSize } from '@/lib/nostr/image';
@@ -63,10 +63,24 @@ function photoRow(
 }
 
 /**
- * Reads of the note before a NIP-05 entry that does not carry the shop's
- * name ends in 503: the first read, and one re-read.
+ * Rounds of `GET /shops/:npub` before a changing note ends in 503. A round
+ * reads the note (round 1) or takes the re-read of the round before, checks
+ * the NIP-05 entry, reads the photo set and re-reads the note. Two rounds
+ * read the note at most three times, build the NIP-05 directory at most
+ * twice and read the photo set at most twice.
  */
-const NOTE_READS = 2;
+const READ_ROUNDS = 2;
+
+/**
+ * The note fields that make up a `GET /shops/:npub` answer: text (name source
+ * and description), pin (name, place), till account id (pay username) and
+ * `deletedAt` (listed). The same fields as the in-memory place fingerprint in
+ * `src/lib/shop-identity.ts`; `parentId`, `createdAt` and the id do not change.
+ */
+function answerFields(note: MessageRow | undefined): string {
+  if (note === undefined) return 'missing';
+  return JSON.stringify([note.text, note.place, note.shopAccount?.id, note.deletedAt]);
+}
 
 /**
  * Build the `/shops` route group with `GET /:npub`.
@@ -75,14 +89,20 @@ const NOTE_READS = 2;
  * hex form of a known key, 410 for a known key whose note is not listed,
  * 404 for anything else, 503 on a store failure (`shops.detail.failed`).
  *
- * The photos come from one read of the whole set
- * ({@link MessageStore.getPhotoSet}). While the NIP-05 domain is set, the
- * allocation's entry must carry the name of the note this request read; a
- * missing entry or another name (renamed or unlisted between the two reads)
- * re-reads the note and allocates once more, and when that still does not
- * match the answer is 503 (`shops.detail.failed` with
+ * One answer comes from one state of the note. The photos come from one read
+ * of the whole set ({@link MessageStore.getPhotoSet}). While the NIP-05
+ * domain is set, the allocation's entry must carry the name of the note this
+ * round read; a missing entry or another name (renamed or unlisted between
+ * the two reads) goes round once more with a re-read of the note, and on the
+ * last round the answer is 503 (`shops.detail.failed` with
  * `reason: 'nip05_stale'`), so a 200 never pairs a name with another name's
- * NIP-05 or a listed shop with a null NIP-05.
+ * NIP-05 or a listed shop with a null NIP-05. After the photo set the note is
+ * read again; when its text, pin, till account or `deletedAt` differ from the
+ * round's note (a rename, text or pin change inside the gap), the route goes
+ * round once more with that re-read, and on the last round the answer is 503
+ * (`shops.detail.failed` with `reason: 'note_changed'`), so a 200 never pairs
+ * the old name with photos set after the change. At most {@link READ_ROUNDS}
+ * rounds: three note reads, two NIP-05 directories, two photo set reads.
  *
  * @param deps - Stores and env.
  * @returns Hono sub-app mounted at `/shops`.
@@ -101,8 +121,9 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
         return c.body(null, 301, { ...PUBLIC_CACHE, Location: `/shops/${npub}` });
       }
       const domain = nip05Domain(env);
-      for (let read = 1; ; read += 1) {
-        const note = await deps.messages.getById(identity.messageId);
+      let read = await deps.messages.getById(identity.messageId);
+      for (let round = 1; ; round += 1) {
+        const note = read;
         const shop = listedShop(note);
         if (note === undefined || shop === null) {
           return c.json({ error: 'Shop is no longer listed', npub }, 410, PUBLIC_CACHE);
@@ -114,13 +135,26 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
           ).find((row) => row.messageId === note.id);
           if (entry === undefined || entry.name !== shop.name) {
             // Renamed or unlisted between the note read and the allocation.
-            if (read < NOTE_READS) continue;
+            if (round < READ_ROUNDS) {
+              read = await deps.messages.getById(identity.messageId);
+              continue;
+            }
             logEvent('shops.detail.failed', { reason: 'nip05_stale' });
             return c.json({ error: 'Shops are unavailable' }, 503, NO_STORE);
           }
           nip05 = `${entry.local}@${domain}`;
         }
         const set = await deps.messages.getPhotoSet(note.id);
+        const after = await deps.messages.getById(identity.messageId);
+        if (answerFields(after) !== answerFields(note)) {
+          // Renamed, rewritten, re-pinned or unlisted while the photos were read.
+          if (round < READ_ROUNDS) {
+            read = after;
+            continue;
+          }
+          logEvent('shops.detail.failed', { reason: 'note_changed' });
+          return c.json({ error: 'Shops are unavailable' }, 503, NO_STORE);
+        }
         const apiBase = resolvePublicApiBase(env);
         const photos = (set.photo === null ? [] : [set.photo, ...set.extras])
           .slice(0, 10)

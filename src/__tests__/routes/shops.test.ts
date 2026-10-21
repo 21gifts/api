@@ -205,20 +205,25 @@ describe('GET /shops/:npub', () => {
 
   /**
    * Route over `messages` whose bulk note read (the NIP-05 allocation) runs
-   * `beforeAllocation` with the 1-based call number first, and counts the
-   * route's note reads.
+   * `beforeAllocation` with the 1-based call number first, whose photo set
+   * read runs `afterPhotoRead` with its 1-based call number after reading,
+   * and counts the route's note reads. `noteGoneFrom` makes every note read
+   * from that 1-based number on answer `undefined`.
    */
   function racingApp(
     ctx: Awaited<ReturnType<typeof setup>>,
     beforeAllocation: (call: number) => Promise<void>,
     hideInAllocation = false,
+    afterPhotoRead: (call: number) => Promise<void> = () => Promise.resolve(),
+    noteGoneFrom = Number.POSITIVE_INFINITY,
   ): { app: Hono; noteReads: () => number } {
     let allocations = 0;
+    let photoReads = 0;
     let noteReads = 0;
     const racing = {
       getById: (id: string) => {
         noteReads += 1;
-        return ctx.messages.getById(id);
+        return noteReads >= noteGoneFrom ? Promise.resolve(undefined) : ctx.messages.getById(id);
       },
       getByIds: async (ids: readonly string[]) => {
         allocations += 1;
@@ -226,7 +231,12 @@ describe('GET /shops/:npub', () => {
         const rows = await ctx.messages.getByIds(ids);
         return hideInAllocation ? rows.map((row) => ({ ...row, deletedAt: new Date(0) })) : rows;
       },
-      getPhotoSet: (id: string) => ctx.messages.getPhotoSet(id),
+      getPhotoSet: async (id: string) => {
+        photoReads += 1;
+        const set = await ctx.messages.getPhotoSet(id);
+        await afterPhotoRead(photoReads);
+        return set;
+      },
     } as unknown as MessageStore;
     const app = new Hono().route(
       '/shops',
@@ -260,7 +270,8 @@ describe('GET /shops/:npub', () => {
       nip05: 'roastery@21.gifts',
       place: { label: 'Roastery' },
     });
-    expect(noteReads()).toBe(2);
+    // First read, the re-read after the allocation, the re-read after the photos.
+    expect(noteReads()).toBe(3);
   });
 
   it('answers 503 when the name still changes between the re-read and the allocation', async () => {
@@ -301,6 +312,111 @@ describe('GET /shops/:npub', () => {
     expect(response.status).toBe(503);
     expect(noteReads()).toBe(2);
     warn.mockRestore();
+  });
+
+  const AFTER = [
+    { contentType: 'image/png' as const, bytes: png(640, 480) },
+    { contentType: 'image/png' as const, bytes: png(30, 40) },
+  ];
+
+  it('goes round once more when the shop is renamed and its photos replaced inside the photo read', async () => {
+    const ctx = await setup({ photos: [{ contentType: 'image/png', bytes: png(320, 200) }] });
+    const { app, noteReads } = racingApp(
+      ctx,
+      () => Promise.resolve(),
+      false,
+      async (call) => {
+        if (call !== 1) return;
+        // The old set is already read; the note changes before the re-read.
+        await ctx.messages.replacePhotos(ID, AFTER);
+        await rename(ctx, 'Roastery');
+      },
+    );
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      shop: { name: unknown; nip05: unknown; photos: Array<{ width: unknown; height: unknown }> };
+    };
+    // Never the old name with either set: the new name with the new photos.
+    expect(body.shop).toMatchObject({ name: 'Roastery', nip05: 'roastery@21.gifts' });
+    expect(body.shop.photos.map((photo) => [photo.width, photo.height])).toEqual([
+      [640, 480],
+      [30, 40],
+    ]);
+    expect(noteReads()).toBe(3);
+  });
+
+  it('serves the changed description after one more round when only the text changes inside the photo read', async () => {
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(
+      ctx,
+      () => Promise.resolve(),
+      false,
+      async (call) => {
+        if (call === 1) {
+          await ctx.messages.updateText(ID, 'Fresh beans roasted here at noon. #21GiftsShop');
+        }
+      },
+    );
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as { shop: { description: unknown } };
+    expect(body.shop.description).toBe('Fresh beans roasted here at noon.');
+    expect(noteReads()).toBe(3);
+  });
+
+  it('serves a photo-only change inside the photo read without another round', async () => {
+    const ctx = await setup({ photos: [{ contentType: 'image/png', bytes: png(320, 200) }] });
+    const { app, noteReads } = racingApp(
+      ctx,
+      () => Promise.resolve(),
+      false,
+      async (call) => {
+        if (call === 1) await ctx.messages.replacePhotos(ID, AFTER);
+      },
+    );
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(200);
+    const body = (await response.json()) as {
+      shop: { name: unknown; photos: Array<{ width: unknown }> };
+    };
+    // The note did not change, so the old set with this note did exist.
+    expect(body.shop.name).toBe('Coffee Lab');
+    expect(body.shop.photos.map((photo) => photo.width)).toEqual([320]);
+    expect(noteReads()).toBe(2);
+  });
+
+  it('answers 503 note_changed when the note still changes inside the last photo read', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(
+      ctx,
+      () => Promise.resolve(),
+      false,
+      (call) => rename(ctx, `Roastery ${String(call)}`),
+    );
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: 'Shops are unavailable' });
+    // The bound: three note reads over two rounds.
+    expect(noteReads()).toBe(3);
+    expect(
+      warn.mock.calls.some(
+        (call) =>
+          String(call[0]).includes('"event":"shops.detail.failed"') &&
+          String(call[0]).includes('"reason":"note_changed"'),
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+  });
+
+  it('answers 410 when the note is gone after the photo read', async () => {
+    const ctx = await setup();
+    const { app, noteReads } = racingApp(ctx, () => Promise.resolve(), false, undefined, 2);
+    const response = await app.request(`/shops/${ctx.npub}`);
+    expect(response.status).toBe(410);
+    expect(noteReads()).toBe(2);
   });
 
   it('serves one whole photo set when the photos are swapped between the former two reads', async () => {
