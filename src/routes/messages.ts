@@ -1251,14 +1251,22 @@ async function persistForumPost(
       }
     }
     const published = created;
-    if (!isReplay) {
+    if (
+      !isReplay &&
+      deps.mapPush !== undefined &&
+      published.parentId === null &&
+      published.place !== null &&
+      published.place !== undefined &&
+      textHasHashtagToken(published.text, '21GiftsShop')
+    ) {
       // The push reads the row in turn: a shop hidden or edited meanwhile is not overwritten.
+      const mapPush = deps.mapPush;
       await queueShopMapPush(deps.store, published.id, async (latest) => {
         if (latest === undefined || latest.deletedAt !== null) {
           return;
         }
         await syncShopOcpPlace({
-          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+          mapPush,
           messageId: latest.id,
           text: latest.text,
           parentId: latest.parentId ?? null,

@@ -12168,11 +12168,19 @@ describe('shop OCP place hook', () => {
   });
 
   it.each([
-    ['gone', undefined],
-    ['hidden', new Date(0)],
+    ['gone', (): MessageRow | undefined => undefined],
+    ['hidden', (row: MessageRow): MessageRow | undefined => ({ ...row, deletedAt: new Date(0) })],
+    [
+      'without a pin',
+      (row: MessageRow): MessageRow | undefined => {
+        const pinless = { ...row };
+        delete pinless.place;
+        return pinless;
+      },
+    ],
   ])(
     'sends nothing for a new shop note whose row is %s at its map turn',
-    async (_label, hidden) => {
+    async (_label, atTurn: (row: MessageRow) => MessageRow | undefined) => {
       const { mapPush, calls } = recordingMap();
       const messages = new InMemoryMessageStore();
       const store = new Proxy(messages, {
@@ -12180,9 +12188,7 @@ describe('shop OCP place hook', () => {
           if (property === 'getById') {
             return async (id: string): Promise<MessageRow | undefined> => {
               const row = await target.getById(id);
-              return hidden === undefined || row === undefined
-                ? undefined
-                : { ...row, deletedAt: hidden };
+              return row === undefined ? undefined : atTurn(row);
             };
           }
           const value: unknown = Reflect.get(target, property, target);
@@ -12566,7 +12572,7 @@ describe('shop OCP place hook', () => {
     expect(res.status).toBe(204);
   });
 
-  it('does not call the map when deleting a note that is not a shop', async () => {
+  it('does not call the map when deleting a note that is not a shop or a reply', async () => {
     const plain = recordingMap();
     const plainMessages = new InMemoryMessageStore();
     await shopNote(plainMessages, { text: 'plain note' });
@@ -12575,6 +12581,16 @@ describe('shop OCP place hook', () => {
     }).request('/messages/' + SHOP_ID, { method: 'DELETE', headers: AUTH });
     expect(plainRes.status).toBe(204);
     expect(plain.calls).toEqual([]);
+    const reply = recordingMap();
+    const replyMessages = new InMemoryMessageStore();
+    const parentId = '77777777-7777-4777-8777-777777777777';
+    await shopNote(replyMessages, { id: parentId, text: 'parent note' });
+    await shopNote(replyMessages, { parentId });
+    const replyRes = await mount(await staffStore('Ada'), replyMessages, {
+      mapPush: reply.mapPush,
+    }).request('/messages/' + SHOP_ID, { method: 'DELETE', headers: AUTH });
+    expect(replyRes.status).toBe(204);
+    expect(reply.calls).toEqual([]);
   });
 
   it('does not map-call a media replay of the same shop pin', async () => {
