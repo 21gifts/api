@@ -24,7 +24,7 @@ export interface ShopRouteDeps {
   messages: MessageStore;
   /** Shop identities. */
   identities: ShopIdentityStore;
-  /** Process env (`PUBLIC_BASE_URL`, `PUBLIC_API_BASE_URL`). Default `process.env`. */
+  /** Process env (`PUBLIC_BASE_URL` for the NIP-05 domain and the photo URLs). Default `process.env`. */
   env?: Record<string, string | undefined>;
 }
 

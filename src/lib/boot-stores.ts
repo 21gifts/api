@@ -219,7 +219,7 @@ export interface BootFxOptions {
  * `trustStore: undefined`, `fundingStore: undefined`, a fresh
  * {@link InMemoryDailyRosterStore} as `rosterStore`, `bannerStore: undefined`,
  * `listDbChange: undefined`,
- * `debugDbStore: undefined`, `nostrKek: undefined`,
+ * `debugDbStore: undefined`, `shopIdentityStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, and an empty {@link InMemoryFiatStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily` then `usd_fiat_daily`),
