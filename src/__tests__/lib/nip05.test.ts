@@ -458,7 +458,7 @@ describe('nip05', () => {
       expect(computations()).toBe(2);
     });
 
-    it('treats a clock that stepped back past the TTL or gap as expired and keeps the newer result', async () => {
+    it('treats a clock that stepped back past the refresh gap as expired and keeps the newer result', async () => {
       const { auth, stores, computations } = await fixture();
       const late = await nip05Directory(auth, stores, 200_000);
       const forcedLate = await nip05Directory(auth, stores, 200_001, true);
@@ -480,6 +480,10 @@ describe('nip05', () => {
       expect(await nip05Directory(auth, stores, 50_000, true)).toBe(forced);
       expect(await nip05Directory(auth, stores, 49_999)).toBe(forced);
       expect(computations()).toBe(4);
+      // A step back past the gap but inside the TTL recomputes the cache.
+      const stepped = await nip05Directory(auth, stores, 30_000);
+      expect(stepped).not.toBe(forced);
+      expect(computations()).toBe(5);
     });
 
     it('refreshes a ?name= the cache gives a shop once an account holds it as its username', async () => {

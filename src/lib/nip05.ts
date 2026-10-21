@@ -420,8 +420,8 @@ async function computeDirectory(
  * forced computation in flight, else the cached directory (computed as a
  * plain read when it expired). A failed computation is not cached: its
  * callers get the error and the next read computes again. A clock that steps
- * back by more than the TTL (cache) or the refresh gap (forced start) counts
- * as elapsed, so a clock step never freezes the cache; a reading only
+ * back by more than the refresh gap (behind the cached directory's or the
+ * last forced start) counts as elapsed, so a clock step never freezes the cache; a reading only
  * slightly before the cached one (a caller that read the clock before an
  * await) still gets the cache and the gap.
  *
@@ -455,7 +455,7 @@ export async function nip05Directory(
   }
   if (slot.value !== undefined) {
     const age = now - slot.value.startedAt;
-    if (age >= -NIP05_DIRECTORY_TTL_MS && age < NIP05_DIRECTORY_TTL_MS) {
+    if (age >= -NIP05_DIRECTORY_REFRESH_MS && age < NIP05_DIRECTORY_TTL_MS) {
       return slot.value.directory;
     }
   }

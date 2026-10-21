@@ -387,8 +387,8 @@ spec adds no zap receipts for a shop key.
   10 s answers 503 `nip05_stale` (and its kind 0 waits) until the gap ends.
   A failed computation is not cached; its callers get the error. Results
   are ordered by the order their computations started, not by the clock,
-  and a clock that steps back by more than the 60 s TTL (cache) or the 10 s
-  gap (forced refresh) counts as elapsed, so a clock step never freezes the
+  and a clock that steps back by more than the 10 s gap (behind the cached
+  directory's or the last forced start) counts as elapsed, so a clock step never freezes the
   cache, while a reading taken shortly before an await still gets the cache
   and the gap.
 
