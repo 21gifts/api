@@ -950,6 +950,52 @@ function multipartPlaceAddress(form: FormData): unknown {
   return { street, houseNumber, postalCode, city, country };
 }
 
+// The last map push queued per note id; each push waits for the one before it.
+const shopMapQueue = new Map<string, Promise<void>>();
+
+/**
+ * Run one map push for a note after every earlier push for that note.
+ *
+ * With `readRow`, the push gets the row read when its turn comes, so
+ * concurrent edits of one shop reach the map in order and the last queued
+ * push sees the last write. A failed read logs `ocp.place.failed` and skips
+ * the push. Without `readRow` the push runs in turn without a read.
+ *
+ * @param store - Message store the row is read from.
+ * @param id - Forum message id (the map `externalId`).
+ * @param push - The map call; receives the row, or `undefined` when it is gone or not read.
+ * @param readRow - Whether to read the row first. Default true.
+ */
+async function queueShopMapPush(
+  store: MessageStore,
+  id: string,
+  push: (latest: MessageRow | undefined) => Promise<void>,
+  readRow = true,
+): Promise<void> {
+  const turn = (shopMapQueue.get(id) ?? Promise.resolve()).then(async () => {
+    if (!readRow) {
+      await push(undefined);
+      return;
+    }
+    let latest: MessageRow | undefined;
+    try {
+      latest = await store.getById(id);
+    } catch {
+      logEvent('ocp.place.failed', { messageId: id });
+      return;
+    }
+    await push(latest);
+  });
+  shopMapQueue.set(id, turn);
+  try {
+    await turn;
+  } finally {
+    if (shopMapQueue.get(id) === turn) {
+      shopMapQueue.delete(id);
+    }
+  }
+}
+
 /**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor and except mention account ids on the
@@ -1203,14 +1249,21 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await syncShopOcpPlace({
-        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: published.id,
-        text: published.text,
-        parentId: published.parentId ?? null,
-        place: published.place ?? null,
-        textHasHashtagToken,
-      });
+      await queueShopMapPush(
+        deps.store,
+        published.id,
+        async () => {
+          await syncShopOcpPlace({
+            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+            messageId: published.id,
+            text: published.text,
+            parentId: published.parentId ?? null,
+            place: published.place ?? null,
+            textHasHashtagToken,
+          });
+        },
+        false,
+      );
     }
     return c.json(
       serializeMessage(
@@ -1634,39 +1687,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
-  // The last map push queued per note id; each push waits for the one before it.
-  const shopMapQueue = new Map<string, Promise<void>>();
-  /**
-   * Run one map push for a note after every earlier push for that note.
-   *
-   * The push reads the row when its turn comes, so concurrent edits of one shop
-   * reach the map in order and the last push sees the last write. A failed read
-   * logs `ocp.place.failed` and skips the push.
-   */
-  const queueShopMapPush = async (
-    id: string,
-    push: (latest: MessageRow | undefined) => Promise<void>,
-  ): Promise<void> => {
-    const turn = (shopMapQueue.get(id) ?? Promise.resolve()).then(async () => {
-      let latest: MessageRow | undefined;
-      try {
-        latest = await deps.store.getById(id);
-      } catch {
-        logEvent('ocp.place.failed', { messageId: id });
-        return;
-      }
-      await push(latest);
-    });
-    shopMapQueue.set(id, turn);
-    try {
-      await turn;
-    } finally {
-      if (shopMapQueue.get(id) === turn) {
-        shopMapQueue.delete(id);
-      }
-    }
-  };
-
   return new Hono()
     .get('/', async (c) => {
       const header = c.req.header('authorization');
@@ -2192,12 +2212,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           target.place !== undefined &&
           textHasHashtagToken(target.text, '21GiftsShop')
         ) {
-          await queueShopMapPush(target.id, async () => {
-            await removeShopOcpPlace({
-              ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-              messageId: target.id,
-            });
-          });
+          await queueShopMapPush(
+            deps.store,
+            target.id,
+            async () => {
+              await removeShopOcpPlace({
+                ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
+                messageId: target.id,
+              });
+            },
+            false,
+          );
         }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
@@ -2321,15 +2346,20 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        // The push reads the row in turn: a shop hidden meanwhile stays off the map.
-        await queueShopMapPush(updated.id, async (latest) => {
-          if (parsed.value !== null && latest !== undefined && latest.deletedAt === null) {
+        // The push reads the row in turn: a shop hidden or cleared meanwhile stays off the map.
+        await queueShopMapPush(deps.store, updated.id, async (latest) => {
+          if (
+            latest !== undefined &&
+            latest.deletedAt === null &&
+            latest.place !== null &&
+            latest.place !== undefined
+          ) {
             await syncShopOcpPlace({
               ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
               messageId: latest.id,
               text: latest.text,
               parentId: latest.parentId ?? null,
-              place: latest.place ?? null,
+              place: latest.place,
               removeWhenIncomplete: true,
               textHasHashtagToken,
             });
@@ -2449,7 +2479,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           role: account.role,
         });
         // The push reads the row in turn: a shop hidden meanwhile stays off the map.
-        await queueShopMapPush(updated.id, async (latest) => {
+        await queueShopMapPush(deps.store, updated.id, async (latest) => {
           if (latest === undefined || latest.deletedAt !== null) {
             await removeShopOcpPlace({
               ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
@@ -2582,7 +2612,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           role: account.role,
         });
         // The push reads the row in turn: a shop hidden meanwhile stays off the map.
-        await queueShopMapPush(updated.id, async (latest) => {
+        await queueShopMapPush(deps.store, updated.id, async (latest) => {
           if (latest === undefined || latest.deletedAt !== null) {
             await removeShopOcpPlace({
               ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),

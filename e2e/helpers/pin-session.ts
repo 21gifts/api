@@ -55,17 +55,3 @@ export async function verifiedPinSession(
 ): Promise<{ authorization: string }> {
   return pinSession(request, stamp, 'verified');
 }
-
-/**
- * Create a moderator account and return its authenticated request headers.
- *
- * @param request - Playwright request context for the booted API.
- * @param stamp - Unique suffix for the debug account and Lightning Address.
- * @returns Bearer headers for the moderator session.
- */
-export async function staffPinSession(
-  request: APIRequestContext,
-  stamp: string,
-): Promise<{ authorization: string }> {
-  return pinSession(request, stamp, 'moderator');
-}

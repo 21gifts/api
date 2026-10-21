@@ -12357,8 +12357,8 @@ describe('shop OCP place hook', () => {
     expect(res.status).toBe(200);
   });
 
-  it('sends nothing when a place write reloads a pin cleared concurrently', async () => {
-    const { mapPush, calls } = recordingMap();
+  it('deletes the map pin when a place write reloads a pin cleared concurrently', async () => {
+    const { mapPush, calls, meta } = recordingMap();
     const messages = new InMemoryMessageStore();
     await shopNote(messages);
     await messages.setPlace(SHOP_ID, PIN);
@@ -12384,7 +12384,8 @@ describe('shop OCP place hook', () => {
       },
     );
     expect(res.status).toBe(200);
-    expect(calls).toHaveLength(0);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
   });
 
   it('deletes the map pin when a text write reloads an incomplete concurrent place', async () => {
@@ -12476,6 +12477,37 @@ describe('shop OCP place hook', () => {
       origin: '21gifts',
       externalId: SHOP_ID,
     });
+  });
+
+  it('sends the hide DELETE without reading the row again', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, PIN);
+    let reads = 0;
+    const store = new Proxy(messages, {
+      get(target, property) {
+        if (property === 'getById') {
+          return async (id: string): Promise<MessageRow | undefined> => {
+            reads += 1;
+            if (reads > 1) {
+              throw new Error('read failed');
+            }
+            return target.getById(id);
+          };
+        }
+        const value: unknown = Reflect.get(target, property, target);
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+    });
+    const res = await mount(await staffStore('Ada'), store, { mapPush }).request(
+      '/messages/' + SHOP_ID,
+      { method: 'DELETE', headers: AUTH },
+    );
+    expect(res.status).toBe(204);
+    expect(reads).toBe(1);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('DELETE');
   });
 
   it('hides a shop pin when the map push is not configured', async () => {
