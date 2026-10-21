@@ -418,13 +418,13 @@ export interface Kind0ProfileContent {
  * the profile-photo slot and `banner` is only the wide-image slot. Blank
  * values fall back to {@link KIND0_PICTURE_URL} and {@link KIND0_BANNER_URL}.
  * The About me note photo is neither. `about` defaults to `21.gifts` and is
- * the profile-note text when the worker passes it. Set `nip05` when a public
- * host is available. Never set `bot`.
+ * the profile-note text (or the shop description for a shop profile) when the
+ * worker passes it. Set `nip05` when a public host is available. Never set `bot`.
  *
  * @param name - Non-null display name.
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param nip05 - NIP-05 identifier, or `null`.
- * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param about - Kind:0 about text (profile note, shop description, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. Blank values fall back to the shared images. The About me photo is neither.
  * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
  * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.
@@ -477,7 +477,7 @@ export interface UnsignedKind0 {
  * @param lightningAddress - Linked LUD-16, or `null`.
  * @param createdAtUnix - Unix seconds at enqueue/publish.
  * @param nip05 - NIP-05 identifier, or `null`.
- * @param about - Kind:0 about text (profile note, or default `21.gifts`).
+ * @param about - Kind:0 about text (profile note, shop description, or default `21.gifts`).
  * @param images - Optional profile-photo `picture` and wide-image `banner` URLs. The About me photo is neither.
  * @param website - Site URL; default `https://21.gifts`, the shop page URL for a shop profile.
  * @param includeImages - When `false`, omit `picture` and `banner` (shop profiles); default `true`.

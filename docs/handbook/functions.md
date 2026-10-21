@@ -848,7 +848,7 @@
 - **Purpose:** Whether `text` contains a `#name` hashtag token. Match is case-insensitive and the token must not be followed by `[A-Za-z0-9_]`, so `#21GiftsShopper` does not match `21GiftsShop`.
 - **Inputs:** `text` string and `name` (token without the leading `#`).
 - **Returns / side effects:** `boolean`. No I/O. `#21giftsshop` matches `21GiftsShop`; `#21GiftsShopper` does not.
-- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`), `activeShopDays` (`GET /shops/activity`).
+- **Used by:** `messagesRoutes` (`PATCH /messages/:id/place`), `activeShopDays` (`GET /shops/activity`), `InMemoryMessageStore.listPlaces` (`shop` flag), `InMemoryShopIdentityStore.listCandidates`.
 
 ## Function: isPubkeyBlocked
 
@@ -1169,7 +1169,7 @@
 - **Purpose:** One JSON line on `console.warn` (`ts` + `event` + fields). During a request, validated client fields from `readClientRequestMeta` are merged underneath the explicit fields, and explicit fields win. Absent client fields are omitted. Outside a request, only the explicit fields are written. Never log secrets.
 - **Inputs:** `event` string, optional `LogFields`.
 - **Returns / side effects:** void.
-- **Used by:** Auth, me, lightning-address, requestLog.
+- **Used by:** Auth, me, lightning-address, requestLog; the shop key paths (`shop.nostr_key.failed` from worker `backfillShopKeys`, `ensureShopIdentity` in `messagesRoutes`, `PUT /me/about`, and `POST /debug/messages/:id/restore`); worker `publishShopProfiles` and `publishShopRelayLists` (`nostr.profile.*`, `nostr.relays.*`); the OpenCryptoPay outbox (`ocp.place.*`, `ocp.photos.*`); `shopRoutes` (`shops.detail.failed`).
 
 ## Function: setDiagnosticSink
 
@@ -1182,7 +1182,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`) and `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim in `sendPlace`, `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass; `ocp.place.failed`, `ocp.photos.failed`).
 
 ## Function: meRoutes
 
@@ -2303,28 +2303,28 @@
 - **Purpose:** Derive NIP-01 hex pubkey.
 - **Inputs:** 32-byte secret.
 - **Returns / side effects:** 64-char hex.
-- **Used by:** `ensureAccountNostrKey`.
+- **Used by:** `ensureAccountNostrKey` and the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed`.
 
 ## Function: encryptNostrSecret
 
 - **Purpose:** AES-256-GCM envelope for a 32-byte nsec.
-- **Inputs:** secret, kek, accountId, optional kekId.
+- **Inputs:** secret, kek, accountId (the AAD: an account id, or `shop:{messageId}` for a shop key), optional kekId.
 - **Returns / side effects:** Envelope bytes.
-- **Used by:** `ensureAccountNostrKey`.
+- **Used by:** `ensureAccountNostrKey` and the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed` (AAD `shop:{messageId}`).
 
 ## Function: decryptNostrSecret
 
 - **Purpose:** Decrypt a v1 envelope (`kek_id=1` only).
-- **Inputs:** envelope, kek, accountId.
+- **Inputs:** envelope, kek, accountId (the AAD: an account id, or `shop:{messageId}` for a shop key).
 - **Returns / side effects:** 32-byte secret.
-- **Used by:** `signEventForAccount`.
+- **Used by:** `signEventForAccount` and `signEventForShop` (AAD `shop:{messageId}`).
 
 ## Function: zeroizeSecret
 
 - **Purpose:** Overwrite a secret buffer with zeros.
 - **Inputs:** `Uint8Array`.
 - **Returns / side effects:** In-place fill.
-- **Used by:** `ensureAccountNostrKey`, `signEventForAccount`.
+- **Used by:** `ensureAccountNostrKey`, `signEventForAccount`, `signEventForShop`, and the shop key creation of `InMemoryShopIdentityStore.ensureListed` / `PostgresShopIdentityStore.ensureListed`.
 
 ## Function: ensureAccountNostrKey
 
@@ -2476,7 +2476,7 @@
 ## Function: buildKind0Content
 
 - **Purpose:** Kind:0 JSON without extra whitespace (`name`, `display_name`, `website`, `banner`, `picture`, `about`, optional `lud16`, optional `nip05`).
-- **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present), optional `images` with personal `picture` and `banner` URLs, optional `website` (default `https://21.gifts`), and optional `includeImages` (default true).
+- **Inputs:** name, lightningAddress or null, optional nip05 or null, optional `about` (default `'21.gifts'`; worker passes profile-note text when present, and `shopDescription` of the note for a shop profile), optional `images` with personal `picture` and `banner` URLs, optional `website` (default `https://21.gifts`), and optional `includeImages` (default true).
 - **Returns / side effects:** JSON string. `picture` and `banner` are the passed URLs when non-blank, otherwise the 21.gifts icon and `https://21.gifts/og.png`; both are omitted when `includeImages` is false. The worker passes the account's own profile photo only as `picture` and the account's own wide image only as `banner`. The About me note photo is neither. `lud16` only when address set. `nip05` only when a public identifier is passed.
 - **Used by:** `buildKind0Event`, worker `publishProfiles` and the shop kind 0 (`website` = `<site origin>/{npub}`; `includeImages` false for a shop that is no longer listed).
 
@@ -2492,7 +2492,7 @@
 - **Purpose:** Unsigned NIP-65 relay list.
 - **Inputs:** relay URLs, unix created_at.
 - **Returns / side effects:** Unsigned fields.
-- **Used by:** Worker `publishRelayLists`.
+- **Used by:** Worker `publishRelayLists` and `publishShopRelayLists` (shop kind 10002).
 
 ## Function: buildZapProbeRequest
 
@@ -2562,7 +2562,7 @@
 - **Purpose:** Space URL plus public URLs when public write is on.
 - **Inputs:** resolved write set.
 - **Returns / side effects:** URL list for EVENT fan-out.
-- **Used by:** Worker publish.
+- **Used by:** Worker publish, including `publishShopProfiles` and `publishShopRelayLists`.
 
 ## Function: replyHintRelay
 
@@ -2580,10 +2580,10 @@
 
 ## Function: resolvePublicApiBase
 
-- **Purpose:** HTTP origin for kind:1 photo URLs. Maps `https://21.gifts` → `https://api.21.gifts`, `https://dev.21.gifts` → `https://dev-api.21.gifts`, and `https://staging.21.gifts` → `https://staging-api.21.gifts`; otherwise the trimmed `PUBLIC_BASE_URL`.
+- **Purpose:** HTTP origin for photo URLs (kind:1, shop kind 0, `GET /shops/:npub`). Maps `https://21.gifts` → `https://api.21.gifts`, `https://dev.21.gifts` → `https://dev-api.21.gifts`, and `https://staging.21.gifts` → `https://staging-api.21.gifts`; otherwise the trimmed `PUBLIC_BASE_URL`.
 - **Inputs:** env slice.
 - **Returns / side effects:** Origin without trailing slash, or empty.
-- **Used by:** Worker sign path.
+- **Used by:** Worker sign path; shop kind 0 `picture` / `banner` (`shopKind0Args`); `shopRoutes` (photo URLs of `GET /shops/:npub`).
 
 ## Function: resolveZapRelays
 
@@ -2660,14 +2660,14 @@
 - **Purpose:** Whether the space relay ACK'd OK.
 - **Inputs:** acks, spaceUrl.
 - **Returns / side effects:** boolean.
-- **Used by:** Worker.
+- **Used by:** Worker, including `publishShopProfiles` and `publishShopRelayLists`.
 
 ## Function: publicAcked
 
 - **Purpose:** Whether a non-space relay ACK'd OK.
 - **Inputs:** acks, spaceUrl.
 - **Returns / side effects:** boolean.
-- **Used by:** Worker.
+- **Used by:** Worker, including `publishShopProfiles` and `publishShopRelayLists`.
 
 ## Function: runNostrWorkerTick
 
@@ -2759,10 +2759,10 @@
 
 ## Function: allocateNip05Local
 
-- **Purpose:** Unique NIP-05 local-part; first slug wins, collisions append account-id hex.
-- **Inputs:** name, account id, taken set.
+- **Purpose:** Unique NIP-05 local-part; first slug wins, collisions append account-id hex (a shop passes its message id).
+- **Inputs:** name, account id (or shop message id), taken set.
 - **Returns / side effects:** local-part string.
-- **Used by:** `nip05Identifier`, `listNip05Entries`.
+- **Used by:** `nip05Identifier`, `listNip05Entries`, `listShopNip05Entries` (shop locals, seeded with the account locals).
 
 ## Function: buildNostrJson
 
@@ -2846,7 +2846,7 @@
 - **Purpose:** Hostname from `PUBLIC_BASE_URL`; null for loopback/IP.
 - **Inputs:** env.
 - **Returns / side effects:** hostname or null.
-- **Used by:** kind:0 `nip05`.
+- **Used by:** account kind 0 `nip05` (worker `publishProfiles`), shop kind 0 `nip05` (`publishShopProfiles`), `shopRoutes` (`nip05` of `GET /shops/:npub`).
 
 ## Function: nip05Identifier
 
@@ -3293,7 +3293,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Encodes strings as one Postgres text-array literal (`{}` when empty; each value double-quoted; a backslash or double quote inside a value is escaped). Bun SQL does not encode a JavaScript array (`malformed array literal`).
 - **Inputs:** `readonly string[]`.
 - **Returns / side effects:** One text-array literal string. No I/O.
-- **Used by:** `PostgresFundingStore.transition` and `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids).
+- **Used by:** `PostgresFundingStore.transition` and `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids, `getByIds`).
 
 ## Function: PostgresFundingStore
 
@@ -3357,22 +3357,22 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 
 - **Purpose:** Note text without the shop tag, same rule as the app's `stripShopHashtag`. Converts CRLF to LF, removes every case-insensitive `#21GiftsShop` token not followed by `[A-Za-z0-9_]`, collapses 3+ newlines to 2, and trims.
 - **Inputs:** Stored or submitted note text.
-- **Returns / side effects:** Description string ready for the OpenCryptoPay map. No I/O.
-- **Used by:** `shopTextProblem` and `shopOcpPlaceInput`.
+- **Returns / side effects:** Description string for the OpenCryptoPay map, the shop kind 0 `about`, and the `description` of `GET /shops/:npub`. No I/O.
+- **Used by:** `shopTextProblem`, `shopOcpPlaceInput`, shop kind 0 `about` (`shopKind0Args`), and `shopRoutes` (`description`).
 
 ## Function: shopPlaceProblem
 
 - **Purpose:** Name and address problems of a shop pin, or null when both are complete. Order: name required, then address required, then the label must not contain the street or postal code as a standalone token.
 - **Inputs:** A `ForumPlace` on a shop note.
 - **Returns / side effects:** A fixed English error (`Shop name is required`, `Shop address is required`, or `Shop name must not contain the address`), or `null`. No I/O.
-- **Used by:** `POST /messages` (JSON and multipart) for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null, `PATCH /messages/:id/text` when deciding whether the stored pin is complete, and `shopOcpPlaceInput`.
+- **Used by:** `POST /messages` (JSON and multipart) for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null, `PATCH /messages/:id/text` when deciding whether the stored pin is complete, `shopOcpPlaceInput`, and `listedShop`.
 
 ## Function: shopTextProblem
 
 - **Purpose:** Description problem of a shop note, or null when it is complete. The description is `shopDescription` of the text (CRLF already folded to LF). It must be 20–1000 characters, strictly longer than the pin label, and not equal to the label case-insensitively. A missing label is compared as the empty string.
 - **Inputs:** Stored or submitted note text, and the forum pin or `null` when the note has none.
 - **Returns / side effects:** `Shop description must be 20 to 1000 characters and longer than the shop name`, or `null`. No I/O.
-- **Used by:** `POST /messages` for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null (after `shopPlaceProblem` passes), `PATCH /messages/:id/text` when the stored place is complete, and `shopOcpPlaceInput`.
+- **Used by:** `POST /messages` for a top-level shop with a pin, `PATCH /messages/:id/place` when the place is non-null (after `shopPlaceProblem` passes), `PATCH /messages/:id/text` when the stored place is complete, `shopOcpPlaceInput`, and `listedShop`.
 
 ## Function: shopOcpPlaceInput
 

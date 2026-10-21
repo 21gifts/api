@@ -55,7 +55,7 @@ const LNURLP_HEADERS = {
 /**
  * Build the `/.well-known` route group.
  *
- * @param deps - Auth store, env, optional fetch, optional pos store, and optional clock.
+ * @param deps - Auth store, env, optional fetch, optional pos store, optional clock, and optional shops.
  * @returns Hono app with `GET /nostr.json` and `GET /lnurlp/:username`.
  */
 export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {

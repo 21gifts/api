@@ -69,7 +69,7 @@ function nameContainsAddress(name: string, street: string, postalCode: string): 
  * not followed by `[A-Za-z0-9_]`, collapses 3+ newlines to 2, and trims.
  *
  * @param text - Stored or submitted note text.
- * @returns Description ready for the map.
+ * @returns Description for the map, the shop kind 0 `about`, and `GET /shops/:npub`.
  */
 export function shopDescription(text: string): string {
   const lf = text.replace(/\r\n/g, '\n').replace(/\r/g, '\n');

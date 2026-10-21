@@ -67,11 +67,12 @@ export function nip05Slug(name: string): string {
 }
 
 /**
- * Allocate a unique local-part. First account with a slug keeps it; later
- * collisions append 8 hex chars of the account id.
+ * Allocate a unique local-part. First account (or shop) with a slug keeps it;
+ * later collisions append 8 hex chars of the account id (a shop passes its
+ * message id).
  *
- * @param name - Display name.
- * @param accountId - Account id.
+ * @param name - Display name (or listed shop name).
+ * @param accountId - Account id, or the shop's message id.
  * @param taken - Locals already assigned in this pass.
  * @returns Unique local-part.
  */
