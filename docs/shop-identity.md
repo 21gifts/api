@@ -644,7 +644,8 @@ Rules for every claim:
   before every call that syncs its queue. The photo fingerprint is the
   photo revision of the in-memory message store
   (`InMemoryMessageStore.photoRevision`): a counter raised by every write
-  that changes photo 0 or an extra (index, content type or bytes) and left
+  that changes a recognized still (photo 0 or an extra: index, content type
+  or bytes; a still with an unrecognized type is not part of the set) and left
   unchanged by a write that stores the same stills. A sync therefore reads
   no photo bytes, so a public read (`GET /shops/:npub`, the NIP-05 list)
   does not read the photos of every shop. A change and its exact revert

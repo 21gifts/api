@@ -697,7 +697,8 @@ export interface MessageStore {
    * {@link MessageStore.replacePhotos} swaps photo 0 and the extras together,
    * so two separate reads can return photo 0 of one set and the extras of
    * another; this read cannot. `GET /shops/:npub`, the OpenCryptoPay photo
-   * push and the in-memory shop photo fingerprint use it. A still with an
+   * push and the photo fingerprint of an `InMemoryShopIdentityStore` built
+   * over a message store that is not an `InMemoryMessageStore` use it. A still with an
    * unrecognized type is left out; each extra keeps the index it is stored
    * under, so a left-out still never shifts the ones after it.
    *

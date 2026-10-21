@@ -8134,6 +8134,10 @@ describe('shop identities (S1 keys, S2 profiles)', () => {
           if (id === uuid(1)) byteReads.push('listExtraPhotos');
           return ctx.messages.listExtraPhotos(id);
         },
+        getExtraPhoto: (id, index) => {
+          if (id === uuid(1)) byteReads.push('getExtraPhoto');
+          return ctx.messages.getExtraPhoto(id, index);
+        },
         getPhotoSet: (id) => {
           if (id === uuid(1)) byteReads.push('getPhotoSet');
           return ctx.messages.getPhotoSet(id);
