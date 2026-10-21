@@ -80,8 +80,8 @@ BEGIN
 END;
 $trigger$;
 
--- Photo outbox: a change of photo 1 (message.photo) or of an extra photo
--- (message_extra_photo) queues the row while the note has the listed shape
+-- Photo outbox: a change of photo 0 (message.photo) or of an extra still
+-- (message_extra_photo, idx 1-9) queues the row while the note has the listed shape
 -- (live, top-level, till account, complete pin columns, shop tag). The text
 -- rules of #478 are checked by the photo sender, which clears the flag
 -- without a request for a note that is not listed.

@@ -545,7 +545,7 @@ Rules for every claim:
   trigger covers every write path, including the cascade hide, without
   changing `blockPubkeyAndHideRows`. The in-memory adapter has no
   transactions and derives the same queue from a fingerprint of each note
-  before every call.
+  before every call that syncs its queue.
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex), anything else gets `DELETE /map/places`. No earlier decision is
