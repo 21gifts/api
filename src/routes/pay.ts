@@ -23,8 +23,17 @@ import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
 import { resolveLnurlp } from '@/lib/lnurlp';
 import { errorLogFields, logEvent } from '@/lib/log';
-import { serializePosCharge, serializePosFiat, type PosCharge, type PosFiatJson } from '@/lib/pos-charge';
-import { duplicateInvoiceLogFields, type PosStore, type RecordInvoiceResult } from '@/lib/pos-store';
+import {
+  serializePosCharge,
+  serializePosFiat,
+  type PosCharge,
+  type PosFiatJson,
+} from '@/lib/pos-charge';
+import {
+  duplicateInvoiceLogFields,
+  type PosStore,
+  type RecordInvoiceResult,
+} from '@/lib/pos-store';
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
