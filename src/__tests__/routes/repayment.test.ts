@@ -358,6 +358,9 @@ describe('credit repayment', () => {
       descriptionHash: null,
       expirySeconds: 0,
     });
+    // `invoiceStillOpen` lives next to `inspectBolt11`, so the spy above does
+    // not reach its internal call; expire the stored invoice through it.
+    const stillOpen = vi.spyOn(bolt11, 'invoiceStillOpen').mockReturnValue(false);
     try {
       const { app } = await readyCredit({ authorId: 'acc-expire' });
       const first = await app.request(`/messages/${CREDIT}/repayment`, {
@@ -373,6 +376,7 @@ describe('credit repayment', () => {
     } finally {
       nip57.mockRestore();
       inspected.mockRestore();
+      stillOpen.mockRestore();
     }
   });
 

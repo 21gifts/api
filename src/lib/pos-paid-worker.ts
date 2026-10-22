@@ -13,7 +13,10 @@ import type { LnurlServerConfig } from '@/lib/config';
 import { errorLogFields, logEvent } from '@/lib/log';
 import { LNURL_PAY_REQUEST_TIMEOUT_MS, callLnurlServer } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
+import type { PosCharge } from '@/lib/pos-charge';
 import type { PosStore, PosWatch } from '@/lib/pos-store';
+import type { ShopPayments } from '@/lib/shop-payment';
+import { startShopPaymentWorker } from '@/lib/shop-payment-worker';
 import { SPARK_QUERY_LIMIT, querySparkInvoices } from '@/lib/spark-operator';
 import { SPARK_WORKER_INTERVAL_MS } from '@/lib/spark-worker';
 
@@ -32,24 +35,58 @@ export interface PosPaidWorkerDeps {
   fetchImpl: FetchFn;
   /** Clock in epoch milliseconds. */
   now: () => number;
+  /**
+   * Shop payments in USDT and USDC. With it, marking a charge paid also
+   * settles the charge's shop payment in the same transaction, and
+   * {@link startPosPaidWorker} starts the shop payment tick.
+   */
+  shop?: ShopPayments;
+}
+
+/**
+ * Mark a watched charge paid; with the shop payment service, in one
+ * transaction with its shop payment.
+ *
+ * @param deps - Worker collaborators.
+ * @param charge - The watched charge.
+ * @param settledHash - The settled BOLT11 payment hash, or `null` for the Spark invoice.
+ */
+async function markChargePaid(
+  deps: PosPaidWorkerDeps,
+  charge: PosCharge,
+  settledHash: string | null,
+): Promise<void> {
+  if (deps.shop === undefined) {
+    await deps.store.markPaid(charge.id, deps.now());
+    return;
+  }
+  await deps.shop.chargePaid(charge, settledHash, deps.now());
 }
 
 /** Outcome of one LUD-21 verify call. */
-type VerifyOutcome = 'settled' | 'open' | 'failed';
+export type VerifyOutcome = 'settled' | 'open' | 'failed';
 
 /**
- * Ask the LNURL server whether one payment hash has settled.
+ * Ask the LNURL server whether one payment hash has settled (LUD-21
+ * `/verify`). The charge watch and the shop payment settlement read share it.
  *
- * @param deps - Worker collaborators.
+ * @param lnurlServer - LNURL server configuration.
+ * @param fetchImpl - Fetch for the LNURL server.
  * @param paymentHash - BOLT11 payment hash (64 lower-case hex).
+ * @param timeoutMs - Abort after this many milliseconds.
  * @returns `settled` when the body says `settled: true`, `open` for any
  *   other 200 JSON body, otherwise `failed`.
  */
-async function verifyPayment(deps: PosPaidWorkerDeps, paymentHash: string): Promise<VerifyOutcome> {
-  const result = await callLnurlServer(deps.lnurlServer, deps.fetchImpl, {
+export async function verifyLightningPayment(
+  lnurlServer: LnurlServerConfig,
+  fetchImpl: FetchFn,
+  paymentHash: string,
+  timeoutMs: number = LNURL_PAY_REQUEST_TIMEOUT_MS,
+): Promise<VerifyOutcome> {
+  const result = await callLnurlServer(lnurlServer, fetchImpl, {
     method: 'GET',
     segments: ['verify', paymentHash],
-    timeoutMs: LNURL_PAY_REQUEST_TIMEOUT_MS,
+    timeoutMs,
   });
   if (!result.ok || result.status !== 200) {
     return 'failed';
@@ -106,7 +143,12 @@ async function pollSpark(
         continue;
       }
       open.delete(chargeId);
-      await deps.store.markPaid(chargeId, deps.now());
+      const entry = watched.find((candidate) => candidate.charge.id === chargeId);
+      /* v8 ignore next 3 -- byInvoice holds only watched charges */
+      if (entry === undefined) {
+        continue;
+      }
+      await markChargePaid(deps, entry.charge, null);
     }
   }
 }
@@ -135,12 +177,12 @@ export async function runPosPaidTick(deps: PosPaidWorkerDeps): Promise<void> {
       if (!open.has(entry.charge.id)) {
         break;
       }
-      const outcome = await verifyPayment(deps, paymentHash);
+      const outcome = await verifyLightningPayment(deps.lnurlServer, deps.fetchImpl, paymentHash);
       if (outcome === 'failed') {
         failures += 1;
       } else if (outcome === 'settled') {
         open.delete(entry.charge.id);
-        await deps.store.markPaid(entry.charge.id, deps.now());
+        await markChargePaid(deps, entry.charge, paymentHash);
       }
     }
   }
@@ -153,7 +195,10 @@ export async function runPosPaidTick(deps: PosPaidWorkerDeps): Promise<void> {
  * Start the worker: one tick now, then one every `intervalMs`.
  *
  * A tick does not start while the previous one is still running. A rejecting
- * tick logs `pos.worker.tick.failed`.
+ * tick logs `pos.worker.tick.failed`. With {@link PosPaidWorkerDeps.shop}, a
+ * second tick for the shop payment duties starts too
+ * (`startShopPaymentWorker`), separate from this one, so a slow shop call
+ * never delays a till confirmation.
  *
  * @param deps - Worker collaborators.
  * @param intervalMs - Tick period (default the Spark invoice worker's {@link SPARK_WORKER_INTERVAL_MS}).
@@ -179,9 +224,11 @@ export function startPosPaidWorker(
   };
   tick();
   const timer = setInterval(tick, intervalMs);
+  const shopWorker = deps.shop === undefined ? null : startShopPaymentWorker(deps.shop);
   return {
     stop: () => {
       clearInterval(timer);
+      shopWorker?.stop();
     },
   };
 }

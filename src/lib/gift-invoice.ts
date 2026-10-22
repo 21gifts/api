@@ -23,6 +23,33 @@ export interface RequestGiftInvoiceArgs {
   comment?: string;
   /** Injected `fetch`. */
   fetchImpl: FetchFn;
+  /**
+   * Absolute deadline (epoch ms) for both calls, the pay-request resolve and
+   * the callback. Each call gets the time left until it; a call that would
+   * start at or after it fails like an unreachable provider. Omitted: no
+   * deadline beyond the fetch's own.
+   */
+  deadlineMs?: number;
+  /** Clock for {@link RequestGiftInvoiceArgs.deadlineMs}. Default `Date.now`. */
+  now?: () => number;
+}
+
+/**
+ * Wrap `fetchImpl` so every call is aborted at `deadlineMs`.
+ *
+ * @param fetchImpl - Underlying fetch.
+ * @param deadlineMs - Absolute deadline (epoch ms).
+ * @param now - Clock.
+ * @returns A fetch that rejects once the deadline has passed.
+ */
+function fetchUntil(fetchImpl: FetchFn, deadlineMs: number, now: () => number): FetchFn {
+  return (input, init) => {
+    const left = deadlineMs - now();
+    if (left <= 0) {
+      return Promise.reject(new TypeError('Invoice deadline passed'));
+    }
+    return fetchImpl(input, { ...init, signal: AbortSignal.timeout(left) });
+  };
 }
 
 const lnurlpInvoiceSchema = z.object({
@@ -32,15 +59,19 @@ const lnurlpInvoiceSchema = z.object({
 /**
  * Resolve a LUD-16 address to a BOLT11 invoice for an exact millisat amount.
  *
- * @param args - Address, amount, optional comment, fetch.
+ * @param args - Address, amount, optional comment, fetch, and optional deadline.
  * @returns `{ ok: true, pr }` or `{ ok: false, reason: 'unreachable' }`.
  */
 export async function requestGiftInvoice(
   args: RequestGiftInvoiceArgs,
 ): Promise<GiftInvoiceFetchResult> {
+  const fetchImpl =
+    args.deadlineMs === undefined
+      ? args.fetchImpl
+      : fetchUntil(args.fetchImpl, args.deadlineMs, args.now ?? Date.now);
   const resolved = await resolveLnurlp({
     address: args.address,
-    fetchImpl: args.fetchImpl,
+    fetchImpl,
   });
   if (!resolved.ok) {
     return { ok: false, reason: 'unreachable' };
@@ -64,7 +95,7 @@ export async function requestGiftInvoice(
     callbackUrl.searchParams.set('comment', args.comment);
   }
 
-  const invoice = await fetchJson(args.fetchImpl, callbackUrl.toString(), lnurlpInvoiceSchema);
+  const invoice = await fetchJson(fetchImpl, callbackUrl.toString(), lnurlpInvoiceSchema);
   if (invoice === null) {
     return { ok: false, reason: 'unreachable' };
   }

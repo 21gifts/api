@@ -1343,3 +1343,38 @@ test('GET /messages/places without bearer is 401', async ({ request }) => {
   const res = await request.get('/messages/places');
   expect(res.status()).toBe(401);
 });
+
+// Shop payment in USDT and USDC (docs/shop-stablecoin-payment.md): the default boot leaves
+// LNURL_SERVER_URL and the four shop variables blank, so each new route answers its default.
+
+test('POST /pay/:username/payment is 404 for an unknown username on default boot', async ({
+  request,
+}) => {
+  const res = await request.post('/pay/:username/payment', { data: { amountSats: 1000 } });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
+test('GET /lnurlp/cb/:username is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/cb/:username');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/tx/:username is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/tx/:username');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/wait/:payment is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/wait/:payment');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/debug/shop-proofs/:id/retry', { headers: DEBUG });
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});

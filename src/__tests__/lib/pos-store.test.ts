@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
+import { PAYMENT_HASH_CLAIM_SQL, PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import {
+  duplicateInvoiceLogFields,
   InMemoryPosStore,
   POS_SCHEMA_SQL,
   migratePosSchema,
@@ -323,15 +326,79 @@ describe('InMemoryPosStore paid tracking', () => {
     const store = new InMemoryPosStore();
     await store.create(charge({ id: 'c1' }));
     await store.create(charge({ id: 'c2', accountId: 'other', status: 'cancelled' }));
-    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toBe(true);
-    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 2)).toBe(false);
-    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toBe(false);
-    expect(await store.recordInvoice('c2', 'c'.repeat(64), T0)).toBe(false);
-    expect(await store.recordInvoice('missing', 'd'.repeat(64), T0)).toBe(false);
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'recorded',
+    });
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 2)).toEqual({
+      outcome: 'this_charge',
+    });
+    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toEqual({
+      outcome: 'not_open',
+    });
+    expect(await store.recordInvoice('c2', 'c'.repeat(64), T0)).toEqual({ outcome: 'not_open' });
+    expect(await store.recordInvoice('missing', 'd'.repeat(64), T0)).toEqual({
+      outcome: 'not_open',
+    });
+    // Another charge's row holds the hash, even for a charge that is not open.
+    expect(await store.recordInvoice('c2', 'a'.repeat(64), T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c1',
+      holderPaymentId: null,
+    });
+    expect(store.paymentHashClaims.holder('a'.repeat(64))).toEqual({
+      chargeId: 'c1',
+      paymentId: null,
+      paymentChargeId: null,
+    });
     const watched = await store.listWatched(T0);
     expect(watched.map((entry) => [entry.charge.id, entry.paymentHashes])).toEqual([
       ['c1', ['a'.repeat(64)]],
     ]);
+  });
+
+  it('recordInvoice decides from the shared claim map: a shop payment holds the hash', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    store.paymentHashClaims.claimShop('h-own', 'p1', 'c1');
+    store.paymentHashClaims.claimShop('h-payer', 'p2', null);
+    store.paymentHashClaims.claimShop('h-other', 'p3', 'c9');
+    store.paymentHashClaims.claimCharge('h-mixed', 'c1');
+    store.paymentHashClaims.claimShop('h-mixed', 'p4', 'c9');
+    expect(await store.recordInvoice('c1', 'h-own', T0)).toEqual({ outcome: 'this_charge' });
+    expect(await store.recordInvoice('c1', 'h-payer', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: null,
+      holderPaymentId: 'p2',
+    });
+    expect(await store.recordInvoice('c1', 'h-other', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c9',
+      holderPaymentId: 'p3',
+    });
+    // Another payment wins over this charge's own row.
+    expect(await store.recordInvoice('c1', 'h-mixed', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c9',
+      holderPaymentId: 'p4',
+    });
+    expect(await store.findChargeForPayment({ paymentHash: 'h-own' })).toBeUndefined();
+  });
+
+  it('duplicateInvoiceLogFields names the charge, the holding charge, and a holding payment', () => {
+    expect(
+      duplicateInvoiceLogFields('c1', {
+        outcome: 'other_payment',
+        holderChargeId: 'c2',
+        holderPaymentId: null,
+      }),
+    ).toEqual({ chargeId: 'c1', holderChargeId: 'c2' });
+    expect(
+      duplicateInvoiceLogFields('c1', {
+        outcome: 'other_payment',
+        holderChargeId: null,
+        holderPaymentId: 'p1',
+      }),
+    ).toEqual({ chargeId: 'c1', paymentId: 'p1' });
   });
 
   it('findChargeForPayment resolves a recorded hash or charge id and returns copies', async () => {
@@ -353,11 +420,17 @@ describe('InMemoryPosStore paid tracking', () => {
     await store.create(charge({ id: 'c1' }));
     await store.currentPending('acc', T0 + POS_CHARGE_TTL_MS);
     expect((await store.listLatest(1))[0]?.status).toBe('expired');
-    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toBe(true);
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'recorded',
+    });
     expect(await store.issueSparkInvoice('c1', 'spark1x', T0 + 1)).toBe('spark1x');
-    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toBe(false);
+    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toEqual({
+      outcome: 'not_open',
+    });
     await store.markPaid('c1', T0 + 2);
-    expect(await store.recordInvoice('c1', 'c'.repeat(64), T0 + 1)).toBe(false);
+    expect(await store.recordInvoice('c1', 'c'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'not_open',
+    });
     expect(await store.issueSparkInvoice('c1', 'spark1y', T0 + 1)).toBeNull();
   });
 
@@ -414,6 +487,19 @@ describe('InMemoryPosStore paid tracking', () => {
     const paid = await store.markPaid('c1', T0 + 5_000);
     paid?.paidAt?.setTime(0);
     expect((await store.listLatest(1))[0]?.paidAt).toEqual(new Date(T0 + 5_000));
+  });
+
+  it('deleteInvoice removes a recorded hash and ignores an unknown one', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    expect(await store.recordInvoice('c1', 'h1', T0)).toEqual({ outcome: 'recorded' });
+    expect(await store.recordInvoice('c1', 'h2', T0)).toEqual({ outcome: 'recorded' });
+    await store.deleteInvoice('h1');
+    await store.deleteInvoice('unknown');
+    expect(await store.findChargeForPayment({ paymentHash: 'h1' })).toBeUndefined();
+    expect(store.paymentHashClaims.holder('h1')).toBeNull();
+    expect((await store.findChargeForPayment({ paymentHash: 'h2' }))?.id).toBe('c1');
+    expect(await store.recordInvoice('c1', 'h1', T0)).toEqual({ outcome: 'recorded' });
   });
 });
 
@@ -655,19 +741,99 @@ describe('PostgresPosStore', () => {
     expect(await store.issueSparkInvoice('c1', 'spark1second', T0)).toBeNull();
   });
 
-  it('recordInvoice inserts only for a charge open at the issue time and skips a known hash', async () => {
+  /** A transaction port whose statements answer from `respond` and are recorded. */
+  function claimDb(respond: (text: string) => unknown[]): {
+    db: MergeDb;
+    calls: { text: string; params: readonly unknown[] }[];
+    begins: { n: number };
+  } {
+    const calls: { text: string; params: readonly unknown[] }[] = [];
+    const begins = { n: 0 };
+    const tx: MergeTx = {
+      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+        calls.push({ text, params });
+        return respond(text) as T[];
+      },
+    };
+    return {
+      db: {
+        begin: (run) => {
+          begins.n += 1;
+          return run(tx);
+        },
+      },
+      calls,
+      begins,
+    };
+  }
+
+  it('recordInvoice claims the hash, reads its holders, then inserts in one transaction', async () => {
     const sql = new MockSql();
-    sql.listRows = [{ payment_hash: 'a'.repeat(64) }];
-    const store = new PostgresPosStore(sql);
-    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0)).toBe(true);
-    expect(sql.queries[0]?.text).toMatch(/INSERT INTO pos_charge_invoice/);
-    expect(sql.queries[0]?.text).toMatch(
+    const hash = `80000000${'a'.repeat(56)}`;
+    let inserted: unknown[] = [{ payment_hash: hash }];
+    const { db, calls, begins } = claimDb((text) =>
+      text.startsWith('INSERT INTO pos_charge_invoice') ? inserted : [],
+    );
+    const store = new PostgresPosStore(sql, db);
+    expect(await store.recordInvoice('c1', hash, T0)).toEqual({ outcome: 'recorded' });
+    expect(begins.n).toBe(1);
+    expect(sql.queries).toEqual([]);
+    expect(calls.map((call) => call.text.split('\n')[0])).toEqual([
+      PAYMENT_HASH_CLAIM_SQL,
+      'SELECT charge_id FROM pos_charge_invoice WHERE payment_hash = $1',
+      'SELECT id, pos_charge_id FROM shop_payment WHERE payment_hash = $1',
+      'INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at)',
+    ]);
+    expect(calls[0]?.params).toEqual([PAYMENT_HASH_LOCK_NAMESPACE, -2147483648]);
+    expect(calls[1]?.params).toEqual([hash]);
+    expect(calls[2]?.params).toEqual([hash]);
+    expect(calls[3]?.text).toMatch(
       /status IN \('pending', 'expired'\) AND expires_at > \$3::timestamptz/,
     );
-    expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
-    expect(sql.queries[0]?.params).toEqual(['c1', 'a'.repeat(64), new Date(T0).toISOString()]);
-    sql.listRows = [];
-    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0)).toBe(false);
+    expect(calls[3]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
+    expect(calls[3]?.params).toEqual(['c1', hash, new Date(T0).toISOString()]);
+    inserted = [];
+    expect(await store.recordInvoice('c1', hash, T0)).toEqual({ outcome: 'not_open' });
+  });
+
+  it('recordInvoice answers a held hash from its rows without inserting', async () => {
+    const sql = new MockSql();
+    let invoiceRows: unknown[] = [{ charge_id: 'c1' }];
+    let paymentRows: unknown[] = [];
+    const { db, calls } = claimDb((text) => {
+      if (text.includes('FROM pos_charge_invoice')) return invoiceRows;
+      if (text.includes('FROM shop_payment')) return paymentRows;
+      return [];
+    });
+    const store = new PostgresPosStore(sql, db);
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({ outcome: 'this_charge' });
+    expect(await store.recordInvoice('c2', 'h', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c1',
+      holderPaymentId: null,
+    });
+    invoiceRows = [];
+    paymentRows = [{ id: 'p1', pos_charge_id: 'c1' }];
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({ outcome: 'this_charge' });
+    paymentRows = [{ id: 'p2', pos_charge_id: null }];
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: null,
+      holderPaymentId: 'p2',
+    });
+    expect(calls.some((call) => call.text.startsWith('INSERT'))).toBe(false);
+  });
+
+  it('recordInvoice lets a statement error through and needs a transaction port', async () => {
+    const sql = new MockSql();
+    const { db } = claimDb((text) => {
+      if (text.startsWith('INSERT')) throw new Error('fk');
+      return [];
+    });
+    await expect(new PostgresPosStore(sql, db).recordInvoice('c1', 'h', T0)).rejects.toThrow('fk');
+    await expect(new PostgresPosStore(sql).recordInvoice('c1', 'h', T0)).rejects.toThrow(
+      'pos transactions are not configured',
+    );
   });
 
   it('findChargeForPayment queries by hash or valid UUID and refuses a malformed id', async () => {
@@ -795,5 +961,13 @@ describe('PostgresPosStore', () => {
       'create boom',
     );
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.create')).toBe(false);
+  });
+
+  it('deleteInvoice runs one DELETE bound to the payment hash', async () => {
+    const sql = new MockSql();
+    await new PostgresPosStore(sql).deleteInvoice('h1');
+    expect(sql.executes).toEqual([
+      { text: 'DELETE FROM pos_charge_invoice WHERE payment_hash = $1', params: ['h1'] },
+    ]);
   });
 });
