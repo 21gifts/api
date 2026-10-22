@@ -960,11 +960,12 @@ export interface MessageStore {
    * locked pin before the UPDATE. A null pin, or a pin `shopPlaceProblem`
    * rejects, skips the text check. A complete pin returns `shopTextProblem`
    * of the new text, and the string is returned with nothing written (the
-   * empty transaction commits). Postgres then reads the fresh row with
-   * `SELECT` on that same transaction, not with `getById`. Without
-   * `transaction`, Postgres does not apply the pair rule and reads the
-   * fresh row with `getById`. A missing id returns `undefined` and does
-   * not call `getById`.
+   * empty transaction commits). Without `transaction`, Postgres does not
+   * apply the pair rule. Without `edit`, both paths return the row from
+   * `UPDATE … RETURNING` and do not call `getById`. With `edit`, a missing
+   * or hidden id returns `undefined` and does not read the row. When that
+   * id is found, Postgres reads the fresh row with `SELECT` on the same
+   * transaction, or with `getById` when there is no transaction.
    *
    * @param id - Message id.
    * @param text - New body (already normalised; may be empty).
