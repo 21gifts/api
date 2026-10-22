@@ -5,6 +5,19 @@ Recorded 2026-10-22 against `https://staging.21.gifts` and
 It does not close the [release checks](./shop-stablecoin-payment.md#release-checks).
 The repeatable script is [`scripts/shop-staging-e2e`](../scripts/shop-staging-e2e/README.md).
 
+## Environment
+
+This run is staging only. Stablecoin rows were offered, so
+`LNURL_SERVER_URL`, `PUBLIC_BASE_URL`, `ORCHESTRA_BASE_URL`,
+`ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and `SHOP_REFUND_ADDRESS` resolved in
+that process. Quotes named the refund address
+`0xC37CA1D13bA08E7dd2de336e4777De1CBD4693E1`. The api does not read a private
+key for that address.
+
+The dev environment and production were not part of this run. Production
+stays off until the release checks pass. The RPC URL and any signing key
+stay out of this repo. The script reads them from the environment.
+
 ## Shop
 
 | Fact | Value |
