@@ -39,7 +39,7 @@ import {
   type NostrPublishState,
 } from '@/lib/message';
 import { placesMatch, type ForumPlace, type ForumPlaceAddress } from '@/lib/place';
-import { isListedShop } from '@/lib/shop-place';
+import { isListedShop, shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
 
 export type { ForumFeedMode };
 import { kind1ContentWithHashtags } from '@/lib/nostr/event';
@@ -755,25 +755,43 @@ export interface MessageStore {
    * `place`). Does not change text, sats, goals, media, hide stamps, event
    * ids, or publish state.
    *
+   * A hidden row is not living: nothing is written. In memory that is
+   * `deletedAt !== null` before any mutation. Postgres puts
+   * `deleted_at IS NULL` on every writing `WHERE` and on the locked CTE.
+   *
+   * When `SqlClient.transaction` is present, the shop pair rule runs on the
+   * locked text before the UPDATE. A null pin, or a pin `shopPlaceProblem`
+   * rejects, skips the text check. A complete pin returns `shopTextProblem`
+   * of that locked text, and the string is returned with nothing written
+   * (the empty transaction commits). Without `transaction`, Postgres does
+   * not apply the pair rule.
+   *
    * @param id - Message id.
    * @param place - Pin to store, or `null` to store SQL NULL / `place: null`.
    * @param edit - When set, and the pin actually changes, the history row is
-   *   written in the same step as the pin. An unchanged pin writes no history.
-   * @returns `false` when no row has that id; `true` when the place columns
-   *   were written.
+   *   written in the same step as the pin. An unchanged pin writes no
+   *   history. A pair-rule rejection writes no history.
+   * @returns The shop-place error string when the pair rule rejects (nothing
+   *   written); `false` when no living row has that id; `true` when the
+   *   place columns were written or the living pin is unchanged.
    */
-  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean>;
+  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean | string>;
 
   /**
    * Set, replace, or clear the linked 21.gifts shop account. Writes only
    * `shop_account_id` (in-memory `shopAccount`). Does not change text, sats,
-   * goals, place, media, hide stamps, event ids, or publish state.
+   * goals, place, media, hide stamps, event ids, or publish state. No shop
+   * pair check.
+   *
+   * A hidden or missing row writes nothing and returns `false`. Postgres puts
+   * `deleted_at IS NULL` on the writing `WHERE` and on the locked CTE.
    *
    * @param id - Message id.
    * @param account - Account snapshot to store, or `null` to clear.
    * @param edit - When set, and the account actually changes, the history row
    *   is written in the same step. An unchanged account writes no history.
-   * @returns `false` when no row has that id; `true` when the column was written.
+   * @returns `false` when no living row has that id; `true` when the column
+   *   was written.
    */
   setShopAccount(
     id: string,
@@ -934,13 +952,35 @@ export interface MessageStore {
   /**
    * Replace the stored note body. Does not change sats, photos, or event ids.
    *
+   * A hidden row is not living: nothing is written. In memory that is
+   * `deletedAt !== null` before any mutation. Postgres puts
+   * `deleted_at IS NULL` on every writing `WHERE` and on the locked CTE.
+   *
+   * When `SqlClient.transaction` is present, the shop pair rule runs on the
+   * locked pin before the UPDATE. A null pin, or a pin `shopPlaceProblem`
+   * rejects, skips the text check. A complete pin returns `shopTextProblem`
+   * of the new text, and the string is returned with nothing written (the
+   * empty transaction commits). Without `transaction`, Postgres does not
+   * apply the pair rule. Without `edit`, both paths return the row from
+   * `UPDATE … RETURNING` and do not call `getById`. With `edit`, a missing
+   * or hidden id returns `undefined` and does not read the row. When that
+   * id is found, Postgres reads the fresh row with `SELECT` on the same
+   * transaction, or with `getById` when there is no transaction.
+   *
    * @param id - Message id.
    * @param text - New body (already normalised; may be empty).
    * @param edit - When set, and the body actually changes, the history row is
-   *   written in the same step. An unchanged body writes no history.
-   * @returns The updated row copy, or `undefined` when no row has that id.
+   *   written in the same step. An unchanged body writes no history. A
+   *   pair-rule rejection writes no history.
+   * @returns The shop-place error string when the pair rule rejects (nothing
+   *   written); `undefined` when no living row has that id; otherwise the
+   *   row after the write.
    */
-  updateText(id: string, text: string, edit?: MessageEditRow): Promise<MessageRow | undefined>;
+  updateText(
+    id: string,
+    text: string,
+    edit?: MessageEditRow,
+  ): Promise<MessageRow | undefined | string>;
 
   /**
    * Replace or clear the stored photo. Does not change text, sats, or event ids.
@@ -3482,10 +3522,18 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve();
   }
 
-  updateText(id: string, text: string, edit?: MessageEditRow): Promise<MessageRow | undefined> {
+  updateText(
+    id: string,
+    text: string,
+    edit?: MessageEditRow,
+  ): Promise<MessageRow | undefined | string> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined) {
+    if (row === undefined || row.deletedAt !== null) {
       return Promise.resolve(undefined);
+    }
+    const problem = shopPairProblem(text, row.place);
+    if (problem !== null) {
+      return Promise.resolve(problem);
     }
     const changed = row.text !== text;
     row.text = text;
@@ -4344,9 +4392,9 @@ export class InMemoryMessageStore implements MessageStore {
     return Promise.resolve(true);
   }
 
-  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean> {
+  setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean | string> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined) {
+    if (row === undefined || row.deletedAt !== null) {
       return Promise.resolve(false);
     }
     const next =
@@ -4367,6 +4415,10 @@ export class InMemoryMessageStore implements MessageStore {
                     country: place.address.country,
                   },
           };
+    const problem = shopPairProblem(row.text, next);
+    if (problem !== null) {
+      return Promise.resolve(problem);
+    }
     const changed = !placesMatch(row.place ?? null, next);
     row.place = next;
     if (edit !== undefined && changed) {
@@ -4381,7 +4433,7 @@ export class InMemoryMessageStore implements MessageStore {
     edit?: MessageEditRow,
   ): Promise<boolean> {
     const row = this.#rows.find((item) => item.id === id);
-    if (row === undefined) {
+    if (row === undefined || row.deletedAt !== null) {
       return Promise.resolve(false);
     }
     const next =
@@ -4594,6 +4646,47 @@ function placeFromSql(
     address: placeAddressFromSql(street, houseNumber, postalCode, city, country),
   };
 }
+
+/**
+ * Text problem of a shop pair, or null when the pin is absent or incomplete.
+ *
+ * A null pin, or a pin {@link shopPlaceProblem} rejects, skips the text
+ * check. A complete pin returns {@link shopTextProblem} of `text` against
+ * that pin. Callers pass the new pin with the locked text, or the new text
+ * with the locked pin.
+ *
+ * @param text - Note body checked against the pin.
+ * @param place - Pin, or null when the note has none.
+ * @returns The shop-place error string, or null when the pair is not rejected.
+ */
+function shopPairProblem(text: string, place: ForumPlace | null | undefined): string | null {
+  /* v8 ignore next 3 -- copyRow and placeFromSql store null, never an omitted pin */
+  if (place === undefined) {
+    return null;
+  }
+  if (place === null || shopPlaceProblem(place) !== null) {
+    return null;
+  }
+  return shopTextProblem(text, place);
+}
+
+/** Text and pin columns locked before a shop pin or text write. */
+interface LockedShopPairRow {
+  text: string;
+  place_lat: string | number | null;
+  place_lng: string | number | null;
+  place_label: string | null;
+  place_street: string | null;
+  place_house_number: string | null;
+  place_postal_code: string | null;
+  place_city: string | null;
+  place_country: string | null;
+}
+
+/** Living row lock for {@link PostgresMessageStore.setPlace} and `updateText`. */
+const LOCK_SHOP_PAIR_SQL = `SELECT text, place_lat, place_lng, place_label,
+            place_street, place_house_number, place_postal_code, place_city, place_country
+     FROM message WHERE id = $1 AND deleted_at IS NULL FOR UPDATE`;
 
 /** Extra still capture times from `json_agg` (string or already-parsed). */
 function parseExtraPhotoTakenAts(value: unknown): (string | null)[] {
@@ -5910,7 +6003,11 @@ export class PostgresMessageStore implements MessageStore {
     return rows[0] !== undefined;
   }
 
-  async setPlace(id: string, place: ForumPlace | null, edit?: MessageEditRow): Promise<boolean> {
+  async setPlace(
+    id: string,
+    place: ForumPlace | null,
+    edit?: MessageEditRow,
+  ): Promise<boolean | string> {
     const lat = place === null ? null : place.lat;
     const lng = place === null ? null : place.lng;
     const label = place === null ? null : place.label;
@@ -5919,27 +6016,22 @@ export class PostgresMessageStore implements MessageStore {
     const postalCode = place === null || place.address === null ? null : place.address.postalCode;
     const city = place === null || place.address === null ? null : place.address.city;
     const country = place === null || place.address === null ? null : place.address.country;
-    if (edit === undefined) {
-      const rows = await this.#sql.query<{ id: string }>(
-        `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4,
+    const placeParams = [id, lat, lng, label, street, houseNumber, postalCode, city, country];
+    const writePlace = `UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4,
             place_street = $5, place_house_number = $6, place_postal_code = $7,
             place_city = $8, place_country = $9
-         WHERE id = $1 RETURNING id`,
-        [id, lat, lng, label, street, houseNumber, postalCode, city, country],
-      );
-      return rows[0] !== undefined;
-    }
-    const rows = await this.#sql.query<{ id: string }>(
-      `WITH locked AS (
+         WHERE id = $1 AND deleted_at IS NULL RETURNING id`;
+    const writePlaceHistory = `WITH locked AS (
          SELECT id, place_lat, place_lng, place_label, place_street, place_house_number,
                 place_postal_code, place_city, place_country
-         FROM message WHERE id = $1 FOR UPDATE
+         FROM message WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
        ), updated AS (
          UPDATE message SET place_lat = $2, place_lng = $3, place_label = $4,
             place_street = $5, place_house_number = $6, place_postal_code = $7,
             place_city = $8, place_country = $9
          FROM locked
          WHERE message.id = locked.id
+           AND message.deleted_at IS NULL
            AND (
              locked.place_lat IS DISTINCT FROM $2
              OR locked.place_lng IS DISTINCT FROM $3
@@ -5958,26 +6050,42 @@ export class PostgresMessageStore implements MessageStore {
          WHERE EXISTS (SELECT 1 FROM updated)
          RETURNING id
        )
-       SELECT id FROM message WHERE id = (SELECT id FROM locked)`,
-      [
-        id,
-        lat,
-        lng,
-        label,
-        street,
-        houseNumber,
-        postalCode,
-        city,
-        country,
-        edit.id,
-        edit.actorId,
-        edit.createdAt,
-        edit.field,
-        JSON.stringify(edit.before),
-        JSON.stringify(edit.after),
-      ],
-    );
-    return rows[0] !== undefined;
+       SELECT id FROM message WHERE id = (SELECT id FROM locked)`;
+    const writeOn = async (
+      db: SqlClient,
+      current: MessageEditRow | undefined,
+    ): Promise<boolean> => {
+      if (current === undefined) {
+        const rows = await db.query<{ id: string }>(writePlace, placeParams);
+        return rows[0] !== undefined;
+      }
+      const rows = await db.query<{ id: string }>(writePlaceHistory, [
+        ...placeParams,
+        current.id,
+        current.actorId,
+        current.createdAt,
+        current.field,
+        JSON.stringify(current.before),
+        JSON.stringify(current.after),
+      ]);
+      return rows[0] !== undefined;
+    };
+    const sql = this.#sql;
+    if (sql.transaction !== undefined) {
+      return sql.transaction(async (tx) => {
+        const locked = await tx.query<LockedShopPairRow>(LOCK_SHOP_PAIR_SQL, [id]);
+        const lockedRow = locked[0];
+        if (lockedRow === undefined) {
+          return false;
+        }
+        const problem = shopPairProblem(lockedRow.text, place);
+        if (problem !== null) {
+          return problem;
+        }
+        return writeOn(tx, edit);
+      });
+    }
+    return writeOn(sql, edit);
   }
 
   async setShopAccount(
@@ -5988,18 +6096,20 @@ export class PostgresMessageStore implements MessageStore {
     const accountId = account === null ? null : account.id;
     if (edit === undefined) {
       const rows = await this.#sql.query<{ id: string }>(
-        `UPDATE message SET shop_account_id = $2 WHERE id = $1 RETURNING id`,
+        `UPDATE message SET shop_account_id = $2 WHERE id = $1 AND deleted_at IS NULL RETURNING id`,
         [id, accountId],
       );
       return rows[0] !== undefined;
     }
     const rows = await this.#sql.query<{ id: string }>(
       `WITH locked AS (
-         SELECT id, shop_account_id FROM message WHERE id = $1 FOR UPDATE
+         SELECT id, shop_account_id FROM message WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
        ), updated AS (
          UPDATE message SET shop_account_id = $2
          FROM locked
-         WHERE message.id = locked.id AND locked.shop_account_id IS DISTINCT FROM $2
+         WHERE message.id = locked.id
+           AND message.deleted_at IS NULL
+           AND locked.shop_account_id IS DISTINCT FROM $2
          RETURNING message.id
        ), inserted AS (
          INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
@@ -6307,22 +6417,16 @@ export class PostgresMessageStore implements MessageStore {
     id: string,
     text: string,
     edit?: MessageEditRow,
-  ): Promise<MessageRow | undefined> {
-    if (edit === undefined) {
-      const rows = await this.#sql.query<MessageSqlRow>(
-        `UPDATE message SET text = $2 WHERE id = $1 RETURNING ${MESSAGE_SELECT_COLUMNS}`,
-        [id, text],
-      );
-      const row = rows[0];
-      return row === undefined ? undefined : mapMessageRow(row);
-    }
-    const rows = await this.#sql.query<{ id: string }>(
-      `WITH locked AS (
-         SELECT id, text FROM message WHERE id = $1 FOR UPDATE
+  ): Promise<MessageRow | undefined | string> {
+    const writeText = `UPDATE message SET text = $2 WHERE id = $1 AND deleted_at IS NULL RETURNING ${MESSAGE_SELECT_COLUMNS}`;
+    const writeTextHistory = `WITH locked AS (
+         SELECT id, text FROM message WHERE id = $1 AND deleted_at IS NULL FOR UPDATE
        ), updated AS (
          UPDATE message SET text = $2
          FROM locked
-         WHERE message.id = locked.id AND locked.text IS DISTINCT FROM $2
+         WHERE message.id = locked.id
+           AND message.deleted_at IS NULL
+           AND locked.text IS DISTINCT FROM $2
          RETURNING message.id
        ), inserted AS (
          INSERT INTO message_edit (id, message_id, actor_id, created_at, field, before, after)
@@ -6331,24 +6435,72 @@ export class PostgresMessageStore implements MessageStore {
          WHERE EXISTS (SELECT 1 FROM updated)
          RETURNING id
        )
-       SELECT id FROM locked`,
-      [
+       SELECT id FROM locked`;
+    const writeOn = async (
+      db: SqlClient,
+      current: MessageEditRow | undefined,
+      readBack: () => Promise<MessageRow | undefined>,
+    ): Promise<MessageRow | undefined> => {
+      if (current === undefined) {
+        const rows = await db.query<MessageSqlRow>(writeText, [id, text]);
+        const written = rows[0];
+        return written === undefined ? undefined : mapMessageRow(written);
+      }
+      const ids = await db.query<{ id: string }>(writeTextHistory, [
         id,
         text,
-        edit.id,
-        edit.actorId,
-        edit.createdAt,
-        edit.field,
-        JSON.stringify(edit.before),
-        JSON.stringify(edit.after),
-      ],
-    );
-    // The write and this read are separate statements. One statement cannot
-    // see its own UPDATE, so the returned text would still be the old body.
-    if (rows[0] === undefined) {
-      return undefined;
+        current.id,
+        current.actorId,
+        current.createdAt,
+        current.field,
+        JSON.stringify(current.before),
+        JSON.stringify(current.after),
+      ]);
+      if (ids[0] === undefined) {
+        return undefined;
+      }
+      return readBack();
+    };
+    const sql = this.#sql;
+    if (sql.transaction !== undefined) {
+      return sql.transaction(async (tx) => {
+        const locked = await tx.query<LockedShopPairRow>(LOCK_SHOP_PAIR_SQL, [id]);
+        const lockedRow = locked[0];
+        if (lockedRow === undefined) {
+          return undefined;
+        }
+        const problem = shopPairProblem(
+          text,
+          placeFromSql(
+            lockedRow.place_lat,
+            lockedRow.place_lng,
+            lockedRow.place_label,
+            lockedRow.place_street,
+            lockedRow.place_house_number,
+            lockedRow.place_postal_code,
+            lockedRow.place_city,
+            lockedRow.place_country,
+          ),
+        );
+        if (problem !== null) {
+          return problem;
+        }
+        return writeOn(tx, edit, async () => {
+          // Same transaction: another connection cannot see this UPDATE yet.
+          const rows = await tx.query<MessageSqlRow>(
+            `SELECT ${MESSAGE_SELECT_COLUMNS} FROM message WHERE id = $1`,
+            [id],
+          );
+          const written = rows[0];
+          return written === undefined ? undefined : mapMessageRow(written);
+        });
+      });
     }
-    return this.getById(id);
+    return writeOn(sql, edit, () => {
+      // The write and this read are separate statements. One statement cannot
+      // see its own UPDATE, so the returned text would still be the old body.
+      return this.getById(id);
+    });
   }
 
   async updatePhoto(id: string, photo: ForumPhoto | null): Promise<MessageRow | undefined> {

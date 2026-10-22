@@ -16,6 +16,7 @@ import {
   type MessageInvoiceAttempt,
   type ZapIngestRow,
 } from '@/lib/message-store';
+import { shopTextProblem } from '@/lib/shop-place';
 import { resolveMediaDir, videoFilePath } from '@/lib/video';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 
@@ -3012,9 +3013,12 @@ describe('InMemoryMessageStore', () => {
     const store = new InMemoryMessageStore();
     await store.create({ ...EARLY, eventId: 'ee'.repeat(32), sats: 21 });
     const updated = await store.updateText('a', 'bio');
-    expect(updated?.text).toBe('bio');
-    expect(updated?.sats).toBe(21);
-    expect(updated?.eventId).toBe('ee'.repeat(32));
+    if (typeof updated !== 'object' || updated === null) {
+      throw new Error('expected a message row');
+    }
+    expect(updated.text).toBe('bio');
+    expect(updated.sats).toBe(21);
+    expect(updated.eventId).toBe('ee'.repeat(32));
     const stored = await store.getById('a');
     expect(stored?.text).toBe('bio');
     expect(stored?.sats).toBe(21);
@@ -5114,6 +5118,118 @@ describe('InMemoryMessageStore', () => {
     expect(listed.map((row) => row.id)).toEqual(['hidden', 'reply', 'live']);
     expect(listed.find((row) => row.id === 'hidden')?.deletedAt).not.toBeNull();
     expect(listed.some((row) => row.accountId === 'other')).toBe(false);
+  });
+
+  describe('shop pair on setPlace and updateText', () => {
+    const COMPLETE = {
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    };
+    const OTHER = {
+      lat: 46.2,
+      lng: 7.2,
+      label: 'Kiosk',
+      address: {
+        street: 'Seestrasse',
+        houseNumber: '9',
+        postalCode: '6003',
+        city: 'Luzern',
+        country: 'CH',
+      },
+    };
+
+    function pairStore(): InMemoryMessageStore {
+      return new InMemoryMessageStore([{ ...EARLY, id: 'pair', text: 'hi', place: COMPLETE }]);
+    }
+
+    it('returns shopTextProblem when another complete pin is set on the text hi', async () => {
+      const store = pairStore();
+      const rejected = await store.setPlace('pair', OTHER, {
+        id: 'e-place',
+        messageId: 'pair',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'place',
+        before: COMPLETE,
+        after: OTHER,
+      });
+      expect(rejected).toBe(shopTextProblem('hi', OTHER));
+      expect((await store.getById('pair'))?.place).toEqual(COMPLETE);
+      expect(await store.listEdits('pair')).toEqual([]);
+    });
+
+    it('returns the same shopTextProblem from updateText hi and writes no history', async () => {
+      const store = pairStore();
+      const rejected = await store.updateText('pair', 'hi', {
+        id: 'e-text',
+        messageId: 'pair',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'text',
+        before: 'hi',
+        after: 'hi',
+      });
+      expect(rejected).toBe(shopTextProblem('hi', COMPLETE));
+      expect((await store.getById('pair'))?.text).toBe('hi');
+      expect(await store.listEdits('pair')).toEqual([]);
+    });
+
+    it('clears the pin when setPlace is null', async () => {
+      const store = pairStore();
+      expect(await store.setPlace('pair', null)).toBe(true);
+      expect((await store.getById('pair'))?.place).toBeNull();
+    });
+
+    it('stores an incomplete pin on the text hi', async () => {
+      const store = pairStore();
+      const incomplete = { lat: 47.3, lng: 8.5, label: 'Stall', address: null };
+      expect(await store.setPlace('pair', incomplete)).toBe(true);
+      expect((await store.getById('pair'))?.place).toEqual(incomplete);
+    });
+
+    it('returns the row when a short text is written and the note has no pin', async () => {
+      const store = new InMemoryMessageStore([
+        { ...EARLY, id: 'open', text: 'hello', place: null },
+      ]);
+      const updated = await store.updateText('open', 'hi');
+      if (typeof updated !== 'object' || updated === null) {
+        throw new Error('expected a message row');
+      }
+      expect(updated.text).toBe('hi');
+      expect((await store.getById('open'))?.text).toBe('hi');
+    });
+
+    it('does not write place, text, or shop account on a hidden row', async () => {
+      const account = { id: 'till', username: 'ada', name: 'Ada' };
+      const store = new InMemoryMessageStore([
+        {
+          ...EARLY,
+          id: 'hidden',
+          text: 'hi',
+          place: COMPLETE,
+          shopAccount: account,
+          deletedAt: new Date('2026-09-01T00:00:00.000Z'),
+          deletedBy: 'staff',
+        },
+      ]);
+      expect(await store.setPlace('hidden', OTHER)).toBe(false);
+      expect(await store.updateText('hidden', 'Fresh coffee roasted here every morning.')).toBe(
+        undefined,
+      );
+      expect(await store.setShopAccount('hidden', null)).toBe(false);
+      const row = await store.getById('hidden');
+      expect(row?.text).toBe('hi');
+      expect(row?.place).toEqual(COMPLETE);
+      expect(row?.shopAccount).toEqual(account);
+    });
   });
 });
 
@@ -7794,6 +7910,7 @@ describe('PostgresMessageStore', () => {
     expect(text).toMatch(
       /UPDATE message SET place_lat = \$2, place_lng = \$3, place_label = \$4,\s+place_street = \$5, place_house_number = \$6, place_postal_code = \$7,\s+place_city = \$8, place_country = \$9\s+WHERE id = \$1/,
     );
+    expect(text).toMatch(/deleted_at IS NULL/);
     expect(text).toMatch(/RETURNING id/);
     expect(sql.queries[0]?.params).toEqual([
       'm1',
@@ -7915,6 +8032,7 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries).toHaveLength(1);
     const text = sql.queries[0]?.text ?? '';
     expect(text).toMatch(/UPDATE message SET shop_account_id = \$2 WHERE id = \$1/);
+    expect(text).toMatch(/deleted_at IS NULL/);
     expect(text).toMatch(/RETURNING id/);
     expect(text).not.toMatch(/place_lat/);
     expect(sql.queries[0]?.params).toEqual(['m1', 'shop-acc']);
@@ -8245,10 +8363,15 @@ describe('PostgresMessageStore', () => {
     ];
     const store = new PostgresMessageStore(sql);
     const updated = await store.updateText('m1', 'bio');
-    expect(updated?.text).toBe('bio');
-    expect(updated?.sats).toBe(21);
-    expect(updated?.eventId).toBe('ee'.repeat(32));
-    expect(sql.queries[0]?.text).toMatch(/UPDATE message SET text = \$2 WHERE id = \$1 RETURNING/);
+    if (typeof updated !== 'object' || updated === null) {
+      throw new Error('expected a message row');
+    }
+    expect(updated.text).toBe('bio');
+    expect(updated.sats).toBe(21);
+    expect(updated.eventId).toBe('ee'.repeat(32));
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE message SET text = \$2 WHERE id = \$1 AND deleted_at IS NULL RETURNING/,
+    );
     expect(sql.queries[0]?.text).toMatch(/\(photo IS NOT NULL\) AS has_photo/);
     expect(sql.queries[0]?.params).toEqual(['m1', 'bio']);
     sql.nextRows = [];
@@ -8273,7 +8396,10 @@ describe('PostgresMessageStore', () => {
       before: 'bio',
       after: 'next',
     });
-    expect(edited?.text).toBe('next');
+    if (typeof edited !== 'object' || edited === null) {
+      throw new Error('expected a message row');
+    }
+    expect(edited.text).toBe('next');
     const history = sql.queries[2];
     expect(history?.text).toMatch(/FOR UPDATE/);
     expect(history?.text).toMatch(/locked\.text IS DISTINCT FROM \$2/);
@@ -9940,6 +10066,167 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).not.toContain('LIMIT');
     expect(sql.queries[0]?.params).toEqual(['acc']);
   });
+
+  describe('shop pair when transaction is set', () => {
+    const COMPLETE = {
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    };
+    const LONG = 'Fresh coffee roasted here every morning.';
+    const OTHER_LONG = 'Beans arrive before dawn and the first cups go out at seven.';
+
+    function sqlWithTransaction(): MockSql {
+      const sql = new MockSql();
+      sql.transaction = async <T>(run: (tx: SqlClient) => Promise<T>): Promise<T> => run(sql);
+      return sql;
+    }
+
+    function locked(text: string): {
+      text: string;
+      place_lat: number;
+      place_lng: number;
+      place_label: string;
+      place_street: string;
+      place_house_number: string;
+      place_postal_code: string;
+      place_city: string;
+      place_country: string;
+    } {
+      return {
+        text,
+        place_lat: COMPLETE.lat,
+        place_lng: COMPLETE.lng,
+        place_label: COMPLETE.label,
+        place_street: COMPLETE.address.street,
+        place_house_number: COMPLETE.address.houseNumber,
+        place_postal_code: COMPLETE.address.postalCode,
+        place_city: COMPLETE.address.city,
+        place_country: COMPLETE.address.country,
+      };
+    }
+
+    it('returns false or undefined when the lock is empty and does not update', async () => {
+      const placeSql = sqlWithTransaction();
+      placeSql.queryQueue = [[]];
+      expect(await new PostgresMessageStore(placeSql).setPlace('m1', COMPLETE)).toBe(false);
+      expect(placeSql.queries).toHaveLength(1);
+      expect(placeSql.queries[0]?.text ?? '').not.toMatch(/UPDATE message/);
+
+      const textSql = sqlWithTransaction();
+      textSql.queryQueue = [[]];
+      expect(await new PostgresMessageStore(textSql).updateText('m1', 'hi')).toBeUndefined();
+      expect(textSql.queries).toHaveLength(1);
+      expect(textSql.queries[0]?.text ?? '').not.toMatch(/UPDATE message/);
+    });
+
+    it('returns shopTextProblem when setPlace completes a pin on the locked text hi', async () => {
+      const sql = sqlWithTransaction();
+      sql.queryQueue = [[locked('hi')]];
+      const next = {
+        lat: 46.2,
+        lng: 7.2,
+        label: 'Kiosk',
+        address: {
+          street: 'Seestrasse',
+          houseNumber: '9',
+          postalCode: '6003',
+          city: 'Luzern',
+          country: 'CH',
+        },
+      };
+      expect(await new PostgresMessageStore(sql).setPlace('m1', next)).toBe(
+        shopTextProblem('hi', next),
+      );
+      expect(sql.queries.some((query) => /UPDATE message/.test(query.text))).toBe(false);
+    });
+
+    it('returns shopTextProblem when updateText stores hi under a complete pin', async () => {
+      const sql = sqlWithTransaction();
+      sql.queryQueue = [[locked(LONG)]];
+      expect(await new PostgresMessageStore(sql).updateText('m1', 'hi')).toBe(
+        shopTextProblem('hi', COMPLETE),
+      );
+      expect(sql.queries.some((query) => /UPDATE message/.test(query.text))).toBe(false);
+    });
+
+    it('reads the edited text back on the same mock after the history update', async () => {
+      const sql = sqlWithTransaction();
+      const readBack = 'Served from the read-back row every morning.';
+      sql.queryQueue = [
+        [locked(LONG)],
+        [{ id: 'm1' }],
+        [
+          {
+            id: 'm1',
+            account_id: 'acc',
+            name: 'Ada',
+            text: readBack,
+            created_at: new Date(0),
+            has_photo: false,
+            event_id: 'ee'.repeat(32),
+            nostr_publish_state: 'published',
+            sats: 21,
+          },
+        ],
+      ];
+      const written = await new PostgresMessageStore(sql).updateText('m1', OTHER_LONG, {
+        id: 'e1',
+        messageId: 'm1',
+        actorId: 'staff',
+        createdAt: new Date(0),
+        field: 'text',
+        before: LONG,
+        after: OTHER_LONG,
+      });
+      if (typeof written !== 'object' || written === null) {
+        throw new Error('expected a message row');
+      }
+      expect(written.text).toBe(readBack);
+      expect(sql.queries).toHaveLength(3);
+      expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+      expect(sql.queries[0]?.text).not.toMatch(/UPDATE message/);
+      expect(sql.queries[1]?.text).toMatch(/UPDATE message SET text/);
+      expect(sql.queries[1]?.text).toMatch(/INSERT INTO message_edit/);
+      expect(sql.queries[2]?.text).toMatch(/FROM message WHERE id = \$1/);
+    });
+
+    it('writes the pin on the same mock when the locked text already fits', async () => {
+      const sql = sqlWithTransaction();
+      sql.queryQueue = [[locked(LONG)], [{ id: 'm1' }]];
+      expect(await new PostgresMessageStore(sql).setPlace('m1', COMPLETE)).toBe(true);
+      expect(sql.queries).toHaveLength(2);
+      expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+      expect(sql.queries[0]?.text).not.toMatch(/UPDATE message/);
+      expect(sql.queries[1]?.text).toMatch(/UPDATE message SET place_lat/);
+      expect(sql.queries[1]?.text).toMatch(/deleted_at IS NULL/);
+    });
+
+    it('returns undefined when the history update locks a row but the read-back is empty', async () => {
+      const sql = sqlWithTransaction();
+      sql.queryQueue = [[locked(LONG)], [{ id: 'm1' }], []];
+      expect(
+        await new PostgresMessageStore(sql).updateText('m1', OTHER_LONG, {
+          id: 'e1',
+          messageId: 'm1',
+          actorId: 'staff',
+          createdAt: new Date(0),
+          field: 'text',
+          before: LONG,
+          after: OTHER_LONG,
+        }),
+      ).toBeUndefined();
+      expect(sql.queries).toHaveLength(3);
+      expect(sql.queries[2]?.text).toMatch(/FROM message WHERE id = \$1/);
+    });
+  });
 });
 
 describe('migrateMessageSchema fiat backfill', () => {
@@ -10329,7 +10616,7 @@ describe('shop identity on message rows', () => {
     const byId = new Map((await store.listPlaces(10)).map((row) => [row.id, row.shopNpub]));
     expect(byId.get('shop-1')).toBe(nip19.npubEncode(SHOP_PUBKEY));
     expect(byId.get('shop-2')).toBeNull();
-    await store.updateText('shop-1', 'Tiny #21GiftsShop');
+    await store.updateText('shop-1', 'Fresh coffee roasted here every morning.');
     expect((await store.listPlaces(10)).find((row) => row.id === 'shop-1')?.shopNpub).toBeNull();
     expect(await store.deleteById('shop-1')).toBe(false);
     expect(await store.getById('shop-1')).toBeDefined();

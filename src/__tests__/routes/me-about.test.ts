@@ -191,6 +191,48 @@ describe('PUT /me/about', () => {
     expect(await res.json()).toEqual({ error: 'missing_requirements', missing: ['name'] });
   });
 
+  it('returns 400 and does not change the photo when a complete pin rejects the bio', async () => {
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      ...nameOnlyNote(),
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Stall',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+    });
+    const res = await putAbout(store, { text: BIO, photo: JPEG_PHOTO }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    const row = await messages.getById(NOTE_ID);
+    expect(row?.text).toBe('Ada');
+    expect(row?.hasPhoto).toBe(false);
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.about.set')).toBe(false);
+  });
+
+  it('returns 404 when the profile note disappears before the bio is written', async () => {
+    const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
+    await patchAccount(store, { profileMessageId: NOTE_ID });
+    const messages = new InMemoryMessageStore([nameOnlyNote()]);
+    messages.updateText = () => Promise.resolve(undefined);
+    const res = await putAbout(store, { text: BIO }, messages);
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect((await messages.getById(NOTE_ID))?.text).toBe('Ada');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'account.about.set')).toBe(false);
+  });
+
   it('updates an existing name-only note when name and Lightning Address are set', async () => {
     const store = await seededStore({ name: 'Ada', lightningAddress: ADDRESS });
     await patchAccount(store, { profileMessageId: NOTE_ID });

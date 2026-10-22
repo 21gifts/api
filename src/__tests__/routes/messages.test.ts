@@ -11005,8 +11005,8 @@ describe('PATCH /messages/:id/place', () => {
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      place: STORED,
     });
-    await messages.setPlace(SHOP_ID, STORED);
     const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -11019,27 +11019,30 @@ describe('PATCH /messages/:id/place', () => {
 
   it('returns 400 for a reply whose text contains the shop hashtag', async () => {
     const auth = await staffStore('Ada');
-    const messages = new InMemoryMessageStore();
-    await messages.create({
-      id: PARENT_ID,
-      accountId: 'acc',
-      name: 'Ada',
-      text: 'parent',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-    });
-    await messages.create({
-      id: REPLY_ID,
-      accountId: 'acc',
-      name: 'Ada',
-      text: 'Shop #21GiftsShop',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-      parentId: PARENT_ID,
-    });
-    await messages.setPlace(REPLY_ID, STORED);
+    const createdAt = new Date(now());
+    // create() stores a reply pin as null, so the invalid pair is seeded here.
+    const messages = new InMemoryMessageStore([
+      {
+        id: PARENT_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'parent',
+        createdAt,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: REPLY_ID,
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'Shop #21GiftsShop',
+        createdAt,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: PARENT_ID,
+        place: STORED,
+      },
+    ]);
     const res = await mount(auth, messages).request('/messages/' + REPLY_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -11061,8 +11064,8 @@ describe('PATCH /messages/:id/place', () => {
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      place: STORED,
     });
-    await messages.setPlace(SHOP_ID, STORED);
     const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -11103,8 +11106,8 @@ describe('PATCH /messages/:id/place', () => {
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      place: STORED,
     });
-    await messages.setPlace(SHOP_ID, STORED);
     expect(await messages.markDeleted(SHOP_ID, new Date(now()), 'acc')).toBe(true);
     const hidden = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
@@ -11140,8 +11143,8 @@ describe('PATCH /messages/:id/place', () => {
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
+      place: STORED,
     });
-    await messages.setPlace(SHOP_ID, STORED);
     const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -12410,17 +12413,18 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
   it('returns 400 when a pinned shop description is too short', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
-    await shopNote(messages);
-    await messages.setPlace(SHOP_ID, {
-      lat: 47.1,
-      lng: 8.5,
-      label: 'Stall',
-      address: {
-        street: 'Bahnhofstrasse',
-        houseNumber: '1',
-        postalCode: '8001',
-        city: 'Zürich',
-        country: 'CH',
+    await shopNote(messages, {
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Stall',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
       },
     });
     const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
@@ -12429,6 +12433,32 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
       error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
     });
     expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+  });
+
+  it('returns 400 when an unchanged description is too short for a complete pin', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages, {
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Stall',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe\n\n#21GiftsShop' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
   });
 
   it('lets a short shop text stay when the note has no pin', async () => {
@@ -12455,20 +12485,35 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
   });
 
-  it('returns 400 when a pinned shop description is not longer than the name', async () => {
+  it('returns 400 when the store rejects the shop pair after the route has accepted the pin', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
     await shopNote(messages);
-    await messages.setPlace(SHOP_ID, {
-      lat: 47.1,
-      lng: 8.5,
-      label: 'Neighborhood Espresso House',
-      address: {
-        street: 'Bahnhofstrasse',
-        houseNumber: '1',
-        postalCode: '8001',
-        city: 'Zürich',
-        country: 'CH',
+    const pairError =
+      'Shop description must be 20 to 1000 characters and longer than the shop name';
+    messages.updateText = () => Promise.resolve(pairError);
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: pairError });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+    expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
+  it('returns 400 when a pinned shop description is not longer than the name', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages, {
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Neighborhood Espresso House',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
       },
     });
     const res = await patchText(auth, SHOP_ID, { text: 'Coffee roasted on site.' }, messages);
@@ -12484,17 +12529,17 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     const messages = new InMemoryMessageStore();
     await shopNote(messages, {
       shopAccount: { id: 'shop-acc', username: 'shopkeep', name: 'Shop Name' },
-    });
-    await messages.setPlace(SHOP_ID, {
-      lat: 47.1,
-      lng: 8.5,
-      label: 'Stall',
-      address: {
-        street: 'Bahnhofstrasse',
-        houseNumber: '1',
-        postalCode: '8001',
-        city: 'Zürich',
-        country: 'CH',
+      place: {
+        lat: 47.1,
+        lng: 8.5,
+        label: 'Stall',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
       },
     });
     const shops = new InMemoryShopIdentityStore(messages);

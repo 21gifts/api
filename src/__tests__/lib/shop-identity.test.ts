@@ -209,7 +209,7 @@ describe('InMemoryShopIdentityStore key creation', () => {
     const { messages, store } = setup();
     const unlisting = {
       generateSecretKey: () => {
-        void messages.updateText(ID_A, 'Too short #21GiftsShop');
+        void messages.updateText(ID_A, 'Fresh coffee roasted here every morning.');
         return secret(2);
       },
     };
