@@ -6,8 +6,8 @@
  * `SHOP_E2E_PAY` is `1`. It does not print the signing key, the RPC URL, the
  * deposit address, or the BOLT11.
  *
- * This file is not part of `bun test` or Playwright. The run of 2026-10-22
- * and the environment variables are in `docs/shop-stablecoin-staging-e2e.md`.
+ * This file is not part of `bun test` or Playwright. How to run it is in
+ * `scripts/shop-staging-e2e/README.md`. Dated results are in `records/`.
  */
 
 import {

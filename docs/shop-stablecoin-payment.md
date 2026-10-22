@@ -1881,8 +1881,8 @@ records each result in the pull request that turns the feature on.
 
 One staging payment on 2026-10-22, Polygon USDT from an externally owned
 account, is recorded in
-[shop-stablecoin-staging-e2e.md](./shop-stablecoin-staging-e2e.md). That
-run does not close this list.
+[2026-10-22-polygon-usdt.md](../scripts/shop-staging-e2e/records/2026-10-22-polygon-usdt.md).
+That run does not close this list.
 
 1. Tether Wallet 1.11.0 on a real Android phone, with a balance that
    covers the amount and the fee, pays a staging shop payment with USDT
