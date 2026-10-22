@@ -46,6 +46,8 @@ import {
   serializeHiddenMessage,
   serializeMessage,
   unsignedNostrDefaults,
+  WAIT_SATS_POLL_MS,
+  WAIT_SATS_TIMEOUT_MS,
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
@@ -475,12 +477,6 @@ function publicEditField(field: MessageEditRow['field']): 'text' | 'place' | 'sh
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
-export const WAIT_SATS_TIMEOUT_MS = 25_000;
-
-/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
-export const WAIT_SATS_POLL_MS = 250;
 
 /**
  * Default sleep between `sinceSats` polls when no test inject is provided.

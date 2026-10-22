@@ -15,6 +15,7 @@ import {
 } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
 import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import type { ShopPayments } from '@/lib/shop-payment';
 import { bearerToken } from '@/routes/me';
 
 /**
@@ -44,6 +45,12 @@ export interface PosRouteDeps {
   activity?: ActivityPing;
   /** LNURL server; omitted when off. A verified wallet is checked against it. */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * Shop payments in USDT and USDC; omitted when the LNURL server is off.
+   * With it, `POST /pos` and `DELETE /pos` change the charge and its shop
+   * payment in one transaction, and `GET /pos` adds `charge.shopPayment`.
+   */
+  shopPayments?: ShopPayments;
 }
 
 /** Resolve the account behind a request's bearer session, or `null`. */
@@ -88,15 +95,26 @@ export function posRoutes(deps: PosRouteDeps): Hono {
           ? latest
           : null;
       const charge = pending ?? recentlyPaid;
+      const shown =
+        charge === null
+          ? null
+          : {
+              ...serializePosCharge(charge),
+              ...(deps.shopPayments === undefined
+                ? {}
+                : { shopPayment: await deps.shopPayments.shopPaymentOfCharge(charge.id) }),
+            };
       return c.json(
         {
-          charge: charge === null ? null : serializePosCharge(charge),
+          charge: shown,
           history: history.map((row) => serializePosCharge(row)),
         },
         200,
       );
     })
     .post('/', async (c) => {
+      // The request's arrival: the charge's background creation counts its 16 s limit from here.
+      const arrivedMs = deps.now();
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
@@ -144,7 +162,15 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         sparkInvoice: null,
       };
       try {
-        const created = await deps.store.create(row);
+        let created: PosCharge;
+        if (deps.shopPayments === undefined) {
+          created = await deps.store.create(row);
+        } else {
+          if (!(await deps.shopPayments.createCharge(account, row, arrivedMs))) {
+            return c.json({ error: 'A payment is already open' }, 409);
+          }
+          created = row;
+        }
         if (deps.messageStore !== undefined && deps.activity !== undefined) {
           try {
             const notes = await deps.messageStore.listLiveAssignedShops();
@@ -175,7 +201,10 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const cancelled = await deps.store.cancelPending(account.id, deps.now());
+      const cancelled =
+        deps.shopPayments === undefined
+          ? await deps.store.cancelPending(account.id, deps.now())
+          : await deps.shopPayments.cancelCharge(account.id, deps.now());
       if (cancelled === null) {
         return c.json({ error: 'No open payment' }, 404);
       }

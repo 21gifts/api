@@ -28,9 +28,10 @@ Source: [src/lib/pos-store.ts](../../../src/lib/pos-store.ts)
 
 ## Referenced by
 
-| Table                | Column      | Points to |
-| -------------------- | ----------- | --------- |
-| `pos_charge_invoice` | `charge_id` | `id`      |
+| Table                | Column          | Points to |
+| -------------------- | --------------- | --------- |
+| `pos_charge_invoice` | `charge_id`     | `id`      |
+| `shop_payment`       | `pos_charge_id` | `id`      |
 
 ## Relations
 
@@ -38,4 +39,5 @@ Source: [src/lib/pos-store.ts](../../../src/lib/pos-store.ts)
 erDiagram
     "pos_charge" }o..|| "account" : "account_id"
     "pos_charge_invoice" }o..|| "pos_charge" : "charge_id"
+    "shop_payment" |o..o| "pos_charge" : "pos_charge_id"
 ```

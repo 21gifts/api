@@ -33,7 +33,14 @@ import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/pu
 import { InMemoryPushStore } from './lib/push-store';
 import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
 import { resolveMediaDir } from './lib/video';
-import { resolveFreePaymentsConfig, resolveLnurlServerConfig } from './lib/config';
+import {
+  resolveFreePaymentsConfig,
+  resolveLnurlServerConfig,
+  resolveShopPaymentConfig,
+} from './lib/config';
+import { OrchestraClient } from './lib/orchestra';
+import { ShopPayments } from './lib/shop-payment';
+import { InMemoryShopPaymentStore, PostgresShopPaymentStore } from './lib/shop-payment-store';
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
@@ -140,7 +147,34 @@ if (import.meta.main) {
     lnurlServer !== undefined && freePayments !== null
       ? (boot.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
       : undefined;
+  const shopConfig = resolveShopPaymentConfig(process.env);
+  const shopPayments =
+    lnurlServer === undefined
+      ? undefined
+      : new ShopPayments({
+          store:
+            bun === undefined
+              ? new InMemoryShopPaymentStore(posStore)
+              : new PostgresShopPaymentStore(bun.client, bun.mergeDb),
+          posStore,
+          auth: authStore,
+          lnurlServer,
+          config: shopConfig,
+          orchestra:
+            shopConfig === null
+              ? null
+              : new OrchestraClient({
+                  baseUrl: shopConfig.orchestraBaseUrl,
+                  apiKey: shopConfig.orchestraApiKey,
+                  fetchImpl: globalThis.fetch,
+                  now: Date.now,
+                }),
+          fxSpot: fxSpotStore,
+          fetchImpl: globalThis.fetch,
+          now: Date.now,
+        });
   const app = createApp({
+    ...(shopPayments === undefined ? {} : { shopPayments }),
     authStore,
     btcUsdRates,
     fiatRates,
@@ -263,6 +297,7 @@ if (import.meta.main) {
         : { operatorUrl: freePayments.operatorUrl }),
       fetchImpl: globalThis.fetch,
       now: Date.now,
+      ...(shopPayments === undefined ? {} : { shop: shopPayments }),
     });
   }
 }

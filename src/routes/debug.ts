@@ -182,6 +182,9 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
           if (result.error === 'platform') {
             return c.json({ error: 'Cannot merge the platform account' }, 409);
           }
+          if (result.error === 'shop_payment_open') {
+            return c.json({ error: 'A payment is already open' }, 409);
+          }
           return c.json({ error: 'Both accounts have a funding grant' }, 409);
         }
         logEvent('debug.accounts.merged', { from, into, messages: result.messages });

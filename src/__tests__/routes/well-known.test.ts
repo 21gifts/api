@@ -7,6 +7,16 @@ import { LNURL_PAY_REQUEST_TIMEOUT_MS } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryPosStore } from '@/lib/pos-store';
 import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
+import {
+  ShopPayments,
+  noPendingPaymentBody,
+  shopErrorBody,
+  shopResponse,
+  type ShopPayLinkAnswer,
+  type ShopPayLinkQuery,
+} from '@/lib/shop-payment';
+import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
+import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { wellKnownRoutes } from '@/routes/well-known';
 
 const PUBKEY = `02${'a'.repeat(64)}`;
@@ -144,7 +154,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
     expect(res.status).toBe(404);
     expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
     expect(res.headers.get('Cache-Control')).toBe('no-store');
-    expect(await res.json()).toEqual({ error: 'Not found' });
+    expect(await res.json()).toEqual(shopErrorBody(404, 'Not found'));
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
@@ -164,6 +174,8 @@ describe('GET /.well-known/lnurlp/:username', () => {
     const app = createApp({ authStore: auth });
     const res = await app.request('/.well-known/lnurlp/ada');
     expect(res.status).toBe(502);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual(shopErrorBody(502, 'Lightning Address could not be resolved'));
   });
 
   describe('wallet-backed payRequest', () => {
@@ -256,7 +268,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
       );
       const res = await app.request('/.well-known/lnurlp/ada');
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect(await res.json()).toEqual(shopErrorBody(404, 'Not found'));
     });
 
     it('returns 503 when the upstream is unreachable, non-2xx, or returns invalid JSON', async () => {
@@ -276,7 +288,9 @@ describe('GET /.well-known/lnurlp/:username', () => {
         );
         const res = await app.request('/.well-known/lnurlp/ada');
         expect(res.status).toBe(503);
-        expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
+        expect(await res.json()).toEqual(
+          shopErrorBody(503, 'Lightning Address could not be resolved'),
+        );
       }
       expect(
         parsedEvents(warn).some(
@@ -333,7 +347,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
         headers: { 'cf-connecting-ip': '203.0.113.80' },
       });
       expect(limited.status).toBe(429);
-      expect(await limited.json()).toEqual({ error: 'Too many requests' });
+      expect(await limited.json()).toEqual(shopErrorBody(429, 'Too many requests'));
       expect(calls).toBe(120);
     });
 
@@ -375,7 +389,7 @@ describe('GET /.well-known/lnurlp/:username', () => {
       );
       const res = await app.request('/.well-known/lnurlp/ada');
       expect(res.status).toBe(404);
-      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect(await res.json()).toEqual(shopErrorBody(404, 'Not found'));
       expect(fetchImpl).not.toHaveBeenCalled();
       expect(
         parsedEvents(warn).some((e) => e['event'] === 'lnurlp.unknown' && e['username'] === 'ada'),
@@ -390,6 +404,198 @@ describe('GET /.well-known/lnurlp/:username', () => {
       const res = await app.request('/.well-known/lnurlp/ada');
       expect(res.status).toBe(404);
       expect(fetchImpl).not.toHaveBeenCalled();
+    });
+  });
+});
+
+describe('GET /.well-known/lnurlp/:username with shop payments', () => {
+  const ACCOUNT_ID = '00000000-0000-4000-8000-000000000001';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  /** A service stub whose `payLink` records its arguments and answers `answer`. */
+  function stubShop(answer: ShopPayLinkAnswer): {
+    shop: ShopPayments;
+    payLink: ReturnType<typeof vi.fn>;
+  } {
+    const payLink = vi.fn(async () => answer);
+    return { shop: { payLink } as unknown as ShopPayments, payLink };
+  }
+
+  async function mountShop(
+    shopPayments: ShopPayments,
+    posStore = new InMemoryPosStore(),
+  ): Promise<Hono> {
+    const auth = new InMemoryAuthStore();
+    await seedVerifiedWallet(auth);
+    return new Hono().route(
+      '/.well-known',
+      wellKnownRoutes({
+        auth,
+        fetchImpl: async () => new Response(JSON.stringify(walletPayDoc()), { status: 200 }),
+        posStore,
+        now: () => NOW,
+        lnurlServer: LNURL_CONFIG,
+        shopPayments,
+      }),
+    );
+  }
+
+  it('returns the service response as is', async () => {
+    const { shop } = stubShop({
+      kind: 'response',
+      response: shopResponse({ answered: 'by the service' }, 200),
+    });
+    const app = await mountShop(shop);
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ answered: 'by the service' });
+  });
+
+  it("serves today's unpinned request when the service answers without a pin", async () => {
+    const { shop, payLink } = stubShop({ kind: 'today', pinSats: null });
+    const app = await mountShop(shop);
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(res.status).toBe(200);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(await res.json()).toEqual(walletPayDoc());
+    const query: ShopPayLinkQuery = { timeout: null, method: null, asset: null, repeated: false };
+    expect(payLink).toHaveBeenCalledWith(
+      expect.objectContaining({ id: ACCOUNT_ID }),
+      'ada',
+      walletPayDoc()['metadata'],
+      query,
+      NOW,
+    );
+  });
+
+  it("passes the fetch's arrival, taken before the wallet's pay request resolves", async () => {
+    const { shop, payLink } = stubShop({ kind: 'today', pinSats: null });
+    const auth = new InMemoryAuthStore();
+    await seedVerifiedWallet(auth);
+    let clock = NOW;
+    const app = new Hono().route(
+      '/.well-known',
+      wellKnownRoutes({
+        auth,
+        fetchImpl: async () => {
+          clock += 3_000;
+          return new Response(JSON.stringify(walletPayDoc()), { status: 200 });
+        },
+        posStore: new InMemoryPosStore(),
+        now: () => clock,
+        lnurlServer: LNURL_CONFIG,
+        shopPayments: shop,
+      }),
+    );
+    expect((await app.request('/.well-known/lnurlp/ada')).status).toBe(200);
+    expect(clock).toBe(NOW + 3_000);
+    expect(payLink.mock.calls[0]?.[4]).toBe(NOW);
+  });
+
+  it("pins today's request to the service's sats", async () => {
+    const { shop } = stubShop({ kind: 'today', pinSats: 42 });
+    const app = await mountShop(shop);
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(await res.json()).toEqual(walletPayDoc({ minSendable: 42_000, maxSendable: 42_000 }));
+  });
+
+  it('passes timeout, method, and asset through, and flags a repeated key', async () => {
+    const { shop, payLink } = stubShop({ kind: 'today', pinSats: null });
+    const app = await mountShop(shop);
+    await app.request('/.well-known/lnurlp/ada?timeout=5&method=Polygon&asset=USDT&quote=q1');
+    expect(payLink.mock.calls[0]?.[3]).toEqual({
+      timeout: '5',
+      method: 'Polygon',
+      asset: 'USDT',
+      repeated: false,
+    });
+    for (const key of ['quote', 'method', 'asset']) {
+      await app.request(`/.well-known/lnurlp/ada?${key}=a&${key}=b`);
+      expect(payLink.mock.lastCall?.[3]).toMatchObject({ repeated: true });
+    }
+    expect(payLink).toHaveBeenCalledTimes(4);
+  });
+
+  it('answers 502 when the service throws', async () => {
+    const shop = {
+      payLink: async () => {
+        throw new Error('boom');
+      },
+    } as unknown as ShopPayments;
+    const app = await mountShop(shop);
+    const res = await app.request('/.well-known/lnurlp/ada');
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual(shopErrorBody(502, 'Lightning Address could not be resolved'));
+  });
+
+  describe('with a real service and no Orchestra config', () => {
+    function realShop(posStore: InMemoryPosStore, auth: InMemoryAuthStore): ShopPayments {
+      return new ShopPayments({
+        store: new InMemoryShopPaymentStore(posStore),
+        posStore,
+        auth,
+        lnurlServer: LNURL_CONFIG,
+        config: null,
+        orchestra: null,
+        fxSpot: new InMemoryFxSpotStore(),
+        fetchImpl: async () => new Response('unexpected', { status: 500 }),
+        now: () => NOW,
+      });
+    }
+
+    async function mountReal(posStore: InMemoryPosStore): Promise<Hono> {
+      const auth = new InMemoryAuthStore();
+      await seedVerifiedWallet(auth);
+      return new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({
+          auth,
+          fetchImpl: async () => new Response(JSON.stringify(walletPayDoc()), { status: 200 }),
+          posStore,
+          now: () => NOW,
+          lnurlServer: LNURL_CONFIG,
+          shopPayments: realShop(posStore, auth),
+        }),
+      );
+    }
+
+    it('pins a pending charge without a shop payment', async () => {
+      const posStore = new InMemoryPosStore();
+      await posStore.create({
+        id: '11111111-1111-4111-8111-111111111111',
+        accountId: ACCOUNT_ID,
+        amountSats: 21,
+        status: 'pending',
+        createdAt: new Date(NOW),
+        expiresAt: new Date(NOW + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+      });
+      const app = await mountReal(posStore);
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(walletPayDoc({ minSendable: 21_000, maxSendable: 21_000 }));
+    });
+
+    it("serves today's request with nothing open and no timeout", async () => {
+      const app = await mountReal(new InMemoryPosStore());
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(await res.json()).toEqual(walletPayDoc());
+    });
+
+    it("answers the standard's 404 with timeout=0 and nothing open", async () => {
+      const app = await mountReal(new InMemoryPosStore());
+      const res = await app.request('/.well-known/lnurlp/ada?timeout=0');
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual(noPendingPaymentBody('ada', 'Ada'));
     });
   });
 });
