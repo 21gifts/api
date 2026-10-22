@@ -991,6 +991,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      spot: fxSpotStore,
       messageStore,
       ...(activity === undefined ? {} : { activity }),
       ...receivingDeps,

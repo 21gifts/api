@@ -1561,10 +1561,10 @@ describe('POST /invoices', () => {
     );
     expect(proved.status).toBe(200);
     expect(recorded[0]?.fiat?.usd).toBe('5.00');
-    expect(recorded[0]?.fiat?.chf).toBe('4.00');
+    expect(recorded[0]?.fiat?.chf).toBeNull();
     const attached = await conversationStore.getMessageById(spendGroupGiftId(body.id));
     expect(attached?.amountUsd).toBe('5.00');
-    expect(attached?.amountChf).toBe('4.00');
+    expect(attached?.amountChf).toBeNull();
   });
 
   it('returns 400 when amountUsd cannot be normalized', async () => {
@@ -4190,17 +4190,16 @@ describe('POST /invoices/proof payment fiat', () => {
       amountUsd: '5.00',
     };
     const recorded: GiftRecord[] = [];
+    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
+      throw new Error('frankfurter down');
+    });
     const invoiceStore = new InMemoryInvoiceStore();
     invoiceStore.put(invoice);
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore,
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: {
-        ensureDays: async () => {
-          throw new Error('frankfurter down');
-        },
-      },
+      fiatRates: { ensureDays },
       giftRecorder: {
         recordOutbound: async (row) => {
           recorded.push(row);
@@ -4211,9 +4210,11 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
-    expect(recorded[0]?.fiat?.usd).toBe('5.00');
-    expect(recorded[0]?.fiat?.chf).toBeNull();
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
+      false,
+    );
+    expect(ensureDays).not.toHaveBeenCalled();
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
   });
 
   it('uses an earlier stored rate when loading the payment day throws', async () => {
@@ -4254,11 +4255,11 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
-    expect(calls[0]?.[0]).toBe('2026-06-01');
-    expect(calls[1]?.includes('2026-06-01')).toBe(false);
-    expect(calls[1]?.includes('2026-05-31')).toBe(true);
-    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: '4.00', eur: '4.50', php: '250.00' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
+      false,
+    );
+    expect(calls).toEqual([]);
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
   });
 
   it('stores null fiat when amountUsd is not normalized', async () => {
@@ -4321,8 +4322,11 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(mockedSpot).not.toHaveBeenCalled();
   });
 
-  it('freezes spot crosses when the invoice has no amountUsd', async () => {
+  it('the omitted snapshot stays null when the invoice has no amountUsd', async () => {
     mockedSpot.mockResolvedValueOnce('100000');
+    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
+      return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+    });
     const invoice: GiftInvoice = {
       id: 'd0'.repeat(16),
       address: ADDRESS,
@@ -4339,9 +4343,7 @@ describe('POST /invoices/proof payment fiat', () => {
       spendApiToken: TOKEN,
       invoiceStore,
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
+      fiatRates: { ensureDays },
       giftRecorder: {
         recordOutbound: async (row) => {
           recorded.push(row);
@@ -4352,8 +4354,9 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat?.usd).toBe('1.00');
-    expect(recorded[0]?.fiat?.chf).toBe('0.80');
+    expect(recorded[0]?.fiat).toBeNull();
+    expect(mockedSpot).not.toHaveBeenCalled();
+    expect(ensureDays).not.toHaveBeenCalled();
   });
 
   it('fills a quote the payment day has not published yet from the previous day', async () => {
@@ -4390,9 +4393,9 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(res.status).toBe(200);
     expect(recorded[0]?.fiat).toEqual({
       usd: '5.00',
-      chf: '4.00',
-      eur: '4.50',
-      php: '250.00',
+      chf: null,
+      eur: null,
+      php: null,
     });
   });
 

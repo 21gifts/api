@@ -451,6 +451,12 @@ function chargeRow(over: Partial<PosCharge> = {}): PosCharge {
     expiresAt: new Date(clock + POS_CHARGE_TTL_MS),
     paidAt: null,
     sparkInvoice: null,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
     ...over,
   };
 }

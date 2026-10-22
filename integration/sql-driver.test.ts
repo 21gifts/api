@@ -1341,6 +1341,12 @@ describe('PostgresPosStore paid tracking', () => {
         expiresAt: new Date(now + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
 
       const hashA = hex64();
@@ -2643,6 +2649,12 @@ describe('PostgresShopPaymentStore', () => {
         expiresAt: new Date(now + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       };
       const payment = shopPayment(accountId, now, { posChargeId: chargeId });
       const quoteId = crypto.randomUUID();
@@ -3218,6 +3230,12 @@ describe('PostgresShopPaymentStore', () => {
         expiresAt: new Date(now + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
       const payment = shopPayment(accountId, now, {
         posChargeId: chargeId,
@@ -3736,6 +3754,12 @@ describe('PostgresShopPaymentStore', () => {
         expiresAt: new Date(now + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
       const hash = hex64();
       const payment = shopPayment(payerAccount, now, { paymentHash: hash });
@@ -3801,6 +3825,12 @@ describe('PostgresShopPaymentStore', () => {
         expiresAt: new Date(now - 10_000),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       };
       await pos.create(charge);
       const lapsed = shopPayment(accountId, now - 400_000, {
@@ -4095,6 +4125,12 @@ describe('mergeAccounts and the shop payment rows', () => {
       expiresAt: new Date(now + expiresInMs),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     };
   }
 

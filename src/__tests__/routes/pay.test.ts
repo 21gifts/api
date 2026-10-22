@@ -269,6 +269,12 @@ describe('GET /pay/:username', () => {
       expiresAt,
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -279,7 +285,17 @@ describe('GET /pay/:username', () => {
       username: 'ada',
       minSats: 21,
       maxSats: 21,
-      charge: { amountSats: 21, expiresAt: expiresAt.toISOString() },
+      charge: {
+        id: '11111111-1111-4111-8111-111111111111',
+        amountSats: 21,
+        expiresAt: expiresAt.toISOString(),
+        amountCurrency: null,
+        amount: null,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
     });
     expect(body).not.toHaveProperty('id');
     expect(body).not.toHaveProperty('status');
@@ -300,6 +316,12 @@ describe('GET /pay/:username', () => {
       expiresAt: new Date(nowMs),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -326,6 +348,12 @@ describe('GET /pay/:username', () => {
       expiresAt: new Date(nowMs + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada');
@@ -573,6 +601,12 @@ describe('POST /pay/:username/invoice', () => {
       expiresAt: new Date(nowMs + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app, urls } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -598,6 +632,12 @@ describe('POST /pay/:username/invoice', () => {
       expiresAt: new Date(nowMs + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app } = await seededApp({ posStore, now });
     const res = await app.request('/pay/ada/invoice', {
@@ -622,6 +662,12 @@ describe('POST /pay/:username/invoice', () => {
       expiresAt: new Date(nowMs + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const { app, urls } = await seededApp({ posStore, now, maxSendable: 5000 });
     const getRes = await app.request('/pay/ada');
@@ -631,7 +677,17 @@ describe('POST /pay/:username/invoice', () => {
       username: 'ada',
       minSats: 21,
       maxSats: 21,
-      charge: { amountSats: 21, expiresAt: new Date(nowMs + 60_000).toISOString() },
+      charge: {
+        id: '66666666-6666-4666-8666-666666666666',
+        amountSats: 21,
+        expiresAt: new Date(nowMs + 60_000).toISOString(),
+        amountCurrency: null,
+        amount: null,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      },
     });
     const postRes = await app.request('/pay/ada/invoice', {
       method: 'POST',
@@ -719,6 +775,12 @@ describe('till payments on POST /pay/:username/invoice', () => {
       expiresAt: new Date(NOW_MS + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     };
   }
 
@@ -1168,6 +1230,12 @@ describe('POST /pay/:username/payment', () => {
       expiresAt: new Date(NOW_MS + 60_000),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     };
   }
 
@@ -1437,5 +1505,120 @@ describe('POST /pay/:username/payment', () => {
     expect(ok.status).toBe(200);
     expect(await ok.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
     expect(urls.some((url) => url.includes('/lnurlp/ada/invoice?'))).toBe(true);
+  });
+});
+
+describe('GET pay charge receipt', () => {
+  it('returns a paid charge by id and omits accountId and sparkInvoice', async () => {
+    const nowMs = 1_700_000_000_000;
+    const id = '88888888-8888-4888-8888-888888888888';
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id,
+      accountId: ADA_ID,
+      amountSats: 21,
+      status: 'paid',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+      paidAt: new Date(nowMs + 1_000),
+      sparkInvoice: 'spark1secret',
+      amountCurrency: 'PHP',
+      amountText: '12.00',
+      fiatUsd: '0.24',
+      fiatChf: '0.22',
+      fiatEur: '0.23',
+      fiatPhp: null,
+    });
+    const { app } = await seededApp({ posStore, now: () => nowMs });
+    const expected = {
+      id,
+      amountSats: 21,
+      status: 'paid',
+      createdAt: new Date(nowMs).toISOString(),
+      expiresAt: new Date(nowMs + 60_000).toISOString(),
+      paidAt: new Date(nowMs + 1_000).toISOString(),
+      amountCurrency: 'PHP',
+      amount: '12.00',
+      amountUsd: '0.24',
+      amountChf: '0.22',
+      amountEur: '0.23',
+      amountPhp: '12.00',
+    };
+    const byId = await app.request(`/pay/charges/${id}`);
+    expect(byId.status).toBe(200);
+    const byIdBody = (await byId.json()) as Record<string, unknown>;
+    expect(byIdBody).toEqual(expected);
+    expect(byIdBody).not.toHaveProperty('accountId');
+    expect(byIdBody).not.toHaveProperty('sparkInvoice');
+    const byName = await app.request(`/pay/ada/charges/${id}`);
+    expect(byName.status).toBe(200);
+    expect(await byName.json()).toEqual(expected);
+    expect((await app.request(`/pay/bea/charges/${id}`)).status).toBe(404);
+    expect((await app.request('/pay/charges/99999999-9999-4999-8999-999999999999')).status).toBe(
+      404,
+    );
+    expect((await app.request('/pay/charges/not-a-uuid')).status).toBe(404);
+  });
+
+  it('returns 404 when the username cannot be normalised', async () => {
+    const id = '88888888-8888-4888-8888-888888888888';
+    const { app } = await seededApp();
+    const res = await app.request(`/pay/_/charges/${id}`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('sparkInvoice');
+  });
+
+  it('returns 404 when the account is unknown', async () => {
+    const id = '88888888-8888-4888-8888-888888888888';
+    const { app } = await seededApp();
+    const res = await app.request(`/pay/bea/charges/${id}`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('sparkInvoice');
+  });
+
+  it('returns 404 when ada has no charge with that id', async () => {
+    const id = '99999999-9999-4999-8999-999999999999';
+    const { app } = await seededApp();
+    const res = await app.request(`/pay/ada/charges/${id}`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('sparkInvoice');
+  });
+
+  it('returns 404 when the charge belongs to another account', async () => {
+    const nowMs = 1_700_000_000_000;
+    const id = '77777777-7777-4777-8777-777777777777';
+    const posStore = new InMemoryPosStore();
+    await posStore.create({
+      id,
+      accountId: '00000000-0000-4000-8000-000000000099',
+      amountSats: 21,
+      status: 'paid',
+      createdAt: new Date(nowMs),
+      expiresAt: new Date(nowMs + 60_000),
+      paidAt: new Date(nowMs + 1_000),
+      sparkInvoice: 'spark1secret',
+      amountCurrency: 'PHP',
+      amountText: '12.00',
+      fiatUsd: '0.24',
+      fiatChf: '0.22',
+      fiatEur: '0.23',
+      fiatPhp: null,
+    });
+    const { app } = await seededApp({ posStore, now: () => nowMs });
+    const res = await app.request(`/pay/ada/charges/${id}`);
+    expect(res.status).toBe(404);
+    const body = (await res.json()) as Record<string, unknown>;
+    expect(body).toEqual({ error: 'Not found' });
+    expect(body).not.toHaveProperty('accountId');
+    expect(body).not.toHaveProperty('sparkInvoice');
   });
 });

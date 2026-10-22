@@ -28,6 +28,19 @@ ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_status_check
 CREATE INDEX IF NOT EXISTS pos_charge_watch_idx
   ON pos_charge (expires_at) WHERE status IN ('pending', 'expired');
 
+-- Typed fiat is amount_text. The numeric columns are only the other three
+-- currencies, frozen once at insert. Paying, expiring, or cancelling does not
+-- change them. Legacy rows stay all null.
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_currency text;
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_text text;
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2);
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2);
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2);
+ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2);
+ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_amount_currency_check;
+ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_amount_currency_check
+  CHECK (amount_currency IN ('USD', 'CHF', 'EUR', 'PHP'));
+
 -- BOLT11 payment hashes handed out for a charge while it was pending
 -- (POST /pay/:username/invoice and the forwarded GET /lnurlp/:username/invoice).
 CREATE TABLE IF NOT EXISTS pos_charge_invoice (
