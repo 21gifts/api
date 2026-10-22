@@ -1141,12 +1141,14 @@ describe('serializeOwnerAccountWithPosts', () => {
 });
 
 describe('serializeViewProfile', () => {
-  it('emits exactly ten public profile fields', () => {
+  it('emits the public profile card and keeps owner settings off it', () => {
     const json = serializeViewProfile(account, false, null, false);
     expect(json).toEqual({
+      id: 'acc',
       name: 'Ada',
       username: 'ada',
       location: null,
+      role: 'basis',
       lightningAddress: null,
       lightningAddressVerified: false,
       createdAt: 1,
@@ -1154,10 +1156,15 @@ describe('serializeViewProfile', () => {
       aboutMe: null,
       aboutMeHasPhoto: false,
       aboutMessageId: null,
+      postCount: 0,
+      replyCount: 0,
+      shopCount: 0,
+      creditCount: 0,
+      fundingReviewedAt: null,
+      fundingReviewedByName: null,
+      profileMessage: null,
     });
-    expect(json).not.toHaveProperty('id');
     expect(json).not.toHaveProperty('linkingKey');
-    expect(json).not.toHaveProperty('role');
     expect(json).not.toHaveProperty('viewKey');
     expect(json).not.toHaveProperty('hasPosted');
     expect(json).not.toHaveProperty('profileMessageId');
@@ -1167,17 +1174,65 @@ describe('serializeViewProfile', () => {
     expect(json).not.toHaveProperty('locale');
     expect(json).not.toHaveProperty('fiat');
     expect(json).not.toHaveProperty('staffTag');
-    expect(Object.keys(json)).toHaveLength(10);
+    expect(Object.keys(json)).toHaveLength(19);
   });
 
-  it('omits staffTag even when the account has the label', () => {
+  it('includes staffTag and the passed counts when they are set', () => {
     const json = serializeViewProfile(
       { ...account, staffTag: 'software_developer' },
       false,
       null,
       false,
+      undefined,
+      {
+        postCount: 2,
+        replyCount: 1,
+        shopCount: 0,
+        creditCount: 3,
+        fundingReviewedAt: 9,
+        fundingReviewedByName: 'Bea',
+      },
     );
-    expect(json).not.toHaveProperty('staffTag');
+    expect(json.staffTag).toBe('software_developer');
+    expect(json.postCount).toBe(2);
+    expect(json.replyCount).toBe(1);
+    expect(json.creditCount).toBe(3);
+    expect(json.fundingReviewedAt).toBe(9);
+    expect(json.fundingReviewedByName).toBe('Bea');
+    expect(json.profileMessage).toBeNull();
+  });
+
+  it('copies the profile note when one is passed', () => {
+    const profileMessage = {
+      id: 'note-1',
+      name: 'Ada',
+      text: 'Hello',
+      createdAt: '1970-01-01T00:00:00.001Z',
+      sats: 0,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
+      payable: false,
+      authorCanReceive: false,
+      hasPhoto: false,
+      photoCount: 0,
+      photoTakenAts: [],
+      hasVideo: false,
+      videoContentType: null,
+      heartCount: 1,
+      hearted: false,
+    };
+    const json = serializeViewProfile(
+      account,
+      false,
+      'Hello',
+      false,
+      undefined,
+      undefined,
+      profileMessage,
+    );
+    expect(json.profileMessage).toBe(profileMessage);
   });
 
   it('maps a missing username to null', () => {

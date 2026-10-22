@@ -595,9 +595,37 @@
 
 ## Endpoint: GET /view/:viewKey
 
-- **Purpose:** Public capability URL. Read-only ten-field profile card (`name`, `username` (`string | null` LUD-16 / NIP-05 local-part), `location` (`string | null`, never omit, never `""`), `lightningAddress` and `lightningAddressVerified` (the wallet address and `true` for a verified wallet with the LNURL server on, otherwise `null` and `false`; a stored external address is ignored), `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`). `hasPasskey` is true when the account already has a passkey credential. `aboutMe` is the profile-note text when it is a real bio, else `null` (missing or soft-hidden (`deletedAt` set); auto name-copy is not a bio). `aboutMeHasPhoto` is true when the live profile note has a stored photo. `aboutMessageId` is the live profile-note id only when `aboutMe !== null`, else `null` (never `profileMessageId` under another name). No auth. Not a session.
+- **Purpose:** Public capability URL. The same visible profile as `GET /members/:accountId`: `id`, `name`, `username` (`string | null`), `location` (`string | null`, never omit, never `""`), `role`, `lightningAddress` and `lightningAddressVerified` (the wallet address and `true` for a verified wallet with the LNURL server on, otherwise `null` and `false`; a stored external address is ignored), epoch-ms `createdAt`, `hasPasskey`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `profileMessage` (`serializeMessage` plus `heartCount` and `hearted`, or `null`; `hearted` is false because there is no viewer), uncapped `postCount`, `replyCount`, `shopCount`, `creditCount`, `fundingReviewedAt` (`null` unless admitted), `fundingReviewedByName` (`null` when unnamed or not admitted), and `staffTag` only when it is `software_developer`. Omits `linkingKey`, `viewKey`, the moderator `trust` graph, and owner settings. `hasPasskey` is true when the account already has a passkey credential. `aboutMe` is the profile-note text when it is a real bio, else `null`. `aboutMessageId` is the live profile-note id only when `aboutMe !== null`, else `null`. No auth. Not a session. Lists are `GET /view/:viewKey/posts`, `/shops`, `/credits`, and `/replies`.
 - **Errors:** 404 `{ "error": "Not found" }` when the param is not 64 lowercase hex or the key is unknown. 503 `{ "error": "Messages are unavailable" }` when the profile-note read throws (`view.get.failed`).
 - **Used by:** Anyone with the link (owner copies `viewKey` from GET `/me`); invite page uses `hasPasskey` for the activation banner.
+- **Auth:** none.
+
+## Endpoint: GET /view/:viewKey/posts
+
+- **Purpose:** Public. Same `{ messages }` as `GET /members/:accountId/posts` for the account behind the view key. `hearted` is false. No auth.
+- **Errors:** 404 `{ error: 'Not found' }` for a bad or unknown key. 503 `{ error: 'Messages are unavailable' }` when the store throws (`view.posts.failed`).
+- **Used by:** The public profile page.
+- **Auth:** none.
+
+## Endpoint: GET /view/:viewKey/shops
+
+- **Purpose:** Public. Same `{ messages }` as `GET /members/:accountId/shops` for the account behind the view key. `hearted` is false. No auth.
+- **Errors:** 404 `{ error: 'Not found' }` for a bad or unknown key. 503 `{ error: 'Messages are unavailable' }` when the store throws (`view.shops.failed`).
+- **Used by:** The public profile page.
+- **Auth:** none.
+
+## Endpoint: GET /view/:viewKey/credits
+
+- **Purpose:** Public. Same `{ messages }` as `GET /members/:accountId/credits` for the account behind the view key. `hearted` is false. No auth.
+- **Errors:** 404 `{ error: 'Not found' }` for a bad or unknown key. 503 `{ error: 'Messages are unavailable' }` when the store throws (`view.credits.failed`).
+- **Used by:** The public profile page.
+- **Auth:** none.
+
+## Endpoint: GET /view/:viewKey/replies
+
+- **Purpose:** Public. Same `{ messages }` as `GET /members/:accountId/replies` for the account behind the view key. `hearted` is false. A reply that cannot serialize is omitted. No auth.
+- **Errors:** 404 `{ error: 'Not found' }` for a bad or unknown key. 503 `{ error: 'Messages are unavailable' }` when the store throws (`view.replies.failed`).
+- **Used by:** The public profile page.
 - **Auth:** none.
 
 ## Endpoint: GET /messages
