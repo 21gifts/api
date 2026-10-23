@@ -334,7 +334,7 @@ export class PostgresFundingStore implements FundingStore {
    * Write `grant` only when the stored status is in `from`. `'none'` uses
    * `INSERT … ON CONFLICT DO UPDATE WHERE status = ANY(from without none)`.
    * `$9` is {@link postgresTextArrayLiteral} of `from` without `'none'`, not a
-   * JavaScript array (Bun SQL cannot bind a JavaScript array to `text[]`).
+   * JavaScript array (Bun 1.4.4 accepts an array for `text[]`; this call keeps the literal).
    *
    * @param grant - Fully formed next grant.
    * @param from - Allowed current statuses, including `'none'` for insert.

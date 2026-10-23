@@ -106,7 +106,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
-│   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
+│   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun 1.4.4 also accepts a JavaScript array for text[])
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
 │   │   ├── diagnostic-log.ts # Diagnostic event store (`diagnostic_event`)
@@ -548,9 +548,9 @@ undeclared deviation and is rejected.
   (see `vitest.config.ts`). Unreachable defensive code can be exempted with a
   `v8 ignore` annotation that names a concrete reason — never to silence the gate.
 - Vitest stays free of `DATABASE_URL`. `bun run test:postgres` is a separate Bun test against
-  Postgres. `$n::text[]` and `$n::uuid[]` parameters must be one array-literal string
-  (`postgresTextArrayLiteral` for text). A JavaScript array is `malformed array literal` under
-  Bun `SQL.unsafe`. CI runs this script and fails if `DATABASE_URL` is missing.
+  Postgres. `$n::text[]` may be a JavaScript array of strings (Bun 1.4.4) or one
+  `postgresTextArrayLiteral`. `$n::uuid[]` and `$n::bigint[]` stay one array-literal string.
+  CI runs this script and fails if `DATABASE_URL` is missing.
 
 ### Before every push (the same checks CI runs)
 

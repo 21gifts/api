@@ -65,21 +65,19 @@ async function closeIfPossible(sql: SQL): Promise<void> {
 }
 
 describe('Bun SQL text[] binding', () => {
-  test('driver rejects a JavaScript array', async () => {
+  test('driver binds a JavaScript array', async () => {
     const sql = new SQL(databaseUrl);
     try {
-      let thrown: unknown;
-      try {
-        await sql.unsafe('SELECT $1::text[] AS tags', [['rejected']]);
-      } catch (error) {
-        thrown = error;
-      }
-      if (thrown === undefined) {
-        throw new Error('expected sql.unsafe to reject a JavaScript array');
-      }
-      const message = String(thrown);
-      if (!message.includes('malformed array literal')) {
-        throw thrown;
+      const rows = (await sql.unsafe('SELECT $1::text[] AS tags', [
+        ['rejected'],
+      ])) as { tags: unknown }[];
+      const tags = rows[0]?.tags;
+      if (Array.isArray(tags)) {
+        expect(tags.includes('rejected')).toBe(true);
+      } else if (typeof tags === 'string') {
+        expect(tags.includes('rejected')).toBe(true);
+      } else {
+        throw new Error(`unexpected tags shape: ${typeof tags}`);
       }
     } finally {
       await closeIfPossible(sql);
