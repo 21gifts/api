@@ -3,8 +3,9 @@
  *
  * Opens `POST /pay/:username/payment`, reads the pay link, and requests one
  * stablecoin detail. It broadcasts an ERC-20 transfer only when
- * `SHOP_E2E_PAY` is `1`. It does not print the signing key, the RPC URL, the
- * deposit address, or the BOLT11.
+ * `SHOP_E2E_PAY` is `1`. A paid run leaves `cycle=open` until `return.py`
+ * has moved those sats back to the paying account. It does not print the
+ * signing key, the RPC URL, the deposit address, or the BOLT11.
  *
  * This file is not part of `bun test` or Playwright. How to run it is in
  * `scripts/shop-staging-e2e/README.md`. Dated results are in `records/`.
@@ -297,6 +298,7 @@ async function main(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 15_000));
   }
   if (!settled) fail('not_paid');
+  console.warn('cycle=open');
 }
 
 main().catch(() => fail('unexpected'));
