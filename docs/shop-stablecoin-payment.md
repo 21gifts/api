@@ -1879,6 +1879,11 @@ Only a live run can prove these facts. The stablecoin rows stay off in
 production until each one passes on staging. The person who runs them
 records each result in the pull request that turns the feature on.
 
+One staging payment on 2026-10-22, Polygon USDT from an externally owned
+account, is recorded in
+[2026-10-22-polygon-usdt.md](../scripts/shop-staging-e2e/records/2026-10-22-polygon-usdt.md).
+That run does not close this list.
+
 1. Tether Wallet 1.11.0 on a real Android phone, with a balance that
    covers the amount and the fee, pays a staging shop payment with USDT
    on Polygon, on Arbitrum, and on Ethereum, and reports
