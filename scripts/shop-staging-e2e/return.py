@@ -131,6 +131,7 @@ def save_state(path: str, state: dict) -> None:
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w", encoding="utf-8") as handle:
         handle.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    os.chmod(path, 0o600)
 
 
 def state_path() -> str:
@@ -409,6 +410,9 @@ async def main() -> None:
     warn(f"shop_balance_sats={balance}")
     warn(f"shop_spark_prefix={own_spark[:8]}")
     try:
+        if env("SHOP_E2E_RETURN") == "probe":
+            warn("return=probe")
+            return
         returning = env("SHOP_E2E_RETURN") == "1"
         path = state_path() if returning else None
         state = load_state(path) if path is not None else {}
@@ -420,8 +424,17 @@ async def main() -> None:
             else:
                 warn("return=skipped")
             return
+        recorded_start = state.get("startSats")
+        if isinstance(recorded_start, int) and recorded_start != start:
+            fail("start_mismatch")
         if balance != start and (balance < start or balance - start != amount):
             fail("balance_mismatch")
+        if (
+            env("SHOP_E2E_EXPECT_CREDIT") == "1"
+            and not state.get("paymentId")
+            and balance == start
+        ):
+            fail("shop_not_credited")
         if not state.get("paymentId") and balance == start:
             warn("return=home")
             return
@@ -447,6 +460,7 @@ async def main() -> None:
                     "depositAddress": view["depositAddress"],
                     "idempotency": str(uuid.uuid4()),
                     "amount": amount,
+                    "startSats": start,
                     "payerUnitsBefore": units_before,
                     "paymentId": None,
                 }
