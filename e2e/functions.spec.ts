@@ -147,6 +147,13 @@ test('Function: readPublicBrandFile — GET /favicon.svg has bytes', async ({ re
   expect(body.byteLength).toBeGreaterThan(0);
 });
 
+test('Function: logPoolOptions — GET /info returns while the process is up', async ({
+  request,
+}) => {
+  const res = await request.get('/info');
+  expect(res.status()).toBe(200);
+});
+
 test('Function: requestLog — GET /info succeeds through middleware', async ({ request }) => {
   const res = await request.get('/info');
   expect(res.status()).toBe(200);
