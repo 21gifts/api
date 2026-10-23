@@ -2645,8 +2645,9 @@ not a finite `Date.parse` time, or a `beforeId` that is not a UUID is
 the newest 200; the full history is this endpoint. The log never stores
 OPTIONS, `/healthz`, the query string, request bodies, or the Authorization
 header. Paths pass through `requestLogPath` (`/view/<segment>` →
-`/view/:viewKey`). Write failure on the request path logs
-`api_log.write.failed` and does not replace the response.
+`/view/:viewKey`). The response is sent without waiting for the insert.
+Write failure on the request path logs `api_log.write.failed` and does not
+replace the response.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 

@@ -15,6 +15,7 @@ import {
 } from './lib/postgres-connection-closed';
 import type { MergeDb, MergeTx } from './lib/account-merge';
 import type { SqlClient } from './lib/auth/sql';
+import { logPoolOptions } from './lib/sql-pool';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
 import { PostRateLimiter } from './lib/nostr/rate-limit';
@@ -41,6 +42,7 @@ const POSTGRES_REOPEN_MS = 1000;
 
 interface BunDatabase {
   client: SqlClient;
+  log: SqlClient;
   mergeDb: MergeDb;
   close(): Promise<void>;
 }
@@ -51,15 +53,23 @@ function retain<T>(pending: Promise<T>): Promise<T> {
   return pending;
 }
 
-function createBunDatabase(databaseUrl: string): BunDatabase {
-  const sql = new SQL(databaseUrl);
-  const client: SqlClient = {
+function bunSqlClient(sql: SQL): SqlClient {
+  return {
     async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
       return (await retain(sql.unsafe(text, [...params]))) as T[];
     },
     async execute(text: string, params: readonly unknown[] = []): Promise<void> {
       await retain(sql.unsafe(text, [...params]));
     },
+  };
+}
+
+function createBunDatabase(databaseUrl: string): BunDatabase {
+  const sql = new SQL(databaseUrl);
+  // Log inserts use their own pool. A stuck insert must not take a request connection.
+  const logSql = new SQL(databaseUrl, logPoolOptions());
+  const client: SqlClient = {
+    ...bunSqlClient(sql),
     async transaction<T>(run: (tx: SqlClient) => Promise<T>): Promise<T> {
       return retain(
         sql.begin(async (tx) =>
@@ -76,6 +86,7 @@ function createBunDatabase(databaseUrl: string): BunDatabase {
   };
   return {
     client,
+    log: bunSqlClient(logSql),
     mergeDb: {
       async begin<T>(run: (tx: MergeTx) => Promise<T>): Promise<T> {
         return retain(
@@ -89,7 +100,9 @@ function createBunDatabase(databaseUrl: string): BunDatabase {
       },
     },
     close(): Promise<void> {
-      return sql.close({ timeout: 0 });
+      return Promise.all([sql.close({ timeout: 0 }), logSql.close({ timeout: 0 })]).then(
+        () => undefined,
+      );
     },
   };
 }
@@ -121,14 +134,17 @@ if (import.meta.main) {
           async () => {
             const next = createBunDatabase(trimmedDatabaseUrl);
             try {
-              const stores = await openBootStores(databaseUrl, () => next.client, bootFx);
+              const stores = await openBootStores(databaseUrl, () => next.client, {
+                ...bootFx,
+                logSql: next.log,
+              });
               bun = next;
               return stores;
             } catch (error) {
               try {
                 await next.close();
               } catch {
-                // The pool is already closed.
+                // The pools are already closed.
               }
               throw error;
             }

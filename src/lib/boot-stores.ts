@@ -199,6 +199,13 @@ export interface BootFxOptions {
   zapRelayUrls?: readonly string[];
   /** Per-relay timeout for the external-zapper backfill. */
   nostrRelayTimeoutMs?: number;
+  /**
+   * Client for `api_log` and `diagnostic_event`.
+   * Production passes a small pool with statement and lock timeouts.
+   * Omitted in tests, which then use the primary client. Migrations always
+   * use the primary client.
+   */
+  logSql?: SqlClient;
 }
 
 /**
@@ -342,7 +349,8 @@ export async function openBootStores(
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
-  const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
+  const logSql = fx?.logSql ?? sqlClient;
+  const diagnosticStore = new PostgresDiagnosticStore(logSql);
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
       .append({
@@ -497,7 +505,7 @@ export async function openBootStores(
     },
   });
   const posStore = new PostgresPosStore(sqlClient);
-  const apiLogStore = new PostgresApiLogStore(sqlClient);
+  const apiLogStore = new PostgresApiLogStore(logSql);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
