@@ -11,6 +11,7 @@ How to run it is in README.md next to this file.
 from __future__ import annotations
 
 import asyncio
+import http.client
 import json
 import os
 import re
@@ -354,7 +355,13 @@ def poll_order(base: str, api_key: str, quote_id: str) -> dict:
                 None,
                 headers,
             )
-        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError) as error:
+        except (
+            urllib.error.URLError,
+            json.JSONDecodeError,
+            TimeoutError,
+            OSError,
+            http.client.HTTPException,
+        ) as error:
             warn("order_poll_retry=" + redact(str(error))[:120])
             time.sleep(15)
             continue
