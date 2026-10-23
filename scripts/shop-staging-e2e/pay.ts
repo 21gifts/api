@@ -140,7 +140,7 @@ function claimState(statePath: string): string {
     }
   }
   const current = readStateObject(statePath);
-  if (current.cycleClaim === token) return token;
+  if (current['cycleClaim'] === token) return token;
   if (Object.keys(current).length > 0) fail('state_not_fresh');
   const lock = `${statePath}.claim`;
   try {
@@ -156,19 +156,19 @@ function claimState(statePath: string): string {
   if (Object.keys(again).length > 0) fail('state_not_fresh');
   replaceStateFile(statePath, body);
   const claimed = readStateObject(statePath);
-  if (claimed.cycleClaim !== token) fail('state_not_fresh');
+  if (claimed['cycleClaim'] !== token) fail('state_not_fresh');
   return token;
 }
 
 function markCycleOpen(startSats: number, amountSats: string, token: string): void {
   const statePath = required('SHOP_E2E_STATE');
   const current = readStateObject(statePath);
-  if (current.cycleClaim !== token) fail('state_not_fresh');
+  if (current['cycleClaim'] !== token) fail('state_not_fresh');
   const amount = Number(amountSats);
   const body = `${JSON.stringify({ startSats, amount }, null, 2)}\n`;
   replaceStateFile(statePath, body);
   const written = readStateObject(statePath);
-  if (written.startSats !== startSats || written.amount !== amount) fail('state_not_fresh');
+  if (written['startSats'] !== startSats || written['amount'] !== amount) fail('state_not_fresh');
 }
 
 function payerAddress(): Address {
