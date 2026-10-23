@@ -144,10 +144,59 @@ def load_state(path: str) -> dict:
 
 
 def save_state(path: str, state: dict) -> None:
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as handle:
-        handle.write(json.dumps(state, indent=2, sort_keys=True) + "\n")
+    directory = os.path.dirname(path) or "."
+    temporary = os.path.join(directory, f".{os.path.basename(path)}.{uuid.uuid4().hex}.tmp")
+    payload = json.dumps(state, indent=2, sort_keys=True) + "\n"
+    fd = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(payload)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    except BaseException:
+        try:
+            os.unlink(temporary)
+        except FileNotFoundError:
+            pass
+        raise
+    dirfd = os.open(directory, os.O_RDONLY)
+    try:
+        os.fsync(dirfd)
+    finally:
+        os.close(dirfd)
     os.chmod(path, 0o600)
+
+
+def quote_fundable(state: dict) -> bool:
+    expires = state.get("expiresAt")
+    if not isinstance(expires, str) or expires == "":
+        return False
+    try:
+        expiry = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    if expiry.tzinfo is None:
+        return False
+    return (expiry - datetime.now(timezone.utc)).total_seconds() >= 45
+
+
+def stored_quote(
+    view: dict, idempotency: str, amount: int, start: int, units_before: int
+) -> dict:
+    expires = view["expiresAt"]
+    if not isinstance(expires, str) or expires == "":
+        fail("quote_expiry")
+    return {
+        "quoteId": view["quoteId"],
+        "depositAddress": view["depositAddress"],
+        "expiresAt": expires,
+        "idempotency": idempotency,
+        "amount": amount,
+        "startSats": start,
+        "payerUnitsBefore": units_before,
+        "paymentId": None,
+    }
 
 
 def state_path() -> str:
@@ -407,6 +456,52 @@ async def send_deposit(sdk, deposit: str, amount: int, idempotency: str) -> tupl
     return str(payment.id), int(payment.amount), int(payment.fees)
 
 
+def _payment_absent(error: Exception) -> bool:
+    return "query returned no rows" in str(error).lower()
+
+
+async def find_completed_send(sdk, idempotency: str):
+    from breez_sdk_spark import (
+        GetPaymentRequest,
+        ListPaymentsRequest,
+        PaymentStatus,
+        PaymentType,
+    )
+
+    payment = None
+    absent = False
+    try:
+        response = await sdk.get_payment(request=GetPaymentRequest(payment_id=idempotency))
+        payment = response.payment
+    except Exception as error:
+        if not _payment_absent(error):
+            fail("send_unconfirmed")
+        absent = True
+    if payment is None:
+        try:
+            listed = await sdk.list_payments(
+                request=ListPaymentsRequest(
+                    type_filter=[PaymentType.SEND],
+                    limit=50,
+                    sort_ascending=False,
+                )
+            )
+        except Exception:
+            fail("send_unconfirmed")
+        rows = list(listed.payments or [])
+        matched = [row for row in rows if str(row.id) == idempotency]
+        if len(matched) > 1 or (len(matched) == 0 and not absent and len(rows) >= 50):
+            fail("send_unconfirmed")
+        if len(matched) == 0:
+            return None
+        payment = matched[0]
+    if str(payment.id) != idempotency:
+        fail("send_unconfirmed")
+    if payment.status != PaymentStatus.COMPLETED:
+        fail("send_not_completed")
+    return payment
+
+
 async def main() -> None:
     chain = (env("SHOP_CHAIN") or "polygon").lower()
     asset = env("SHOP_ASSET") or "USDT"
@@ -482,33 +577,47 @@ async def main() -> None:
                 or state.get("quoteId") == ""
             ):
                 fail("state_invalid")
+            if state.get("depositAddress"):
+                found = await find_completed_send(sdk, str(state["idempotency"]))
+                if found is not None:
+                    state["paymentId"] = str(found.id)
+                    state["paymentAmount"] = int(found.amount)
+                    state["paymentFees"] = int(found.fees)
+                    save_state(path, state)
+                elif not quote_fundable(state):
+                    kept = state.get("payerUnitsBefore")
+                    baseline = kept if isinstance(kept, int) else units_before
+                    estimate = estimate_out(base, api_key, amount, chain, asset, recipient)
+                    warn(f"estimate_units={estimate}")
+                    view = create_quote(
+                        base, api_key, amount, chain, asset, recipient, own_spark, estimate
+                    )
+                    state = stored_quote(view, str(uuid.uuid4()), amount, start, baseline)
+                    save_state(path, state)
             if not state.get("depositAddress"):
                 estimate = estimate_out(base, api_key, amount, chain, asset, recipient)
                 warn(f"estimate_units={estimate}")
-                view = create_quote(base, api_key, amount, chain, asset, recipient, own_spark, estimate)
-                state = {
-                    "quoteId": view["quoteId"],
-                    "depositAddress": view["depositAddress"],
-                    "idempotency": str(uuid.uuid4()),
-                    "amount": amount,
-                    "startSats": start,
-                    "payerUnitsBefore": units_before,
-                    "paymentId": None,
-                }
+                view = create_quote(
+                    base, api_key, amount, chain, asset, recipient, own_spark, estimate
+                )
+                state = stored_quote(view, str(uuid.uuid4()), amount, start, units_before)
                 save_state(path, state)
-            if not isinstance(state.get("quoteId"), str) or state.get("quoteId") == "":
-                fail("quote_missing")
-            payment_id, paid, fees = await send_deposit(
-                sdk,
-                str(state["depositAddress"]),
-                amount,
-                str(state["idempotency"]),
-            )
-            state["paymentId"] = payment_id
-            state["paymentAmount"] = paid
-            state["paymentFees"] = fees
-            save_state(path, state)
-            warn(f"sent={payment_id} amount={paid} fees={fees}")
+            if not state.get("paymentId"):
+                if not quote_fundable(state):
+                    fail("quote_expiry")
+                if not isinstance(state.get("quoteId"), str) or state.get("quoteId") == "":
+                    fail("quote_missing")
+                payment_id, paid, fees = await send_deposit(
+                    sdk,
+                    str(state["depositAddress"]),
+                    amount,
+                    str(state["idempotency"]),
+                )
+                state["paymentId"] = payment_id
+                state["paymentAmount"] = paid
+                state["paymentFees"] = fees
+                save_state(path, state)
+                warn(f"sent={payment_id} amount={paid} fees={fees}")
 
         quote_id = state.get("quoteId")
         if not isinstance(quote_id, str) or quote_id == "":

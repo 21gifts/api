@@ -91,7 +91,14 @@ SHOP_USERNAME=e2e-stg-shop SHOP_AMOUNT_SATS=10000 \
 
 Before it opens a payment, the script checks the return inputs and reads
 the shop's sat balance. It refuses a state file that already holds a cycle,
-and a state file that is not a JSON object.
+and a state file that is not a JSON object. A missing state file is created,
+private to its owner, with a non-empty claim before any network call. An
+empty JSON object is claimed the same way, through a private lock file
+beside it. A second paid run that finds that claim stops with
+`state_not_fresh`. The claim is replaced with the cycle only while the file
+still holds this run's token, by renaming a flushed temporary file in the
+same directory. A claim, a cycle, or a leftover lock on an empty file is
+refused.
 It then signs an EIP-1559 ERC-20 `transfer` for the units in the detail
 URI, waits for a successful receipt, submits `tx` to
 `GET /lnurlp/tx/:username`, and polls `GET /lnurlp/wait/:payment` for up to
@@ -123,16 +130,25 @@ The send is one Spark transfer of the whole sat amount into the quote's
 deposit. A non-zero Spark fee aborts before the transfer, because the quote
 asked for the full amount. An empty quote id aborts before that transfer.
 The transfer is recorded only when the Spark payment is completed. The
-script then polls the order for up to 15 minutes, and a transport error
-during that wait is retried until the deadline. It finishes with
-`return=home` only when the order is completed,
-the shop balance is `SHOP_START_SATS` again, and the paying account's token
-balance grew by the order's `amountOut`.
+quote's expiry is stored with the quote. A later run funds that deposit
+only when more than 45 seconds remain. When the saved idempotency key
+already has a completed Spark payment, that payment is recorded and the
+order is polled. When that key has a payment that is not completed, the
+run stops with `send_not_completed` and does not send. When the key has no
+payment and the quote is no longer fundable, the script stores a new quote
+and a new idempotency key before it sends. An uncertain lookup stops with
+`send_unconfirmed` and does not send. The script then polls the order for
+up to 15 minutes, and a transport error during that wait is retried until
+the deadline. It finishes with `return=home` only when the order is
+completed, the shop balance is `SHOP_START_SATS` again, and the paying
+account's token balance grew by the order's `amountOut`.
 
 `SHOP_E2E_STATE` is an absolute path outside this repository. The file must
-be readable only by its owner. A retry after a sent payment polls that quote
-instead of opening another one. The install of `breez_sdk_spark` is local to
-the machine that runs the return. CI does not install it.
+be readable only by its owner. The state file is replaced by renaming a
+flushed temporary file in the same directory, and the previous contents
+stay until that rename succeeds. A retry after a sent payment polls that
+quote instead of opening another one. The install of `breez_sdk_spark` is
+local to the machine that runs the return. CI does not install it.
 
 ```sh
 SHOP_AMOUNT_SATS=10000 \

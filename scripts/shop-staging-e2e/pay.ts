@@ -14,8 +14,20 @@
  */
 
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { randomUUID } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   createPublicClient,
@@ -50,18 +62,120 @@ function outsideRepo(path: string): boolean {
   return target !== root && !target.startsWith(root + sep);
 }
 
-function markCycleOpen(startSats: number, amountSats: string): void {
-  const statePath = required('SHOP_E2E_STATE');
-  const body = `${JSON.stringify({ startSats, amount: Number(amountSats) }, null, 2)}\n`;
-  writeFileSync(statePath, body, { mode: 0o600 });
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+function fsyncDirectory(directory: string): void {
+  const dir = openSync(directory, 'r');
+  try {
+    fsyncSync(dir);
+  } finally {
+    closeSync(dir);
+  }
+}
+
+function replaceStateFile(statePath: string, body: string): void {
+  const temporary = join(dirname(statePath), `.${basename(statePath)}.${randomUUID()}.tmp`);
+  const fd = openSync(temporary, 'wx', 0o600);
+  let durable = false;
+  try {
+    writeSync(fd, body);
+    fsyncSync(fd);
+    durable = true;
+  } finally {
+    closeSync(fd);
+    if (!durable) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // The temporary file is already gone.
+      }
+    }
+  }
+  try {
+    renameSync(temporary, statePath);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file is already gone.
+    }
+    throw error;
+  }
+  fsyncDirectory(dirname(statePath));
   chmodSync(statePath, 0o600);
+}
+
+function readStateObject(statePath: string): Record<string, unknown> {
+  if ((statSync(statePath).mode & 0o077) !== 0) fail('state_not_private');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(statePath, 'utf8')) as unknown;
+  } catch {
+    fail('state_invalid');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) fail('state_invalid');
+  return parsed as Record<string, unknown>;
+}
+
+function claimState(statePath: string): string {
+  const token = randomUUID();
+  const body = `${JSON.stringify({ cycleClaim: token }, null, 2)}\n`;
+  if (!existsSync(statePath)) {
+    try {
+      const fd = openSync(statePath, 'wx', 0o600);
+      try {
+        writeSync(fd, body);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      fsyncDirectory(dirname(statePath));
+      chmodSync(statePath, 0o600);
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error;
+    }
+  }
+  const current = readStateObject(statePath);
+  if (current.cycleClaim === token) return token;
+  if (Object.keys(current).length > 0) fail('state_not_fresh');
+  const lock = `${statePath}.claim`;
+  try {
+    const lockFd = openSync(lock, 'wx', 0o600);
+    closeSync(lockFd);
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') fail('state_not_fresh');
+    throw error;
+  }
+  chmodSync(lock, 0o600);
+  fsyncDirectory(dirname(statePath));
+  const again = readStateObject(statePath);
+  if (Object.keys(again).length > 0) fail('state_not_fresh');
+  replaceStateFile(statePath, body);
+  const claimed = readStateObject(statePath);
+  if (claimed.cycleClaim !== token) fail('state_not_fresh');
+  return token;
+}
+
+function markCycleOpen(startSats: number, amountSats: string, token: string): void {
+  const statePath = required('SHOP_E2E_STATE');
+  const current = readStateObject(statePath);
+  if (current.cycleClaim !== token) fail('state_not_fresh');
+  const amount = Number(amountSats);
+  const body = `${JSON.stringify({ startSats, amount }, null, 2)}\n`;
+  replaceStateFile(statePath, body);
+  const written = readStateObject(statePath);
+  if (written.startSats !== startSats || written.amount !== amount) fail('state_not_fresh');
 }
 
 function payerAddress(): Address {
   return privateKeyToAccount(privateKey()).address;
 }
 
-function assertCycleReady(payer: Address, method: string): void {
+function assertCycleReady(payer: Address, method: string): string {
   for (const name of CYCLE_ENV) required(name);
   const storage = required('SHOP_SPARK_STORAGE');
   if (!isAbsolute(storage) || !outsideRepo(storage)) fail('storage_inside_repo');
@@ -73,18 +187,7 @@ function assertCycleReady(payer: Address, method: string): void {
   if (configured !== undefined && configured.toLowerCase() !== payer.toLowerCase()) {
     fail('payer_mismatch');
   }
-  if (!existsSync(statePath)) return;
-  if ((statSync(statePath).mode & 0o077) !== 0) fail('state_not_private');
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(readFileSync(statePath, 'utf8')) as unknown;
-  } catch {
-    fail('state_invalid');
-  }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-    fail('state_invalid');
-  }
-  if (Object.keys(parsed).length > 0) fail('state_not_fresh');
+  return claimState(statePath);
 }
 
 interface ReturnResult {
@@ -384,9 +487,10 @@ async function main(): Promise<void> {
   const pay = env('SHOP_E2E_PAY') === '1';
   let payer: Address | undefined;
   let startSats = 0;
+  let cycleClaim = '';
   if (pay) {
     payer = payerAddress();
-    assertCycleReady(payer, method);
+    cycleClaim = assertCycleReady(payer, method);
     startSats = await shopStartSats(payer, method, asset);
     console.warn(`shop_start_sats=${startSats}`);
   }
@@ -428,7 +532,7 @@ async function main(): Promise<void> {
   }
 
   const rpcUrl = required('SHOP_EVM_RPC_URL');
-  markCycleOpen(startSats, amountText);
+  markCycleOpen(startSats, amountText, cycleClaim);
   const tx = await payTransfer(uri, rpcUrl);
   const proofUrl =
     `${appBase}/lnurlp/tx/${encodeURIComponent(username)}` +
