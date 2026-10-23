@@ -193,6 +193,9 @@ def public_quote(quote: dict) -> dict:
 
 def assert_quote(quote: dict, own_spark: str, amount: int, chain: str, asset: str, estimate_out: int) -> dict:
     view = public_quote(quote)
+    quote_id = view["quoteId"]
+    if not isinstance(quote_id, str) or quote_id == "":
+        fail("quote_missing")
     if view["sourceChain"] != "spark" or view["sourceAsset"] != "BTC":
         fail("quote_source")
     if view["destinationChain"] != chain or view["destinationAsset"] != asset:
@@ -295,12 +298,21 @@ def poll_order(base: str, api_key: str, quote_id: str) -> dict:
     deadline = time.time() + 15 * 60
     headers = orchestra_headers(api_key)
     while time.time() < deadline:
-        code, payload = http_json(
-            base + "/v1/orchestration/order?" + urllib.parse.urlencode({"quoteId": quote_id}),
-            "GET",
-            None,
-            headers,
-        )
+        try:
+            code, payload = http_json(
+                base + "/v1/orchestration/order?" + urllib.parse.urlencode({"quoteId": quote_id}),
+                "GET",
+                None,
+                headers,
+            )
+        except (urllib.error.URLError, json.JSONDecodeError, TimeoutError, OSError) as error:
+            warn("order_poll_retry=" + redact(str(error))[:120])
+            time.sleep(15)
+            continue
+        if code != 200:
+            warn(f"order_http={code} status=")
+            time.sleep(15)
+            continue
         current = order_of(payload)
         status = current.get("status") if isinstance(current, dict) else None
         warn(f"order_http={code} status={status or ''}")
@@ -366,6 +378,7 @@ async def send_deposit(sdk, deposit: str, amount: int, idempotency: str) -> tupl
     from breez_sdk_spark import (
         FeePolicy,
         PaymentRequest,
+        PaymentStatus,
         PrepareSendPaymentRequest,
         SendPaymentRequest,
     )
@@ -389,6 +402,8 @@ async def send_deposit(sdk, deposit: str, amount: int, idempotency: str) -> tupl
         request=SendPaymentRequest(prepare_response=prepared, idempotency_key=idempotency)
     )
     payment = sent.payment
+    if payment.status != PaymentStatus.COMPLETED:
+        fail("send_not_completed")
     return str(payment.id), int(payment.amount), int(payment.fees)
 
 
@@ -461,7 +476,10 @@ async def main() -> None:
 
         if not state.get("paymentId"):
             if state.get("depositAddress") and (
-                not isinstance(state.get("idempotency"), str) or not isinstance(state.get("quoteId"), str)
+                not isinstance(state.get("idempotency"), str)
+                or state.get("idempotency") == ""
+                or not isinstance(state.get("quoteId"), str)
+                or state.get("quoteId") == ""
             ):
                 fail("state_invalid")
             if not state.get("depositAddress"):
@@ -478,6 +496,8 @@ async def main() -> None:
                     "paymentId": None,
                 }
                 save_state(path, state)
+            if not isinstance(state.get("quoteId"), str) or state.get("quoteId") == "":
+                fail("quote_missing")
             payment_id, paid, fees = await send_deposit(
                 sdk,
                 str(state["depositAddress"]),

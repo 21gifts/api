@@ -121,8 +121,11 @@ requires a completed order.
 
 The send is one Spark transfer of the whole sat amount into the quote's
 deposit. A non-zero Spark fee aborts before the transfer, because the quote
-asked for the full amount. The script then polls the order for up to 15
-minutes. It finishes with `return=home` only when the order is completed,
+asked for the full amount. An empty quote id aborts before that transfer.
+The transfer is recorded only when the Spark payment is completed. The
+script then polls the order for up to 15 minutes, and a transport error
+during that wait is retried until the deadline. It finishes with
+`return=home` only when the order is completed,
 the shop balance is `SHOP_START_SATS` again, and the paying account's token
 balance grew by the order's `amountOut`.
 
