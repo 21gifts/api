@@ -229,6 +229,7 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
         return;
       }
       void write.catch(() => {
+        /* v8 ignore next -- writeRequestLog already swallows auth and append failures */
         logEvent('api_log.write.failed');
       });
     });
