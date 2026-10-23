@@ -68,9 +68,9 @@ describe('Bun SQL text[] binding', () => {
   test('driver binds a JavaScript array', async () => {
     const sql = new SQL(databaseUrl);
     try {
-      const rows = (await sql.unsafe('SELECT $1::text[] AS tags', [
-        ['rejected'],
-      ])) as { tags: unknown }[];
+      const rows = (await sql.unsafe('SELECT $1::text[] AS tags', [['rejected']])) as {
+        tags: unknown;
+      }[];
       const tags = rows[0]?.tags;
       if (Array.isArray(tags)) {
         expect(tags.includes('rejected')).toBe(true);
