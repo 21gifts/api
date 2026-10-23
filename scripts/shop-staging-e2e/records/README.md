@@ -11,7 +11,7 @@ checks it did not close. The checks themselves stay in
 A record does not contain an RPC URL, a signing key, a BOLT11, or a deposit
 address.
 
-| Date       | Record                                                                   | What settled                                                                 |
-| ---------- | ------------------------------------------------------------------------ | ---------------------------------------------------------------------------- |
-| 2026-10-22 | [2026-10-22-polygon-usdt.md](./2026-10-22-polygon-usdt.md)               | One Polygon USDT transfer from an externally owned account.                  |
-| 2026-10-23 | [2026-10-23-polygon-usdt-return.md](./2026-10-23-polygon-usdt-return.md) | Those 10000 sats sold back to Polygon USDT on the account that paid.        |
+| Date       | Record                                                                   | What settled                                                         |
+| ---------- | ------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| 2026-10-22 | [2026-10-22-polygon-usdt.md](./2026-10-22-polygon-usdt.md)               | One Polygon USDT transfer from an externally owned account.          |
+| 2026-10-23 | [2026-10-23-polygon-usdt-return.md](./2026-10-23-polygon-usdt-return.md) | Those 10000 sats sold back to Polygon USDT on the account that paid. |

@@ -138,7 +138,8 @@ async function shopStartSats(payer: Address, method: string, asset: string): Pro
   });
   const line = result.lines.find((row) => row.startsWith('shop_balance_sats='));
   const text = line?.slice('shop_balance_sats='.length);
-  if (result.code !== 0 || text === undefined || !/^[0-9]+$/.test(text)) fail('shop_balance_unread');
+  if (result.code !== 0 || text === undefined || !/^[0-9]+$/.test(text))
+    fail('shop_balance_unread');
   return Number(text);
 }
 

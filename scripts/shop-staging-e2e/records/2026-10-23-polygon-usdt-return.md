@@ -52,18 +52,18 @@ spent. The sats are no longer in the shop.
 
 ## Release checks
 
-| Check                                                                                                | Result                                                                                     |
-| ---------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------ |
-| 1. Tether Wallet on Android, USDT on Polygon, Arbitrum, and Ethereum, including one ERC-4337 deposit | Not run. This file is the return of the 2026-10-22 Polygon USDT payment.                  |
-| 2. `amountIn` equals `transaction.data` on each offered pair                                         | Not run.                                                                                   |
-| 3. BOLT11 lifetime at least 1020 s                                                                   | Not run.                                                                                   |
-| 4. Late deposit and `409 quote_expired`                                                              | Not run.                                                                                   |
-| 5. Parallel quotes for one BOLT11                                                                    | Not run.                                                                                   |
-| 6. Two submits of one deposit                                                                        | Not run.                                                                                   |
-| 7. Rate limits at the watcher budgets                                                                | Not run.                                                                                   |
-| 8. Production routes `/lnurlp/*` to the api                                                          | Not run. This return used the shop wallet and Orchestra, not a production route.          |
-| 9. One bundle paying two quotes                                                                      | Not run.                                                                                   |
-| 10. History by the payment's BOLT11                                                                  | Not run.                                                                                   |
-| 11. Two quotes, two deposit addresses, submit without `sourceAddress`                                | Not run.                                                                                   |
+| Check                                                                                                | Result                                                                           |
+| ---------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| 1. Tether Wallet on Android, USDT on Polygon, Arbitrum, and Ethereum, including one ERC-4337 deposit | Not run. This file is the return of the 2026-10-22 Polygon USDT payment.         |
+| 2. `amountIn` equals `transaction.data` on each offered pair                                         | Not run.                                                                         |
+| 3. BOLT11 lifetime at least 1020 s                                                                   | Not run.                                                                         |
+| 4. Late deposit and `409 quote_expired`                                                              | Not run.                                                                         |
+| 5. Parallel quotes for one BOLT11                                                                    | Not run.                                                                         |
+| 6. Two submits of one deposit                                                                        | Not run.                                                                         |
+| 7. Rate limits at the watcher budgets                                                                | Not run.                                                                         |
+| 8. Production routes `/lnurlp/*` to the api                                                          | Not run. This return used the shop wallet and Orchestra, not a production route. |
+| 9. One bundle paying two quotes                                                                      | Not run.                                                                         |
+| 10. History by the payment's BOLT11                                                                  | Not run.                                                                         |
+| 11. Two quotes, two deposit addresses, submit without `sourceAddress`                                | Not run.                                                                         |
 
 Stablecoin rows stay off in production until these checks pass on staging.

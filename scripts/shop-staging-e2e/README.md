@@ -14,12 +14,12 @@ for a run that talks to a live staging shop and a live chain.
 
 ## Layout
 
-| Path        | Role                                                                      |
-| ----------- | ------------------------------------------------------------------------- |
-| `README.md` | How to run the harness, and what it will not do.                          |
-| `pay.ts`    | One cycle: read the shop balance, pay, and sell the sats back.            |
+| Path        | Role                                                                                                   |
+| ----------- | ------------------------------------------------------------------------------------------------------ |
+| `README.md` | How to run the harness, and what it will not do.                                                       |
+| `pay.ts`    | One cycle: read the shop balance, pay, and sell the sats back.                                         |
 | `return.py` | The return leg. `pay.ts` runs it. Run it alone only to finish a cycle that stopped after the transfer. |
-| `records/`  | One file per live run. The index is `records/README.md`.                  |
+| `records/`  | One file per live run. The index is `records/README.md`.                                               |
 
 A later run adds a file under `records/`. It does not grow `pay.ts`,
 `return.py`, or an older record. The dev environment and production are out
@@ -36,24 +36,24 @@ a cycle: it does not sign and does not need the return variables.
 The staging edge rejects a client that sends no User-Agent. The script sends
 `21gifts-shop-staging-e2e` unless `SHOP_E2E_USER_AGENT` is set.
 
-| Variable              | Required     | Purpose                                                                                        |
-| --------------------- | ------------ | ---------------------------------------------------------------------------------------------- |
-| `SHOP_USERNAME`       | yes          | Shop username, without a domain.                                                               |
-| `SHOP_AMOUNT_SATS`    | yes          | Positive integer sats for `POST /pay/:username/payment`.                                       |
-| `SHOP_APP_BASE`       | no           | Pay-link origin. Default `https://staging.21.gifts`.                                           |
-| `SHOP_API_BASE`       | no           | Api origin. Default `https://staging-api.21.gifts`.                                            |
-| `SHOP_METHOD`         | no           | Chain name on the offer. Default `Polygon`.                                                    |
-| `SHOP_ASSET`          | no           | `USDT` or `USDC`. Default `USDT`.                                                              |
-| `SHOP_E2E_USER_AGENT` | no           | Replaces the default User-Agent.                                                               |
-| `SHOP_E2E_PAY`        | to broadcast | `1` pays and sells the sats back before the process can exit 0. Any other value stops after the detail URI. |
-| `SHOP_EVM_RPC_URL`    | to broadcast | HTTPS JSON-RPC URL of the chain named in the detail URI. The return reads the payer balance through it. |
+| Variable              | Required     | Purpose                                                                                                                           |
+| --------------------- | ------------ | --------------------------------------------------------------------------------------------------------------------------------- |
+| `SHOP_USERNAME`       | yes          | Shop username, without a domain.                                                                                                  |
+| `SHOP_AMOUNT_SATS`    | yes          | Positive integer sats for `POST /pay/:username/payment`.                                                                          |
+| `SHOP_APP_BASE`       | no           | Pay-link origin. Default `https://staging.21.gifts`.                                                                              |
+| `SHOP_API_BASE`       | no           | Api origin. Default `https://staging-api.21.gifts`.                                                                               |
+| `SHOP_METHOD`         | no           | Chain name on the offer. Default `Polygon`.                                                                                       |
+| `SHOP_ASSET`          | no           | `USDT` or `USDC`. Default `USDT`.                                                                                                 |
+| `SHOP_E2E_USER_AGENT` | no           | Replaces the default User-Agent.                                                                                                  |
+| `SHOP_E2E_PAY`        | to broadcast | `1` pays and sells the sats back before the process can exit 0. Any other value stops after the detail URI.                       |
+| `SHOP_EVM_RPC_URL`    | to broadcast | HTTPS JSON-RPC URL of the chain named in the detail URI. The return reads the payer balance through it.                           |
 | `EVM_PRIVATE_KEY`     | to broadcast | Hex key of the account that holds the stablecoin and the gas coin. A leading `0x` is optional. The return pays that same account. |
-| `SHOP_SPARK_MNEMONIC` | to broadcast | 12 or 24 words of the shop wallet that receives the sats.                                      |
-| `SHOP_SPARK_STORAGE`  | to broadcast | Absolute directory, outside this repository, for that wallet's storage.                        |
-| `BREEZ_API_KEY`       | to broadcast | Key the shop wallet uses to sync.                                                              |
-| `ORCHESTRA_API_KEY`   | to broadcast | Server key for the return quote.                                                               |
-| `SHOP_E2E_STATE`      | to broadcast | Absolute state file outside this repository, owner-only, empty or absent at the start.         |
-| `SHOP_E2E_PYTHON`     | no           | Python that has `breez_sdk_spark` installed. Default `python3`.                                |
+| `SHOP_SPARK_MNEMONIC` | to broadcast | 12 or 24 words of the shop wallet that receives the sats.                                                                         |
+| `SHOP_SPARK_STORAGE`  | to broadcast | Absolute directory, outside this repository, for that wallet's storage.                                                           |
+| `BREEZ_API_KEY`       | to broadcast | Key the shop wallet uses to sync.                                                                                                 |
+| `ORCHESTRA_API_KEY`   | to broadcast | Server key for the return quote.                                                                                                  |
+| `SHOP_E2E_STATE`      | to broadcast | Absolute state file outside this repository, owner-only, empty or absent at the start.                                            |
+| `SHOP_E2E_PYTHON`     | no           | Python that has `breez_sdk_spark` installed. Default `python3`.                                                                   |
 
 Do not commit the RPC URL, the mnemonic, or either key, and do not pass them on a logged
 command line if the shell records history. The process prints statuses, the
@@ -141,23 +141,23 @@ SHOP_AMOUNT_SATS=10000 \
   python3 scripts/shop-staging-e2e/return.py
 ```
 
-| Variable              | Required     | Purpose                                                                                          |
-| --------------------- | ------------ | ------------------------------------------------------------------------------------------------ |
-| `SHOP_AMOUNT_SATS`    | yes          | Sats to sell back. The shop must hold this many above `SHOP_START_SATS`.                        |
-| `SHOP_PAYER_ADDRESS`  | yes          | Account that receives the stablecoin. It is the account that paid.                               |
-| `SHOP_EVM_RPC_URL`    | yes          | HTTPS JSON-RPC used to read that account's token balance before and after.                      |
-| `SHOP_SPARK_MNEMONIC` | yes          | 12 or 24 words of the shop wallet that received the sats.                                       |
-| `SHOP_SPARK_STORAGE`  | yes          | Absolute directory, outside this repository, for that wallet's storage.                         |
-| `BREEZ_API_KEY`       | yes          | Key the wallet uses to sync.                                                                     |
-| `SHOP_START_SATS`     | no           | Sat balance the shop held before the payment. Default `0`.                                      |
-| `SHOP_CHAIN`          | no           | Orchestra destination chain. Default `polygon`.                                                 |
-| `SHOP_ASSET`          | no           | `USDT` or `USDC`. Default `USDT`.                                                               |
-| `SHOP_TOKEN_ADDRESS`  | no           | Overrides the Polygon USDT or USDC contract used for the balance read.                          |
-| `ORCHESTRA_BASE_URL`  | no           | Default `https://orchestration.flashnet.xyz`.                                                   |
-| `ORCHESTRA_API_KEY`   | to broadcast | Server key. Required when `SHOP_E2E_RETURN=1`.                                                  |
-| `SHOP_E2E_STATE`      | to broadcast | Absolute state file outside this repository, owner-only. Required when `SHOP_E2E_RETURN=1`.     |
-| `SHOP_E2E_RETURN`     | to broadcast | `1` quotes and sends. Any other value stops after the balance read.                             |
-| `SHOP_E2E_USER_AGENT` | no           | Replaces the default User-Agent on the quote calls.                                             |
+| Variable              | Required     | Purpose                                                                                     |
+| --------------------- | ------------ | ------------------------------------------------------------------------------------------- |
+| `SHOP_AMOUNT_SATS`    | yes          | Sats to sell back. The shop must hold this many above `SHOP_START_SATS`.                    |
+| `SHOP_PAYER_ADDRESS`  | yes          | Account that receives the stablecoin. It is the account that paid.                          |
+| `SHOP_EVM_RPC_URL`    | yes          | HTTPS JSON-RPC used to read that account's token balance before and after.                  |
+| `SHOP_SPARK_MNEMONIC` | yes          | 12 or 24 words of the shop wallet that received the sats.                                   |
+| `SHOP_SPARK_STORAGE`  | yes          | Absolute directory, outside this repository, for that wallet's storage.                     |
+| `BREEZ_API_KEY`       | yes          | Key the wallet uses to sync.                                                                |
+| `SHOP_START_SATS`     | no           | Sat balance the shop held before the payment. Default `0`.                                  |
+| `SHOP_CHAIN`          | no           | Orchestra destination chain. Default `polygon`.                                             |
+| `SHOP_ASSET`          | no           | `USDT` or `USDC`. Default `USDT`.                                                           |
+| `SHOP_TOKEN_ADDRESS`  | no           | Overrides the Polygon USDT or USDC contract used for the balance read.                      |
+| `ORCHESTRA_BASE_URL`  | no           | Default `https://orchestration.flashnet.xyz`.                                               |
+| `ORCHESTRA_API_KEY`   | to broadcast | Server key. Required when `SHOP_E2E_RETURN=1`.                                              |
+| `SHOP_E2E_STATE`      | to broadcast | Absolute state file outside this repository, owner-only. Required when `SHOP_E2E_RETURN=1`. |
+| `SHOP_E2E_RETURN`     | to broadcast | `1` quotes and sends. Any other value stops after the balance read.                         |
+| `SHOP_E2E_USER_AGENT` | no           | Replaces the default User-Agent on the quote calls.                                         |
 
 Do not commit the RPC URL, the mnemonic, the wallet storage, the state file,
 or either key. The process prints statuses, amounts, the quote id, the order
