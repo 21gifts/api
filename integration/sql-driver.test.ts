@@ -65,22 +65,37 @@ async function closeIfPossible(sql: SQL): Promise<void> {
 }
 
 describe('Bun SQL text[] binding', () => {
-  test('driver rejects a JavaScript array', async () => {
+  test('driver binds or rejects a JavaScript array', async () => {
     const sql = new SQL(databaseUrl);
     try {
       let thrown: unknown;
+      let rows: { tags: unknown }[] | undefined;
       try {
-        await sql.unsafe('SELECT $1::text[] AS tags', [['rejected']]);
+        rows = (await sql.unsafe('SELECT $1::text[] AS tags', [['rejected']])) as {
+          tags: unknown;
+        }[];
       } catch (error) {
         thrown = error;
       }
-      if (thrown === undefined) {
-        throw new Error('expected sql.unsafe to reject a JavaScript array');
+      // Bun 1.3 rejects a JavaScript array as a malformed array literal.
+      // Bun 1.4 binds it. The literal form remains the next test.
+      if (thrown !== undefined) {
+        const message = String(thrown);
+        if (!message.includes('malformed array literal')) {
+          throw thrown;
+        }
+        return;
       }
-      const message = String(thrown);
-      if (!message.includes('malformed array literal')) {
-        throw thrown;
+      const tags = rows?.[0]?.tags;
+      if (Array.isArray(tags)) {
+        expect(tags.includes('rejected')).toBe(true);
+        return;
       }
+      if (typeof tags === 'string') {
+        expect(tags.includes('rejected')).toBe(true);
+        return;
+      }
+      throw new Error(`unexpected tags shape: ${typeof tags}`);
     } finally {
       await closeIfPossible(sql);
     }
