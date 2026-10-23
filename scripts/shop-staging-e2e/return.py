@@ -58,14 +58,30 @@ def required(name: str) -> str:
 
 
 def redact(text: str) -> str:
-    cleaned = re.sub(r"fn_[A-Za-z0-9_-]+", "[redacted]", text)
+    cleaned = text
+    for name in (
+        "SHOP_SPARK_MNEMONIC",
+        "BREEZ_API_KEY",
+        "ORCHESTRA_API_KEY",
+        "EVM_PRIVATE_KEY",
+        "SHOP_EVM_RPC_URL",
+    ):
+        value = env(name)
+        if value:
+            cleaned = cleaned.replace(value, "[redacted]")
+    cleaned = re.sub(r"fn_[A-Za-z0-9_-]+", "[redacted]", cleaned)
     cleaned = re.sub(r"https://[^\s\"']+", "[redacted-url]", cleaned)
-    mnemonic = env("SHOP_SPARK_MNEMONIC")
-    if mnemonic:
-        cleaned = cleaned.replace(mnemonic, "[redacted]")
-    breez = env("BREEZ_API_KEY")
-    if breez:
-        cleaned = cleaned.replace(breez, "[redacted]")
+    cleaned = re.sub(
+        r"\b(?:spark1|sp1)[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{20,}\b",
+        "[redacted-address]",
+        cleaned,
+    )
+    cleaned = re.sub(
+        r"\b(?:lnbc|lntb|lnbcrt)[0-9a-z]+\b",
+        "[redacted-invoice]",
+        cleaned,
+        flags=re.IGNORECASE,
+    )
     return cleaned
 
 
@@ -430,14 +446,11 @@ async def main() -> None:
         if balance != start and (balance < start or balance - start != amount):
             fail("balance_mismatch")
         if (
-            env("SHOP_E2E_EXPECT_CREDIT") == "1"
-            and not state.get("paymentId")
+            not state.get("paymentId")
+            and not state.get("depositAddress")
             and balance == start
         ):
             fail("shop_not_credited")
-        if not state.get("paymentId") and balance == start:
-            warn("return=home")
-            return
 
         if not isinstance(path, str):
             fail("state_missing")
@@ -512,7 +525,11 @@ async def main() -> None:
         baseline = state.get("payerUnitsBefore")
         if not isinstance(baseline, int):
             fail("state_invalid")
-        amount_out = int(str(order.get("amountOut") or "0"))
+        raw_out = order.get("amountOut")
+        text_out = "" if isinstance(raw_out, bool) or raw_out is None else str(raw_out)
+        if not re.fullmatch(r"[0-9]+", text_out) or text_out == "0":
+            fail("payout_mismatch")
+        amount_out = int(text_out)
         if units_after != baseline + amount_out:
             fail("payout_mismatch")
         warn("return=home")

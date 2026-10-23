@@ -81,7 +81,9 @@ function assertCycleReady(payer: Address, method: string): void {
   } catch {
     fail('state_invalid');
   }
-  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return;
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    fail('state_invalid');
+  }
   if (Object.keys(parsed).length > 0) fail('state_not_fresh');
 }
 
@@ -153,7 +155,6 @@ async function returnHome(
   console.warn('cycle=return');
   const extra = {
     SHOP_E2E_RETURN: '1',
-    SHOP_E2E_EXPECT_CREDIT: '1',
     SHOP_PAYER_ADDRESS: payer,
     SHOP_CHAIN: method.toLowerCase(),
     SHOP_ASSET: asset,

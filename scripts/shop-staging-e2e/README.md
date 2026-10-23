@@ -90,7 +90,8 @@ SHOP_USERNAME=e2e-stg-shop SHOP_AMOUNT_SATS=10000 \
 ```
 
 Before it opens a payment, the script checks the return inputs and reads
-the shop's sat balance. It refuses a state file that already holds a cycle.
+the shop's sat balance. It refuses a state file that already holds a cycle,
+and a state file that is not a JSON object.
 It then signs an EIP-1559 ERC-20 `transfer` for the units in the detail
 URI, waits for a successful receipt, submits `tx` to
 `GET /lnurlp/tx/:username`, and polls `GET /lnurlp/wait/:payment` for up to
@@ -114,6 +115,9 @@ account that paid. The shop must hold `SHOP_START_SATS` plus
 `SHOP_AMOUNT_SATS`. Pass the `startSats` value from the state file. Without
 `SHOP_E2E_RETURN=1` it prints `return=skipped`, or `return=home` when the
 shop is already back at `SHOP_START_SATS`, and it does not ask for a quote.
+With `SHOP_E2E_RETURN=1`, that same balance and no saved quote stops with
+`shop_not_credited`. A saved quote is sent or polled. `return=home` still
+requires a completed order.
 
 The send is one Spark transfer of the whole sat amount into the quote's
 deposit. A non-zero Spark fee aborts before the transfer, because the quote
