@@ -3850,7 +3850,7 @@ Builds the operator-only external-pubkey inspection route.
 
 ## Function: postgresTextArrayLiteral
 
-- **Purpose:** Encodes strings as one Postgres text-array literal (`{}` when empty; each value double-quoted; a backslash or double quote inside a value is escaped). Bun 1.4.4 binds a JavaScript array to `text[]`. Call sites still pass this literal.
+- **Purpose:** Encodes strings as one Postgres text-array literal (`{}` when empty; each value double-quoted; a backslash or double quote inside a value is escaped). Bun SQL does not encode a JavaScript array (`malformed array literal`).
 - **Inputs:** `readonly string[]`.
 - **Returns / side effects:** One text-array literal string. No I/O.
 - **Used by:** `PostgresFundingStore.transition` and `PostgresMessageStore` (active feed staff ids, missing-hashtag unnest, exclude ids).

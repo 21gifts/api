@@ -157,15 +157,15 @@ async function openPayment(
 ): Promise<HttpResult> {
   const url = `${apiBase}/pay/${encodeURIComponent(username)}/payment`;
   let result = await request(url, userAgent, 'POST', { amountSats });
-  console.log(`quote_status=${result.status}`);
+  console.warn(`quote_status=${result.status}`);
   const code = stringField(result.body, 'code');
-  if (code !== undefined) console.log(`quote_code=${code}`);
+  if (code !== undefined) console.warn(`quote_code=${code}`);
   if (result.status === 503) {
     await new Promise((resolve) => setTimeout(resolve, 2_000));
     result = await request(url, userAgent, 'POST', { amountSats });
-    console.log(`quote_status=${result.status}`);
+    console.warn(`quote_status=${result.status}`);
     const retryCode = stringField(result.body, 'code');
-    if (retryCode !== undefined) console.log(`quote_code=${retryCode}`);
+    if (retryCode !== undefined) console.warn(`quote_code=${retryCode}`);
   }
   return result;
 }
@@ -177,9 +177,9 @@ async function payTransfer(uri: string, rpcUrl: string): Promise<Hex> {
   const transport = http(rpcUrl);
   const publicClient = createPublicClient({ chain, transport });
   const walletClient = createWalletClient({ account, chain, transport });
-  console.log(`payer=${account.address}`);
-  console.log(`chain_id=${parsed.chainId}`);
-  console.log(`units=${parsed.units.toString()}`);
+  console.warn(`payer=${account.address}`);
+  console.warn(`chain_id=${parsed.chainId}`);
+  console.warn(`units=${parsed.units.toString()}`);
   let balance: bigint;
   try {
     balance = await publicClient.readContract({
@@ -191,7 +191,7 @@ async function payTransfer(uri: string, rpcUrl: string): Promise<Hex> {
   } catch {
     fail('balance_read_failed');
   }
-  console.log(`balance_units=${balance.toString()}`);
+  console.warn(`balance_units=${balance.toString()}`);
   if (parsed.units > balance) fail('balance_short');
   const deposit = new URLSearchParams(uri.slice(uri.indexOf('?') + 1)).get('address');
   if (deposit === null || !isAddress(deposit)) fail('uri_deposit');
@@ -208,14 +208,14 @@ async function payTransfer(uri: string, rpcUrl: string): Promise<Hex> {
   } catch {
     fail('send_failed');
   }
-  console.log(`tx=${hash}`);
+  console.warn(`tx=${hash}`);
   let receipt: { status: string };
   try {
     receipt = await publicClient.waitForTransactionReceipt({ hash, timeout: 120_000 });
   } catch {
     fail('receipt_pending');
   }
-  console.log(`receipt_status=${receipt.status}`);
+  console.warn(`receipt_status=${receipt.status}`);
   if (receipt.status !== 'success') fail('receipt_failed');
   return hash;
 }
@@ -235,17 +235,17 @@ async function main(): Promise<void> {
   const opened = await openPayment(apiBase, username, amountSats, userAgent);
   if (opened.status !== 200) fail('quote_failed');
   const paymentFromOpen = stringField(opened.body, 'payment');
-  if (paymentFromOpen !== undefined) console.log(`payment=${paymentFromOpen}`);
+  if (paymentFromOpen !== undefined) console.warn(`payment=${paymentFromOpen}`);
   const expiresAt = stringField(opened.body, 'expiresAt');
-  if (expiresAt !== undefined) console.log(`quote_expires=${expiresAt}`);
+  if (expiresAt !== undefined) console.warn(`quote_expires=${expiresAt}`);
 
   const lnurl = await request(
     `${appBase}/.well-known/lnurlp/${encodeURIComponent(username)}`,
     userAgent,
   );
-  console.log(`lnurl_status=${lnurl.status}`);
+  console.warn(`lnurl_status=${lnurl.status}`);
   const listed = offers(lnurl.body);
-  console.log(
+  console.warn(
     `offered=${listed.map((row) => `${row.method}:${row.assets.join('+')}`).join(',') || 'none'}`,
   );
   const quote = objectField(lnurl.body, 'quote');
@@ -260,11 +260,11 @@ async function main(): Promise<void> {
     `${appBase}/lnurlp/cb/${encodeURIComponent(username)}` +
     `?quote=${encodeURIComponent(quoteId)}&method=${encodeURIComponent(method)}&asset=${encodeURIComponent(asset)}`;
   const detail = await request(detailUrl, userAgent);
-  console.log(`detail_status=${detail.status}`);
+  console.warn(`detail_status=${detail.status}`);
   const uri = stringField(detail.body, 'uri');
   if (detail.status !== 200 || uri === undefined) fail('detail_missing');
   if (!pay) {
-    console.log('pay=skipped');
+    console.warn('pay=skipped');
     return;
   }
 
@@ -275,9 +275,9 @@ async function main(): Promise<void> {
     `?quote=${encodeURIComponent(quoteId)}&method=${encodeURIComponent(method)}` +
     `&asset=${encodeURIComponent(asset)}&tx=${encodeURIComponent(tx)}`;
   const proof = await request(proofUrl, userAgent);
-  console.log(`proof_status=${proof.status}`);
+  console.warn(`proof_status=${proof.status}`);
   const proofCode = stringField(proof.body, 'code');
-  if (proofCode !== undefined) console.log(`proof_code=${proofCode}`);
+  if (proofCode !== undefined) console.warn(`proof_code=${proofCode}`);
   if (paymentId === undefined) fail('payment_missing');
 
   const deadline = Date.now() + 15 * 60 * 1000;
@@ -289,7 +289,7 @@ async function main(): Promise<void> {
     );
     const state = stringField(wait.body, 'status');
     const inner = stringField(wait.body, 'paymentStatus');
-    console.log(`wait=${wait.status}:${state ?? ''}:${inner ?? ''}`);
+    console.warn(`wait=${wait.status}:${state ?? ''}:${inner ?? ''}`);
     if (state === 'Completed' || inner === 'paid') {
       settled = true;
       break;

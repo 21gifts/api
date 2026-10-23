@@ -1,14 +1,14 @@
 /**
  * Encode strings as one Postgres text-array literal.
  *
- * Bun 1.4.4 binds a JavaScript array to `text[]`. Call sites still pass this literal.
+ * Bun `SQL.unsafe` cannot bind a JavaScript array to `text[]`.
  */
 
 /**
  * Encode `values` as one Postgres text-array literal.
  *
  * Empty input is `{}`. A backslash or double quote inside a value is escaped.
- * Bun 1.4.4 binds a JavaScript array to `text[]`. Call sites still pass this literal.
+ * Bun SQL cannot bind a JavaScript array to `text[]`.
  *
  * @param values - Strings to include in the array.
  * @returns A literal such as `{"rejected"}` or `{}`.
