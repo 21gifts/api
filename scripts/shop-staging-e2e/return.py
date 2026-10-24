@@ -596,6 +596,8 @@ async def main() -> None:
         if recorded_start != start:
             fail("start_mismatch")
         start = recorded_start
+        if "payerUnitsBefore" in state and type(state["payerUnitsBefore"]) is not int:
+            fail("state_invalid")
     units_before = read_units(rpc_url, token, recipient)
     warn(f"payer_units_before={units_before}")
 
@@ -647,8 +649,11 @@ async def main() -> None:
                 elif balance != start + amount:
                     fail("shop_not_credited")
                 elif not quote_fundable(state):
-                    kept = state.get("payerUnitsBefore")
-                    baseline = kept if type(kept) is int else units_before
+                    baseline = (
+                        state["payerUnitsBefore"]
+                        if "payerUnitsBefore" in state
+                        else units_before
+                    )
                     estimate = estimate_out(base, api_key, amount, chain, asset, recipient)
                     warn(f"estimate_units={estimate}")
                     view = create_quote(
@@ -664,7 +669,12 @@ async def main() -> None:
                 view = create_quote(
                     base, api_key, amount, chain, asset, recipient, own_spark, estimate
                 )
-                state = stored_quote(view, str(uuid.uuid4()), amount, start, units_before)
+                baseline = (
+                    state["payerUnitsBefore"]
+                    if "payerUnitsBefore" in state
+                    else units_before
+                )
+                state = stored_quote(view, str(uuid.uuid4()), amount, start, baseline)
                 save_state(path, state)
             if not state.get("paymentId"):
                 if balance != start + amount:
