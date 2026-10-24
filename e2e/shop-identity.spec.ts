@@ -220,11 +220,13 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
   const shop = await listedShop(request, 'List');
   const other = await freshModerator(request, 'List');
   const label = `Unlisted ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  // A top-level shop tag needs an account, so this note is a reply. It keeps
+  // the tag and stays off GET /shops.
   const tagged = await request.post('/messages', {
     headers: { ...other, 'content-type': 'application/json' },
     data: {
-      text: 'Tagged as a shop and not listed.\n\n#21GiftsShop',
-      place: { lat: 47.3769, lng: 8.5417, label, address: ADDRESS },
+      text: `${label} is tagged as a shop and not listed.\n\n#21GiftsShop`,
+      inReplyTo: shop.noteId,
     },
   });
   expect(tagged.status()).toBe(200);
