@@ -127,9 +127,11 @@ shop is already back at `SHOP_START_SATS`, and it does not ask for a quote.
 With `SHOP_E2E_RETURN=1` the script takes the same `<state>.lock` before it
 reads the state file or opens a network call, and it holds that lock until
 it exits. A second return that cannot take the lock stops with
-`state_not_fresh` and does not ask for a quote. The stored `amount` must be
-an integer equal to `SHOP_AMOUNT_SATS`. A boolean does not pass. The shop
-balance must be `SHOP_START_SATS` or that start plus the stored amount.
+`state_not_fresh` and does not ask for a quote. The stored `amount` and
+`startSats` must be integers equal to `SHOP_AMOUNT_SATS` and
+`SHOP_START_SATS`. A boolean does not pass. The shop balance must be that
+stored start or that start plus the stored amount. A stored payer balance,
+when present, must be an integer too.
 With the shop still at `SHOP_START_SATS`, the script stops with
 `shop_not_credited` and does not open or fund a quote, unless the saved
 idempotency key already has a completed Spark payment. That payment is

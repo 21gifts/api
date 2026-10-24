@@ -306,7 +306,7 @@ def assert_quote(quote: dict, own_spark: str, amount: int, chain: str, asset: st
     if estimate_out > 0 and estimated * 100 < estimate_out * 95:
         fail("quote_below_estimate")
     fee_bps = view["feeBps"]
-    if not isinstance(fee_bps, int) or fee_bps > 150:
+    if type(fee_bps) is not int or fee_bps > 150:
         fail("quote_fee")
     deposit = str(view["depositAddress"] or "")
     if not DEPOSIT_ADDRESS.match(deposit) or deposit == own_spark:
@@ -591,8 +591,11 @@ async def main() -> None:
         if recorded_amount != amount:
             fail("amount_mismatch")
         recorded_start = state.get("startSats")
-        if type(recorded_start) is int and recorded_start != start:
+        if type(recorded_start) is not int:
+            fail("state_invalid")
+        if recorded_start != start:
             fail("start_mismatch")
+        start = recorded_start
     units_before = read_units(rpc_url, token, recipient)
     warn(f"payer_units_before={units_before}")
 
@@ -645,7 +648,7 @@ async def main() -> None:
                     fail("shop_not_credited")
                 elif not quote_fundable(state):
                     kept = state.get("payerUnitsBefore")
-                    baseline = kept if isinstance(kept, int) else units_before
+                    baseline = kept if type(kept) is int else units_before
                     estimate = estimate_out(base, api_key, amount, chain, asset, recipient)
                     warn(f"estimate_units={estimate}")
                     view = create_quote(
@@ -715,7 +718,7 @@ async def main() -> None:
         if int(info.balance_sats) != start:
             fail("shop_not_home")
         baseline = state.get("payerUnitsBefore")
-        if not isinstance(baseline, int):
+        if type(baseline) is not int:
             fail("state_invalid")
         raw_out = order.get("amountOut")
         text_out = "" if isinstance(raw_out, bool) or raw_out is None else str(raw_out)
