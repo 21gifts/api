@@ -717,3 +717,228 @@ describe('GET /shops/:npub', () => {
     warn.mockRestore();
   });
 });
+
+describe('GET /shops', () => {
+  const PLACE = {
+    lat: 47.3,
+    lng: 8.5,
+    label: 'Coffee Lab',
+    address: {
+      street: 'Main Street',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    },
+  };
+
+  function directoryId(n: number): string {
+    return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+  }
+
+  function token(value: unknown): string {
+    return Buffer.from(JSON.stringify(value), 'utf8').toString('base64url');
+  }
+
+  function routes(identities: ShopIdentityStore): Hono {
+    return new Hono().route(
+      '/shops',
+      shopRoutes({
+        authStore: new InMemoryAuthStore(),
+        messages: new InMemoryMessageStore(),
+        identities,
+      }),
+    );
+  }
+
+  async function directoryOf(
+    specs: ReadonlyArray<{ id: string; createdAt: Date; key: number | null; label?: string }>,
+  ): Promise<{ app: Hono; messages: InMemoryMessageStore }> {
+    const messages = new InMemoryMessageStore();
+    const identities = new InMemoryShopIdentityStore(messages);
+    for (const spec of specs) {
+      await messages.create(
+        note({
+          id: spec.id,
+          createdAt: spec.createdAt,
+          place: PLACE,
+        }),
+      );
+      if (spec.key !== null) {
+        const key = spec.key;
+        await identities.ensureListed(spec.id, KEK, {
+          generateSecretKey: () =>
+            Uint8Array.from({ length: 32 }, (_, index) => (index === 31 ? key : 1)),
+        });
+      }
+      if (spec.label === '') {
+        expect(await messages.setPlace(spec.id, { ...PLACE, label: '' })).toBe(true);
+      }
+    }
+    const app = new Hono().route(
+      '/shops',
+      shopRoutes({
+        authStore: new InMemoryAuthStore(),
+        messages,
+        identities,
+        env: {},
+      }),
+    );
+    return { app, messages };
+  }
+
+  it('returns the keyed shop, ignores a bearer, and leaves GET /shops/:npub unchanged', async () => {
+    const { app, npub } = await setup();
+    const response = await app.request('/shops', { headers: { authorization: 'Bearer nope' } });
+    expect(response.status).toBe(200);
+    expect(response.headers.get('cache-control')).toBe('public, max-age=60');
+    const body = (await response.json()) as { shops: unknown[]; nextCursor?: string };
+    expect(body).toEqual({ shops: [{ npub, name: 'Coffee Lab', place: PLACE }] });
+    expect(body.nextCursor).toBeUndefined();
+    const redacted = JSON.stringify(body).replace(/npub1[0-9a-z]+/g, '');
+    expect(redacted).not.toContain('nsec');
+    expect(redacted).not.toContain(TILL);
+    expect(redacted).not.toContain('ciphertext');
+    expect(redacted).not.toContain('Fresh coffee');
+    const detail = await app.request(`/shops/${npub}`);
+    expect(detail.status).toBe(200);
+    expect(((await detail.json()) as { shop: { name: string; npub: string } }).shop).toMatchObject({
+      name: 'Coffee Lab',
+      npub,
+    });
+  });
+
+  it('uses 20 when limit is omitted, accepts 100, and rejects a bad limit before the cursor', async () => {
+    const seen: number[] = [];
+    const identities = {
+      listDirectory: (_cursor: unknown, limit: number) => {
+        seen.push(limit);
+        return Promise.resolve({ shops: [], next: null });
+      },
+    } as unknown as ShopIdentityStore;
+    const app = routes(identities);
+    expect(await (await app.request('/shops')).json()).toEqual({ shops: [] });
+    expect(seen).toEqual([20]);
+    expect((await app.request('/shops?limit=100')).status).toBe(200);
+    expect(seen).toEqual([20, 100]);
+    const down = routes({
+      listDirectory: () => Promise.reject(new Error('down')),
+    } as unknown as ShopIdentityStore);
+    for (const limit of [
+      '0',
+      '101',
+      '20.0',
+      '+20',
+      '020',
+      '',
+      ' 20',
+      '1e1',
+      '20\n',
+      '20\r',
+      '100\u2028',
+    ]) {
+      const response = await down.request(`/shops?limit=${encodeURIComponent(limit)}&cursor=%%%`);
+      expect(response.status).toBe(400);
+      expect(response.headers.get('cache-control')).toBe('public, max-age=60');
+      expect(await response.json()).toEqual({ error: 'Invalid limit' });
+    }
+  });
+
+  it('rejects a bad cursor without reading the store', async () => {
+    const down = routes({
+      listDirectory: () => Promise.reject(new Error('down')),
+    } as unknown as ShopIdentityStore);
+    const iso = '2026-10-01T00:00:00.000Z';
+    const cursors = [
+      '',
+      'A',
+      'bad+cursor',
+      token(null),
+      token(1),
+      token([]),
+      token({ c: iso }),
+      token({ c: iso, i: ID, extra: true }),
+      token({ i: ID, x: iso }),
+      token({ c: iso, x: ID }),
+      token({ c: 1, i: ID }),
+      token({ c: iso, i: 1 }),
+      token({ c: 'not-a-date', i: ID }),
+      token({ c: '2026-10-01T00:00:00Z', i: ID }),
+      token({ c: iso, i: 'not-a-uuid' }),
+      Buffer.from('{', 'utf8').toString('base64url'),
+      token({ c: iso, i: ID + '\n' }),
+      token({ c: iso, i: ID + '\r' }),
+      token({ c: iso, i: ID + '\u2028' }),
+    ];
+    for (const cursor of cursors) {
+      const response = await down.request(`/shops?cursor=${encodeURIComponent(cursor)}`);
+      expect(response.status).toBe(400);
+      expect(response.headers.get('cache-control')).toBe('public, max-age=60');
+      expect(await response.json()).toEqual({ error: 'Invalid cursor' });
+    }
+  });
+
+  it('includes nextCursor when the page stops early and the next call can be empty', async () => {
+    const newer = new Date('2026-10-02T00:00:00.000Z');
+    const older = new Date('2026-10-01T00:00:00.000Z');
+    const { app } = await directoryOf([
+      { id: directoryId(2), createdAt: newer, key: 2 },
+      { id: directoryId(1), createdAt: older, key: null },
+    ]);
+    const first = await app.request('/shops?limit=1');
+    expect(first.status).toBe(200);
+    const body = (await first.json()) as {
+      shops: Array<{ npub: string; name: string }>;
+      nextCursor?: string;
+    };
+    expect(body.shops).toHaveLength(1);
+    expect(body.shops[0]?.name).toBe('Coffee Lab');
+    expect(typeof body.nextCursor).toBe('string');
+    const upper = token({
+      c: newer.toISOString(),
+      i: directoryId(2).toUpperCase(),
+    });
+    const second = await app.request(`/shops?limit=1&cursor=${encodeURIComponent(upper)}`);
+    expect(second.status).toBe(200);
+    expect(await second.json()).toEqual({ shops: [] });
+  });
+
+  it('returns the listed shop after more than 20 text-rule failures', async () => {
+    const good = directoryId(1);
+    const specs = [
+      { id: good, createdAt: new Date('2026-10-01T00:00:00.000Z'), key: 1, label: 'Coffee Lab' },
+      ...Array.from({ length: 21 }, (_, index) => ({
+        id: directoryId(index + 2),
+        createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)),
+        key: index + 2,
+        label: '',
+      })),
+    ];
+    const { app } = await directoryOf(specs);
+    const first = await app.request('/shops?limit=1');
+    const firstBody = (await first.json()) as { shops: unknown[]; nextCursor?: string };
+    expect(firstBody.shops).toEqual([]);
+    expect(typeof firstBody.nextCursor).toBe('string');
+    const second = await app.request(
+      `/shops?limit=1&cursor=${encodeURIComponent(firstBody.nextCursor ?? '')}`,
+    );
+    const secondBody = (await second.json()) as { shops: Array<{ name: string }> };
+    expect(secondBody.shops.map((shop) => shop.name)).toEqual(['Coffee Lab']);
+  });
+
+  it('answers 503 with no-store and logs shops.list.failed when the store throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const app = routes({
+      listDirectory: () => Promise.reject(new Error('down')),
+    } as unknown as ShopIdentityStore);
+    const response = await app.request('/shops');
+    expect(response.status).toBe(503);
+    expect(response.headers.get('cache-control')).toBe('no-store');
+    expect(await response.json()).toEqual({ error: 'Shops are unavailable' });
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('shops.list.failed'))).toBe(
+      true,
+    );
+    expect(warn.mock.calls.some((call) => String(call[0]).includes('down'))).toBe(false);
+    warn.mockRestore();
+  });
+});

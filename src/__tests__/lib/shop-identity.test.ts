@@ -418,6 +418,189 @@ describe('InMemoryShopIdentityStore reads', () => {
   });
 });
 
+describe('InMemoryShopIdentityStore listDirectory', () => {
+  const PLACE = {
+    lat: 47.3,
+    lng: 8.5,
+    label: 'Coffee Lab',
+    address: {
+      street: 'Main Street',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    },
+  };
+
+  function directoryId(n: number): string {
+    return `00000000-0000-4000-8000-${n.toString(16).padStart(12, '0')}`;
+  }
+
+  async function keyed(
+    store: InMemoryShopIdentityStore,
+    id: string,
+    secretN: number,
+  ): Promise<void> {
+    await store.ensureListed(id, KEK, keygenFrom(secretN));
+  }
+
+  it('returns a keyed listed shop and omits every note that is not one', async () => {
+    const newer = new Date('2026-10-03T00:00:00.000Z');
+    const same = new Date('2026-10-02T00:00:00.000Z');
+    const older = new Date('2026-10-01T00:00:00.000Z');
+    const rows = [
+      shopRow(ID_C, { createdAt: newer }),
+      shopRow(ID_B, { createdAt: same }),
+      shopRow(ID_A, { createdAt: same }),
+      shopRow(directoryId(4), { createdAt: older, text: 'No tag in this text at all here.' }),
+      shopRow(directoryId(5), { createdAt: older, place: null }),
+      shopRow(directoryId(6), { createdAt: older, parentId: ID_A }),
+      shopRow(directoryId(7), { createdAt: older, deletedAt: older }),
+      shopRow(directoryId(8), { createdAt: older, shopAccount: null }),
+      shopRow(directoryId(9), { createdAt: older }),
+    ];
+    const { messages, store } = setup(rows);
+    await keyed(store, ID_C, 4);
+    await keyed(store, ID_B, 3);
+    await keyed(store, ID_A, 2);
+    await keyed(store, directoryId(9), 5);
+    expect(await messages.setPlace(directoryId(9), { ...PLACE, label: '' })).toBe(true);
+    const page = await store.listDirectory(null, 10);
+    expect(page.next).toBeNull();
+    expect(page.shops.map((shop) => shop.id)).toEqual([ID_C, ID_B, ID_A]);
+    expect(page.shops[0]).toMatchObject({
+      npub: shopNpub({ nostrPubkey: publicKeyHexFromSecret(secret(4)) }),
+      name: 'Coffee Lab',
+      place: PLACE,
+    });
+    const olderPage = await store.listDirectory({ createdAt: same, id: ID_B }, 10);
+    expect(olderPage.shops.map((shop) => shop.id)).toEqual([ID_A]);
+    expect(olderPage.next).toBeNull();
+  });
+
+  it('orders the same timestamp by id descending when the lower id is stored first', async () => {
+    const same = new Date('2026-10-02T00:00:00.000Z');
+    const { store } = setup([
+      shopRow(ID_A, { createdAt: same }),
+      shopRow(ID_B, { createdAt: same }),
+    ]);
+    await keyed(store, ID_A, 2);
+    await keyed(store, ID_B, 3);
+    expect((await store.listDirectory(null, 10)).shops.map((shop) => shop.id)).toEqual([
+      ID_B,
+      ID_A,
+    ]);
+  });
+
+  it('stops in the middle of a short structural page and continues after that shop', async () => {
+    const { store } = setup([
+      shopRow(ID_B, { createdAt: new Date('2026-10-02T00:00:00.000Z') }),
+      shopRow(ID_A, { createdAt: new Date('2026-10-01T00:00:00.000Z') }),
+    ]);
+    await keyed(store, ID_B, 3);
+    const first = await store.listDirectory(null, 1);
+    expect(first.shops.map((shop) => shop.id)).toEqual([ID_B]);
+    expect(first.next).toEqual({ createdAt: new Date('2026-10-02T00:00:00.000Z'), id: ID_B });
+    const second = await store.listDirectory(first.next, 1);
+    expect(second).toEqual({ shops: [], next: null });
+  });
+
+  it('omits next when the only structural page is shorter than the cap and full of shops', async () => {
+    const { store } = setup([shopRow(ID_A)]);
+    await keyed(store, ID_A, 2);
+    const page = await store.listDirectory(null, 1);
+    expect(page.shops).toHaveLength(1);
+    expect(page.next).toBeNull();
+    expect(await store.listDirectory(null, 10)).toMatchObject({ next: null });
+  });
+
+  it('returns nothing for an empty directory', async () => {
+    const { store } = setup([]);
+    expect(await store.listDirectory(null, 20)).toEqual({ shops: [], next: null });
+  });
+
+  it('continues past more than 20 * limit text-rule failures', async () => {
+    const good = directoryId(1);
+    const failures = Array.from({ length: 21 }, (_, index) => directoryId(index + 2));
+    const rows = [
+      shopRow(good, { createdAt: new Date('2026-10-01T00:00:00.000Z') }),
+      ...failures.map((id, index) =>
+        shopRow(id, { createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)) }),
+      ),
+    ];
+    const { messages, store } = setup(rows);
+    await keyed(store, good, 1);
+    for (const [index, id] of failures.entries()) {
+      await keyed(store, id, index + 2);
+      expect(await messages.setPlace(id, { ...PLACE, label: '' })).toBe(true);
+    }
+    const first = await store.listDirectory(null, 1);
+    expect(first.shops).toEqual([]);
+    expect(first.next).toEqual({
+      createdAt: new Date(Date.UTC(2026, 9, 2, 0, 1)),
+      id: directoryId(3),
+    });
+    const second = await store.listDirectory(first.next, 1);
+    expect(second.shops.map((shop) => shop.id)).toEqual([good]);
+  });
+
+  it('continues past more than 20 * limit shaped notes that have no key', async () => {
+    const good = directoryId(1);
+    const keyless = Array.from({ length: 21 }, (_, index) => directoryId(index + 2));
+    const rows = [
+      shopRow(good, { createdAt: new Date('2026-10-01T00:00:00.000Z') }),
+      ...keyless.map((id, index) =>
+        shopRow(id, { createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)) }),
+      ),
+    ];
+    const { store } = setup(rows);
+    await keyed(store, good, 1);
+    const first = await store.listDirectory(null, 1);
+    expect(first.shops).toEqual([]);
+    expect(first.next?.id).toBe(directoryId(3));
+    const second = await store.listDirectory(first.next, 1);
+    expect(second.shops.map((shop) => shop.id)).toEqual([good]);
+    expect(second.next).toBeNull();
+  });
+
+  it('does not examine a note that fails the structural shape', async () => {
+    const messages = new InMemoryMessageStore([
+      shopRow(ID_A),
+      shopRow(ID_B),
+      shopRow(ID_C),
+      shopRow(directoryId(4)),
+      shopRow(directoryId(5)),
+      shopRow(directoryId(6)),
+      shopRow(directoryId(7)),
+      shopRow(directoryId(8)),
+      shopRow(directoryId(9)),
+      shopRow(directoryId(10)),
+    ]);
+    const noAccount = shopRow(directoryId(5));
+    delete noAccount.shopAccount;
+    const noPlace = shopRow(directoryId(7));
+    delete noPlace.place;
+    const shapes = new Map<string, MessageRow | undefined>([
+      [ID_A, undefined],
+      [ID_B, shopRow(ID_B, { parentId: ID_A })],
+      [ID_C, shopRow(ID_C, { deletedAt: new Date('2026-10-01T00:00:00.000Z') })],
+      [directoryId(4), shopRow(directoryId(4), { shopAccount: null })],
+      [directoryId(5), noAccount],
+      [directoryId(6), shopRow(directoryId(6), { place: null })],
+      [directoryId(7), noPlace],
+      [directoryId(8), shopRow(directoryId(8), { place: { ...PLACE, label: null } })],
+      [directoryId(9), shopRow(directoryId(9), { place: { ...PLACE, address: null } })],
+      [directoryId(10), shopRow(directoryId(10), { text: 'No tag in this text at all here.' })],
+    ]);
+    const wrapped = {
+      listLiveAssignedShops: () => messages.listLiveAssignedShops(),
+      getById: (id: string) => Promise.resolve(shapes.get(id)),
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    expect(await store.listDirectory(null, 10)).toEqual({ shops: [], next: null });
+  });
+});
+
 describe('InMemoryShopIdentityStore listRound', () => {
   const IDS = [1, 2, 3, 4, 5].map((n) => `0000000${String(n)}-0000-4000-8000-000000000000`);
 
@@ -1246,6 +1429,77 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[1]?.text).toContain('AND (m.created_at, m.id) > ($1::timestamptz, $2::uuid)');
     expect(calls[1]?.text).not.toContain('$1::timestamptz IS NULL');
     expect(calls[1]?.text).toContain('LIMIT $3');
+  });
+
+  it('lists a directory page without joining shop_identity', async () => {
+    const created = new Date('2026-10-03T00:00:00.000Z');
+    const pubkey = publicKeyHexFromSecret(secret(2));
+    const row = {
+      id: ID_C,
+      created_at: created,
+      text: TEXT,
+      parent_id: null,
+      deleted_at: null,
+      place_lat: '47.3',
+      place_lng: 8.5,
+      place_label: 'Coffee Lab',
+      place_street: 'Main Street',
+      place_house_number: '1',
+      place_postal_code: '8001',
+      place_city: 'Zürich',
+      place_country: 'CH',
+      shop_account_id: 'till',
+      nostr_pubkey: pubkey,
+    };
+    const { sql, calls } = fakeSql([
+      [
+        row,
+        { ...row, id: ID_B, deleted_at: '2026-10-02T00:00:00.000Z', nostr_pubkey: pubkey },
+        { ...row, id: ID_A, nostr_pubkey: null },
+      ],
+      [],
+    ]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    const page = await store.listDirectory(null, 2);
+    expect(page.next).toBeNull();
+    expect(page.shops).toEqual([
+      {
+        id: ID_C,
+        createdAt: created,
+        npub: shopNpub({ nostrPubkey: pubkey }),
+        name: 'Coffee Lab',
+        place: {
+          lat: 47.3,
+          lng: 8.5,
+          label: 'Coffee Lab',
+          address: {
+            street: 'Main Street',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
+      },
+    ]);
+    expect(calls[0]?.params).toEqual([40]);
+    expect(calls[0]?.text).toContain('ORDER BY m.created_at DESC, m.id DESC');
+    expect(calls[0]?.text).toContain('LIMIT $1');
+    expect(calls[0]?.text).not.toContain('(m.created_at, m.id) <');
+    expect(calls[0]?.text).toContain(
+      '(SELECT s.nostr_pubkey FROM shop_identity s WHERE s.message_id = m.id) AS nostr_pubkey',
+    );
+    expect(calls[0]?.text).not.toContain('JOIN');
+    expect(calls[0]?.text).not.toContain('nostr_nsec_ciphertext');
+    const cursor = { createdAt: created, id: ID_C };
+    expect(await store.listDirectory(cursor, 2)).toEqual({ shops: [], next: null });
+    expect(calls[1]?.params).toEqual([created, ID_C, 40]);
+    expect(calls[1]?.text).toContain('AND (m.created_at, m.id) < ($1::timestamptz, $2::uuid)');
+    expect(calls[1]?.text).toContain('ORDER BY m.created_at DESC, m.id DESC');
+    expect(calls[1]?.text).toContain('LIMIT $3');
+    expect(calls[1]?.text).not.toContain('$1::timestamptz IS NULL');
+    expect(calls[1]?.text).not.toContain('JOIN');
+    expect(calls[1]?.text).not.toContain('nostr_nsec_ciphertext');
   });
 
   it('queues a page of identities by message id', async () => {
