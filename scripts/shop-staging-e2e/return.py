@@ -600,6 +600,12 @@ async def main() -> None:
             fail("state_invalid")
     units_before = read_units(rpc_url, token, recipient)
     warn(f"payer_units_before={units_before}")
+    if returning:
+        if not isinstance(path, str):
+            fail("state_missing")
+        if "payerUnitsBefore" not in state:
+            state["payerUnitsBefore"] = units_before
+            save_state(path, state)
 
     try:
         sdk, balance, own_spark = await connect_shop(storage)

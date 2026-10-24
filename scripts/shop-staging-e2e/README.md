@@ -131,7 +131,9 @@ it exits. A second return that cannot take the lock stops with
 `startSats` must be integers equal to `SHOP_AMOUNT_SATS` and
 `SHOP_START_SATS`. A boolean does not pass. The shop balance must be that
 stored start or that start plus the stored amount. A stored payer balance,
-when present, must be an integer too.
+when present, must be an integer too. When it is absent, the fresh read is
+stored before the shop is contacted, and a later quote or payout check uses
+that integer.
 With the shop still at `SHOP_START_SATS`, the script stops with
 `shop_not_credited` and does not open or fund a quote, unless the saved
 idempotency key already has a completed Spark payment. That payment is
@@ -155,7 +157,13 @@ no longer fundable, the script stores a new quote and a new idempotency
 key before it sends. An uncertain lookup stops with `send_unconfirmed` and
 does not send. The script then polls the order for
 up to 15 minutes, and a transport error during that wait is retried until
-the deadline. It finishes with `return=home` only when the order is
+the deadline. That deadline starts when the poll starts. It is the same
+fifteen minutes as the paid run's wait on `GET /lnurlp/wait/:payment`, with
+the same fifteen-second pause. It is not `SHOP_ORDER_WATCH_MS` and not
+`SHOP_HISTORY_INTERVAL_MS`. Those clocks keep the shop reading an offer's
+history until thirty minutes after `expiresAt`, and they keep those reads
+at least ten seconds apart. This poll does not extend a shop offer.
+It finishes with `return=home` only when the order is
 completed, the shop balance is `SHOP_START_SATS` again, and the paying
 account's token balance grew by the order's `amountOut`.
 
