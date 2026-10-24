@@ -574,11 +574,11 @@ CI will fail on the same conditions; catching them locally is faster.
 ### A38
 
 This repository requires A38 according to the canonical A38 standard in
-[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/e118e9f8a9aad02cdf06ded68bdd6305345e7526/docs/a38.md)
-at commit `e118e9f8a9aad02cdf06ded68bdd6305345e7526`. Repo job selection:
+[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/bf9763f8d59285aa542f5dc22cbdbf451618c5f5/docs/a38.md)
+at commit `bf9763f8d59285aa542f5dc22cbdbf451618c5f5`. Repo job selection:
 `.github/a38.json`. Target-branch applicability and fork workflow approval:
 `.github/pr-guard.json`. `dfx pr guard` is
-[wired in](https://github.com/DFXswiss/agent/blob/e118e9f8a9aad02cdf06ded68bdd6305345e7526/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
+[wired in](https://github.com/DFXswiss/agent/blob/bf9763f8d59285aa542f5dc22cbdbf451618c5f5/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
 
 This is a **public** repository. GitHub-hosted runners execute the heavy suite
 (typecheck, handbook completeness, e2e completeness, Vitest with the coverage
