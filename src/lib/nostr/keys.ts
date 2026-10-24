@@ -49,11 +49,11 @@ export function publicKeyHexFromSecret(secret: Uint8Array): string {
  * Encrypt a 32-byte Nostr secret into the v1 envelope.
  *
  * Layout: `version(1) || kek_id uint32 BE || nonce(12) || ciphertext+tag`.
- * AAD is UTF-8 `accountId`.
+ * AAD is UTF-8 `accountId`: an account id, or `shop:{messageId}` for a shop key.
  *
  * @param secret - Raw 32-byte secret.
  * @param kek - 32-byte AES key (`NOSTR_NSEC_KEK`).
- * @param accountId - Account UUID string (AAD).
+ * @param accountId - AAD string: account UUID, or `shop:{messageId}` for a shop key.
  * @param kekId - Key id stored in the envelope (v1 = 1).
  * @returns Envelope bytes.
  */
@@ -91,7 +91,7 @@ export async function encryptNostrSecret(
  *
  * @param envelope - Stored ciphertext envelope.
  * @param kek - 32-byte AES key.
- * @param accountId - Account UUID string (AAD).
+ * @param accountId - AAD string: account UUID, or `shop:{messageId}` for a shop key.
  * @returns Raw 32-byte secret (caller must zeroize after use).
  */
 export async function decryptNostrSecret(

@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import type { AccountRole, StaffTag } from '@/lib/auth/store';
 import type { GoalCurrency } from '@/lib/goal-rate';
 import type { ForumPlace } from '@/lib/place';
+import { isListedShop } from '@/lib/shop-place';
 import type { ForumVideoContentType } from '@/lib/video';
 
 /**
@@ -58,6 +59,37 @@ export interface ForumPhoto {
   bytes: Uint8Array;
   /** Civil capture time as sent by the client. Absent means null. */
   takenAt?: string | null;
+}
+
+/**
+ * An extra still with the index it is stored under (`message_extra_photo.idx`,
+ * 1–9), which is the `n` of `/messages/:id/photo/<n>.<ext>`. A still that is
+ * left out (for example an unrecognized type) does not shift the indices of
+ * the stills after it.
+ */
+export interface IndexedForumPhoto {
+  /** Stored index (1–9). */
+  index: number;
+  /** The still. */
+  photo: ForumPhoto;
+}
+
+/** Content type of an extra still with the index it is stored under (1–9). */
+export interface IndexedForumPhotoType {
+  /** Stored index (1–9). */
+  index: number;
+  /** MIME type of the still. */
+  contentType: ForumPhotoContentType;
+}
+
+/** Till account of a shop note as stored on the message row. */
+export interface MessageShopAccount {
+  /** Account id (`message.shop_account_id`). */
+  id: string;
+  /** The account's username, or `null` when it has none. */
+  username: string | null;
+  /** Display name; may be empty. */
+  name: string;
 }
 
 /** Persisted forum row (store-internal; includes `accountId`). */
@@ -167,10 +199,17 @@ export interface MessageRow {
    */
   place?: ForumPlace | null;
   /**
-   * Optional 21.gifts account linked to a shop note. Not the author.
-   * Omit or `null` means none.
+   * Optional 21.gifts account linked to a shop note (the till account). Not
+   * the author. Omit or `null` means none. `username` is `null` when the
+   * account has no username (for example the survivor of an account merge);
+   * the account is still assigned and the note can still be a listed shop.
    */
-  shopAccount?: { id: string; username: string; name: string } | null;
+  shopAccount?: MessageShopAccount | null;
+  /**
+   * npub of the note's shop identity (`shop_identity`), or `null`/omitted
+   * when it has none. Public JSON exposes it only while the note is listed.
+   */
+  shopNpub?: string | null;
   /** Stored signed event JSON, or `null` until signed. */
   nostrEvent: Record<string, unknown> | null;
   /** Lease expiry (epoch ms), or `null`. */
@@ -294,6 +333,7 @@ export interface PublicMessage {
   /**
    * Optional map pin. Included only when stored; omitted when unset (same
    * omit rule as `parentId`). `label` is a string or JSON `null`.
+   * `address` is the structured postal address or JSON `null`.
    */
   place?: ForumPlace;
   /**
@@ -302,6 +342,8 @@ export interface PublicMessage {
    * Present even when `accountId` is omitted.
    */
   shopAccount?: { id: string; username: string; name: string };
+  /** npub of the listed shop, or `null` when the note is not a listed shop with a key. */
+  shopNpub: string | null;
   /** Whether `POST /messages/:id/invoice` can run. */
   payable: boolean;
   /** True when a photo can be fetched via GET `/messages/:id/photo`. */
@@ -455,19 +497,25 @@ function publicPlace(row: MessageRow): ForumPlace | undefined {
   if (place === undefined || place === null) {
     return undefined;
   }
-  return { lat: place.lat, lng: place.lng, label: place.label };
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    label: place.label,
+    address: place.address ?? null,
+  };
 }
 
 /**
  * Public/hidden JSON `shopAccount` when one is stored. Omitted when unset
- * or null (same omit rule as `place`). Included even when `includeAccountId`
- * is false. `name` may be empty.
+ * or null (same omit rule as `place`), and when the account has no
+ * username. Included even when `includeAccountId` is false. `name` may be
+ * empty.
  */
 function publicShopAccount(
   row: MessageRow,
 ): { id: string; username: string; name: string } | undefined {
   const shop = row.shopAccount;
-  if (shop === undefined || shop === null) {
+  if (shop === undefined || shop === null || shop.username === null) {
     return undefined;
   }
   return { id: shop.id, username: shop.username, name: shop.name };
@@ -645,7 +693,8 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * the stored column is true (omitted when null; never false); optional
  * `goalTermDays` when the stored column is not null (omitted when null);
  * optional currency-ask keys when `goalCurrency` is stored; optional `place` when stored;
- * optional `shopAccount` when stored (also when `includeAccountId` is false);
+ * optional `shopAccount` when stored and the till account has a username (also when
+ * `includeAccountId` is false);
  * optional hide stamps when `hidden`
  * is set); `createdAt` ISO-8601. Never includes photo or video bytes, and
  * never includes `contentFp`. Omits the `parentId` key on top-level notes.
@@ -655,7 +704,7 @@ export function truncatePubkeyDisplay(pubkeyHex: string): string {
  * Omits `goalCurrency` / `goalAmount` / `goalAmountUsd` / `goalAmountChf` /
  * `goalAmountEur` / `goalAmountPhp` when `goalCurrency` is null.
  * Omits `place` when unset or null.
- * Omits `shopAccount` when unset or null.
+ * Omits `shopAccount` when unset or null, or when the till account has no username.
  * Omits `staffTag` when the argument is not exactly `software_developer`.
  * On a reply, always includes `receivedSats` (`row.receivedSats ?? 0`) and
  * the four `receivedAmount*` keys (stored string or null). Omits those five
@@ -692,6 +741,7 @@ export function serializeMessage(
     photoTakenAts: taken.photoTakenAts,
     hasVideo: row.hasVideo === true,
     videoContentType: row.videoContentType ?? null,
+    shopNpub: isListedShop(row) ? (row.shopNpub ?? null) : null,
   };
   if (taken.photoTakenAt !== undefined) {
     body.photoTakenAt = taken.photoTakenAt;
@@ -796,8 +846,10 @@ export interface DebugMessagePhotoMeta {
  *   when null; never false). `goalTermDays` is included only when the stored
  *   column is not null (omitted when null). Currency-ask keys are included only when
  *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
- *   `placeLabel` (JSON `null` when unset). Always includes `shopAccountId`
- *   (`null` when unset). Does not include the shop username or name.
+ *   `placeLabel` / `placeStreet` / `placeHouseNumber` / `placePostalCode` /
+ *   `placeCity` / `placeCountry` (JSON `null` when unset). Always includes
+ *   `shopAccountId` (`null` when unset). Does not include the shop username
+ *   or name.
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -854,6 +906,11 @@ export function serializeDebugMessage(
     placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
     placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
     placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
+    placeStreet: row.place?.address?.street ?? null,
+    placeHouseNumber: row.place?.address?.houseNumber ?? null,
+    placePostalCode: row.place?.address?.postalCode ?? null,
+    placeCity: row.place?.address?.city ?? null,
+    placeCountry: row.place?.address?.country ?? null,
     shopAccountId:
       row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id,
     photoContentType: photo?.photoContentType ?? null,
@@ -889,7 +946,8 @@ export function serializeDebugMessage(
  *   stored value is a positive integer on a top-level note (omitted
  *   otherwise). Optional currency-ask keys when `goalCurrency` is stored
  *   (omitted on legacy rows). Optional `place` when stored (omitted when unset).
- *   Optional `shopAccount` when stored (omitted when unset).
+ *   Optional `shopAccount` when stored (omitted when unset or when the till
+ *   account has no username).
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeHiddenMessage(

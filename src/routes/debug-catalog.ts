@@ -12,6 +12,7 @@ import type { MessageStore } from '@/lib/message-store';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PosStore } from '@/lib/pos-store';
 import type { PushStore } from '@/lib/push-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import type { TrustStore } from '@/lib/trust-store';
 
 /** Collaborators for GET `/debug/dump`. */
@@ -22,6 +23,8 @@ export interface DebugCatalogRouteDeps {
   messages: MessageStore;
   /** Contact mailbox. */
   contacts: ContactStore;
+  /** Optional shop identities. Omitted dumps `shop_identity` as `[]`. */
+  shops?: ShopIdentityStore;
   /** Optional point-of-sale charges. Omitted dumps `pos_charge` as `[]`. */
   pos?: PosStore;
   /** Optional HTTP audit log. */
@@ -65,6 +68,9 @@ function catalogDeps(deps: DebugCatalogRouteDeps): DebugCatalogDeps {
     messages: deps.messages,
     contacts: deps.contacts,
   };
+  if (deps.shops !== undefined) {
+    catalog.shops = deps.shops;
+  }
   if (deps.pos !== undefined) {
     catalog.pos = deps.pos;
   }

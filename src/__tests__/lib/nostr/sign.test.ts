@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
-import { buildKind1Event } from '@/lib/nostr/event';
+import { buildKind0Event, buildKind1Event } from '@/lib/nostr/event';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
-import { signEventForAccount } from '@/lib/nostr/sign';
+import { signEventForAccount, signEventForShop } from '@/lib/nostr/sign';
+import { InMemoryMessageStore } from '@/lib/message-store';
+import { unsignedNostrDefaults } from '@/lib/message';
+import { InMemoryShopIdentityStore } from '@/lib/shop-identity';
 
 const KEK = parseNostrKek('ef'.repeat(32));
 
@@ -40,5 +43,40 @@ describe('signEventForAccount', () => {
     await expect(
       signEventForAccount(store, 'missing', KEK, buildKind1Event('hi', 1)),
     ).rejects.toThrow(/missing/);
+  });
+});
+
+describe('signEventForShop', () => {
+  it('signs with shop-scoped AAD', async () => {
+    const id = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const messages = new InMemoryMessageStore([
+      {
+        id,
+        accountId: 'author',
+        name: 'Ada',
+        text: 'Fresh coffee roasted here every morning. #21GiftsShop',
+        createdAt: new Date(),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        place: {
+          lat: 1,
+          lng: 2,
+          label: 'Coffee',
+          address: {
+            street: 'Main',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
+        shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      },
+    ]);
+    const shops = new InMemoryShopIdentityStore(messages);
+    await shops.ensureListed(id, KEK);
+    const signed = await signEventForShop(shops, id, KEK, buildKind0Event('Coffee', null, 1));
+    expect(signed.kind).toBe(0);
+    expect(signed.id).toMatch(/^[0-9a-f]{64}$/);
   });
 });

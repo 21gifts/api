@@ -30,6 +30,7 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
@@ -96,6 +97,13 @@ export interface MeRouteDeps {
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Shop identities. With `shopKek` (or `nostrKek`), `PUT /me/about` creates
+   * the key when the profile note becomes a listed shop. Omitted → no shop keys.
+   */
+  shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
 }
 
 /**
@@ -723,11 +731,25 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
         }
-        await deps.messages.updateText(noteId, normalized);
+        const written = await deps.messages.updateText(noteId, normalized);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
         if (photoKeyPresent && !createdThisRequest) {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }
         const liveRow = await deps.messages.getById(noteId);
+        const shopKek = deps.shopKek ?? deps.nostrKek;
+        if (deps.shopIdentities !== undefined && shopKek !== undefined) {
+          try {
+            await deps.shopIdentities.ensureListed(noteId, shopKek);
+          } catch {
+            logEvent('shop.nostr_key.failed', { messageId: noteId });
+          }
+        }
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
         }

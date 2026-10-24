@@ -18,6 +18,7 @@ import {
 } from '@/lib/goal-rate';
 import { effectiveStatus, eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { isOperatorBearer } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
@@ -40,6 +41,7 @@ import {
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
+  type MessageShopAccount,
 } from '@/lib/message';
 import {
   textHasHashtagToken,
@@ -79,7 +81,8 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
-import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
+import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -268,11 +271,13 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * write, DELETE on clear or hide). Omitted → the forum write still
-   * succeeds and nothing is sent.
+   * Shop identities. With `shopKek` (or `nostrKek`), a write that makes a
+   * note a listed shop creates its key after the commit. The OpenCryptoPay
+   * outbox is queued by the store write itself. Omitted → no shop keys.
    */
-  mapPush?: MapPush;
+  shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -330,10 +335,38 @@ export interface MessagesRouteDeps {
    * ask; a BTC ask still stores the typed sats.
    */
   goalRateDay?: () => Promise<GoalRateDay | null>;
+  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  debugToken?: string;
+  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  debugReadToken?: string;
 }
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+
+/**
+ * After a committed write that can make a note a listed shop: create its key
+ * once (S1). The OpenCryptoPay outbox is queued by the store write itself.
+ * A failure logs `shop.nostr_key.failed` and never fails the request.
+ *
+ * @param deps - Route deps (shop identities and KEK).
+ * @param messageId - Written note id.
+ * @returns The shop npub, or `undefined` when the note has no key.
+ */
+async function ensureShopIdentity(
+  deps: MessagesRouteDeps,
+  messageId: string,
+): Promise<string | undefined> {
+  const kek = deps.shopKek ?? deps.nostrKek;
+  if (deps.shopIdentities === undefined || kek === undefined) return undefined;
+  try {
+    const identity = await deps.shopIdentities.ensureListed(messageId, kek);
+    return identity === undefined ? undefined : shopNpub(identity);
+  } catch {
+    logEvent('shop.nostr_key.failed', { messageId });
+    return undefined;
+  }
+}
 
 /**
  * Whether a credit note still has money out. Once any sats arrived, the note
@@ -431,7 +464,7 @@ function ensureShopNoteTag(text: string): string {
  * Both absent matches. One absent does not. Only the account id counts.
  */
 function shopAccountsMatch(
-  a: { id: string; username: string; name: string } | null | undefined,
+  a: MessageShopAccount | null | undefined,
   b: { id: string; username: string; name: string } | null,
 ): boolean {
   const left = a ?? null;
@@ -902,6 +935,48 @@ async function postedShopAccount(
 }
 
 /**
+ * Shop-with-pin completeness for create. A shop note without a pin stays
+ * allowed. Replies never carry a pin.
+ *
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level.
+ * @param place - Parsed pin, or `null`.
+ * @returns A fixed English error, or `null` when the note may be stored.
+ */
+function shopPinRegistrationProblem(
+  text: string,
+  parentId: string | null,
+  place: ForumPlace | null,
+): string | null {
+  if (parentId !== null || place === null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return null;
+  }
+  return shopPlaceProblem(place) ?? shopTextProblem(text, place);
+}
+
+/**
+ * Multipart structured address. All five fields blank means no address.
+ * Any present field requires all five (same `Place address is invalid`).
+ *
+ * @param form - Multipart body.
+ * @returns `undefined` when every field is blank, otherwise an object for
+ *   {@link normalizePlace}.
+ */
+function multipartPlaceAddress(form: FormData): unknown {
+  const street = form.get('placeStreet');
+  const houseNumber = form.get('placeHouseNumber');
+  const postalCode = form.get('placePostalCode');
+  const city = form.get('placeCity');
+  const country = form.get('placeCountry');
+  const blank = (raw: unknown): boolean =>
+    raw === null || (typeof raw === 'string' && raw.trim() === '');
+  if (blank(street) && blank(houseNumber) && blank(postalCode) && blank(city) && blank(country)) {
+    return undefined;
+  }
+  return { street, houseNumber, postalCode, city, country };
+}
+
+/**
  * Media collapse → burst limiter → create → optional {@link notifyForumPost}
  * (every account except the actor and except mention account ids on the
  * created row; no-op when the actor is the official platform account) for a
@@ -1154,15 +1229,8 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await syncShopOcpPlace({
-        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: published.id,
-        text: published.text,
-        parentId: published.parentId ?? null,
-        place: published.place ?? null,
-        authorName: published.name,
-        textHasHashtagToken,
-      });
+      const npub = await ensureShopIdentity(deps, published.id);
+      if (npub !== undefined) published.shopNpub = npub;
     }
     return c.json(
       serializeMessage(
@@ -1271,6 +1339,10 @@ async function postMultipartMessage(
   const lngParsed = parseMultipartCoord(placeLng);
   const latMissing = latParsed === 'missing';
   const lngMissing = lngParsed === 'missing';
+  const address = multipartPlaceAddress(form);
+  if (latMissing && lngMissing && address !== undefined) {
+    return c.json({ error: 'Place must be a latitude and longitude' }, 400);
+  }
   if (!latMissing || !lngMissing) {
     if (latMissing || lngMissing || latParsed === 'invalid' || lngParsed === 'invalid') {
       return c.json({ error: 'Place must be a latitude and longitude' }, 400);
@@ -1279,6 +1351,7 @@ async function postMultipartMessage(
       lat: latParsed,
       lng: lngParsed,
       ...(placeLabel === null || placeLabel === '' ? {} : { label: placeLabel }),
+      ...(address === undefined ? {} : { address }),
     });
     if (!parsedPlace.ok) {
       return c.json({ error: parsedPlace.error }, 400);
@@ -1314,6 +1387,10 @@ async function postMultipartMessage(
   );
   if (!shopParsed.ok) {
     return c.json({ error: shopParsed.error }, shopParsed.status);
+  }
+  const shopProblem = shopPinRegistrationProblem(text, null, place);
+  if (shopProblem !== null) {
+    return c.json({ error: shopProblem }, 400);
   }
   return persistForumPost(
     deps,
@@ -1842,6 +1919,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (!shopParsed.ok) {
         return c.json({ error: shopParsed.error }, shopParsed.status);
       }
+      const shopProblem = shopPinRegistrationProblem(text, parentId, place);
+      if (shopProblem !== null) {
+        return c.json({ error: shopProblem }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -2093,17 +2174,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'An open credit cannot be deleted' }, 409);
           }
         }
-        if (
-          target.parentId === null &&
-          target.place !== null &&
-          target.place !== undefined &&
-          textHasHashtagToken(target.text, '21GiftsShop')
-        ) {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: target.id,
-          });
-        }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
@@ -2186,6 +2256,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
+        if (parsed.value !== null) {
+          const problem = shopPlaceProblem(parsed.value);
+          if (problem !== null) {
+            return c.json({ error: problem }, 400);
+          }
+        }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
           ? await deps.store.setPlace(id, parsed.value, {
@@ -2198,6 +2274,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               after: parsed.value,
             })
           : await deps.store.setPlace(id, parsed.value);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -2216,22 +2295,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (parsed.value !== null) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: parsed.value,
-            authorName: updated.name,
-            textHasHashtagToken,
-          });
-        } else {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2340,17 +2405,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (updated.place !== null && updated.place !== undefined) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place,
-            authorName: updated.name,
-            textHasHashtagToken,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2415,6 +2471,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
+        const pinned = row.place ?? null;
+        if (pinned !== null && shopPlaceProblem(pinned) === null) {
+          const textProblem = shopTextProblem(ensured, pinned);
+          if (textProblem !== null) {
+            return c.json({ error: textProblem }, 400);
+          }
+        }
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
@@ -2442,6 +2505,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           before: row.text,
           after: ensured,
         });
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (written === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -2460,6 +2526,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         return c.json(
           serializeMessage(
             updated,
@@ -2566,12 +2634,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
     })
     .get('/:id/edits', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      if (!roleAtLeast(account.role, 'moderator')) {
-        return c.json({ error: 'Forbidden' }, 403);
+      const header = c.req.header('authorization');
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        const account = await authedAccount(deps, header);
+        if (account === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (!roleAtLeast(account.role, 'moderator')) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
       }
       const id = c.req.param('id');
       if (!MESSAGE_ID_RE.test(id)) {
@@ -2619,12 +2690,15 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
     })
     .get('/hidden', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      if (!roleAtLeast(account.role, 'moderator')) {
-        return c.json({ error: 'Forbidden' }, 403);
+      const header = c.req.header('authorization');
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, header)) {
+        const account = await authedAccount(deps, header);
+        if (account === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (!roleAtLeast(account.role, 'moderator')) {
+          return c.json({ error: 'Forbidden' }, 403);
+        }
       }
       try {
         const rows = await deps.store.listHidden(MESSAGE_LIST_LIMIT);
@@ -2672,7 +2746,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               lat: row.lat,
               lng: row.lng,
               label: row.label,
+              address: row.address,
               shop: row.shop,
+              shopNpub: row.shopNpub,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },

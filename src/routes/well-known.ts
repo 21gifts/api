@@ -18,6 +18,8 @@ import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { buildNostrJson } from '@/lib/nip05';
 import { logEvent } from '@/lib/log';
 import { normalizeUsername } from '@/lib/username';
+import type { MessageStore } from '@/lib/message-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 
 /** Collaborators for the well-known routes. */
 export interface WellKnownRouteDeps {
@@ -29,8 +31,13 @@ export interface WellKnownRouteDeps {
   fetchImpl?: FetchFn;
   /** Open point-of-sale charges. Default empty in-memory store. */
   posStore?: PosStore;
-  /** Clock in epoch milliseconds. Default `Date.now`. */
+  /** Clock in epoch milliseconds (pending charges, NIP-05 directory cache). Default `Date.now`. */
   now?: () => number;
+  /**
+   * Shop identities and the forum store. Listed shops join `nostr.json`
+   * after every account. Omitted → accounts only.
+   */
+  shops?: { identities: ShopIdentityStore; messages: MessageStore };
 }
 
 const WELL_KNOWN_CORS = {
@@ -48,7 +55,7 @@ const LNURLP_HEADERS = {
 /**
  * Build the `/.well-known` route group.
  *
- * @param deps - Auth store, env, optional fetch, optional pos store, and optional clock.
+ * @param deps - Auth store, env, optional fetch, optional pos store, optional clock, and optional shops.
  * @returns Hono app with `GET /nostr.json` and `GET /lnurlp/:username`.
  */
 export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
@@ -61,7 +68,7 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
     .get('/nostr.json', async (c) => {
       try {
         const name = c.req.query('name') ?? undefined;
-        const body = await buildNostrJson(deps.auth, env, name);
+        const body = await buildNostrJson(deps.auth, env, name, deps.shops, now());
         return c.json(body, 200, WELL_KNOWN_CORS);
       } catch {
         logEvent('nostr.nip05.failed');

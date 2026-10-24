@@ -190,6 +190,7 @@ describe('serializeMessage', () => {
       photoTakenAts: [],
       hasVideo: false,
       videoContentType: null,
+      shopNpub: null,
       role: 'moderator',
     });
     expect(serializeMessage(row, false, 'basis')).not.toHaveProperty('accountId');
@@ -647,19 +648,56 @@ describe('serializeMessage', () => {
       createdAt: new Date('2026-08-28T12:00:00.000Z'),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
-      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
     };
     expect(serializeMessage(row, false, 'basis').place).toEqual({
       lat: 47.3,
       lng: 8.5,
       label: 'Zürich',
+      address: null,
     });
     expect(
-      serializeMessage({ ...row, place: { lat: 1, lng: 2, label: null } }, false, 'basis').place,
-    ).toEqual({ lat: 1, lng: 2, label: null });
+      serializeMessage(
+        { ...row, place: { lat: 1, lng: 2, label: null, address: null } },
+        false,
+        'basis',
+      ).place,
+    ).toEqual({ lat: 1, lng: 2, label: null, address: null });
+    expect(
+      serializeMessage(
+        {
+          ...row,
+          place: {
+            lat: 47.3,
+            lng: 8.5,
+            label: 'Cafe',
+            address: {
+              street: 'Bahnhofstrasse',
+              houseNumber: '1',
+              postalCode: '8001',
+              city: 'Zürich',
+              country: 'CH',
+            },
+          },
+        },
+        false,
+        'basis',
+      ).place,
+    ).toEqual({
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Cafe',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
   });
 
-  it('omits shopAccount when unset or null', () => {
+  it('omits shopAccount when unset, null, or without a username', () => {
     const row: MessageRow = {
       id: 'msg-noshop',
       accountId: 'acc-1',
@@ -674,6 +712,15 @@ describe('serializeMessage', () => {
     );
     expect(
       serializeMessage({ ...row, shopAccount: null }, false, 'basis', undefined, false),
+    ).not.toHaveProperty('shopAccount');
+    expect(
+      serializeMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: null, name: 'Ada' } },
+        false,
+        'basis',
+        undefined,
+        false,
+      ),
     ).not.toHaveProperty('shopAccount');
   });
 
@@ -817,6 +864,11 @@ describe('serializeDebugMessage', () => {
       placeLat: null,
       placeLng: null,
       placeLabel: null,
+      placeStreet: null,
+      placeHouseNumber: null,
+      placePostalCode: null,
+      placeCity: null,
+      placeCountry: null,
       shopAccountId: null,
       photoContentType: null,
       photoBytes: 0,
@@ -924,7 +976,7 @@ describe('serializeDebugMessage', () => {
     ).toBe(21000);
   });
 
-  it('always includes placeLat, placeLng, and placeLabel, JSON null when unset', () => {
+  it('always includes placeLat, placeLng, placeLabel, and address fields, JSON null when unset', () => {
     const row: MessageRow = {
       id: 'msg-debug-place',
       accountId: 'acc-1',
@@ -937,21 +989,43 @@ describe('serializeDebugMessage', () => {
     expect(serializeDebugMessage(row)['placeLat']).toBeNull();
     expect(serializeDebugMessage(row)['placeLng']).toBeNull();
     expect(serializeDebugMessage(row)['placeLabel']).toBeNull();
+    expect(serializeDebugMessage(row)['placeStreet']).toBeNull();
     expect(serializeDebugMessage({ ...row, place: null })['placeLat']).toBeNull();
     const pinned = serializeDebugMessage({
       ...row,
-      place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+      place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
     });
     expect(pinned['placeLat']).toBe(47.3);
     expect(pinned['placeLng']).toBe(8.5);
     expect(pinned['placeLabel']).toBe('Zürich');
+    expect(pinned['placeStreet']).toBeNull();
     const unlabeled = serializeDebugMessage({
       ...row,
-      place: { lat: 1, lng: 2, label: null },
+      place: { lat: 1, lng: 2, label: null, address: null },
     });
     expect(unlabeled['placeLat']).toBe(1);
     expect(unlabeled['placeLng']).toBe(2);
     expect(unlabeled['placeLabel']).toBeNull();
+    const addressed = serializeDebugMessage({
+      ...row,
+      place: {
+        lat: 47.3,
+        lng: 8.5,
+        label: 'Cafe',
+        address: {
+          street: 'Bahnhofstrasse',
+          houseNumber: '1',
+          postalCode: '8001',
+          city: 'Zürich',
+          country: 'CH',
+        },
+      },
+    });
+    expect(addressed['placeStreet']).toBe('Bahnhofstrasse');
+    expect(addressed['placeHouseNumber']).toBe('1');
+    expect(addressed['placePostalCode']).toBe('8001');
+    expect(addressed['placeCity']).toBe('Zürich');
+    expect(addressed['placeCountry']).toBe('CH');
   });
 
   it('always includes shopAccountId, JSON null when unset, and omits username', () => {
@@ -1211,15 +1285,16 @@ describe('serializeHiddenMessage', () => {
     expect(serializeHiddenMessage({ ...row, place: null }, deletedBy)).not.toHaveProperty('place');
     expect(
       serializeHiddenMessage(
-        { ...row, place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+        { ...row, place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null } },
         deletedBy,
       )['place'],
-    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich', address: null });
     expect(
-      serializeHiddenMessage({ ...row, place: { lat: 1, lng: 2, label: null } }, deletedBy)[
-        'place'
-      ],
-    ).toEqual({ lat: 1, lng: 2, label: null });
+      serializeHiddenMessage(
+        { ...row, place: { lat: 1, lng: 2, label: null, address: null } },
+        deletedBy,
+      )['place'],
+    ).toEqual({ lat: 1, lng: 2, label: null, address: null });
   });
 
   it('includes shopAccount only when set', () => {

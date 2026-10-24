@@ -1,12 +1,13 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MergeDb } from '@/lib/account-merge';
-import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import type { DiagnosticStore } from '@/lib/diagnostic-log';
 import { setDiagnosticSink } from '@/lib/log';
-import { unsignedNostrDefaults } from '@/lib/message';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { createApp, resolveBindAddr, parseBindAddr } from '@/server';
 
 function b64url(bytes: Uint8Array): string {
@@ -744,5 +745,137 @@ describe('parseBindAddr', () => {
 
   it('rejects port with trailing junk', () => {
     expect(() => parseBindAddr('0.0.0.0:3000x')).toThrowError(/must be 0\.\.65535/);
+  });
+});
+
+describe('shop identity hooks', () => {
+  const now = (): number => 1_700_000_000_000;
+
+  const AUTH = { authorization: 'Bearer tok', 'content-type': 'application/json' };
+
+  const SHOP_ID = '11111111-1111-4111-8111-111111111111';
+
+  const TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+
+  const ADDRESS = {
+    street: 'Bahnhofstrasse',
+    houseNumber: '1',
+    postalCode: '8001',
+    city: 'Zürich',
+    country: 'CH',
+  };
+
+  const PIN = { lat: 47.3, lng: 8.5, label: 'Cafe', address: ADDRESS };
+
+  function account(overrides: Partial<Account>): Account {
+    return {
+      id: 'mod',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Mo',
+      username: 'mo',
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      ...overrides,
+    } as Account;
+  }
+
+  async function authStore(): Promise<InMemoryAuthStore> {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({}));
+    await auth.createAccount(
+      account({
+        id: 'till',
+        role: 'basis',
+        name: 'Coffee',
+        username: 'coffee',
+        viewKey: 'b'.repeat(64),
+      }),
+    );
+    await auth.createSession({ token: 'tok', accountId: 'mod', createdAt: now() });
+    return auth;
+  }
+
+  function shopNote(overrides: Partial<MessageRow>): MessageRow {
+    return {
+      id: SHOP_ID,
+      accountId: 'mod',
+      name: 'Mo',
+      text: TEXT,
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      place: PIN,
+      shopAccount: { id: 'till', username: 'coffee', name: 'Coffee' },
+      ...overrides,
+    };
+  }
+
+  describe('shopKek without nostrKek (memory boot)', () => {
+    const SHOP_KEK = new Uint8Array(32).fill(9);
+
+    function spy(): { store: ShopIdentityStore; calls: Array<[string, Uint8Array]> } {
+      const calls: Array<[string, Uint8Array]> = [];
+      const store = {
+        ensureListed: (id: string, kek: Uint8Array) => {
+          calls.push([id, kek]);
+          return Promise.resolve(undefined);
+        },
+      } as unknown as ShopIdentityStore;
+      return { store, calls };
+    }
+
+    it('createApp hands shopKek to /messages, /me and /debug/messages', async () => {
+      const auth = await authStore();
+      const messages = new InMemoryMessageStore();
+      await messages.create(shopNote({ place: null }));
+      const { store, calls } = spy();
+      const app = createApp({
+        authStore: auth,
+        now,
+        messageStore: messages,
+        shopIdentityStore: store,
+        shopKek: SHOP_KEK,
+        debugToken: 'dbg',
+      });
+      expect(
+        (
+          await app.request(`/messages/${SHOP_ID}/place`, {
+            method: 'PATCH',
+            headers: AUTH,
+            body: JSON.stringify({ place: PIN }),
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (
+          await app.request('/me/about', {
+            method: 'PUT',
+            headers: AUTH,
+            body: JSON.stringify({ text: 'About the coffee shop' }),
+          })
+        ).status,
+      ).toBe(200);
+      await messages.markDeleted(SHOP_ID, new Date(now()), 'mod');
+      expect(
+        (
+          await app.request(`/debug/messages/${SHOP_ID}/restore`, {
+            method: 'POST',
+            headers: { authorization: 'Bearer dbg' },
+          })
+        ).status,
+      ).toBe(204);
+      const profileId = (await auth.getAccount('mod'))?.profileMessageId;
+      expect(calls).toEqual([
+        [SHOP_ID, SHOP_KEK],
+        [profileId, SHOP_KEK],
+        [SHOP_ID, SHOP_KEK],
+      ]);
+    });
   });
 });
