@@ -163,6 +163,13 @@ the same fifteen-second pause. It is not `SHOP_ORDER_WATCH_MS` and not
 `SHOP_HISTORY_INTERVAL_MS`. Those clocks keep the shop reading an offer's
 history until thirty minutes after `expiresAt`, and they keep those reads
 at least ten seconds apart. This poll does not extend a shop offer.
+`pay.ts` retries that return from `returnHome` for up to three minutes
+(`pay.ts:315`) while the script stops with `shop_not_credited`, and pauses
+fifteen seconds between those tries (`pay.ts:322`). That wait starts when
+the return starts. It stops when the shop balance shows the credit or when
+those three minutes pass. It is not the fifteen-minute wait at `pay.ts:595`
+on `GET /lnurlp/wait/:payment`. That wait ends when the payment is reported.
+This retry does not watch a shop offer.
 It finishes with `return=home` only when the order is
 completed, the shop balance is `SHOP_START_SATS` again, and the paying
 account's token balance grew by the order's `amountOut`.
