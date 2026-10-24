@@ -93,12 +93,15 @@ Before it opens a payment, the script checks the return inputs and reads
 the shop's sat balance. It refuses a state file that already holds a cycle,
 and a state file that is not a JSON object. A missing state file is created,
 private to its owner, with a non-empty claim before any network call. An
-empty JSON object is claimed the same way, through a private lock file
-beside it. A second paid run that finds that claim stops with
-`state_not_fresh`. The claim is replaced with the cycle only while the file
-still holds this run's token, by renaming a flushed temporary file in the
-same directory. A claim, a cycle, or a leftover lock on an empty file is
-refused.
+empty JSON object is claimed the same way, through a private `.claim` file
+beside it. The claim and the replacement of that claim both run while this
+process holds an exclusive lock on `<state>.lock`. The kernel releases that
+lock when the holder exits. A second paid run that cannot take the lock, or
+that finds the claim, stops with `state_not_fresh`. The token is checked
+again under that lock, and the cycle is written by renaming a flushed
+temporary file in the same directory. A claim, a cycle, or a leftover
+`.claim` on an empty file is refused.
+
 It then signs an EIP-1559 ERC-20 `transfer` for the units in the detail
 URI, waits for a successful receipt, submits `tx` to
 `GET /lnurlp/tx/:username`, and polls `GET /lnurlp/wait/:payment` for up to
@@ -118,26 +121,37 @@ value stored in the state file. Start a new state file for the next cycle.
 after the transfer. It reads the shop wallet with `breez_sdk_spark` and
 sells `SHOP_AMOUNT_SATS` from Spark BTC into the chain and asset named by
 `SHOP_CHAIN` and `SHOP_ASSET`. The recipient is `SHOP_PAYER_ADDRESS`, the
-account that paid. The shop must hold `SHOP_START_SATS` plus
-`SHOP_AMOUNT_SATS`. Pass the `startSats` value from the state file. Without
+account that paid. Pass the `startSats` value from the state file. Without
 `SHOP_E2E_RETURN=1` it prints `return=skipped`, or `return=home` when the
 shop is already back at `SHOP_START_SATS`, and it does not ask for a quote.
-With `SHOP_E2E_RETURN=1`, that same balance and no saved quote stops with
-`shop_not_credited`. A saved quote is sent or polled. `return=home` still
-requires a completed order.
+With `SHOP_E2E_RETURN=1` the script takes the same `<state>.lock` before it
+reads the state file or opens a network call, and it holds that lock until
+it exits. A second return that cannot take the lock stops with
+`state_not_fresh` and does not ask for a quote. The stored `amount` must be
+an integer equal to `SHOP_AMOUNT_SATS`. A boolean does not pass. The shop
+balance must be `SHOP_START_SATS` or that start plus the stored amount.
+With the shop still at `SHOP_START_SATS`, the script stops with
+`shop_not_credited` and does not open or fund a quote, unless the saved
+idempotency key already has a completed Spark payment. That payment is
+recorded and the order is polled. `return=home` still requires a completed
+order.
 
 The send is one Spark transfer of the whole sat amount into the quote's
 deposit. A non-zero Spark fee aborts before the transfer, because the quote
 asked for the full amount. An empty quote id aborts before that transfer.
 The transfer is recorded only when the Spark payment is completed. The
 quote's expiry is stored with the quote. A later run funds that deposit
-only when more than 45 seconds remain. When the saved idempotency key
-already has a completed Spark payment, that payment is recorded and the
-order is polled. When that key has a payment that is not completed, the
-run stops with `send_not_completed` and does not send. When the key has no
-payment and the quote is no longer fundable, the script stores a new quote
-and a new idempotency key before it sends. An uncertain lookup stops with
-`send_unconfirmed` and does not send. The script then polls the order for
+only when the shop balance is the stored start plus the stored amount, and
+only when more than `SHOP_REPLACE_BEFORE_MS` remains. That margin is the
+export in `src/lib/shop-payment.ts`. A quote with that many milliseconds
+left, or fewer, is not sent. When the saved idempotency key already has a
+completed Spark payment, that payment is recorded and the order is polled.
+When that key has a payment that is not completed, the run stops with
+`send_not_completed` and does not send. When the key has no payment, the
+balance is still the stored start plus the stored amount, and the quote is
+no longer fundable, the script stores a new quote and a new idempotency
+key before it sends. An uncertain lookup stops with `send_unconfirmed` and
+does not send. The script then polls the order for
 up to 15 minutes, and a transport error during that wait is retried until
 the deadline. It finishes with `return=home` only when the order is
 completed, the shop balance is `SHOP_START_SATS` again, and the paying

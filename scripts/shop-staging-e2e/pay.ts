@@ -13,6 +13,7 @@
  * `scripts/shop-staging-e2e/README.md`. Dated results are in `records/`.
  */
 
+import { dlopen } from 'bun:ffi';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import {
@@ -66,6 +67,43 @@ function errorCode(error: unknown): string | undefined {
   if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
   const code = (error as { code?: unknown }).code;
   return typeof code === 'string' ? code : undefined;
+}
+
+// flock(2): LOCK_EX|LOCK_NB and LOCK_UN. The same bits on darwin and linux.
+const LOCK_EX_NB = 6;
+const LOCK_UN = 8;
+
+function openCycleLock() {
+  return dlopen(process.platform === 'darwin' ? 'libc.dylib' : 'libc.so.6', {
+    flock: {
+      args: ['i32', 'i32'] as const,
+      returns: 'i32' as const,
+    },
+  });
+}
+
+let cycleLock: ReturnType<typeof openCycleLock> | undefined;
+
+function libcFlock(fd: number, operation: number): number {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') fail('state_not_fresh');
+  if (cycleLock === undefined) cycleLock = openCycleLock();
+  return cycleLock.symbols.flock(fd, operation);
+}
+
+function withCycleLock(statePath: string, body: () => void): void {
+  const lockPath = `${statePath}.lock`;
+  const fd = openSync(lockPath, 'a+', 0o600);
+  let held = false;
+  try {
+    chmodSync(lockPath, 0o600);
+    if ((statSync(lockPath).mode & 0o077) !== 0) fail('state_not_private');
+    if (libcFlock(fd, LOCK_EX_NB) !== 0) fail('state_not_fresh');
+    held = true;
+    body();
+  } finally {
+    if (held) libcFlock(fd, LOCK_UN);
+    closeSync(fd);
+  }
 }
 
 function fsyncDirectory(directory: string): void {
@@ -122,6 +160,14 @@ function readStateObject(statePath: string): Record<string, unknown> {
 }
 
 function claimState(statePath: string): string {
+  let token = '';
+  withCycleLock(statePath, () => {
+    token = writeClaim(statePath);
+  });
+  return token;
+}
+
+function writeClaim(statePath: string): string {
   const token = randomUUID();
   const body = `${JSON.stringify({ cycleClaim: token }, null, 2)}\n`;
   if (!existsSync(statePath)) {
@@ -162,13 +208,15 @@ function claimState(statePath: string): string {
 
 function markCycleOpen(startSats: number, amountSats: string, token: string): void {
   const statePath = required('SHOP_E2E_STATE');
-  const current = readStateObject(statePath);
-  if (current['cycleClaim'] !== token) fail('state_not_fresh');
-  const amount = Number(amountSats);
-  const body = `${JSON.stringify({ startSats, amount }, null, 2)}\n`;
-  replaceStateFile(statePath, body);
-  const written = readStateObject(statePath);
-  if (written['startSats'] !== startSats || written['amount'] !== amount) fail('state_not_fresh');
+  withCycleLock(statePath, () => {
+    const current = readStateObject(statePath);
+    if (current['cycleClaim'] !== token) fail('state_not_fresh');
+    const amount = Number(amountSats);
+    const body = `${JSON.stringify({ startSats, amount }, null, 2)}\n`;
+    replaceStateFile(statePath, body);
+    const written = readStateObject(statePath);
+    if (written['startSats'] !== startSats || written['amount'] !== amount) fail('state_not_fresh');
+  });
 }
 
 function payerAddress(): Address {

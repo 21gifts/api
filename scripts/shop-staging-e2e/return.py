@@ -11,6 +11,8 @@ How to run it is in README.md next to this file.
 from __future__ import annotations
 
 import asyncio
+import errno
+import fcntl
 import http.client
 import json
 import os
@@ -131,6 +133,28 @@ def read_units(rpc_url: str, token: str, holder: str) -> int:
     return int(payload["result"], 16)
 
 
+_LOCKS: list[int] = []
+
+
+def acquire_cycle_lock(path: str) -> None:
+    lock_path = path + ".lock"
+    fd = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        os.chmod(lock_path, 0o600)
+        if stat.S_IMODE(os.stat(lock_path).st_mode) & 0o077:
+            fail("state_not_private")
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError as error:
+        os.close(fd)
+        if error.errno in (errno.EAGAIN, errno.EWOULDBLOCK):
+            fail("state_not_fresh")
+        raise
+    except SystemExit:
+        os.close(fd)
+        raise
+    _LOCKS.append(fd)
+
+
 def load_state(path: str) -> dict:
     if not os.path.exists(path):
         return {}
@@ -169,17 +193,41 @@ def save_state(path: str, state: dict) -> None:
     os.chmod(path, 0o600)
 
 
+def funding_margin_ms() -> int:
+    root = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    source = os.path.join(root, "src", "lib", "shop-payment.ts")
+    try:
+        with open(source, encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError:
+        fail("margin_missing")
+    match = re.search(r"^export const SHOP_REPLACE_BEFORE_MS = ([0-9_]+);$", text, re.M)
+    if match is None:
+        fail("margin_missing")
+    margin = int(match.group(1).replace("_", ""))
+    if margin <= 0:
+        fail("margin_missing")
+    return margin
+
+
+def seconds_left(expires: str) -> float | None:
+    try:
+        expiry = datetime.fromisoformat(expires.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if expiry.tzinfo is None:
+        return None
+    return (expiry - datetime.now(timezone.utc)).total_seconds()
+
+
 def quote_fundable(state: dict) -> bool:
     expires = state.get("expiresAt")
     if not isinstance(expires, str) or expires == "":
         return False
-    try:
-        expiry = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-    except ValueError:
+    left = seconds_left(expires)
+    if left is None:
         return False
-    if expiry.tzinfo is None:
-        return False
-    return (expiry - datetime.now(timezone.utc)).total_seconds() >= 45
+    return left * 1000 > funding_margin_ms()
 
 
 def stored_quote(
@@ -264,10 +312,8 @@ def assert_quote(quote: dict, own_spark: str, amount: int, chain: str, asset: st
     if not DEPOSIT_ADDRESS.match(deposit) or deposit == own_spark:
         fail("quote_deposit")
     expires = view["expiresAt"]
-    if not isinstance(expires, str):
-        fail("quote_expiry")
-    expiry = datetime.fromisoformat(expires.replace("Z", "+00:00"))
-    if (expiry - datetime.now(timezone.utc)).total_seconds() < 45:
+    left = seconds_left(expires) if isinstance(expires, str) else None
+    if left is None or left * 1000 <= funding_margin_ms():
         fail("quote_expiry")
     warn(
         f"quote={view['quoteId']} in_sats={view['amountIn']} "
@@ -531,6 +577,22 @@ async def main() -> None:
         fail("storage_inside_repo")
     rpc_url = required("SHOP_EVM_RPC_URL")
     token = token_address(chain, asset)
+    returning = env("SHOP_E2E_RETURN") == "1"
+    path = state_path() if returning else None
+    state: dict = {}
+    if returning:
+        if not isinstance(path, str):
+            fail("state_missing")
+        acquire_cycle_lock(path)
+        state = load_state(path)
+        recorded_amount = state.get("amount")
+        if type(recorded_amount) is not int:
+            fail("state_invalid")
+        if recorded_amount != amount:
+            fail("amount_mismatch")
+        recorded_start = state.get("startSats")
+        if type(recorded_start) is int and recorded_start != start:
+            fail("start_mismatch")
     units_before = read_units(rpc_url, token, recipient)
     warn(f"payer_units_before={units_before}")
 
@@ -546,9 +608,6 @@ async def main() -> None:
         if env("SHOP_E2E_RETURN") == "probe":
             warn("return=probe")
             return
-        returning = env("SHOP_E2E_RETURN") == "1"
-        path = state_path() if returning else None
-        state = load_state(path) if path is not None else {}
         if not returning:
             if balance == start:
                 warn("return=home")
@@ -557,17 +616,8 @@ async def main() -> None:
             else:
                 warn("return=skipped")
             return
-        recorded_start = state.get("startSats")
-        if isinstance(recorded_start, int) and recorded_start != start:
-            fail("start_mismatch")
-        if balance != start and (balance < start or balance - start != amount):
+        if balance != start and balance != start + amount:
             fail("balance_mismatch")
-        if (
-            not state.get("paymentId")
-            and not state.get("depositAddress")
-            and balance == start
-        ):
-            fail("shop_not_credited")
 
         if not isinstance(path, str):
             fail("state_missing")
@@ -591,6 +641,8 @@ async def main() -> None:
                     state["paymentAmount"] = int(found.amount)
                     state["paymentFees"] = int(found.fees)
                     save_state(path, state)
+                elif balance != start + amount:
+                    fail("shop_not_credited")
                 elif not quote_fundable(state):
                     kept = state.get("payerUnitsBefore")
                     baseline = kept if isinstance(kept, int) else units_before
@@ -601,7 +653,9 @@ async def main() -> None:
                     )
                     state = stored_quote(view, str(uuid.uuid4()), amount, start, baseline)
                     save_state(path, state)
-            if not state.get("depositAddress"):
+            if not state.get("paymentId") and not state.get("depositAddress"):
+                if balance != start + amount:
+                    fail("shop_not_credited")
                 estimate = estimate_out(base, api_key, amount, chain, asset, recipient)
                 warn(f"estimate_units={estimate}")
                 view = create_quote(
@@ -610,6 +664,8 @@ async def main() -> None:
                 state = stored_quote(view, str(uuid.uuid4()), amount, start, units_before)
                 save_state(path, state)
             if not state.get("paymentId"):
+                if balance != start + amount:
+                    fail("shop_not_credited")
                 if not quote_fundable(state):
                     fail("quote_expiry")
                 if not isinstance(state.get("quoteId"), str) or state.get("quoteId") == "":
