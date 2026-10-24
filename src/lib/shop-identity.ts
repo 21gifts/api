@@ -25,7 +25,14 @@ import {
   zeroizeSecret,
   type NostrKeygen,
 } from '@/lib/nostr/keys';
-import { isListedShop, listedShop, listedShopName, shopListingFingerprint } from '@/lib/shop-place';
+import {
+  isListedShop,
+  listedShop,
+  listedShopName,
+  shopListingFingerprint,
+  type ListedShop,
+  type ShopListingFields,
+} from '@/lib/shop-place';
 
 /** One persisted shop key and its two OpenCryptoPay outboxes. */
 export interface ShopIdentityRow {
@@ -90,6 +97,39 @@ export interface ShopCandidateCursor {
 export interface ShopCandidate extends ShopCandidateCursor {
   /** The note already has a row in `shop_identity`. */
   keyed: boolean;
+}
+
+/** Keyset cursor of the public directory, by note `created_at` then `id`. */
+export interface ShopDirectoryCursor {
+  /** Note creation time. */
+  createdAt: Date;
+  /** Note id. */
+  id: string;
+}
+
+/** One keyed listed shop. `id` and `createdAt` stay on the cursor, not the JSON. */
+export interface ShopDirectoryItem {
+  /** Note id. */
+  id: string;
+  /** Note creation time. */
+  createdAt: Date;
+  /** Canonical npub ({@link shopNpub}). */
+  npub: string;
+  /** Pin label. */
+  name: string;
+  /** Complete pin. */
+  place: ListedShop['place'];
+}
+
+/** One directory page of at most `limit` keyed listed shops. */
+export interface ShopDirectoryPage {
+  /** Keyed listed shops, newest note first. */
+  shops: ShopDirectoryItem[];
+  /**
+   * Last examined note, when another structural row may exist. Null when the
+   * keyset is exhausted.
+   */
+  next: ShopDirectoryCursor | null;
 }
 
 /**
@@ -198,6 +238,19 @@ export interface ShopIdentityStore {
    * @returns Up to `limit` candidates after `cursor`, by `created_at` then `id`.
    */
   listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidate[]>;
+  /**
+   * One page of up to `limit` keyed listed shops, newest note first.
+   * A note without a key and a note {@link listedShop} rejects are omitted,
+   * but each one is examined. The read examines at most `20 * limit`
+   * structural rows. `next` is the last kept shop when the page fills in
+   * the middle of that read, the last examined note when the cap is hit
+   * first, and null when the read is shorter than the cap.
+   *
+   * @param cursor - Last examined note, or `null` for the newest page.
+   * @param limit - Most shops to return.
+   * @returns The page. `next` is null when the keyset is exhausted.
+   */
+  listDirectory(cursor: ShopDirectoryCursor | null, limit: number): Promise<ShopDirectoryPage>;
   /**
    * Queue the place push of one page of identities.
    *
@@ -335,7 +388,8 @@ export interface ShopIdentityStore {
 /**
  * SQL condition of a listed shop that the database can check on a `message`
  * row named `m`: everything except the completeness text rules of #478, which
- * the code checks. Used only to narrow candidates and photo queueing.
+ * the code checks. Used to narrow candidates, the directory read
+ * (`listDirectory`) and photo queueing.
  */
 const LISTED_SHAPE_SQL = (m: string): string =>
   `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
@@ -517,6 +571,129 @@ export async function migrateShopIdentitySchema(sql: SqlClient): Promise<void> {
  */
 export function shopNpub(identity: Pick<ShopIdentityRow, 'nostrPubkey'>): string {
   return nip19.npubEncode(identity.nostrPubkey);
+}
+
+/**
+ * Structural rows read per returned shop. The directory stops after
+ * `20 * limit` of them, including rows it then drops.
+ */
+const DIRECTORY_SCAN_PER_SHOP = 20;
+
+/** One structural note plus the pubkey of its identity, if it has one. */
+interface DirectoryStructuralRow {
+  /** Note id. */
+  id: string;
+  /** Note creation time. */
+  createdAt: Date;
+  /** Fields {@link listedShop} reads. */
+  note: ShopListingFields;
+  /** Hex pubkey, or null when `shop_identity` has no row. */
+  nostrPubkey: string | null;
+}
+
+/**
+ * Whether `row` is a structural listed shop: the same columns as
+ * {@link LISTED_SHAPE_SQL}, and not the text rules of {@link listedShop}.
+ *
+ * @param row - Forum note.
+ * @returns `true` when the note would match the directory `WHERE`.
+ */
+function listedShape(row: MessageRow): boolean {
+  if (row.parentId !== null) return false;
+  if (row.deletedAt !== null) return false;
+  if (row.shopAccount === undefined || row.shopAccount === null) return false;
+  if (row.place === undefined || row.place === null) return false;
+  if (row.place.label === null) return false;
+  if (row.place.address === null) return false;
+  return textHasHashtagToken(row.text, '21GiftsShop');
+}
+
+/**
+ * Whether `row` is strictly older than `cursor` in directory order
+ * (`createdAt` descending, then `id` descending).
+ *
+ * @param row - A structural note.
+ * @param cursor - Last examined note.
+ * @returns `true` when the note belongs on a later page.
+ */
+function directoryOlder(
+  row: { createdAt: Date; id: string },
+  cursor: ShopDirectoryCursor,
+): boolean {
+  const time = row.createdAt.getTime();
+  const cursorTime = cursor.createdAt.getTime();
+  if (time < cursorTime) return true;
+  if (time > cursorTime) return false;
+  return row.id < cursor.id;
+}
+
+/**
+ * Newest note first, then `id` descending.
+ *
+ * @param a - A structural note.
+ * @param b - A structural note.
+ * @returns A sort delta.
+ */
+function byDirectoryOrder(
+  a: { createdAt: Date; id: string },
+  b: { createdAt: Date; id: string },
+): number {
+  const time = b.createdAt.getTime() - a.createdAt.getTime();
+  if (time !== 0) return time;
+  return a.id < b.id ? 1 : -1;
+}
+
+/**
+ * A kept shop, or null when the row has no key or {@link listedShop} rejects it.
+ * A null result was still examined by the caller.
+ *
+ * @param row - One structural note.
+ * @returns The directory item, or null.
+ */
+function directoryItem(row: DirectoryStructuralRow): ShopDirectoryItem | null {
+  if (row.nostrPubkey === null) return null;
+  const shop = listedShop(row.note);
+  if (shop === null) return null;
+  return {
+    id: row.id,
+    createdAt: row.createdAt,
+    npub: shopNpub({ nostrPubkey: row.nostrPubkey }),
+    name: shop.name,
+    place: shop.place,
+  };
+}
+
+/**
+ * Turn one structural page into directory shops. `requested` is the cap
+ * (`20 * limit`). Filling `limit` before the last row stops on the last kept
+ * shop and leaves the rest of the page unread. A short page that was read
+ * to the end has no `next`, even when it filled `limit`. A full page that
+ * did not fill `limit` continues at the last examined row.
+ *
+ * @param rows - Structural rows, newest first, at most `requested`.
+ * @param requested - How many rows the page asked for.
+ * @param limit - Most shops to keep.
+ * @returns The directory page.
+ */
+function directoryPage(
+  rows: readonly DirectoryStructuralRow[],
+  requested: number,
+  limit: number,
+): ShopDirectoryPage {
+  const shops: ShopDirectoryItem[] = [];
+  let lastExamined: ShopDirectoryCursor | null = null;
+  for (const [index, row] of rows.entries()) {
+    lastExamined = { createdAt: row.createdAt, id: row.id };
+    const shop = directoryItem(row);
+    if (shop !== null) {
+      shops.push(shop);
+      if (shops.length === limit && index + 1 < rows.length) {
+        return { shops, next: { createdAt: shop.createdAt, id: shop.id } };
+      }
+    }
+  }
+  if (lastExamined === null || rows.length < requested) return { shops, next: null };
+  return { shops, next: lastExamined };
 }
 
 function copyIdentity(row: ShopIdentityRow): ShopIdentityRow {
@@ -756,6 +933,31 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
         createdAt: new Date(row.createdAt),
         keyed: this.#rows.has(row.id),
       }));
+  }
+
+  async listDirectory(
+    cursor: ShopDirectoryCursor | null,
+    limit: number,
+  ): Promise<ShopDirectoryPage> {
+    const requested = DIRECTORY_SCAN_PER_SHOP * limit;
+    const refs = await this.#messages.listLiveAssignedShops();
+    const notes = await Promise.all(refs.map((ref) => this.#messages.getById(ref.id)));
+    const rows = notes
+      .filter((row): row is MessageRow => row !== undefined)
+      .filter((row) => listedShape(row))
+      .filter((row) => cursor === null || directoryOlder(row, cursor))
+      .sort(byDirectoryOrder)
+      .slice(0, requested)
+      .map((row) => {
+        const identity = this.#rows.get(row.id);
+        return {
+          id: row.id,
+          createdAt: new Date(row.createdAt),
+          note: row,
+          nostrPubkey: identity === undefined ? null : identity.nostrPubkey,
+        };
+      });
+    return directoryPage(rows, requested, limit);
   }
 
   async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {
@@ -1266,6 +1468,84 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       createdAt: sqlDate(row.created_at),
       keyed: row.keyed,
     }));
+  }
+
+  async listDirectory(
+    cursor: ShopDirectoryCursor | null,
+    limit: number,
+  ): Promise<ShopDirectoryPage> {
+    // The WHERE implies message_shop_candidate_idx, and LIMIT bounds the page
+    // before the pubkey lookup. Two statements keep the cursor an index
+    // condition under a cached generic plan of a prepared statement. The
+    // pubkey subquery must not become a join: a join would let that plan turn
+    // the cursor into a filter and re-read every newer candidate.
+    type DirectorySqlRow = {
+      id: string;
+      created_at: Date | string;
+      text: string;
+      parent_id: string | null;
+      deleted_at: Date | string | null;
+      place_lat: number | string;
+      place_lng: number | string;
+      place_label: string | null;
+      place_street: string;
+      place_house_number: string;
+      place_postal_code: string;
+      place_city: string;
+      place_country: string;
+      shop_account_id: string;
+      nostr_pubkey: string | null;
+    };
+    const requested = DIRECTORY_SCAN_PER_SHOP * limit;
+    const select = `SELECT m.id, m.created_at, m.text, m.parent_id, m.deleted_at,
+         m.place_lat, m.place_lng, m.place_label, m.place_street,
+         m.place_house_number, m.place_postal_code, m.place_city, m.place_country,
+         m.shop_account_id,
+         (SELECT s.nostr_pubkey FROM shop_identity s WHERE s.message_id = m.id) AS nostr_pubkey
+       FROM message m
+       WHERE ${LISTED_SHAPE_SQL('m')}`;
+    const rows =
+      cursor === null
+        ? await this.#sql.query<DirectorySqlRow>(
+            `${select}
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT $1`,
+            [requested],
+          )
+        : await this.#sql.query<DirectorySqlRow>(
+            `${select}
+         AND (m.created_at, m.id) < ($1::timestamptz, $2::uuid)
+       ORDER BY m.created_at DESC, m.id DESC
+       LIMIT $3`,
+            [cursor.createdAt, cursor.id, requested],
+          );
+    return directoryPage(
+      rows.map((row) => ({
+        id: row.id,
+        createdAt: sqlDate(row.created_at),
+        nostrPubkey: row.nostr_pubkey,
+        note: {
+          parentId: row.parent_id,
+          deletedAt: row.deleted_at === null ? null : sqlDate(row.deleted_at),
+          text: row.text,
+          place: {
+            lat: Number(row.place_lat),
+            lng: Number(row.place_lng),
+            label: row.place_label,
+            address: {
+              street: row.place_street,
+              houseNumber: row.place_house_number,
+              postalCode: row.place_postal_code,
+              city: row.place_city,
+              country: row.place_country,
+            },
+          },
+          shopAccount: { id: row.shop_account_id },
+        },
+      })),
+      requested,
+      limit,
+    );
   }
 
   async queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]> {

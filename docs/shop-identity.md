@@ -407,6 +407,10 @@ spec adds no zap receipts for a shop key.
 
 ## S3 API
 
+`GET /shops` lists only keyed listed shops, newest note first. A note is
+included only when `listedShop` accepts it and `shop_identity` already has a
+key for that note. Unlisted identities are omitted.
+
 ### `GET /shops/:npub`
 
 New. `GET /messages/:id` keeps serving a note by its note id. This route
