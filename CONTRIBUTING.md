@@ -127,6 +127,7 @@ api/
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
 │   │   ├── ln-address-cache.ts  # In-memory TTL cache for successful resolves
 │   │   ├── log.ts            # JSON event lines (console.warn); requestLog middleware
+│   │   ├── sql-pool.ts       # Bun SQL options for the api_log and diagnostic_event pool
 │   │   ├── lnurl-pay.ts      # LUD-16 → LNURL-pay invoice (amount + LUD-12 comment)
 │   │   ├── gift-invoice.ts   # LUD-16 → LNURL-pay invoice for gift amounts (no 10-sat cap)
 │   │   ├── bolt11.ts         # Decode/inspect BOLT11 (hash, amount, description / description_hash)
@@ -189,6 +190,7 @@ api/
 │       │   ├── lnurlp.test.ts
 │       │   ├── ln-address-cache.test.ts
 │       │   ├── log.test.ts
+│       │   ├── sql-pool.test.ts
 │       │   ├── lnurl-pay.test.ts
 │       │   ├── gift-invoice.test.ts
 │       │   ├── bolt11.test.ts
