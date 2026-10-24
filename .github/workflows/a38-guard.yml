@@ -1,5 +1,5 @@
 # Example consumer workflow for dfx pr guard.
-# Pinned to a reviewed commit SHA of DFXswiss/agent.
+# Pinned to DFXswiss/agent e118e9f8a9aad02cdf06ded68bdd6305345e7526.
 # Do not check out the pull-request head for this job.
 
 name: dfx pr guard
