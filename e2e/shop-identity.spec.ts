@@ -405,19 +405,18 @@ test('Function: nip05Directory — the full nostr.json carries a shop once a ?na
   expect(((await all.json()) as { names: Record<string, string> }).names[local]).toBe(shop.pubkey);
 });
 
-test('Function: isListedShop — removing the till account unlists the shop', async ({ request }) => {
+test('Function: isListedShop — a shop note keeps its till account', async ({ request }) => {
   const shop = await listedShop(request, 'Unl');
   const cleared = await request.patch(`/messages/${shop.noteId}/shop-account`, {
     headers: { ...shop.auth, 'content-type': 'application/json' },
     data: { username: null },
   });
-  expect(cleared.status()).toBe(200);
-  expect(((await cleared.json()) as { shopNpub: string | null }).shopNpub).toBeNull();
+  expect(cleared.status()).toBe(400);
+  expect(await cleared.json()).toEqual({ error: 'A shop note needs a shop account' });
   const note = await request.get(`/messages/${shop.noteId}`);
   expect(note.status()).toBe(200);
-  expect(((await note.json()) as { shopNpub: string | null }).shopNpub).toBeNull();
-  const gone = await request.get(`/shops/${shop.npub}`);
-  expect(gone.status()).toBe(410);
+  expect(((await note.json()) as { shopNpub: string | null }).shopNpub).toBe(shop.npub);
+  expect((await getShop(request, shop.npub)).shop.npub).toBe(shop.npub);
 });
 
 test('Function: shopNpub — GET /messages/:id and GET /messages/places carry the shop npub', async ({

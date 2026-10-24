@@ -881,12 +881,17 @@ async function frozenAskResponse(
   return { goal: frozen.goal };
 }
 
+/** A top-level shop note must name its 21.gifts account. */
+const SHOP_ACCOUNT_REQUIRED = 'A shop note needs a shop account';
+
 /**
- * Resolve an optional shop username before a note is created.
+ * Resolve `shopUsername` before a note is created.
  *
  * Omitted, null, blank, or only `@` means no assignment. A non-blank value
  * is only valid on a top-level shop note. Unknown and unusable handles fail
- * before `persistForumPost`.
+ * before `persistForumPost`. A top-level shop note with no assignment is
+ * rejected afterwards by {@link shopAccountRequiredProblem}, after the pin
+ * checks.
  *
  * @param deps - Auth store used for the username lookup.
  * @param text - Normalised note body.
@@ -952,6 +957,27 @@ function shopPinRegistrationProblem(
     return null;
   }
   return shopPlaceProblem(place) ?? shopTextProblem(text, place);
+}
+
+/**
+ * Shop-account requirement for create. Runs after the pin checks, so an
+ * incomplete pin is still reported first. A note that is not a top-level
+ * shop keeps a missing account as "store nothing".
+ *
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level.
+ * @param snapshot - Resolved shop account, or `null` when unset.
+ * @returns {@link SHOP_ACCOUNT_REQUIRED}, or `null` when the note may be stored.
+ */
+function shopAccountRequiredProblem(
+  text: string,
+  parentId: string | null,
+  snapshot: { id: string; username: string; name: string } | null,
+): string | null {
+  if (parentId !== null || snapshot !== null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return null;
+  }
+  return SHOP_ACCOUNT_REQUIRED;
 }
 
 /**
@@ -1391,6 +1417,10 @@ async function postMultipartMessage(
   const shopProblem = shopPinRegistrationProblem(text, null, place);
   if (shopProblem !== null) {
     return c.json({ error: shopProblem }, 400);
+  }
+  const shopAccountMissing = shopAccountRequiredProblem(text, null, shopParsed.snapshot);
+  if (shopAccountMissing !== null) {
+    return c.json({ error: shopAccountMissing }, 400);
   }
   return persistForumPost(
     deps,
@@ -1923,6 +1953,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (shopProblem !== null) {
         return c.json({ error: shopProblem }, 400);
       }
+      const shopAccountMissing = shopAccountRequiredProblem(text, parentId, shopParsed.snapshot);
+      if (shopAccountMissing !== null) {
+        return c.json({ error: shopAccountMissing }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -2336,9 +2370,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Invalid body' }, 400);
       }
       const usernameValue = (raw as { username: unknown }).username;
-      let normalizedUsername: string | null;
+      let normalizedUsername: string | undefined;
       if (usernameValue === null) {
-        normalizedUsername = null;
+        normalizedUsername = undefined;
       } else if (typeof usernameValue !== 'string') {
         return c.json({ error: 'Username is not valid' }, 400);
       } else {
@@ -2359,22 +2393,22 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a shop account' }, 400);
         }
-        let snapshot: { id: string; username: string; name: string } | null = null;
-        if (normalizedUsername !== null) {
-          const found = await deps.authStore.getAccountByUsername(normalizedUsername);
-          if (found === undefined) {
-            return c.json({ error: 'No account with that username' }, 404);
-          }
-          const storedUsername = found.username;
-          if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
-            return c.json({ error: 'No account with that username' }, 404);
-          }
-          snapshot = {
-            id: found.id,
-            username: storedUsername,
-            name: found.name ?? '',
-          };
+        if (normalizedUsername === undefined) {
+          return c.json({ error: SHOP_ACCOUNT_REQUIRED }, 400);
         }
+        const found = await deps.authStore.getAccountByUsername(normalizedUsername);
+        if (found === undefined) {
+          return c.json({ error: 'No account with that username' }, 404);
+        }
+        const storedUsername = found.username;
+        if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
+          return c.json({ error: 'No account with that username' }, 404);
+        }
+        const snapshot = {
+          id: found.id,
+          username: storedUsername,
+          name: found.name ?? '',
+        };
         const accountChanged = !shopAccountsMatch(row.shopAccount, snapshot);
         const written = accountChanged
           ? await deps.store.setShopAccount(id, snapshot, {

@@ -17,6 +17,10 @@ test('Function: shopDescription — POST /messages strips the shop tag before th
 }) => {
   const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 8)}`;
   const auth = await verifiedPinSession(request, stamp);
+  const me = await request.get('/me', { headers: auth });
+  expect(me.status()).toBe(200);
+  const username = ((await me.json()) as { username: string | null }).username;
+  expect(username).toBeTruthy();
   const description = 'Fresh coffee and snacks are served every day. '
     .repeat(22)
     .slice(0, 995)
@@ -26,7 +30,7 @@ test('Function: shopDescription — POST /messages strips the shop tag before th
   expect(text.length).toBeGreaterThan(1000);
   const posted = await request.post('/messages', {
     headers: { ...auth, 'content-type': 'application/json' },
-    data: { text, place: PLACE },
+    data: { text, place: PLACE, shopUsername: username },
   });
   expect(posted.status()).toBe(200);
   const body = (await posted.json()) as { text: string; place?: { address?: unknown } };

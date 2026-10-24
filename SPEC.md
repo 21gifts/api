@@ -4226,7 +4226,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `shopUsername` (JSON string or multipart field) on a shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Required `shopUsername` (JSON string or multipart field) on a top-level shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone on a top-level shop note is 400 `A shop note needs a shop account` after the shop pin checks pass, and nothing is stored. The same blank value on a note that is not a shop stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
@@ -5074,7 +5074,7 @@ Staff assignment of a 21.gifts account on a live top-level shop note
 required. Live role must be at least `moderator`. No rules gate. `:id`
 must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
 `c.req.json()`; a non-JSON body or an object with no `username` key is
-**400** `{ "error": "Invalid body" }`. `username: null` clears. A string
+**400** `{ "error": "Invalid body" }`. After the row is a live top-level shop note, `username: null` is **400** `{ "error": "A shop note needs a shop account" }` and nothing is stored. A missing or hidden row with `username: null` stays **404**. A string
 is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
 invalid username is **400** `{ "error": "Username is not valid" }`.
 Missing or hidden row → **404** `{ "error": "Not found" }` and no write,
@@ -5088,10 +5088,8 @@ is **404** `{ "error": "No account with that username" }`.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
-Success → **200** live public message JSON (optional `shopAccount`
-`{ id, username, name }`, omitted when cleared or when the till account
-has no username, reply count, no hide
-stamps). Logs `messages.shop_account.updated` with `messageId`,
+Success → **200** live public message JSON including `shopAccount`
+`{ id, username, name }` (reply count, no hide stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
 unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
 A real change on a shop with a key queues its OpenCryptoPay place outbox in

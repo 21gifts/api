@@ -1330,17 +1330,44 @@ describe('POST /messages', () => {
     expect(created.shopAccount?.username).toBe('luna');
   });
 
-  it('ignores a blank shop username', async () => {
+  it('rejects a blank shop username on a shop note', async () => {
     const auth = await namedStore('Ada');
-    for (const shopUsername of ['', '   ', '@', null]) {
-      const res = await mount(auth).request('/messages', {
+    const messages = new InMemoryMessageStore();
+    const app = mount(auth, messages);
+    for (const shopUsername of ['', '   ', '@', null] as const) {
+      const res = await app.request('/messages', {
         method: 'POST',
         headers: { ...AUTH, 'content-type': 'application/json' },
         body: JSON.stringify({ text: `Cafe ${String(shopUsername)} #21GiftsShop`, shopUsername }),
       });
-      expect(res.status).toBe(200);
-      expect(await res.json()).not.toHaveProperty('shopAccount');
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'A shop note needs a shop account' });
     }
+    const omitted = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop' }),
+    });
+    expect(omitted.status).toBe(400);
+    expect(await omitted.json()).toEqual({ error: 'A shop note needs a shop account' });
+    const form = new FormData();
+    form.set('text', 'Cafe #21GiftsShop');
+    form.set('shopUsername', '@');
+    const multipart = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(multipart.status).toBe(400);
+    expect(await multipart.json()).toEqual({ error: 'A shop note needs a shop account' });
+    const plain = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Hello', shopUsername: '' }),
+    });
+    expect(plain.status).toBe(200);
+    expect(await plain.json()).not.toHaveProperty('shopAccount');
+    expect(await messages.listLatest(10)).toHaveLength(1);
   });
 
   it('rejects a shop username that is not a shop note, a reply, or a usable handle', async () => {
@@ -1430,21 +1457,28 @@ describe('POST /messages', () => {
     const first = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo }),
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo, shopUsername: 'luna' }),
     });
     expect(first.status).toBe(200);
-    const firstId = ((await first.json()) as { id: string }).id;
+    const firstBody = (await first.json()) as {
+      id: string;
+      shopAccount?: { id: string; username: string; name: string };
+    };
+    expect(firstBody.shopAccount).toEqual({ id: 'shop-acc', username: 'luna', name: 'Luna' });
     const second = await app.request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo, shopUsername: 'luna' }),
+      body: JSON.stringify({ text: 'Cafe #21GiftsShop', photo, shopUsername: 'ada' }),
     });
     expect(second.status).toBe(200);
-    const replay = (await second.json()) as { id: string };
-    expect(replay.id).toBe(firstId);
-    expect(replay).not.toHaveProperty('shopAccount');
+    const replay = (await second.json()) as {
+      id: string;
+      shopAccount?: { id: string; username: string; name: string };
+    };
+    expect(replay.id).toBe(firstBody.id);
+    expect(replay.shopAccount).toEqual({ id: 'shop-acc', username: 'luna', name: 'Luna' });
     expect(setShop).not.toHaveBeenCalled();
-    expect(await messages.listEdits(firstId)).toEqual([]);
+    expect(await messages.listEdits(firstBody.id)).toEqual([]);
   });
 
   it('returns 503 and leaves no note when create throws', async () => {
@@ -1765,10 +1799,12 @@ describe('POST /messages', () => {
     const post = await mount(await namedStore('Ada')).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Shop #21GiftsShop' }),
+      body: JSON.stringify({ text: 'Shop #21GiftsShop', shopUsername: 'ada' }),
     });
     expect(post.status).toBe(200);
-    expect(await post.json()).not.toHaveProperty('place');
+    const body = (await post.json()) as { shopAccount?: { username: string } };
+    expect(body).not.toHaveProperty('place');
+    expect(body.shopAccount?.username).toBe('ada');
   });
 
   it('returns 400 when a JSON shop pin is missing a name, address, or description', async () => {
@@ -1830,6 +1866,7 @@ describe('POST /messages', () => {
       body: JSON.stringify({
         text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
         place: { lat: 47.3, lng: 8.5, label: 'Stall', address },
+        shopUsername: 'ada',
       }),
     });
     expect(post.status).toBe(200);
@@ -8837,6 +8874,7 @@ describe('forum video', () => {
   it('posts a multipart shop pin with a complete address', async () => {
     const form = new FormData();
     form.set('text', 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop');
+    form.set('shopUsername', 'ada');
     form.set('placeLat', '47.3');
     form.set('placeLng', '8.5');
     form.set('placeLabel', 'Stall');
@@ -11464,7 +11502,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(OTHER_ACCOUNT);
   });
 
-  it('returns 200 when username null clears the shop account', async () => {
+  it('returns 400 when username null would clear the shop account', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
     await messages.create({
@@ -11479,10 +11517,9 @@ describe('PATCH /messages/:id/shop-account', () => {
     await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin', address: null });
     await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
     const res = await patchShop(auth, SHOP_ID, { username: null }, messages);
-    expect(res.status).toBe(200);
-    const json = (await res.json()) as Record<string, unknown>;
-    expect(json).not.toHaveProperty('shopAccount');
-    expect((await messages.getById(SHOP_ID))?.shopAccount).toBeNull();
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'A shop note needs a shop account' });
+    expect((await messages.getById(SHOP_ID))?.shopAccount).toEqual(SHOP_ACCOUNT);
     expect((await messages.getById(SHOP_ID))?.place).toEqual({
       lat: 47.1,
       lng: 8.5,
@@ -11789,7 +11826,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     ).request('/messages/' + SHOP_ID + '/shop-account', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ username: null }),
+      body: JSON.stringify({ username: 'ada' }),
     });
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
@@ -11823,7 +11860,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     ).request('/messages/' + SHOP_ID + '/shop-account', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ username: null }),
+      body: JSON.stringify({ username: 'ada' }),
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
@@ -11861,7 +11898,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     ).request('/messages/' + SHOP_ID + '/shop-account', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ username: null }),
+      body: JSON.stringify({ username: 'ada' }),
     });
     expect(res.status).toBe(404);
     expect(await res.json()).toEqual({ error: 'Not found' });
@@ -11976,13 +12013,28 @@ describe('shop place outbox after forum writes', () => {
     );
   }
 
-  it('creates no identity for a new pinned note without a till account, also on a replay', async () => {
+  it('creates no identity for a pinned shop without a till account, and only one when the till is named, also on a replay', async () => {
     const messages = new InMemoryMessageStore();
-    const { app, shops } = mountShops(await namedStore('Ada'), messages);
+    const auth = await namedStore('Ada');
+    await addShopkeep(auth);
+    const { app, shops } = mountShops(auth, messages);
+    const rejected = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: SHOP_TEXT,
+        place: PIN,
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(rejected.status).toBe(400);
+    expect(await rejected.json()).toEqual({ error: 'A shop note needs a shop account' });
+    expect(await shops.listAll()).toEqual([]);
     const body = JSON.stringify({
       text: SHOP_TEXT,
       place: PIN,
       photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      shopUsername: 'shopkeep',
     });
     const post = (): Promise<Response> =>
       Promise.resolve(
@@ -11994,12 +12046,12 @@ describe('shop place outbox after forum writes', () => {
       );
     const first = await post();
     expect(first.status).toBe(200);
+    const createdId = ((await first.json()) as { id: string }).id;
+    expect((await shops.listAll()).map((row) => row.messageId)).toEqual([createdId]);
     const second = await post();
     expect(second.status).toBe(200);
-    expect(((await second.json()) as { id: string }).id).toBe(
-      ((await first.json()) as { id: string }).id,
-    );
-    expect(await shops.listAll()).toEqual([]);
+    expect(((await second.json()) as { id: string }).id).toBe(createdId);
+    expect((await shops.listAll()).map((row) => row.messageId)).toEqual([createdId]);
     // A fresh mount: the post limiter of the first one is spent.
     const other = mountShops(await namedStore('Ada'), new InMemoryMessageStore());
     const plain = await other.app.request('/messages', {
@@ -13085,7 +13137,8 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
         body: JSON.stringify({ username: null }),
       },
     );
-    expect(clearAccount.status).toBe(200);
+    expect(clearAccount.status).toBe(400);
+    expect(await clearAccount.json()).toEqual({ error: 'A shop note needs a shop account' });
     const clearAccountAgain = await mount(auth, messages).request(
       '/messages/' + SHOP_ID + '/shop-account',
       {
@@ -13094,13 +13147,14 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
         body: JSON.stringify({ username: null }),
       },
     );
-    expect(clearAccountAgain.status).toBe(200);
+    expect(clearAccountAgain.status).toBe(400);
+    expect((await messages.getById(SHOP_ID))?.shopAccount?.username).toBe('luna');
     expect(
       (await messages.listEdits(SHOP_ID))
         .map((row) => row.field)
         .slice()
         .sort(),
-    ).toEqual(['place', 'place', 'shop_account', 'shop_account']);
+    ).toEqual(['place', 'place', 'shop_account']);
   });
 });
 
