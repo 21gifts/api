@@ -219,9 +219,13 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
 }) => {
   const shop = await listedShop(request, 'List');
   const other = await freshModerator(request, 'List');
+  const label = `Unlisted ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
   const tagged = await request.post('/messages', {
     headers: { ...other, 'content-type': 'application/json' },
-    data: { text: 'Tagged as a shop and not listed.\n\n#21GiftsShop' },
+    data: {
+      text: 'Tagged as a shop and not listed.\n\n#21GiftsShop',
+      place: { lat: 47.3769, lng: 8.5417, label, address: ADDRESS },
+    },
   });
   expect(tagged.status()).toBe(200);
   const taggedNote = (await tagged.json()) as { id: string; shopNpub: string | null };
@@ -242,7 +246,7 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
     name: shop.name,
     place: { lat: 47.3769, lng: 8.5417, label: shop.name, address: ADDRESS },
   });
-  expect(JSON.stringify(body)).not.toContain(taggedNote.id);
+  expect(body.shops.map((row) => row.name)).not.toContain(label);
 });
 
 test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', async ({
