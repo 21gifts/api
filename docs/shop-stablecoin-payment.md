@@ -1882,7 +1882,13 @@ records each result in the pull request that turns the feature on.
 One staging payment on 2026-10-22, Polygon USDT from an externally owned
 account, is recorded in
 [2026-10-22-polygon-usdt.md](../scripts/shop-staging-e2e/records/2026-10-22-polygon-usdt.md).
-That run does not close this list.
+That run does not close this list. The sats from that payment were returned
+to the same account on 2026-10-23, recorded in
+[2026-10-23-polygon-usdt-return.md](../scripts/shop-staging-e2e/records/2026-10-23-polygon-usdt-return.md).
+A live cycle pays from an account and then returns the received sats to
+that account. The staging harness does both before a paid run finishes.
+Quote and network fees stay spent. The shop's sat balance returns to the
+amount it held before the payment.
 
 1. Tether Wallet 1.11.0 on a real Android phone, with a balance that
    covers the amount and the fee, pays a staging shop payment with USDT

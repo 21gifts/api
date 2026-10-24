@@ -3,13 +3,33 @@
  *
  * Opens `POST /pay/:username/payment`, reads the pay link, and requests one
  * stablecoin detail. It broadcasts an ERC-20 transfer only when
- * `SHOP_E2E_PAY` is `1`. It does not print the signing key, the RPC URL, the
- * deposit address, or the BOLT11.
+ * `SHOP_E2E_PAY` is `1`. A paid run is one cycle: it reads the shop balance,
+ * pays, and then runs `return.py` so those sats are sold back to the same
+ * account. It does not exit successfully while the shop still holds them.
+ * It does not print the signing key, the RPC URL, the deposit address, or
+ * the BOLT11.
  *
  * This file is not part of `bun test` or Playwright. How to run it is in
  * `scripts/shop-staging-e2e/README.md`. Dated results are in `records/`.
  */
 
+import { dlopen } from 'bun:ffi';
+import { spawn } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
+import {
+  chmodSync,
+  closeSync,
+  existsSync,
+  fsyncSync,
+  openSync,
+  readFileSync,
+  renameSync,
+  statSync,
+  unlinkSync,
+  writeSync,
+} from 'node:fs';
+import { basename, dirname, isAbsolute, join, resolve, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import {
   createPublicClient,
   createWalletClient,
@@ -24,6 +44,288 @@ import { privateKeyToAccount } from 'viem/accounts';
 import { arbitrum, base, bsc, mainnet, optimism, polygon } from 'viem/chains';
 
 const KNOWN_CHAINS: readonly Chain[] = [mainnet, polygon, arbitrum, optimism, base, bsc];
+const CYCLE_ENV = [
+  'SHOP_SPARK_MNEMONIC',
+  'SHOP_SPARK_STORAGE',
+  'BREEZ_API_KEY',
+  'ORCHESTRA_API_KEY',
+  'SHOP_E2E_STATE',
+  'SHOP_EVM_RPC_URL',
+] as const;
+
+function repoRoot(): string {
+  return join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+}
+
+function outsideRepo(path: string): boolean {
+  const root = resolve(repoRoot());
+  const target = resolve(path);
+  return target !== root && !target.startsWith(root + sep);
+}
+
+function errorCode(error: unknown): string | undefined {
+  if (typeof error !== 'object' || error === null || !('code' in error)) return undefined;
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : undefined;
+}
+
+// flock(2): LOCK_EX|LOCK_NB and LOCK_UN. The same bits on darwin and linux.
+const LOCK_EX_NB = 6;
+const LOCK_UN = 8;
+
+function openCycleLock() {
+  return dlopen(process.platform === 'darwin' ? 'libc.dylib' : 'libc.so.6', {
+    flock: {
+      args: ['i32', 'i32'] as const,
+      returns: 'i32' as const,
+    },
+  });
+}
+
+let cycleLock: ReturnType<typeof openCycleLock> | undefined;
+
+function libcFlock(fd: number, operation: number): number {
+  if (process.platform !== 'darwin' && process.platform !== 'linux') fail('state_not_fresh');
+  if (cycleLock === undefined) cycleLock = openCycleLock();
+  return cycleLock.symbols.flock(fd, operation);
+}
+
+function withCycleLock(statePath: string, body: () => void): void {
+  const lockPath = `${statePath}.lock`;
+  const fd = openSync(lockPath, 'a+', 0o600);
+  let held = false;
+  try {
+    chmodSync(lockPath, 0o600);
+    if ((statSync(lockPath).mode & 0o077) !== 0) fail('state_not_private');
+    if (libcFlock(fd, LOCK_EX_NB) !== 0) fail('state_not_fresh');
+    held = true;
+    body();
+  } finally {
+    if (held) libcFlock(fd, LOCK_UN);
+    closeSync(fd);
+  }
+}
+
+function fsyncDirectory(directory: string): void {
+  const dir = openSync(directory, 'r');
+  try {
+    fsyncSync(dir);
+  } finally {
+    closeSync(dir);
+  }
+}
+
+function replaceStateFile(statePath: string, body: string): void {
+  const temporary = join(dirname(statePath), `.${basename(statePath)}.${randomUUID()}.tmp`);
+  const fd = openSync(temporary, 'wx', 0o600);
+  let durable = false;
+  try {
+    writeSync(fd, body);
+    fsyncSync(fd);
+    durable = true;
+  } finally {
+    closeSync(fd);
+    if (!durable) {
+      try {
+        unlinkSync(temporary);
+      } catch {
+        // The temporary file is already gone.
+      }
+    }
+  }
+  try {
+    renameSync(temporary, statePath);
+  } catch (error) {
+    try {
+      unlinkSync(temporary);
+    } catch {
+      // The temporary file is already gone.
+    }
+    throw error;
+  }
+  fsyncDirectory(dirname(statePath));
+  chmodSync(statePath, 0o600);
+}
+
+function readStateObject(statePath: string): Record<string, unknown> {
+  if ((statSync(statePath).mode & 0o077) !== 0) fail('state_not_private');
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(statePath, 'utf8')) as unknown;
+  } catch {
+    fail('state_invalid');
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) fail('state_invalid');
+  return parsed as Record<string, unknown>;
+}
+
+function claimState(statePath: string): string {
+  let token = '';
+  withCycleLock(statePath, () => {
+    token = writeClaim(statePath);
+  });
+  return token;
+}
+
+function writeClaim(statePath: string): string {
+  const token = randomUUID();
+  const body = `${JSON.stringify({ cycleClaim: token }, null, 2)}\n`;
+  if (!existsSync(statePath)) {
+    try {
+      const fd = openSync(statePath, 'wx', 0o600);
+      try {
+        writeSync(fd, body);
+        fsyncSync(fd);
+      } finally {
+        closeSync(fd);
+      }
+      fsyncDirectory(dirname(statePath));
+      chmodSync(statePath, 0o600);
+    } catch (error) {
+      if (errorCode(error) !== 'EEXIST') throw error;
+    }
+  }
+  const current = readStateObject(statePath);
+  if (current['cycleClaim'] === token) return token;
+  if (Object.keys(current).length > 0) fail('state_not_fresh');
+  const lock = `${statePath}.claim`;
+  try {
+    const lockFd = openSync(lock, 'wx', 0o600);
+    closeSync(lockFd);
+  } catch (error) {
+    if (errorCode(error) === 'EEXIST') fail('state_not_fresh');
+    throw error;
+  }
+  chmodSync(lock, 0o600);
+  fsyncDirectory(dirname(statePath));
+  const again = readStateObject(statePath);
+  if (Object.keys(again).length > 0) fail('state_not_fresh');
+  replaceStateFile(statePath, body);
+  const claimed = readStateObject(statePath);
+  if (claimed['cycleClaim'] !== token) fail('state_not_fresh');
+  return token;
+}
+
+function markCycleOpen(startSats: number, amountSats: string, token: string): void {
+  const statePath = required('SHOP_E2E_STATE');
+  withCycleLock(statePath, () => {
+    const current = readStateObject(statePath);
+    if (current['cycleClaim'] !== token) fail('state_not_fresh');
+    const amount = Number(amountSats);
+    const body = `${JSON.stringify({ startSats, amount }, null, 2)}\n`;
+    replaceStateFile(statePath, body);
+    const written = readStateObject(statePath);
+    if (written['startSats'] !== startSats || written['amount'] !== amount) fail('state_not_fresh');
+  });
+}
+
+function payerAddress(): Address {
+  return privateKeyToAccount(privateKey()).address;
+}
+
+function assertCycleReady(payer: Address, method: string): string {
+  for (const name of CYCLE_ENV) required(name);
+  const storage = required('SHOP_SPARK_STORAGE');
+  if (!isAbsolute(storage) || !outsideRepo(storage)) fail('storage_inside_repo');
+  const statePath = required('SHOP_E2E_STATE');
+  if (!isAbsolute(statePath) || !outsideRepo(statePath)) fail('state_inside_repo');
+  const chain = env('SHOP_CHAIN');
+  if (chain !== undefined && chain.toLowerCase() !== method.toLowerCase()) fail('chain_mismatch');
+  const configured = env('SHOP_PAYER_ADDRESS');
+  if (configured !== undefined && configured.toLowerCase() !== payer.toLowerCase()) {
+    fail('payer_mismatch');
+  }
+  return claimState(statePath);
+}
+
+interface ReturnResult {
+  code: number;
+  lines: string[];
+}
+
+function runReturn(extra: Record<string, string>): Promise<ReturnResult> {
+  const bin = env('SHOP_E2E_PYTHON') ?? 'python3';
+  const script = join(dirname(fileURLToPath(import.meta.url)), 'return.py');
+  return new Promise((resolve) => {
+    const child = spawn(bin, [script], {
+      env: { ...process.env, ...extra },
+      stdio: ['ignore', 'inherit', 'pipe'],
+    });
+    const lines: string[] = [];
+    let pending = '';
+    const take = (chunk: Buffer | string): void => {
+      pending += typeof chunk === 'string' ? chunk : chunk.toString('utf8');
+      const parts = pending.split(/\r?\n/);
+      pending = parts.pop() ?? '';
+      for (const line of parts) {
+        console.warn(line);
+        lines.push(line);
+      }
+    };
+    if (child.stderr === null) {
+      child.kill();
+      resolve({ code: 1, lines: ['return_spawn'] });
+      return;
+    }
+    child.stderr.on('data', take);
+    child.on('error', () => {
+      console.warn('return_spawn');
+      resolve({ code: 1, lines });
+    });
+    child.on('close', (code) => {
+      if (pending !== '') {
+        console.warn(pending);
+        lines.push(pending);
+      }
+      resolve({ code: code ?? 1, lines });
+    });
+  });
+}
+
+async function shopStartSats(payer: Address, method: string, asset: string): Promise<number> {
+  const result = await runReturn({
+    SHOP_E2E_RETURN: 'probe',
+    SHOP_PAYER_ADDRESS: payer,
+    SHOP_CHAIN: method.toLowerCase(),
+    SHOP_ASSET: asset,
+  });
+  const line = result.lines.find((row) => row.startsWith('shop_balance_sats='));
+  const text = line?.slice('shop_balance_sats='.length);
+  if (result.code !== 0 || text === undefined || !/^[0-9]+$/.test(text))
+    fail('shop_balance_unread');
+  return Number(text);
+}
+
+async function returnHome(
+  payer: Address,
+  method: string,
+  asset: string,
+  startSats: number,
+  amountSats: string,
+): Promise<void> {
+  console.warn('cycle=return');
+  const extra = {
+    SHOP_E2E_RETURN: '1',
+    SHOP_PAYER_ADDRESS: payer,
+    SHOP_CHAIN: method.toLowerCase(),
+    SHOP_ASSET: asset,
+    SHOP_START_SATS: String(startSats),
+    SHOP_AMOUNT_SATS: amountSats,
+  };
+  const deadline = Date.now() + 3 * 60 * 1000;
+  let last = await runReturn(extra);
+  while (
+    last.code !== 0 &&
+    last.lines.some((row) => row.trim() === 'shop_not_credited') &&
+    Date.now() < deadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 15_000));
+    last = await runReturn(extra);
+  }
+  const home = last.code === 0 && last.lines.some((row) => row.trim() === 'return=home');
+  if (!home) fail('return_failed');
+  console.warn('cycle=home');
+}
 
 function env(name: string): string | undefined {
   const value = process.env[name];
@@ -231,6 +533,15 @@ async function main(): Promise<void> {
   const asset = env('SHOP_ASSET') ?? 'USDT';
   const userAgent = env('SHOP_E2E_USER_AGENT') ?? '21gifts-shop-staging-e2e';
   const pay = env('SHOP_E2E_PAY') === '1';
+  let payer: Address | undefined;
+  let startSats = 0;
+  let cycleClaim = '';
+  if (pay) {
+    payer = payerAddress();
+    cycleClaim = assertCycleReady(payer, method);
+    startSats = await shopStartSats(payer, method, asset);
+    console.warn(`shop_start_sats=${startSats}`);
+  }
 
   const opened = await openPayment(apiBase, username, amountSats, userAgent);
   if (opened.status !== 200) fail('quote_failed');
@@ -269,6 +580,7 @@ async function main(): Promise<void> {
   }
 
   const rpcUrl = required('SHOP_EVM_RPC_URL');
+  markCycleOpen(startSats, amountText, cycleClaim);
   const tx = await payTransfer(uri, rpcUrl);
   const proofUrl =
     `${appBase}/lnurlp/tx/${encodeURIComponent(username)}` +
@@ -297,6 +609,8 @@ async function main(): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 15_000));
   }
   if (!settled) fail('not_paid');
+  if (payer === undefined) fail('payer_missing');
+  await returnHome(payer, method, asset, startSats, amountText);
 }
 
 main().catch(() => fail('unexpected'));
