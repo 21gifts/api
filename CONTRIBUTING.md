@@ -484,7 +484,7 @@ LNURL-pay;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `PostgresShopIdentityStore` and `migrateShopIdentitySchema`, which need `DATABASE_URL`;
 `signEventForShop`, which only the Nostr worker calls (it needs `DATABASE_URL`, `NOSTR_NSEC_KEK`, and a publisher);
-`runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`)),
+`shopOcpPlaceInput`, `runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`)),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, a
 healthy process with `DATABASE_URL` blank, or a listed shop served while its outbox stays unsent). Playwright `webServer.env` pins
@@ -494,6 +494,7 @@ healthy process with `DATABASE_URL` blank, or a listed shop served while its out
 `VAPID_SUBJECT`, `TRANSLATE_URL`, `TRANSLATE_API_KEY`, `OCP_MAP_BASE_URL`, and
 `OCP_PLACE_INGEST_TOKEN` to blank, and `NIP57_PROBE` to `0`,
 so those outcomes do not depend on the host environment.
+`resolveMapPush` is not in that list. `src/index.ts` calls it on every boot. A blank `OCP_MAP_BASE_URL` or `OCP_PLACE_INGEST_TOKEN` makes it return undefined, and `startOcpOutboxWorker` starts only when the call returns a target. `Function: resolveMapPush` serves a listed shop on that default boot.
 `bun run e2e:check` **fails the PR** if an endpoint has no matching
 `request.get/post/delete` or a function has no matching
 `test('Function: <Name> …')` title. The check reads `e2e/**/*.spec.ts` only.

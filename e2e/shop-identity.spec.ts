@@ -436,3 +436,11 @@ test('Function: queueAllShopPlaces — OCP map target blank, the listed shop is 
 test('Function: startOcpOutboxWorker — OCP map target blank, the listed shop is still served', ({
   request,
 }) => servedWithoutMap(request, 'OcpW'));
+
+test('Function: shopOcpPlaceInput — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpIn'));
+
+test('Function: resolveMapPush — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpMp'));
