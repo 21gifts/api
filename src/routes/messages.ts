@@ -884,6 +884,9 @@ async function frozenAskResponse(
 /** A top-level shop note must name its 21.gifts account. */
 const SHOP_ACCOUNT_REQUIRED = 'A shop note needs a shop account';
 
+/** A top-level shop note must have a shop name (the pin label). */
+const SHOP_NAME_REQUIRED = 'Shop name is required';
+
 /**
  * Resolve `shopUsername` before a note is created.
  *
@@ -940,8 +943,11 @@ async function postedShopAccount(
 }
 
 /**
- * Shop-with-pin completeness for create. A shop note without a pin stays
- * allowed. Replies never carry a pin.
+ * Shop-pin completeness for create. A top-level shop note needs a pin,
+ * because the shop name is the pin label. A missing pin is
+ * {@link SHOP_NAME_REQUIRED}. A pin must pass {@link shopPlaceProblem} and
+ * then {@link shopTextProblem}. Replies and notes that are not shops skip
+ * this. A non-shop pin may still omit its label.
  *
  * @param text - Normalised forum text.
  * @param parentId - Reply parent, or `null` for top-level.
@@ -953,8 +959,11 @@ function shopPinRegistrationProblem(
   parentId: string | null,
   place: ForumPlace | null,
 ): string | null {
-  if (parentId !== null || place === null || !textHasHashtagToken(text, '21GiftsShop')) {
+  if (parentId !== null || !textHasHashtagToken(text, '21GiftsShop')) {
     return null;
+  }
+  if (place === null) {
+    return SHOP_NAME_REQUIRED;
   }
   return shopPlaceProblem(place) ?? shopTextProblem(text, place);
 }
@@ -2290,11 +2299,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
-        if (parsed.value !== null) {
-          const problem = shopPlaceProblem(parsed.value);
-          if (problem !== null) {
-            return c.json({ error: problem }, 400);
-          }
+        if (parsed.value === null) {
+          return c.json({ error: SHOP_NAME_REQUIRED }, 400);
+        }
+        const problem = shopPlaceProblem(parsed.value);
+        if (problem !== null) {
+          return c.json({ error: problem }, 400);
         }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
