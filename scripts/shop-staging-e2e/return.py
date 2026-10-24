@@ -252,8 +252,7 @@ def state_path() -> str:
     raw = required("SHOP_E2E_STATE")
     if not os.path.isabs(raw):
         fail("state_not_absolute")
-    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    if os.path.abspath(raw).startswith(repo + os.sep):
+    if not outside_repo(raw):
         fail("state_inside_repo")
     return raw
 
@@ -431,6 +430,16 @@ def poll_order(base: str, api_key: str, quote_id: str) -> dict:
     return {}
 
 
+def repo_root() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def outside_repo(path: str) -> bool:
+    root = repo_root()
+    target = os.path.abspath(path)
+    return target != root and not target.startswith(root + os.sep)
+
+
 async def connect_shop(storage: str):
     try:
         from breez_sdk_spark import (
@@ -572,8 +581,7 @@ async def main() -> None:
     storage = required("SHOP_SPARK_STORAGE")
     if not os.path.isabs(storage):
         fail("storage_not_absolute")
-    repo = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
-    if os.path.abspath(storage).startswith(repo + os.sep):
+    if not outside_repo(storage):
         fail("storage_inside_repo")
     rpc_url = required("SHOP_EVM_RPC_URL")
     token = token_address(chain, asset)
