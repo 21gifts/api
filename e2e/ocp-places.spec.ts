@@ -85,14 +85,6 @@ test('Function: shopTextProblem — POST /messages rejects a short shop descript
   });
 });
 
-test('Function: shopOcpPlaceInput — default boot is healthy', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
-
-test('Function: resolveMapPush — default boot is healthy', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
-});
-
 test('Function: isDevShopSeedTarget — default boot is healthy', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
