@@ -253,6 +253,8 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
 
 /**
  * A live shop note with a till account and no pin. The directory still lists it.
+ * `POST /messages` refuses this shape, so the note is stored through
+ * `POST /debug/shop-notes` and then read back.
  */
 async function shopWithoutPin(
   request: APIRequestContext,
@@ -281,23 +283,21 @@ async function shopWithoutPin(
   ).accounts;
   const author = accounts.find((row) => row.name === authorName);
   const till = accounts.find((row) => row.name === tillName);
-  expect(author).toBeDefined();
+  expect(author?.id).toBeTruthy();
   expect(till?.username).toBeTruthy();
-  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
-  expect(session.status()).toBe(200);
-  const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
-  expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
-  const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
-    headers: DEBUG,
-    data: { role: 'moderator' },
-  });
-  expect(promoted.status()).toBe(200);
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
-    data: { text, shopUsername: till?.username },
+  const posted = await request.post('/debug/shop-notes', {
+    headers: { ...DEBUG, 'content-type': 'application/json' },
+    data: { text, shopUsername: till?.username, authorId: author?.id },
   });
   expect(posted.status()).toBe(200);
 }
+
+test('Function: debugShopNoteRoutes — POST /debug/shop-notes without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-notes');
+  expect(res.status()).toBe(401);
+});
 
 test('Function: publicShop — GET /shops lists a shop that has no pin', async ({ request }) => {
   const line = `Morning stall ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;

@@ -73,7 +73,9 @@ The shop description is the note text without the `#21GiftsShop` token
   public shop for the first time: `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
   `PATCH /messages/:id/shop-account`, `PUT /me/about` (the profile note's
-  text) and the staff restore `POST /debug/messages/:id/restore`.
+  text), the staff restore `POST /debug/messages/:id/restore`, and
+  `POST /debug/shop-notes` (a note that already has a till and no pin;
+  `POST /messages` still refuses that shape).
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
     backfill below, and then checks again that the note is still a public shop (live, top-level, the shop tag, and a till account). If the note

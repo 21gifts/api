@@ -50,6 +50,7 @@ import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugShopKeyRoutes } from '@/routes/debug-shop-keys';
+import { debugShopNoteRoutes } from '@/routes/debug-shop-notes';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
@@ -139,7 +140,7 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, and
+   * `POST /debug/trust-edges`, `POST /debug/shop-notes`, and
    * `POST /debug/passkey-renew/reopen`
    * return 503. `GET /debug/db` returns 503 when this token and
    * `debugReadToken` are both unset or blank.
@@ -650,6 +651,17 @@ export function createApp(deps: AppDeps = {}): Hono {
       messages: messageStore,
       kek: shopKek,
       debugToken,
+    }),
+  );
+  app.route(
+    '/debug/shop-notes',
+    debugShopNoteRoutes({
+      auth: store,
+      messages: messageStore,
+      identities: shopIdentityStore,
+      kek: shopKek,
+      debugToken,
+      now,
     }),
   );
   app.route('/debug/trust-edges', debugTrustRoutes({ store, trustStore, debugToken, now }));

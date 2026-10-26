@@ -301,6 +301,13 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/shop-notes
+
+- **Purpose:** Stores one live top-level shop note that has a till account and no pin. Body `{ text, shopUsername, authorId }`. `text` must contain `#21GiftsShop`. The pin is not accepted and is stored null. Response `{ id, shopNpub }`. `POST /messages` still refuses a shop without a pin.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 503 Shop keys are not configured; 400 Invalid shop note; 404 Not found; 503 Shop key was not created; 503 Shop note was not stored.
+- **Used by:** The directory test for a shop that already exists without a pin, and an operator recording that shape.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /debug/shop-keys
 
 - **Purpose:** Stores the OpenCryptoPay private key of one shop note that already has that key. Body `{ messageId, secret }`. `messageId` is the forum note. `secret` is 64 hex characters and is not logged or returned. Response `{ messageId, npub }`. The same key again is a success. A different key already stored is refused. The insert does not queue a place push.

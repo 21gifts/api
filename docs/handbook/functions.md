@@ -3625,6 +3625,13 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 - **Returns / side effects:** Boolean. No I/O.
 - **Used by:** `InMemoryShopIdentityStore.ensureListed`, `PostgresShopIdentityStore.ensureListed`, `POST /debug/shop-keys`.
 
+## Function: debugShopNoteRoutes
+
+- **Purpose:** `POST /debug/shop-notes`. Stores one live top-level shop note that has a till account and no pin. Body `{ text, shopUsername, authorId }`. The pin is stored null. Returns `{ id, shopNpub }`. Does not accept a secret.
+- **Inputs:** Auth store, message store, shop identity store, optional 32-byte KEK, optional debug token, and a clock.
+- **Returns / side effects:** Hono app. Inserts the note and calls `ensureListed`, so a public shop gets its key.
+- **Used by:** `createApp` at `/debug/shop-notes`.
+
 ## Function: debugShopKeyRoutes
 
 - **Purpose:** `POST /debug/shop-keys`. Stores the existing 32-byte shop secret for a note `shopKeyMustBeAdopted` names. Body `{ messageId, secret }` where `secret` is 64 hex characters. Returns `{ messageId, npub }`. Does not log or return the secret.
