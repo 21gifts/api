@@ -1,5 +1,9 @@
 import { InMemoryAuthStore, type AuthStore } from '@/lib/auth/store';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { backfillAccountUsernames } from '@/lib/username';
 
@@ -8,7 +12,8 @@ import { backfillAccountUsernames } from '@/lib/username';
  *
  * Blank or unset `DATABASE_URL` yields the in-memory adapter (tests, local
  * boots without Postgres). The in-memory path does not backfill usernames.
- * A set URL migrates the auth schema, backfills account usernames
+ * A set URL migrates the auth schema, stores missing Spark addresses
+ * ({@link backfillSparkAddresses}), backfills account usernames
  * ({@link backfillAccountUsernames}), then returns the Postgres adapter.
  * The SQL client factory is required when a URL is set so unit tests never
  * import the Bun SQL runtime.
@@ -30,6 +35,7 @@ export async function openAuthStore(
   }
   const sql = createClient(databaseUrl.trim());
   await migrateAuthSchema(sql);
+  await backfillSparkAddresses(sql);
   const store = new PostgresAuthStore(sql);
   await backfillAccountUsernames(store);
   return store;

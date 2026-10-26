@@ -405,6 +405,14 @@ test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('Function: encodeSparkAddress — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
   request,
 }) => {
@@ -457,6 +465,13 @@ test('Function: usernameFromDisplayName — POST /me/name without bearer is 401'
 });
 
 test('Function: backfillAccountUsernames — GET /healthz is ok after boot backfill', async ({
+  request,
+}) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: backfillSparkAddresses — GET /healthz is ok after boot backfill', async ({
   request,
 }) => {
   const res = await request.get('/healthz');

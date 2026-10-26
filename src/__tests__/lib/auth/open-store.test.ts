@@ -32,10 +32,14 @@ describe('openAuthStore', () => {
     );
   });
 
-  it('migrates and returns Postgres when a URL is set', async () => {
+  it('migrates, backfills Spark addresses, and returns Postgres when a URL is set', async () => {
     const executes: string[] = [];
+    const queries: string[] = [];
     const store = await openAuthStore('postgres://gifts21@localhost/gifts21', () => ({
-      query: async () => [],
+      query: async (text) => {
+        queries.push(text);
+        return [];
+      },
       execute: async (text) => {
         executes.push(text);
       },
@@ -43,5 +47,8 @@ describe('openAuthStore', () => {
     expect(store).toBeInstanceOf(PostgresAuthStore);
     expect(executes.length).toBeGreaterThan(0);
     expect(executes[0]).toMatch(/CREATE TABLE IF NOT EXISTS account/);
+    expect(queries[0]).toBe(
+      'SELECT id, spark_pubkey, spark_address FROM account WHERE spark_pubkey IS NOT NULL',
+    );
   });
 });

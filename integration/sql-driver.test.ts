@@ -1,7 +1,11 @@
 import { SQL } from 'bun';
 import { describe, expect, spyOn, test } from 'bun:test';
 import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import {
   migrateDailyRosterSchema,
@@ -37,6 +41,7 @@ import {
   type ShopProofLookup,
   type ShopTx,
 } from '@/lib/shop-payment-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
@@ -1021,6 +1026,11 @@ describe('PostgresAuthStore spark pubkey', () => {
       expect(claimA?.wrote).toBe(true);
       expect(claimA?.account.sparkPubkey).toBe(pubkey);
       expect(claimA?.account.sparkPubkeyVerifiedAt ?? null).toBeNull();
+      const addressRows = await client.query<{ spark_address: string | null }>(
+        'SELECT spark_address FROM account WHERE id = $1',
+        [idA],
+      );
+      expect(addressRows[0]?.spark_address).toBe(encodeSparkAddress(pubkey));
 
       const claimB = await store.claimSparkPubkey(idB, pubkey);
       expect(claimB?.wrote).toBe(true);
@@ -1077,6 +1087,7 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(claimChange).toBeDefined();
+      expect(claimChange?.after?.['spark_address']).toBe(encodeSparkAddress(pubkey));
 
       const verifyChange = changeRows.find(
         (row) =>
@@ -1087,6 +1098,80 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(verifyChange).toBeDefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('backfillSparkAddresses fills missing and stale addresses; the CHECK refuses bad ones', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+      for (const [index, id] of ids.entries()) {
+        await store.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `spark_fill_${index}_${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now() + index,
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      const [missingId, staleId, keylessId] = ids as [string, string, string];
+      const missingKey = `02${hex64()}`;
+      const staleKey = `03${hex64()}`;
+      await client.execute('UPDATE account SET spark_pubkey = $2 WHERE id = $1', [
+        missingId,
+        missingKey,
+      ]);
+      await client.execute(
+        'UPDATE account SET spark_pubkey = $2, spark_address = $3 WHERE id = $1',
+        [staleId, staleKey, encodeSparkAddress(missingKey)],
+      );
+
+      expect(await backfillSparkAddresses(client)).toBeGreaterThanOrEqual(2);
+      const rows = await client.query<{ id: string; spark_address: string | null }>(
+        'SELECT id::text AS id, spark_address FROM account WHERE id = ANY($1::uuid[])',
+        [postgresTextArrayLiteral(ids)],
+      );
+      const addressOf = (id: string): string | null | undefined =>
+        rows.find((row) => row.id === id)?.spark_address;
+      expect(addressOf(missingId)).toBe(encodeSparkAddress(missingKey));
+      expect(addressOf(staleId)).toBe(encodeSparkAddress(staleKey));
+      expect(addressOf(keylessId)).toBeNull();
+
+      let keyless: unknown;
+      try {
+        await client.execute('UPDATE account SET spark_address = $2 WHERE id = $1', [
+          keylessId,
+          encodeSparkAddress(missingKey),
+        ]);
+      } catch (error) {
+        keyless = error;
+      }
+      expect(sqlState(keyless)).toBe('23514');
+
+      let malformed: unknown;
+      try {
+        await client.execute('UPDATE account SET spark_address = $2 WHERE id = $1', [
+          missingId,
+          'spark1notanaddress',
+        ]);
+      } catch (error) {
+        malformed = error;
+      }
+      expect(sqlState(malformed)).toBe('23514');
     } finally {
       await closeIfPossible(sql);
     }

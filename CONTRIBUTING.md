@@ -92,7 +92,7 @@ api/
 │   │   ├── secret-shape.ts   # isSecretFieldName / looksLikeSecretValue (never store keys, seeds, phrases)
 │   │   ├── encoded-secret.ts # containsEncodedSecret (secret material inside Spark/BOLT11/bech32 tokens)
 │   │   ├── client-instant.ts # parseClientInstant (ISO or epoch timestamp from the app, bounded)
-│   │   ├── spark-address.ts  # decodeSparkAddress (identity key + memo of a Spark address or invoice)
+│   │   ├── spark-address.ts  # encodeSparkAddress (mainnet address of an identity key); decodeSparkAddress (identity key + memo of a Spark address or invoice)
 │   │   ├── wallet-report.ts  # parseWalletReport (allow-listed wallet report body)
 │   │   ├── wallet-category.ts # walletPaymentClassifier (member/shop/platform/gift/outside_lightning/onchain/unknown)
 │   │   ├── wallet-store.ts   # WalletStore port, InMemory/Postgres adapters, WALLET_SCHEMA_SQL
@@ -207,7 +207,7 @@ api/
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL (incl. session_refused)
-│   │       ├── postgres-store.ts  # Durable AuthStore
+│   │       ├── postgres-store.ts  # Durable AuthStore; backfillSparkAddresses
 │   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
 │   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
