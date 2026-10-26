@@ -955,6 +955,10 @@ describe('shop identity on Postgres', () => {
       const confirmed = await ctx.shops.claimPlaces(20, 60_000);
       expect(confirmed.map((claim) => claim.messageId).sort()).toEqual([a, b, c]);
       for (const claim of confirmed) await ctx.shops.finishPlace(claim, 'put');
+      // A place this outbox has not sent stays at revision 0, so its photos
+      // are not claimed. The place lane raises the revision, then they are.
+      expect(await ctx.shops.claimPhoto(60_000)).toBeUndefined();
+      for (const claim of confirmed) expect(await ctx.shops.nextRevision('place', claim)).toBe(1);
       const photo = async (): Promise<string | undefined> => {
         await Bun.sleep(5);
         return (await ctx.shops.claimPhoto(1))?.messageId;
@@ -994,8 +998,11 @@ describe('shop identity on Postgres', () => {
       expect(secondPlace?.messageId).toBe(second.id);
       const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
       expect(firstAgain?.messageId).toBe(first.id);
-      // Both places settle, which queues both photo sets.
+      // Both places settle, which queues both photo sets. The revision is
+      // raised first, as the place sender does before the request.
+      await ctx.shops.nextRevision('place', secondPlace!);
       await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.nextRevision('place', firstAgain!);
       await ctx.shops.finishPlace(firstAgain!, 'put');
       // The same for the photos of the first shop.
       const photo = (await ctx.shops.claimPhoto(60_000))!;
@@ -1036,7 +1043,9 @@ describe('shop identity on Postgres', () => {
       expect(secondPlace?.messageId).toBe(second.id);
       const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
       expect(firstAgain?.messageId).toBe(first.id);
+      await ctx.shops.nextRevision('place', secondPlace!);
       await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.nextRevision('place', firstAgain!);
       await ctx.shops.finishPlace(firstAgain!, 'put');
       // The same for the photos of the first shop.
       const photo = (await ctx.shops.claimPhoto(60_000))!;
