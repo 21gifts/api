@@ -342,7 +342,7 @@ Kind 0 of a shop that is no longer public:
 `buildKind0Content` (`src/lib/nostr/event.ts`) always writes
 `website: 'https://21.gifts'` and both images, so it gains two optional
 arguments: a `website` that replaces the fixed value, and a flag that leaves
-out `picture` and `banner` for a shop that is no longer listed.
+out `picture` and `banner` for a shop that is no longer public.
 `buildKind0Event`, which builds the content again for the event it signs,
 gains the same two arguments and passes them on, so the signed event and the
 cached content match; a test checks the content of a signed shop event.
@@ -462,11 +462,11 @@ One answer, one state of the note:
   another name the request asks once for a forced refresh of the directory
   (at most one computation per 10 s per store set, so a stream of requests
   for a renamed shop cannot each force one) and checks again. When it still
-  does not match (the shop was renamed or unlisted between the two reads),
-  the route reads the note again: a note that is no longer listed then
+  does not match (the shop was renamed or is no longer public between the two reads),
+  the route reads the note again: a note that is no longer public then
   answers 410. A mismatch on the last round (`READ_ROUNDS`) answers the 503 above with
   `reason: "nip05_stale"`, never a 200 that pairs a name with another
-  name's NIP-05 or a listed shop with a `null` NIP-05.
+  name's NIP-05 or a public shop with a `null` NIP-05.
 - After the photo set the route reads the note again and compares the
   fields the answer is built from: text (listing tag and description), pin (name and place),
   till account id and `deletedAt` (`shopListingFingerprint`, also the
