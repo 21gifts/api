@@ -41,6 +41,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `spark_pubkey`                 | Free text          | `text`                     | Yes      | –           | –                            |
 | `spark_pubkey_verified_at`     | Date/time          | `timestamp with time zone` | Yes      | –           | –                            |
 | `notify_hearts`                | Boolean            | `boolean`                  | No       | `true`      | –                            |
+| `spark_address`                | Free text          | `text`                     | Yes      | –           | –                            |
 
 ## Indexes
 

@@ -3678,7 +3678,8 @@ Environment:
 
 Operator detail of one account via `serializeDebugAccountDetail`: the account
 columns except the retained legacy `lightning_address` and
-`lightning_address_verified`, plus nested `passkeys`, `sessions`, and matching
+`lightning_address_verified` and the derived `spark_address` (it follows from
+`sparkPubkey`), plus nested `passkeys`, `sessions`, and matching
 `passkeyChallenges`. `lightningAddress` is the receiving address (verified
 wallet) when the LNURL server is configured. Session tokens are plaintext. nsec is
 envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.

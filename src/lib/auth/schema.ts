@@ -5,8 +5,8 @@
  * `forum_laws_dismissed`, `rules_agreed_at`, `notification_level`,
  * `amount_unit`, `locale`, `fiat`, `session_refused`, `wallet_required`,
  * `wallet_backup_seen_at`, `staff_tag`, `spark_pubkey`, `spark_pubkey_verified_at`,
- * `notify_hearts`, `wallet_intro_seen`, and `passkey_challenge.requested_name` on databases created before those
- * columns existed.
+ * `notify_hearts`, `wallet_intro_seen`, `spark_address`, and `passkey_challenge.requested_name` on databases created before those
+ * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
  * server-written succeeded seed rows).
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
@@ -184,4 +184,8 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `CREATE UNIQUE INDEX IF NOT EXISTS account_spark_pubkey_verified_uidx
   ON account (spark_pubkey) WHERE spark_pubkey_verified_at IS NOT NULL`,
   `ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true`,
+  `ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_address text`,
+  `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk`,
+  `ALTER TABLE account ADD CONSTRAINT account_spark_address_chk
+  CHECK (spark_address IS NULL OR (spark_pubkey IS NOT NULL AND spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$'))`,
 ];
