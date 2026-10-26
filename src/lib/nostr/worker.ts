@@ -934,15 +934,15 @@ const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor |
 const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
 
 /**
- * Create keys for listed shops that have none (S1 backfill), reading at most
+ * Create keys for public shops that have none (S1 backfill), reading at most
  * `WORKER_BATCH` raw candidates per tick. Candidates are live top-level
  * `#21GiftsShop` notes with a till account, pinned or not, keyed or not; the
  * page is bounded before the key check, the cursor advances on that raw page,
  * and only the candidates without a key go to `ensureListed`, which checks
  * {@link publicShop} in code. The keyset cursor by (`created_at`, `id`) moves past
- * keyed and rejected notes and resets to the start only after a short raw
- * page, so neither an incomplete note nor a run of keyed shops holds the slot
- * of an unkeyed listed shop behind it, and a lap over keyed shops never reads
+ * keyed notes and resets to the start only after a short raw
+ * page, so a run of keyed shops does not hold the slot
+ * of an unkeyed public shop behind it, and a lap over keyed shops never reads
  * more than one page per tick. A new key queues the place push.
  * A failure logs `shop.nostr_key.failed`.
  * While a backfill for the same store is still in flight (ticks start
@@ -1475,16 +1475,16 @@ interface ShopKind0Args {
 }
 
 /**
- * Kind 0 fields of one shop identity (S2). A listed shop gets its name,
+ * Kind 0 fields of one shop identity (S2). A public shop gets its name,
  * description, photos, `<site origin>/{npub}`, its NIP-05 and the till
  * account's `lud16` (only when the till account has a name, a username and a
- * non-empty Lightning address); a shop that is no longer listed keeps `profile_name`
- * (or `Shop` when the note is hidden or gone), the fixed unlisted `about`
- * and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
- * only called for a listed shop and only when `domain` is set, before any
+ * non-empty Lightning address); a shop that is no longer public keeps `profile_name`
+ * (or `Shop` when the note is hidden or gone), the fixed about for a shop that
+ * is not public, and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
+ * only called for a public shop and only when `domain` is set, before any
  * write; it returns the NIP-05 directory entry only when it carries the name this
  * read sees. Without such an entry the shop gets no kind 0 this time: the
- * result is `'nip05_stale'` and nothing was written. A listed shop's note is
+ * result is `'nip05_stale'` and nothing was written. A public shop's note is
  * read again after the last await of the build (directory, rename, till
  * account, photo types); when its {@link shopListingFingerprint} (text, pin,
  * till account, `deletedAt`) differs from the first read (a rename, text or
@@ -1570,7 +1570,7 @@ async function shopKind0Args(
 }
 
 /**
- * Publish kind 0 for every shop identity, listed or not, with the same
+ * Publish kind 0 for every shop identity, public or not, with the same
  * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
  * Each tick runs one bounded round-robin pass ({@link shopRoundPass}): it
  * reads at most `WORKER_BATCH` identities after the kind 0 cursor (wrapping
@@ -1582,16 +1582,16 @@ async function shopKind0Args(
  * `WORKER_BATCH` shops; their NIP-05 names come from the shared directory
  * ({@link nip05Directory}, the same names as `/.well-known/nostr.json` and
  * `GET /shops/:npub`, cached per store set), read only when a visited shop is
- * listed and the NIP-05 domain is set. The directory is computed at most once
+ * public and the NIP-05 domain is set. The directory is computed at most once
  * per `NIP05_DIRECTORY_TTL_MS` (60 s) on expiry, not per tick, whatever the
  * number of shops. Each shop reads its note fresh, so when the directory has
- * no entry for a listed shop or one with another name (listed or renamed
+ * no entry for a public shop or one with another name (published or renamed
  * since the directory), the shop asks for a forced refresh, which computes at
  * most once per `NIP05_DIRECTORY_REFRESH_MS` (10 s) per store set and
  * otherwise returns the cached directory. When that entry still does not
  * match, the shop gets no kind 0 and no cache
  * entry: the tick logs `nostr.profile.nack` with `reason: 'nip05_stale'` and
- * the shop is tried again on its next turn. A listed shop's note is read
+ * the shop is tried again on its next turn. A public shop's note is read
  * again right before the reservation; when its text, pin, till account or
  * `deletedAt` changed during the build (a rename or a staff hide), the shop
  * likewise gets no kind 0 and no cache entry, the tick logs
@@ -1705,7 +1705,7 @@ async function publishShopProfiles(
     } catch {
       if (reservation !== undefined) cache.delete(id);
       if (nip05Failed) {
-        // Every listed shop needs the directory: stop kind 0 for this tick.
+        // Every public shop needs the directory: stop kind 0 for this tick.
         logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05' });
         return false;
       }

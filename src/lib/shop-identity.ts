@@ -152,16 +152,21 @@ export type ShopOcpLane = 'place' | 'photos';
 /** Persistence port for shop identities and their OpenCryptoPay outboxes. */
 export interface ShopIdentityStore {
   /**
-   * Create the key of a listed shop note once, or return the existing one.
-   * A new key queues the place push. An existing key gets its
-   * `profile_name` rewritten while the note is listed and still matches the
-   * snapshot this call read (the rule of {@link renameIfListed}), so a call
-   * with an older snapshot than a stored rename changes nothing.
+   * Create the key of a public shop once, or return the existing one.
+   *
+   * A public shop is live, top-level, tagged `#21GiftsShop`, and has a till
+   * account. A pin is optional. A new key queues the place push. An existing
+   * key gets its `profile_name` rewritten while the note is still a public
+   * shop and still matches the snapshot this call read (the rule of
+   * {@link renameIfListed}), so a call with an older snapshot than a stored
+   * rename changes nothing. A note whose key must be adopted is left without
+   * a row.
    *
    * @param messageId - Shop note id.
    * @param kek - Key-encryption key for the new secret.
    * @param keygen - Secret key source (default {@link defaultNostrKeygen}).
-   * @returns The identity, or `undefined` when the note is not listed and has no key.
+   * @returns The identity, or `undefined` when there is no key yet and the
+   *   note is not a public shop, or when its key must be adopted.
    */
   ensureListed(
     messageId: string,
@@ -233,14 +238,14 @@ export interface ShopIdentityStore {
   listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]>;
   /**
    * Write `profile_name` from a note snapshot, only while that snapshot is
-   * listed and the stored note still shows it (the same note lock and
+   * a public shop and the stored note still shows it (the same note lock and
    * unchanged-columns condition as the rename in {@link ensureListed}). A
    * caller holding an older snapshot than a committed rename changes
    * nothing, so it cannot put an older name back.
    *
    * @param note - The note as the caller read it.
-   * @returns Resolves when done (no key, an unlisted snapshot, a changed note
-   *   or an unchanged name is a no-op).
+   * @returns Resolves when done (no key, a snapshot that is not a public
+   *   shop, a changed note, or an unchanged name is a no-op).
    */
   renameIfListed(note: MessageRow): Promise<void>;
   /**
@@ -1510,7 +1515,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     if (shop === null) return undefined;
     const generated = await freshIdentity(messageId, shop.name, kek, keygen, new Date());
     // One statement: lock the note (FOR UPDATE) and insert only while every
-    // column the listed check read above is unchanged. A concurrent edit
+    // column the public-shop check read above is unchanged. A concurrent edit
     // either committed before the lock (the values differ, no key; the edit's
     // own write path or the backfill mints it) or waits and then queues
     // itself through the trigger, which sees the committed row.

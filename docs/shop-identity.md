@@ -76,7 +76,7 @@ The shop description is the note text without the `#21GiftsShop` token
   text) and the staff restore `POST /debug/messages/:id/restore`.
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
-    backfill below, and then checks the five conditions again. If the note
+    backfill below, and then checks again that the note is still a public shop (live, top-level, the shop tag, and a till account). If the note
     is no longer public, no key is created. A concurrent edit of that note
     therefore either commits first, and the check and the new key's first
     push see it, or waits and then queues itself (S5).
@@ -98,7 +98,7 @@ The shop description is the note text without the `#21GiftsShop` token
     returns the stored row.
   - A failure logs `shop.nostr_key.failed` with the message id and does not
     fail the request, the same as the lazy account key at login.
-  - The worker backfill also picks up listed shops without a key, next to
+  - The worker backfill also picks up public shops without a key, next to
     the existing account backfill. Each tick reads one raw page of at most
     20 candidate notes (live, top-level `#21GiftsShop` notes with a
     till account, with or without a pin), keyed or not: the `LIMIT` bounds
@@ -261,18 +261,18 @@ not, in the same loop and with the same rules as account profiles
   kind (a tick whose previous pass of that kind is still running reads none), also during an outage. The NIP-05
   names come from the shared directory (`nip05Directory`, see NIP-05
   below): the same names as `/.well-known/nostr.json` and
-  `GET /shops/:npub`, read only once a visited shop is listed and the
+  `GET /shops/:npub`, read only once a visited shop is public and the
   NIP-05 domain is set. It is computed at most once per 60 s on expiry and
   not per tick, whatever the number of shops. Each shop reads its note
-  fresh, so when the directory has no entry for a listed shop or one with
-  another name (listed or renamed since the directory), the shop asks for a
+  fresh, so when the directory has no entry for a public shop or one with
+  another name (published or renamed since the directory), the shop asks for a
   forced refresh, which computes at most once per 10 s per store set and
   otherwise gives the cached directory. When the entry still does not
   match, that shop gets no kind 0 and no cache entry, the tick logs
   `nostr.profile.nack` with `reason: "nip05_stale"` and the shop is tried
   again on its next turn. After the last read of the build (directory,
   rename, till account, photo types) and right before the reservation, a
-  listed shop's note is read again and compared with the first read by
+  public shop's note is read again and compared with the first read by
   `shopListingFingerprint` (text, pin, till account id, `deletedAt`, the
   check of `GET /shops/:npub` after its photo read). When it differs (a
   rename, a text or pin change or a staff hide during the build), that shop
