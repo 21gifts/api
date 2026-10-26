@@ -90,6 +90,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     listRound: vi.fn(),
     renameIfListed: vi.fn(),
     listCandidates: vi.fn(),
+    listDirectory: vi.fn(),
     queueAllPlacePage: vi.fn(() => Promise.resolve([])),
     claimPlaces: vi.fn(() => Promise.resolve([CLAIM])),
     claimPhoto: vi.fn(() => Promise.resolve(CLAIM)),

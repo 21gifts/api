@@ -1267,6 +1267,13 @@ Operator inspection of external Nostr identities that have earned visibility or 
 
 # Shop identity
 
+## Endpoint: GET /shops
+
+- **Purpose:** Public keyset page of listed shops that already have a shop key. No session. A bearer is ignored and does not change the response. Each shop is `{ npub, name, place }` only: `npub` from the stored pubkey, `name` and `place` from `listedShop`. The ciphertext is not selected. `limit` defaults to 20 and is at most 100. `nextCursor` is present only when another structural row may exist. Order is the note's `createdAt` descending, then id descending. `/shops/activity` and `/shops/:npub` are unchanged.
+- **Errors:** 400 `{ "error": "Invalid limit" }` or `{ "error": "Invalid cursor" }` with `Cache-Control: public, max-age=60`, without reading the store. A store throw is 503 `{ "error": "Shops are unavailable" }`, `Cache-Control: no-store`, and logs `shops.list.failed`.
+- **Used by:** the app shop list via the same-origin proxy `/shops/list`, which this repo does not implement.
+- **Auth:** none. Public. A bearer changes nothing.
+
 ## Endpoint: GET /shops/:npub
 
 - **Purpose:** Resolve a shop identity without a session. A listed identity returns its current name, description, complete place, ordered photo URLs with header-only dimensions, till pay username, NIP-05, and creation time. A known lowercase hex pubkey redirects to the canonical npub URL; an unlisted retained identity returns 410 without its former name.

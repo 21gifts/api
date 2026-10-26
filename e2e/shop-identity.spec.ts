@@ -146,6 +146,41 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
   return { auth, noteId: note.id, name, npub, pubkey, tillUsername: till?.username as string };
 }
 
+/**
+ * A moderator who has not posted yet. `listedShop` already spends the author's
+ * one burst slot, so a second text note in the same test needs its own account.
+ */
+async function freshModerator(
+  request: APIRequestContext,
+  tag: string,
+): Promise<{ authorization: string }> {
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eTagMod${tag}${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [{ name, lightningAddress: `e2e-tagmod-${stamp}@walletofsatoshi.com` }],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const author = (
+    (await listed.json()) as { accounts: Array<{ id: string; name: string }> }
+  ).accounts.find((row) => row.name === name);
+  expect(author).toBeDefined();
+  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
+  expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+  return auth;
+}
+
 async function getShop(request: APIRequestContext, segment: string): Promise<ShopBody> {
   const response = await request.get(`/shops/${segment}`);
   expect(response.status()).toBe(200);
@@ -177,6 +212,41 @@ test('GET /shops/:npub is 404 for an unknown hex key and an unknown npub', async
 test('GET /shops/activity keeps its own handler next to GET /shops/:npub', async ({ request }) => {
   const response = await request.get('/shops/activity');
   expect(response.status()).toBe(200);
+});
+
+test('GET /shops lists a keyed shop and omits a tagged note that is not listed', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'List');
+  const other = await freshModerator(request, 'List');
+  const label = `Unlisted ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const tagged = await request.post('/messages', {
+    headers: { ...other, 'content-type': 'application/json' },
+    data: {
+      text: 'Tagged as a shop and not listed.\n\n#21GiftsShop',
+      place: { lat: 47.3769, lng: 8.5417, label, address: ADDRESS },
+    },
+  });
+  expect(tagged.status()).toBe(200);
+  const taggedNote = (await tagged.json()) as { id: string; shopNpub: string | null };
+  expect(taggedNote.shopNpub).toBeNull();
+
+  const response = await request.get('/shops');
+  expect(response.status()).toBe(200);
+  expect(response.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  const body = (await response.json()) as {
+    shops: Array<{
+      npub: string;
+      name: string;
+      place: { lat: number; lng: number; label: string; address: typeof ADDRESS };
+    }>;
+  };
+  expect(body.shops.find((row) => row.npub === shop.npub)).toEqual({
+    npub: shop.npub,
+    name: shop.name,
+    place: { lat: 47.3769, lng: 8.5417, label: shop.name, address: ADDRESS },
+  });
+  expect(body.shops.map((row) => row.name)).not.toContain(label);
 });
 
 test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', async ({
@@ -436,3 +506,11 @@ test('Function: queueAllShopPlaces — OCP map target blank, the listed shop is 
 test('Function: startOcpOutboxWorker — OCP map target blank, the listed shop is still served', ({
   request,
 }) => servedWithoutMap(request, 'OcpW'));
+
+test('Function: shopOcpPlaceInput — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpIn'));
+
+test('Function: resolveMapPush — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpMp'));
