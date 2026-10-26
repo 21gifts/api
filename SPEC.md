@@ -176,8 +176,8 @@ Public base URLs used in examples:
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+)                   | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+)                   | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)                          | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                                                                                                                                                                                                                                                                                                                                                                          |
-| PATCH  | `/messages/:id/place`                                | Bearer (moderator+)                          | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                |
-| PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)                          | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| PATCH  | `/messages/:id/place`                                | Bearer (moderator+)                          | Set or replace the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)                          | Set or replace the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | PATCH  | `/messages/:id/text`                                 | Bearer (moderator+)                          | Replace the text of a live top-level shop note; the shop tag stays                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)                          | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/messages/:id/edits`                                | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
@@ -4226,7 +4226,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `shopUsername` (JSON string or multipart field) on a shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Required `shopUsername` (JSON string or multipart field) on a top-level shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone on a top-level shop note is 400 `A shop note needs a shop account` after the shop pin checks pass, and nothing is stored. The same blank value on a note that is not a shop stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
@@ -4289,9 +4289,12 @@ or blank label without coordinates still stores no pin. Exactly one
 coordinate set is 400 `Place must be a latitude and longitude`.
 All five address fields blank means no address; any present field requires
 all five (same `Place address is invalid`). A top-level note whose text has
-`#21GiftsShop` and that carries a pin must pass `shopPlaceProblem` then
-`shopTextProblem`; otherwise **400** with that shop error and nothing is
-stored. A shop note without a pin stays allowed.
+`#21GiftsShop` and that has no pin is **400**
+`{ "error": "Shop name is required" }` and nothing is stored, because the
+shop name is the pin label. That check runs before the shop-account check.
+A pin on that note must pass `shopPlaceProblem` then `shopTextProblem`;
+otherwise **400** with that shop error and nothing is stored. A reply, and
+a note that is not a shop, may still omit the pin.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, but never before 2026-11-01, for `goal_term_days` days. A credit that filled on or before 2026-10-31 starts on 2026-11-01. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
@@ -5036,20 +5039,21 @@ gate. Checks run in this order: Bearer session required (**401**
 (**403** `{ "error": "Forbidden" }`); `:id` must match `MESSAGE_ID_RE` or
 the response is **404**; body is JSON via `c.req.json()` and a non-JSON
 body or an object with no `place` key is **400**
-`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null`
-(clears) — a bad coordinate is **400**
+`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null` — a bad coordinate is **400**
 `{ "error": "Place must be a latitude and longitude" }`, a label over 80
 characters is **400** `{ "error": "Place label must be at most 80 characters" }`,
 an invalid structured address is **400**
 `{ "error": "Place address is invalid" }`; a missing or hidden row is
 **404** `{ "error": "Not found" }` and no write; a reply is **400**
 `{ "error": "A reply cannot include a place" }`; a non-shop top-level
-note is **400** `{ "error": "Only a shop note can set a place" }`; for a
-non-null pin `shopPlaceProblem` is **400** with `Shop name is required`,
+note is **400** `{ "error": "Only a shop note can set a place" }`; `null`
+on a live shop note is **400** `{ "error": "Shop name is required" }` and
+nothing is stored, so this route does not clear a shop name; for a pin
+`shopPlaceProblem` is **400** with `Shop name is required`,
 `Shop address is required`, or `Shop name must not contain the address`
 and nothing is stored; then `shopTextProblem` against the stored text is
 **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`
-and nothing is stored. Clearing with `null` skips both shop checks.
+and nothing is stored.
 `setPlace` false → **404**. Store throw → **503**
 `{ "error": "Messages are unavailable" }` and `messages.place.failed`.
 
@@ -5061,9 +5065,10 @@ on a shop with a key queues its OpenCryptoPay place outbox in the same
 write. The sender reads the note when it sends: a listed shop gets PUT to
 `/map/places`, and a shop that is no longer listed (pin and text
 incomplete, pin or till account cleared, hidden or gone, also by a
-concurrent request) gets DELETE. Clearing the pin therefore sends DELETE,
-unless a later write has set a complete shop pin again before the send,
-which then sends one PUT (an incomplete pin set again still gets DELETE).
+concurrent request) gets DELETE. This route does not accept `place: null`,
+so it does not queue a clear. A concurrent store write that drops the pin,
+or a hide, still makes the next send DELETE. A later complete pin before
+the send is one PUT (an incomplete pin set again still gets DELETE).
 Each send carries a new revision, so concurrent edits of one shop reach the
 map in order and the last send matches the last write.
 
@@ -5074,7 +5079,7 @@ Staff assignment of a 21.gifts account on a live top-level shop note
 required. Live role must be at least `moderator`. No rules gate. `:id`
 must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
 `c.req.json()`; a non-JSON body or an object with no `username` key is
-**400** `{ "error": "Invalid body" }`. `username: null` clears. A string
+**400** `{ "error": "Invalid body" }`. After the row is a live top-level shop note, `username: null` is **400** `{ "error": "A shop note needs a shop account" }` and nothing is stored. A missing or hidden row with `username: null` stays **404**. A string
 is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
 invalid username is **400** `{ "error": "Username is not valid" }`.
 Missing or hidden row → **404** `{ "error": "Not found" }` and no write,
@@ -5088,10 +5093,8 @@ is **404** `{ "error": "No account with that username" }`.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
-Success → **200** live public message JSON (optional `shopAccount`
-`{ id, username, name }`, omitted when cleared or when the till account
-has no username, reply count, no hide
-stamps). Logs `messages.shop_account.updated` with `messageId`,
+Success → **200** live public message JSON including `shopAccount`
+`{ id, username, name }` (reply count, no hide stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
 unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
 A real change on a shop with a key queues its OpenCryptoPay place outbox in
