@@ -1,460 +1,230 @@
 # Securing the account
 
-Status: **concept only**. Decided 2026-09-30. Not implemented. No HTTP path in
+Status: **concept only**. Decided 2026-10-27. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
-Recovery does two things, and nothing else:
+This replaces the design of 2026-09-29 and 2026-09-30 (two required people, a
+48-hour wait, a server-side bind key and a seed wrap). None of those parts
+remain.
 
-1. The same 21.gifts account opens on a new device.
-2. The same 12 seed words come back.
+## What recovery does
 
-## Decision
+An owner who lost their passkey gets two things back:
 
-The owner starts this. The owner is the account being secured. Person 1 and
-person 2 are the two chosen people. Those words are not interchangeable. It
-is not a side effect of being verified, and it is not required. The app
-offers **Mein Konto absichern**. The owner may ignore it. Sign-up, login,
-and every other use of the account work with no recovery set. Leaving the
-screen before two people are confirmed stores nothing.
+1. **The same account.** The account id stays, and with it the username, the
+   Lightning address `<username>@<host>`, the profile, the notes and the
+   history. Only the passkey and the wallet key change.
+2. **The original 12 words.** They are put back together on the new phone and
+   used once to move the whole wallet balance to the new wallet.
 
-When the owner continues, that screen explains the two results above, and
-that both chosen people are required. One person cannot reset the account.
-The owner then chooses exactly two people.
+After recovery the account has a new passkey with its own new 12 words. A
+passkey cannot take a given seed: the app derives the 12 words from the PRF
+output of exactly one passkey (`src/lib/prf-mnemonic.ts` in the app, see
+[CONCEPT.md](../CONCEPT.md)). So the old words cannot follow the account to the
+new passkey. They open the old wallet for the move and are then discarded.
+Nothing stores them.
 
-If a moderator has verified the owner, that moderator is suggested as
-person 1. The suggestion is not fixed. The owner can replace it with
-someone else. Person 2 has no suggestion. If nobody has verified the
-owner, both slots start empty.
+## Who holds what
 
-Each chosen person's share stays on that person's phone. 21.gifts does not
-hold a share and cannot reset the account. The server may store a copy of
-a sealed share. It has no key to open one.
+The 16 bytes behind the 12 words are split with SLIP-39: one group, group
+threshold 1, member count 3, member threshold 2, empty passphrase. Any two
+shares give back the same 16 bytes, and BIP-39 of those bytes is the original
+12 words. One share gives nothing.
 
-Both shares are required. There is no third share. A member threshold of 1
-cannot be stored. The SLIP-39 group threshold is 1 because there is one
-group, not because one share is enough.
+| Share | Held by                  | How it travels                        |
+| ----- | ------------------------ | ------------------------------------- |
+| 1     | Person 1, on their phone | QR code, phone to phone               |
+| 2     | Person 2, on their phone | QR code, phone to phone               |
+| 3     | 21.gifts, as a backup    | Open, see [Open points](#open-points) |
 
-Daily login stays a passkey. The passkey private key is not one of these
-shares and never leaves the authenticator. On the new device the recovered
-bytes authorize one new passkey for this account, and they are shown as the
-same 12 words. Those words are the phrase the phone already derives.
-The shop payment in
-[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
-these words and does not deliver to a Spark address. Recovery does not
-move bitcoin.
+- A person's share never reaches the 21.gifts server, sealed or not. The
+  server stores nothing about who protects whom.
+- The 21.gifts share is a backup only. The api never reads, releases or uses
+  it. Using it is a manual 21.gifts process.
+- Any two holders act at once. There is no waiting period and no cancel
+  window. Person 1 and person 2 together can recover the account and move the
+  wallet without the owner. The owner is told this before choosing them.
 
-## Mein Konto absichern
+## Who can use it
 
-The action is offered to a signed-in owner. It is optional. Opening it
-does not create shares, and closing it does not either. The screen
-explains, in order:
+Securing the account is optional. Sign-up, login and every other use work
+without it. It is offered only to an account with a verified wallet
+(`spark_pubkey_verified_at` is set), because the account transfer below is
+proven against that wallet key.
 
-- Both people together can put this account on a new phone and bring back
-  the same 12 words.
-- One of them cannot.
-- The passkey used day to day stays on the owner's phone.
-- Nothing else is recovered or moved.
+## Setting it up
 
-The owner then picks the two people. Person 1 is prefilled with the
-moderator who verified them, when that trust edge exists. Changing person
-1 is a normal choice, not an extra step. The two people must be two
-different 21.gifts accounts, and neither may be the owner. An account
-that cannot log in cannot be chosen.
+The owner opens **Mein Konto absichern** and chooses two people. Setup may
+happen remotely, for example with the QR code shown in a video call.
 
-Choosing the names is not enough, and it stores nothing. There is no set,
-and neither phone stores the ciphertext or the X25519 secret, until both
-readable-proofs are accepted. Those local copies and the owner's upload
-happen together. The set becomes **active** only when both copies are
-stored and that upload has created it. If either phone cannot store its
-copy, or the upload fails, both phones discard the ciphertext and the
-X25519 secret, and the server stores no set. That failure rule is for
-the first set. A failed replacement of a set that is already active
-leaves that set active. The active set becomes **inactive** only later,
-if one of those stored shares is gone. Inactive means a reset cannot
-start.
+1. The owner's phone derives the 12 words as today and splits the 16 bytes
+   into three shares. Before any share leaves the phone, it checks that each
+   of the three pairs gives the same 16 bytes.
+2. The owner's phone shows share 1 as a QR code. Person 1 scans it in the
+   21.gifts app, which keeps it on that phone under the owner's name.
+3. The same for share 2 and person 2.
+4. Share 3 goes to 21.gifts as described under [Open points](#open-points).
 
-## The 12 words
-
-The words are the phrase the phone already derives and never sends. When
-the owner continues past the explanation, their phone derives them again.
-It does not generate a new secret.
-
-1. WebAuthn PRF `eval.first`, salt = SHA-256 of the UTF-8 string
-   `21gifts-nostr-v1`.
-2. HKDF-SHA256, salt = UTF-8 `21gifts-seed-derivation`, info = UTF-8
-   `mnemonic-v1`, 128 bits.
-3. BIP-39 English, 12 words.
-
-That derivation already exists. This document does not change it. The bytes
-are the backup phrase. They are not uploaded. Recovery uses them to open
-this account on a new device and to show the same 12 words. It does not
-move a balance. The shop payment in
-[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
-these words and does not deliver to a Spark address. It is not
-implemented. Recovery does not move bitcoin.
-
-Before any share is given out, the phone reconstructs the shares locally
-and checks that BIP-39 of those bytes is the phrase it just derived. If
-not, it stops.
-
-## What this does not do
-
-Opening the account on a new device and restoring those words is what it
-does. The shop payment in
-[`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
-these words and does not deliver to a Spark address. This recovery does
-not send or receive bitcoin. The passkey private key is not split.
-A new passkey is a new door onto the same account. Deleting the old credential on the server stops the
-old passkey from logging in. It does not erase the secret inside a lost
-phone. The phrase is not replaced with different words. No balance is
-moved. Nothing is published. Verification is not changed, and it does not
-by itself create a share. Skipping **Mein Konto absichern** does not lock
-the account. An account with no set has no social reset. The passkey
-remains the only way in.
-
-## The two shares
-
-One SLIP-39 group. Group count 1. Group threshold 1. Member count 2. Member
-threshold 2. Empty passphrase. Iteration exponent 0. The master secret is
-those 16 bytes. Reconstruction stops there, then BIP-39-encodes them. That
-encoding is the original 12 words. Do not run SLIP-39's conversion of the
-master secret into a BIP-32 seed. That would not be these words.
-
-| Share | Who                           | Where the readable share lives |
-| ----- | ----------------------------- | ------------------------------ |
-| 1     | The person chosen as person 1 | That person's phone            |
-| 2     | The person chosen as person 2 | That person's phone            |
-
-Both shares are required. There is no configuration of `t` or `n`.
-
-Each share is sealed to an X25519 key that person's phone shows, as a QR
-or as hex, to the owner's phone. The owner's phone does not take that
-key from the api. The seal is a libsodium sealed box (`crypto_box_seal`:
-X25519, XSalsa20-Poly1305). The plaintext is one version byte `0x01`, then 32 confirmation bytes from
-the owner's phone, then the UTF-8 SLIP-39 mnemonic of that share (twenty
-words, single ASCII spaces, no trailing newline). Each share has its own
-confirmation. The api may store a copy of that ciphertext. It has no key
-to open it, and it never stores the confirmation.
-
-## Enrollment order
-
-1. The owner opens **Mein Konto absichern** and reads the explanation.
-   Stopping here stores nothing. If the owner continues, they confirm the
-   two people. Person 1 may still be the suggested moderator, or someone
-   else. Confirming the names still stores nothing.
-2. The owner's phone derives the existing 16 bytes, builds the two
-   SLIP-39 shares, and checks that BIP-39 of the reconstruction is the
-   phrase it just derived. It draws a fresh 32-byte confirmation for each
-   share. It derives the Ed25519 bind public key and keeps that public key.
-3. For each chosen person, that phone shows a fresh X25519 public key and
-   an Ed25519 public key, and signs the owner's 32-byte nonce with that
-   Ed25519 key. The owner scans or pastes that payload and verifies the
-   signature. A mismatch aborts the ceremony. The owner seals that
-   person's share, including that share's confirmation, to the scanned
-   X25519 key. That phone holds the ciphertext and the matching X25519
-   secret only in memory, opens the ciphertext once, reads the
-   confirmation, checks the SLIP-39 identifier, discards the share words,
-   and signs a readable-proof that includes the confirmation. The owner's phone accepts the proof only when the
-   signature verifies and the confirmation matches the one it sealed into
-   that share. It then discards that confirmation.
-4. Both people do this on their own phones during this ceremony. If either
-   person is not available, or either phone aborts, both phones discard
-   every provisional ciphertext and the matching X25519 secret. The
-   owner's phone also discards the 16
-   bytes, the bind private key, both share plaintexts, and both
-   confirmations. Nothing is stored. During this enrollment, no share is
-   sealed to a key on the owner's current phone. The ceremony can be
-   started again later. When both
-   proofs have been accepted, the 16 bytes, the bind private key, and the
-   share plaintexts are discarded.
-5. Only after both readable-proofs are accepted do both phones store their
-   ciphertext and the matching X25519 secret together, and the owner's
-   phone uploads the bind public key, the SLIP-39 identifier, and the two
-   ciphertexts. The server never receives an X25519 secret. Those local
-   copies and that upload happen together. The set becomes `active` only
-   when both copies are stored and that upload has created it. If either
-   phone cannot store its copy, or the upload fails, both phones discard
-   the ciphertext and the X25519 secret, and the server stores no set.
-   There is no active set, and a reset cannot start. The ceremony can be
-   started again. This step creates the first set. A failed replacement
-   does not delete a set that already exists. The 16 bytes are not in
-   the upload. Until both proofs are accepted, nothing is stored and a
-   reset cannot start.
-
-The nonce is generated on the owner's phone. The api does not choose it.
-The signed enrollment message is UTF-8, four lines, a newline between the
-lines, no trailing newline:
-
-```text
-21gifts-recovery-person-v1
-<owner account id>
-<person x25519 public key, lowercase hex>
-<nonce, lowercase hex>
-```
-
-The signature is Ed25519 over the SHA-256 of that string. The readable-proof
-is UTF-8, five lines, a newline between the lines, no trailing newline.
-The signature is Ed25519 over the SHA-256 of that string:
-
-```text
-21gifts-recovery-readable-v1
-<owner account id>
-<SLIP-39 identifier, lowercase hex>
-<person ed25519 public key, lowercase hex>
-<confirmation, lowercase hex>
-```
-
-The confirmation is inside the seal and nowhere else. A person who cannot
-open the seal does not learn it, so they cannot produce a proof the owner's
-phone accepts. The proof is not a substitute for the scan. The server does
-not store the confirmation.
-
-Replacing the set uses the same proofs and replaces both shares in one
-step. Shamir shares are not edited in place. Changing either person is a
-full replacement. While that set is still active, it stays active until
-the new upload replaces it. If that upload fails, or either phone cannot
-store its new copy, both phones discard the new copies and the old set
-stays active. A later verification does not move a share and does not
-replace person 1.
-
-A written export of a SLIP-39 share cannot be deleted. Resignation deletes
-the server ciphertext and asks that phone to delete its local copy. The
-owner is told this before confirming the two people. If either share is
-gone after the set is `active`, fewer than two shares remain, the set
-becomes `inactive`, and a reset cannot start until the owner, who can
-still open the phrase with their passkey, runs the ceremony again. The
-new upload waits until both new proofs exist, then replaces the set as
-`active` only when both new copies are stored and that upload has created
-it. This repair starts from a set that is already `inactive`. If either
-phone cannot store its new copy, or the upload fails, both phones
-discard those new copies, and the set stays `inactive`. Until a
-successful upload, the set stays `inactive`.
-
-## What the server may store
-
-No row contains the 16 bytes, a share plaintext, a confirmation, PRF
-output, the 12-word backup, or a passkey private key. Logs follow the same ban. The server
-cannot decrypt a share.
-
-Conceptual records, not a schema migration:
-
-**Recovery set.** Created only by the upload in enrollment step 5, as
-`active`, and only when both phones have stored their copies. A failed
-first upload stores no set. A failed replacement does not write a new
-set: an active set stays active, and an inactive set stays inactive.
-Owner account id. SLIP-39 identifier. Ed25519 bind public key.
-Created time. Status `active`, or `inactive` after one stored share is
-later gone. The account suggested as person 1 is not stored unless that
-person was confirmed.
-
-**Share.** Set id. Chosen person's account id. Ed25519 public key and
-X25519 public key the owner verified by scan. Sealed ciphertext. Time the
-readable-proof succeeded. Exactly two rows while the set is `active`. An
-`inactive` set has fewer than two.
-
-Both people are 21.gifts accounts so the app on those phones can store
-the share and be asked to release it. A chosen person receives nothing
-except that share. `session_refused` cannot enroll, hold a share, or
-recover.
+Choosing other people later means a new setup with three new shares. Shares
+are not edited in place.
 
 ## Recovery
 
-A new phone generates an X25519 keypair and keeps the secret in memory.
-It shows the public key as a QR and as lowercase hex. Both people must
-release their share. Each phone opens its stored ciphertext with the
-X25519 secret it kept, then seals that share only to a key that phone
-scanned from the new phone. It refuses a key that arrived only inside a
-server payload. The server may store the announced public key so a person
-can see a mismatch. It must not offer "use the key on the session". The
-server has no share of its own to release.
+Recovery needs each person to meet the owner **in person**. The owner has a
+new phone with the 21.gifts app.
 
-The short code is 8 characters from `ABCDEFGHJKLMNPQRSTUVWXYZ23456789`.
-It names the recovery to a person. It is not a key and not sufficient to
-release a share.
+1. The owner taps **Account über Social Recovery wiederherstellen**.
+2. The owner's new phone scans the QR code of person 1.
+3. It scans the QR code of person 2.
+4. The app puts the 16 bytes back together, derives the old 12 words, opens
+   the old wallet with them and reads its identity public key. It calls the
+   recovery endpoint with that key. The server finds the account whose
+   verified `spark_pubkey` equals it and returns a fresh, single-use
+   challenge with a short expiry. No account is found for an unverified or
+   unknown key.
+5. The app creates a new passkey for this account, derives the new 12 words
+   from it and opens the new wallet. The new passkey is not linked to the
+   account yet.
+6. One button, **Übertragen**, does three things together:
+   1. The old wallet sends its whole balance to the new wallet, if the balance
+      is above 0.
+   2. The old wallet authorizes the transfer of the Lightning address to the
+      new wallet's identity key (`authorizeLightningAddressTransfer` in the
+      Breez SDK), and the new wallet claims it
+      (`claimLightningAddressTransfer`).
+   3. The old wallet signs the recovery message (`signMessage` in the Breez
+      SDK). The server checks it and transfers the account.
 
-The new phone reconstructs the 16 bytes from both shares. It derives the
-bind key locally and checks the signature against the stored bind public
-key before uploading anything. A mismatch discards the material and
-uploads nothing.
+The account transfer in step 6.3 is the only step that changes the account.
+The app runs it last, so the account moves after the wallet has moved.
 
-The bind private key is Ed25519. Its 32-byte seed is HKDF-SHA256 with
-input keying material the 16 bytes, salt the UTF-8 string
-`21gifts-account-recovery`, info the UTF-8 string `bind-v1`, and length 32. This key only authorizes the new passkey.
+### The recovery message
 
-The bind message is UTF-8, four lines, a newline between the lines, no
-trailing newline:
-
-```text
-21gifts-account-recovery-bind-v1
-<owner account id>
-<recovery session id>
-<new passkey credential id, lowercase hex>
-```
-
-The signature is Ed25519 over the SHA-256 of that string. The server
-accepts it only together with a new passkey attestation for this
-relying party, user verification required, the user id equal to the
-account id, and the wrap described below. The body must not contain PRF
-results.
-
-Before that request, the new phone wraps the 16 bytes under the new
-passkey and decrypts the wrap locally. HKDF-SHA256, salt UTF-8
-`21gifts-seed-derivation`, info UTF-8 `seed-wrap-v1`, 32 bytes. That info
-must not equal `mnemonic-v1`. AES-256-GCM, 12-byte nonce, additional data
-the UTF-8 account id, plaintext the 16 bytes. The blob is version `0x01`,
-the nonce, the ciphertext, and the tag: 45 bytes. The local decrypt must
-yield the same 16 bytes. If the new passkey returns no PRF, or the local
-decrypt does not match, the phone does not send the bind. The session
-stays `ready`. Existing credentials stay. The phone must not show
-`mnemonic-v1` of the new passkey instead.
-
-When the local decrypt matches, the phone shows the 12 words from those
-bytes and sends the bind, the attestation, and the wrap together. The
-server, in one transaction, stores the new credential, stores the wrap,
-deletes every other credential for the account, marks the session
-completed, and cancels sibling sessions. On failure it stores nothing,
-leaves the session `ready` until it expires, and leaves existing
-credentials in place. The refused "replace the phrase" behaviour is
-unchanged. This path restores the same phrase. It does not write a
-different one.
-
-The server cannot read the wrap. Showing the words later unwraps it and
-BIP-39-encodes the bytes.
-
-The wait is 48 hours from the start of the recovery, even if both shares
-arrive in the first minute, and even if some passkey is still logged in.
-The only instant path is a passkey that already logs in. An existing
-passkey cancels the recovery immediately. The new phone can abandon its
-own session and discard the ephemeral secret.
-
-A session that is not completed or cancelled expires 7 days after
-creation. At most 3 recoveries may be started for one account in any
-rolling 24 hours. The first one to complete cancels the others.
-
-The server does not need the 16 bytes to check the bind. It verifies the
-signature under the bind public key stored at enrollment.
-
-## If the service is gone
-
-The two phones still hold their sealed shares. Those two people can
-reconstruct the 12 words without the server. Binding a new passkey needs
-the service to be up, because the account lives there. The reconstruction
-itself does not.
-
-Losing both phones, with no export, loses this recovery. A paper copy of
-the 12 words is the same phrase, not a different secret.
-
-## State machine
+UTF-8, five lines, a newline between the lines, no trailing newline:
 
 ```text
-no set
-  │ never opened, left before two people are confirmed, or a readable
-  │ proof is still missing (stores nothing)
-  └── stays here
-
-no set
-  │ both readable-proofs accepted
-  │ both phones store their copies, and the owner uploads
-  ▼
-active ──────── one share gone, or resignation ────────► inactive
-
-active
-  │ replacement of both shares fails
-  │ both phones discard the new copies
-  └── stays here
-
-no set
-  │ either phone cannot store its copy, or the upload fails
-  │ both phones discard the copies; the server stores no set
-  └── stays here
-
-inactive
-  │ ceremony again, both new readable-proofs accepted
-  │ both phones store their copies, and the owner uploads
-  ▼
-active
-
-inactive
-  │ either new copy cannot be stored, or that upload fails
-  │ both phones discard the new copies
-  └── stays here
-
-active recovery, only from active:
-draft (15 min, no account yet)
-        │ bind by username, or by a chosen person who selects the owner
-        ▼
-     pending ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │ 48h elapsed and both shares released
-        ▼
-      ready ────── owner passkey cancel, or device abandon, or sibling completed ──► cancelled
-        │ bind, wrap, and new passkey verify together
-        ▼
-    completed
-
-pending or ready, 7 days after creation, not completed ──► expired
+21gifts-account-recovery-v1
+<account id>
+<challenge, lowercase hex>
+<new passkey credential id, base64url>
+<new wallet identity public key, lowercase hex>
 ```
 
-No set, and an inactive set, have no transition into `pending`. A passkey
-that still works is the cancel path during the 48 hours.
+The server accepts it only when:
+
+- the public key returned by `signMessage` equals the account's verified
+  `spark_pubkey`,
+- the signature verifies for that key and this exact message,
+- the challenge was issued for this account, is unused and has not expired,
+- the request carries a valid attestation of the new passkey with that
+  credential id, user verification required, and the user id equal to the
+  account id.
+
+Then, in one transaction, the server:
+
+- stores the new passkey credential,
+- deletes every other passkey credential and every session of the account,
+- keeps the old `spark_pubkey` and `spark_address` as the account's
+  **previous wallet**,
+- stores the new identity key as `spark_pubkey` and its `spark_address`,
+- marks the challenge used.
+
+The new key counts as verified once the LNURL server has accepted the claimed
+Lightning address, as it does today for a registration. The username stays.
+On any failure nothing changes, and the old passkey credentials stay.
+
+### If not everything succeeds
+
+The button can be pressed again while the app still holds the old words in
+memory. Once the app is closed, the words are gone.
+
+- **The account did not move.** The two QR codes are scanned again and
+  recovery runs again from step 1.
+- **The account moved, but the balance or the Lightning address did not.** The
+  settings show the previous wallet with its balance and a button **Restguthaben
+  übertragen**. It needs the two QR codes again and then repeats steps 6.1 and
+  6.2 only. The balance is read live from the public Spark explorer API by the
+  previous `spark_address`, and the last reported `wallet_balance_snapshot`
+  is shown with its date when that is not reachable. Payments that reach the
+  old wallet before the Lightning address moved are swept the same way.
+
+The previous wallet is dropped when its balance is 0 and the owner confirms.
+An old key is never used to move the account again: after recovery, step 4
+only finds an account by its current verified key.
+
+## After recovery
+
+The old shares now rebuild only the old wallet, which is empty once moved.
+The app asks the owner to set up new shares for the new 12 words, with the
+same or other people.
+
+## What the server stores
+
+No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
+
+- The new passkey credential, as for any passkey.
+- `spark_pubkey` and `spark_address` of the current and, until it is dropped,
+  the previous wallet.
+- Recovery challenges: random value, account id, expiry, used flag.
+
+## Security
+
+- **Two people together** can recover the account and move the wallet at
+  once. The owner chooses them knowing this.
+- **One person** cannot. A single share reveals nothing.
+- **The server alone** cannot. It holds no readable share and cannot sign
+  with the wallet key.
+- **21.gifts and one person** can, through the manual backup process only.
+- **A stranger with a fake QR code** has to stand in front of the person,
+  because recovery happens in person.
+- **A replayed signature** is refused: the message binds the account, a
+  single-use challenge, the new passkey and the new wallet key.
+
+## Open points
+
+- **21.gifts share custody.** Proposal: the owner's phone seals share 3 to a
+  21.gifts offline public key that ships with the app, so the running api can
+  never read it. Where the ciphertext lives, who at 21.gifts may open it
+  (four eyes), how the requester and the participating person are identified,
+  and how the share reaches the new phone (by QR code) are not decided.
+- **Where a person keeps their share.** The app keeps it in browser storage,
+  which a browser can delete (for example Safari's limit for sites that are
+  not installed, or "clear website data"). A printed QR code as a second copy
+  and a reminder in the app are proposed.
+- **Remote setup.** A QR code shown in a video call can be swapped. A short
+  confirmation code that both phones show is proposed.
+- **Signature scheme.** `signMessage` returns `{ pubkey, signature }` and has
+  a matching `checkMessage`. The exact scheme (message hashing, compact or
+  DER signature) must be pinned with a test vector before the server
+  verifies it.
+- **Lightning address transfer.** Which path of the self-hosted LNURL server
+  the claim uses, and that the api's LNURL relay forwards it, must be checked.
+- **Accounts with both a login passkey and a seed passkey.** Which words are
+  protected, and that step 6.3 removes both old credentials, must be stated
+  for that case.
 
 ## Acceptance criteria for a later implementation
 
-- Both shares reconstruct the original 16 bytes, and BIP-39 of those
-  bytes is the original 12 words. One share does not.
-- Those bytes authorize a new passkey on the same account and are the
-  same 12 words. The shop payment in
-  [`docs/shop-stablecoin-payment.md`](./shop-stablecoin-payment.md) does not read
-  these words and does not deliver to a Spark address. Recovery does
-  not send or receive bitcoin.
-- **Mein Konto absichern** is optional. The account works with no
-  recovery set. Closing the screen before two people are confirmed stores
-  nothing. Continuing explains the two results, then asks for two people.
-  Person 1 starts as the verifying moderator when one exists, and the
-  owner can replace that suggestion.
-- A fixed moderator, or a share held by the service, cannot be stored.
-- The owner's phone will not seal a share to a key that came from the
-  api.
-- Before both readable-proofs are accepted, nothing is stored, including
-  on the chosen people's phones, and a reset cannot start.
-- The local copies and the owner's upload happen together. The set
-  becomes active only when both copies are stored and the upload has
-  created it. If either phone cannot store its copy, or the upload fails,
-  both phones discard the ciphertext and the X25519 secret, the server
-  stores no set, and a reset cannot start. That is the first set. A
-  failed replacement of a set that is still active discards the new
-  copies and leaves the old set active. A failed repair of a set that is
-  already inactive leaves it inactive. Partial copies are discarded in
-  that same step. They are not kept for a later retry.
-- The new passkey, the wrap, and completion are written together. A
-  missing PRF, or a failed write, leaves the session `ready` and leaves
-  existing credentials in place.
-- The owner's phone rejects a readable-proof whose confirmation was not
-  inside that share's seal. During enrollment, a share is not sealed to
-  a key on the owner's current phone. During recovery, each chosen phone
-  opens its share and seals it to the key scanned from the new phone.
-  Each chosen phone stores the X25519 secret with the ciphertext. The
-  server never receives that secret.
-- A body that contains PRF results is rejected.
-- Replacing the phrase with different words stays refused.
-- After recovery, showing the words unwraps the stored wrap. It does not
-  derive a new phrase from the new passkey.
-- No row and no log contains the 16 bytes, a share plaintext, or a
-  confirmation.
-- Completing one recovery cancels the other open ones for that account.
-- The two people can reconstruct the 12 words from the copies on their
-  phones with the server offline.
+- Each pair of the three shares rebuilds the original 16 bytes and 12 words.
+  One share does not.
+- A person's share never appears in a request to the api.
+- The api has no path that reads, returns or uses the 21.gifts share.
+- Recovery without a valid signature by the account's verified `spark_pubkey`
+  changes nothing.
+- A used or expired challenge is refused.
+- A successful recovery leaves exactly one passkey credential, no old
+  session, the new wallet key as `spark_pubkey`, and the old key as the
+  previous wallet.
+- The username and the Lightning address stay the same.
+- The old key cannot start a second account transfer.
+- No row and no log contains the 12 words, the 16 bytes, a share or PRF
+  output.
 
 ## Out of scope here
 
-- Anything other than account access on a new device and the same 12
-  words.
-- Any route, table, screen, or migration.
+- Any route, table, screen or migration.
 - Splitting the passkey private key.
-- Requiring **Mein Konto absichern** before sign-up, login, or any other
-  use of the account.
-- A share held by 21.gifts, a fixed moderator, or a threshold other than
-  both chosen people.
-- A SLIP-39 passphrase or a second Shamir group.
-- Remote wipe of a lost authenticator.
-- Recovery of an external Lightning wallet.
+- On-chain multisig. This is Shamir secret sharing of the seed.
+- Requiring **Mein Konto absichern** for sign-up, login or any other use.
+- Moving funds of an external Lightning wallet.
