@@ -81,7 +81,7 @@ import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
-import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
+import { SHOP_NAME_REQUIRED, shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
 import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
@@ -883,9 +883,6 @@ async function frozenAskResponse(
 
 /** A top-level shop note must name its 21.gifts account. */
 const SHOP_ACCOUNT_REQUIRED = 'A shop note needs a shop account';
-
-/** A top-level shop note must have a shop name (the pin label). */
-const SHOP_NAME_REQUIRED = 'Shop name is required';
 
 /**
  * Resolve `shopUsername` before a note is created.

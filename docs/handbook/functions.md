@@ -3377,6 +3377,14 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 - **Returns / side effects:** Description string for the OpenCryptoPay map, the shop kind 0 `about`, and the `description` of `GET /shops/:npub`. No I/O.
 - **Used by:** `shopTextProblem`, `shopOcpPlaceInput`, shop kind 0 `about` (`shopKind0Args`), and `shopRoutes` (`description`).
 
+## Function: SHOP_NAME_REQUIRED
+
+- **Purpose:** Caller-visible error when a shop note has no shop name. The shop name is the pin label. One string serves every check that rejects a missing name.
+- **Value:** The text `Shop name is required`.
+- **Used by:** `shopPlaceProblem` when the label is missing or blank, `POST /messages` when a top-level shop has no pin, and `PATCH /messages/:id/place` when `place` is null.
+
+A missing pin and an empty label tell the caller the same thing. The create and place routes import this export instead of keeping a second copy of the sentence.
+
 ## Function: shopPlaceProblem
 
 - **Purpose:** Name and address problems of a shop pin, or null when both are complete. Order: name required, then address required, then the label must not contain the street or postal code as a standalone token.

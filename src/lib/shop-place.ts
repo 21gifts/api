@@ -16,7 +16,8 @@ export const SHOP_DESCRIPTION_MIN = 20;
 /** Maximum shop description length after the shop tag is stripped. */
 export const SHOP_DESCRIPTION_MAX = 1000;
 
-const SHOP_NAME_REQUIRED = 'Shop name is required';
+/** Caller-visible error when a shop note has no shop name. */
+export const SHOP_NAME_REQUIRED = 'Shop name is required';
 const SHOP_NAME_CONTAINS_ADDRESS = 'Shop name must not contain the address';
 const SHOP_ADDRESS_REQUIRED = 'Shop address is required';
 const SHOP_DESCRIPTION_RANGE =

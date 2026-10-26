@@ -3,6 +3,7 @@ import type { ForumPlace } from '@/lib/place';
 import {
   SHOP_DESCRIPTION_MAX,
   SHOP_DESCRIPTION_MIN,
+  SHOP_NAME_REQUIRED,
   shopDescription,
   shopPlaceProblem,
   shopTextProblem,
@@ -52,7 +53,10 @@ describe('shopDescription', () => {
 
 describe('shopPlaceProblem', () => {
   it('requires a non-blank name before it requires an address', () => {
-    expect(shopPlaceProblem({ lat: 1, lng: 2, label: null, address: null })).toBe(NAME_REQUIRED);
+    expect(SHOP_NAME_REQUIRED).toBe(NAME_REQUIRED);
+    expect(shopPlaceProblem({ lat: 1, lng: 2, label: null, address: null })).toBe(
+      SHOP_NAME_REQUIRED,
+    );
     expect(shopPlaceProblem({ lat: 1, lng: 2, label: '   ', address: ADDRESS })).toBe(
       NAME_REQUIRED,
     );
