@@ -2352,7 +2352,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Encode one length-delimited protobuf field (wire type 2): tag, varint length, then the bytes. Strings are written as UTF-8; embedded messages are passed as their serialised bytes.
 - **Inputs:** Field number and a `Uint8Array` or string.
 - **Returns / side effects:** Tag, length, and value bytes. No I/O.
-- **Used by:** `encodeSparkInvoice`, `encodeQuerySparkInvoicesRequest`.
+- **Used by:** `encodeSparkInvoice`, `encodeQuerySparkInvoicesRequest`, `encodeSparkAddress`.
 
 ## Function: decodeProto
 
@@ -4189,8 +4189,8 @@ The constant is the upper bound of the 20–1000 character rule on a shop with a
 ## Function: encodeSparkAddress
 
 - **Purpose:** Encode a wallet identity public key as its mainnet Spark address: bech32m with prefix `spark` over protobuf `SparkAddress { 1: identity_public_key }`, with no invoice fields and no signature. The address depends only on the key.
-- **Inputs:** Compressed identity public key, 66 lower-case hex characters.
-- **Returns / side effects:** The `spark1…` address (68 characters). Throws when the key is not 33 bytes of lower-case hex. No I/O.
+- **Inputs:** Compressed identity public key, 66 hex characters (callers pass the lower-case key that the route and the `account_spark_pubkey_chk` CHECK enforce; `hex.decode` also accepts upper case).
+- **Returns / side effects:** The `spark1…` address (68 characters). Throws when the key is not 33 bytes of hex. No I/O.
 - **Used by:** `PostgresAuthStore.claimSparkPubkey` (writes `account.spark_address` with the key) and `backfillSparkAddresses`.
 
 ## Function: parseWalletReport

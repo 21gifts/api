@@ -34,9 +34,9 @@ type BytesField = Extract<ProtoField, { wire: 2 }>;
  * `SparkAddress { 1: identity_public_key }` with no invoice fields and no
  * signature, so it is a pure function of the key.
  *
- * @param identityPublicKey - Compressed Spark identity public key as 66 lower-case hex characters.
+ * @param identityPublicKey - Compressed Spark identity public key as 66 hex characters.
  * @returns `spark1…` address (68 characters).
- * @throws Error when the key is not 33 bytes of lower-case hex.
+ * @throws Error when the key is not 33 bytes of hex.
  */
 export function encodeSparkAddress(identityPublicKey: string): string {
   const identity = hex.decode(identityPublicKey);

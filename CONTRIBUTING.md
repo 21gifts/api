@@ -540,7 +540,7 @@ Every HTTP endpoint **must** have at least one Playwright request against a
 booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
-the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `QueryGiftStore`,
+the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey`, whose route also needs the LNURL server, and `backfillSparkAddresses`), `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`, `PostgresFxSpotStore`, `migrateFxSpotSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
