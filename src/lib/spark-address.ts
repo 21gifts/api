@@ -1,4 +1,4 @@
-/** Encode and decode Spark addresses and invoices for the wallet identity fields used by the api. */
+/** Encode Spark addresses, and decode Spark addresses and invoices into the wallet identity fields used by the api. */
 
 import { bech32m, hex } from '@scure/base';
 import { decodeProto, protoBytesField, type ProtoField } from '@/lib/protobuf';
