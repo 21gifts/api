@@ -176,7 +176,7 @@ api/
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── login-gate.ts     # LoginGate (login switch, allowlist, platform account), LOGINS_OPEN_DEFAULT and APP_BUILD_REQUIRED resolvers, X-App-Build check
 │   │   ├── login-gate-store.ts # LoginGateStore port, InMemory/Postgres adapters, LOGIN_GATE_SCHEMA_SQL (app_setting + login_allowlist)
-│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column except the legacy `account.lightning_address` / `lightning_address_verified` and the derived `account.spark_address`; envelope hex, never decrypt)
+│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (operator projections; `account` rows leave out the legacy `lightning_address` / `lightning_address_verified` and the derived `spark_address`; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
@@ -610,7 +610,8 @@ default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAc
 repayment bill of a loan, and a loan is a post, which needs a verified wallet (their tests assert
 posting 409 `missing: ['lightning-address']`);
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
-`concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
+`concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL`) or when free in-app payments are on;
+`protoVarintField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
 `startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments

@@ -471,9 +471,7 @@ test('Function: backfillAccountUsernames — GET /healthz is ok after boot backf
   expect(res.status()).toBe(200);
 });
 
-test('Function: backfillSparkAddresses — GET /healthz is ok after boot backfill', async ({
-  request,
-}) => {
+test('Function: backfillSparkAddresses — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
