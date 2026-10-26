@@ -140,8 +140,8 @@ export interface AppDeps {
    * `PUT /debug/messages/:id/video`, `POST /debug/messages/:id/restore`,
    * `GET /debug/external-pubkeys`, `GET /debug/accounts/:id`,
    * `GET /debug/trust-edges`, `GET /debug/dump`, `GET /debug/dump/:table`,
-   * `POST /debug/trust-edges`, `POST /debug/shop-notes`, and
-   * `POST /debug/passkey-renew/reopen`
+   * `POST /debug/trust-edges`, `POST /debug/shop-keys`,
+   * `POST /debug/shop-notes`, and `POST /debug/passkey-renew/reopen`
    * return 503. `GET /debug/db` returns 503 when this token and
    * `debugReadToken` are both unset or blank.
    */

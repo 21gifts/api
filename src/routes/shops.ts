@@ -243,7 +243,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
             entry = (await nip05Directory(deps.authStore, stores, now(), true)).shops.get(note.id);
           }
           if (entry === undefined || entry.name !== shop.name) {
-            // Renamed or unlisted between the note read and the allocation.
+            // Renamed or no longer public between the note read and the allocation.
             if (round < READ_ROUNDS) {
               read = await deps.messages.getById(identity.messageId);
               continue;
@@ -256,7 +256,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
         const set = await deps.messages.getPhotoSet(note.id);
         const after = await deps.messages.getById(identity.messageId);
         if (shopListingFingerprint(after) !== shopListingFingerprint(note)) {
-          // Renamed, rewritten, re-pinned or unlisted while the photos were read.
+          // Renamed, rewritten, re-pinned or no longer public while the photos were read.
           if (round < READ_ROUNDS) {
             read = after;
             continue;

@@ -3564,7 +3564,7 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: listedShop
 
-- **Purpose:** The single "listed shop" rule of `docs/shop-identity.md`: a live (`deletedAt` null), top-level note with the `#21GiftsShop` token (same rule as `GET /shops/activity`), a pin, a till account, and complete under `shopPlaceProblem` and `shopTextProblem`.
+- **Purpose:** A map-complete shop, not the directory rule in `docs/shop-identity.md`: a live (`deletedAt` null), top-level note with the `#21GiftsShop` token (same rule as `GET /shops/activity`), a pin, a till account, and complete under `shopPlaceProblem` and `shopTextProblem`.
 - **Inputs:** A note with `parentId`, `deletedAt`, `text`, optional `place` and optional `shopAccount`, or `undefined`.
 - **Returns / side effects:** `{ name, place: { lat, lng, label, address }, tillAccountId }` with the address always present, or `null`. No I/O.
 - **Used by:** `listedShopName`, `isListedShop`, and the place outbox sender. The directory, the shop page, NIP-05 and the shop kind 0 use `publicShop`.

@@ -1447,7 +1447,7 @@ function shopCache<T>(
   return created;
 }
 
-/** Kind 0 `about` of a shop that is no longer listed. */
+/** Kind 0 `about` of a shop that is no longer public. */
 const SHOP_UNLISTED_ABOUT = 'This shop is no longer listed on 21.gifts.';
 
 /** Kind 0 name of a shop whose note is hidden or deleted. */

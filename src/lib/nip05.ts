@@ -337,14 +337,14 @@ export interface Nip05Directory {
   /** Account entries by local part (stored usernames are unique, so one entry per local). */
   accountsByLocal: ReadonlyMap<string, Nip05Entry>;
   /**
-   * Listed shop entries by local part. Shop locals are unique among shops;
+   * Public shop entries by local part. Shop locals are unique among shops;
    * one that equals an account local is still listed here and never served
    * over the account ({@link buildNostrJson}).
    */
   shopsByLocal: ReadonlyMap<string, ShopNip05Entry>;
 }
 
-/** Shop identities and the forum store that decides whether a shop is listed. */
+/** Shop identities and the forum store that decides whether a shop is public. */
 interface Nip05ShopStores {
   identities: ShopIdentityStore;
   messages: MessageStore;

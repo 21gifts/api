@@ -50,7 +50,7 @@ export interface ShopIdentityRow {
   nostrKeyCustody: 'custodial' | 'user';
   /** Insert time of the key. */
   nostrKeyCreatedAt: Date;
-  /** Shop name while it was last listed. */
+  /** Shop name while it was last public. */
   profileName: string;
   /** SHA-256 of the photo set OpenCryptoPay last answered, or `null`. */
   ocpPhotosHash: string | null;
@@ -932,7 +932,8 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   readonly #seen = new Map<string, { place: string; photos: string }>();
 
   /**
-   * @param messages - Forum store whose notes decide whether a shop is listed.
+   * @param messages - Forum store. Keys follow `publicShop`. Photo
+   *   queueing follows `isListedShop`.
    * @param now - Lease clock in epoch ms (default `Date.now`).
    */
   constructor(messages: MessageStore, now: () => number = Date.now) {
@@ -1490,7 +1491,8 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
 
   /**
    * @param sql - Shared SQL client.
-   * @param messages - Forum store for the listed check in code.
+   * @param messages - Forum store. Keys follow `publicShop` in code.
+   *   Photo queueing follows `isListedShop`.
    */
   constructor(sql: SqlClient, messages: MessageStore) {
     this.#sql = sql;

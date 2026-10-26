@@ -165,7 +165,7 @@ New table `shop_identity`. The key columns have the same names as on
 | `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                         |
 | `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                       |
 | `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                    |
-| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is listed (1)             |
+| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is public (1)             |
 | `ocp_photos_hash`          | `text NULL`            | SHA-256 of the photo set last answered by S5                     |
 | `ocp_photos_pending`       | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)                        |
 | `ocp_photos_generation`    | `integer NOT NULL`     | Default `0`; raised by every S5 trigger                          |
@@ -178,11 +178,11 @@ New table `shop_identity`. The key columns have the same names as on
 | `ocp_revision`             | `bigint NOT NULL`      | Default `0`; raised for every request sent to OpenCryptoPay (S5) |
 
 (1) Written on insert, by every write path that calls `ensureListed` while
-the note is listed, and by the worker before it publishes a listed shop's
+the note is public, and by the worker before it publishes a public shop's
 kind 0. The worker writes through `renameIfListed` with the note it read,
 under the same note lock and unchanged-columns condition as `ensureListed`,
 so a tick that read the note before a newer rename committed cannot put the
-older name back (which the kind 0 of a shop that is later unlisted would
+older name back (which the kind 0 of a shop that is no longer public would
 otherwise keep).
 
 The operator dump (`GET /debug/dump/shop_identity`) shows every column
