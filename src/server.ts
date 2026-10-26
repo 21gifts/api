@@ -49,6 +49,7 @@ import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { pushRoutes } from '@/routes/push';
 import { debugPushRoutes } from '@/routes/debug-push';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
+import { debugShopKeyRoutes } from '@/routes/debug-shop-keys';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { trustChainRoutes } from '@/routes/trust-chain';
@@ -639,6 +640,15 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/debug/passkey-renew',
     debugPasskeyRenewRoutes({
       authStore: store,
+      debugToken,
+    }),
+  );
+  app.route(
+    '/debug/shop-keys',
+    debugShopKeyRoutes({
+      identities: shopIdentityStore,
+      messages: messageStore,
+      kek: shopKek,
       debugToken,
     }),
   );

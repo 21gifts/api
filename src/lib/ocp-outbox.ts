@@ -12,7 +12,10 @@
  * `revision` of the shop's shared counter. The worker decides at send time
  * from the note as it is then: a listed shop gets `PUT /map/places`, a
  * public shop that is not listed clears its place flag and sends nothing,
- * and anything that is no longer public gets `DELETE /map/places`.
+ * and anything that is no longer public gets `DELETE /map/places` only
+ * after this outbox has sent the place (`ocpRevision` greater than 0). A
+ * key that has never been sent, including one adopted from OpenCryptoPay,
+ * is not deleted.
  */
 
 import { createHash } from 'node:crypto';
@@ -131,7 +134,9 @@ function send(
  * Send one claimed place: `PUT` with `nostrPubkey` and `revision` for a
  * listed shop. A public shop that is not listed clears the place flag and
  * sends nothing. Anything that is no longer public resets the photo state
- * and `DELETE`s.
+ * and `DELETE`s, except a key this outbox has never sent (`ocpRevision`
+ * is 0): that flag is cleared and nothing is sent, so an adopted
+ * OpenCryptoPay place is not deleted.
  */
 async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void> {
   const { identities } = deps;
@@ -161,6 +166,11 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
       ...input,
       nostrPubkey: identity.nostrPubkey,
     };
+  } else if (identity.ocpRevision === 0) {
+    // This outbox has never sent the place. Do not DELETE a map row it
+    // did not create. An adopted OpenCryptoPay key starts at revision 0.
+    await identities.finishPlace(claim, 'reject');
+    return;
   } else {
     await identities.resetPhotosForDelete(claim);
     body = { origin: '21gifts', externalId: messageId };

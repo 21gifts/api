@@ -48,7 +48,10 @@ without the address) and `shopTextProblem` (description) both return
 PUT. A public shop that is not listed stays in the directory. The place
 sender clears its place flag and does not PUT and does not DELETE, so a
 shop that never had a complete address is not created on the map. A keyed
-shop that is no longer public is deleted from the map.
+shop that is no longer public is deleted from the map only after this
+outbox has sent the place (`ocp_revision` greater than 0). A key that has
+never been sent, including one adopted from an existing OpenCryptoPay
+identity, is not deleted.
 
 The shop description is the note text without the `#21GiftsShop` token
 (`shopDescription`). The map rules come from 21gifts/api#478.
@@ -57,6 +60,13 @@ The shop description is the note text without the `#21GiftsShop` token
 
 - One random key per shop note, from the same `generateSecretKey()` path as
   account keys (`src/lib/nostr/keys.ts`). No master seed, no derivation.
+- A shop whose Nostr key already exists at OpenCryptoPay is not given a
+  second key. `shopKeyMustBeAdopted` names those notes. `ensureListed` and
+  the backfill leave them without a row until `POST /debug/shop-keys`
+  stores that same secret through `adoptKnownSecret`. The public key is the
+  one already on the map. The insert does not queue a place push. The
+  secret is the raw key, encrypted with the shop KEK under the AAD
+  `shop:<messageId>`. It is not derived and not invented.
 - The key is created after the commit of any write that makes a note a
   public shop for the first time: `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,

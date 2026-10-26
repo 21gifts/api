@@ -10,6 +10,7 @@ import {
   PostgresShopIdentityStore,
   SHOP_IDENTITY_SCHEMA_SQL,
   migrateShopIdentitySchema,
+  shopKeyMustBeAdopted,
   shopNpub,
   type ShopIdentityRow,
   type ShopOcpClaim,
@@ -80,6 +81,156 @@ describe('shopNpub', () => {
   it('encodes the stored hex key as npub', () => {
     const hex = publicKeyHexFromSecret(secret(2));
     expect(shopNpub({ nostrPubkey: hex })).toBe(nip19.npubEncode(hex));
+  });
+});
+
+const ADOPTED_ID = '0cc5c2eb-aaf1-4f36-be26-f1b967e7bbe5';
+
+describe('shopKeyMustBeAdopted', () => {
+  it('names only the shops whose key already exists', () => {
+    expect(shopKeyMustBeAdopted(ADOPTED_ID)).toBe(true);
+    expect(shopKeyMustBeAdopted(ID_A)).toBe(false);
+    expect(shopKeyMustBeAdopted(ADOPTED_ID.toUpperCase())).toBe(false);
+  });
+});
+
+describe('adoptKnownSecret', () => {
+  it('stores the supplied secret and does not mint another one', async () => {
+    const { messages, store, clock } = setup([shopRow(ADOPTED_ID)]);
+    expect(await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(9))).toBeUndefined();
+    expect(await store.listAll()).toEqual([]);
+    const first = await store.adoptKnownSecret(ADOPTED_ID, secret(4), KEK);
+    expect(first).toMatchObject({
+      messageId: ADOPTED_ID,
+      nostrPubkey: publicKeyHexFromSecret(secret(4)),
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      profileName: 'Coffee Lab',
+      ocpPlacePending: false,
+      ocpPlaceGeneration: 0,
+      ocpRevision: 0,
+    });
+    expect(first.nostrKeyCreatedAt.getTime()).toBe(clock.now);
+    const plain = await decryptNostrSecret(first.nostrNsecCiphertext, KEK, `shop:${ADOPTED_ID}`);
+    expect([...plain]).toEqual([...secret(4)]);
+    expect((await messages.getById(ADOPTED_ID))?.shopNpub).toBe(shopNpub(first));
+    const again = await store.adoptKnownSecret(ADOPTED_ID, secret(4).slice(), KEK);
+    expect(again.nostrNsecCiphertext).toEqual(first.nostrNsecCiphertext);
+    expect((await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(9)))?.nostrPubkey).toBe(
+      first.nostrPubkey,
+    );
+    expect((await store.getByMessageId(ADOPTED_ID))?.ocpPlacePending).toBe(false);
+  });
+
+  it('keeps a pin label when the note is not a public shop', async () => {
+    const { store } = setup([
+      shopRow(ID_A, { text: 'No shop tag in this long enough note.', shopAccount: null }),
+    ]);
+    const row = await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(row.profileName).toBe('Coffee Lab');
+    expect(row.ocpPlacePending).toBe(false);
+  });
+
+  it('uses Shop when the note has no public name and no label', async () => {
+    const blank = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 1, lng: 2, label: '   ', address: null },
+      }),
+    ]);
+    expect((await blank.store.adoptKnownSecret(ID_A, secret(4), KEK)).profileName).toBe('Shop');
+    const missing = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: null,
+      }),
+    ]);
+    expect((await missing.store.adoptKnownSecret(ID_A, secret(4), KEK)).profileName).toBe('Shop');
+  });
+
+  it('refuses a missing note, a bad secret, a different key and a shared key', async () => {
+    const { store } = setup([shopRow(ID_A), shopRow(ID_B)]);
+    await expect(store.adoptKnownSecret(ID_C, secret(4), KEK)).rejects.toThrow(
+      'shop note not found',
+    );
+    await expect(store.adoptKnownSecret(ID_A, secret(4).slice(0, 31), KEK)).rejects.toThrow(
+      '32 bytes',
+    );
+    await expect(store.adoptKnownSecret(ID_A, new Uint8Array(32), KEK)).rejects.toThrow(
+      'Invalid Nostr secret',
+    );
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await expect(store.adoptKnownSecret(ID_A, secret(5), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect((await store.getByMessageId(ID_A))?.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    await expect(store.adoptKnownSecret(ID_B, secret(4), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect(await store.getByMessageId(ID_B)).toBeUndefined();
+  });
+
+  it('returns the key stored while its own fingerprint was being read', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const box: { store: InMemoryShopIdentityStore } = {
+      store: undefined as unknown as InMemoryShopIdentityStore,
+    };
+    let nested = false;
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: async (id: string) => {
+        const set = await messages.getPhotoSet(id);
+        if (!nested) {
+          nested = true;
+          await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+        }
+        return set;
+      },
+    } as unknown as MessageStore;
+    box.store = new InMemoryShopIdentityStore(wrapped);
+    const row = await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(row.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    expect(await box.store.listAll()).toHaveLength(1);
+  });
+
+  it('refuses a different key stored while its own fingerprint was being read', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const box: { store: InMemoryShopIdentityStore } = {
+      store: undefined as unknown as InMemoryShopIdentityStore,
+    };
+    let nested = false;
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: async (id: string) => {
+        const set = await messages.getPhotoSet(id);
+        if (!nested) {
+          nested = true;
+          await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+        }
+        return set;
+      },
+    } as unknown as MessageStore;
+    box.store = new InMemoryShopIdentityStore(wrapped);
+    await expect(box.store.adoptKnownSecret(ID_A, secret(5), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect((await box.store.getByMessageId(ID_A))?.nostrPubkey).toBe(
+      publicKeyHexFromSecret(secret(4)),
+    );
+  });
+
+  it('stores the key without attaching an npub on another message store', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    const created = await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(created.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    expect((await messages.getById(ID_A))?.shopNpub ?? null).toBeNull();
   });
 });
 
@@ -1367,6 +1518,94 @@ describe('PostgresShopIdentityStore', () => {
     );
     expect(calls[3]?.text).toContain('LIMIT $3');
     expect(calls[3]?.params).toEqual([cursor.createdAt, ID_A, 1]);
+  });
+
+  it('does not mint a key that must be adopted', async () => {
+    const adoptedMessages = new InMemoryMessageStore([shopRow(ADOPTED_ID)]);
+    const { sql, calls } = fakeSql([[]]);
+    const store = new PostgresShopIdentityStore(sql, adoptedMessages);
+    expect(await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(2))).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain('WHERE message_id = $1');
+    expect(calls[0]?.text).not.toContain('INSERT');
+  });
+
+  it('inserts an adopted secret without queueing the place', async () => {
+    const { sql, calls } = fakeSql([
+      [],
+      [],
+      [sqlIdentity({ ocp_place_pending: false, ocp_place_generation: 0 })],
+    ]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    const created = await store.adoptKnownSecret(ID_A, secret(2), KEK);
+    expect(created?.ocpPlacePending).toBe(false);
+    expect(created?.ocpPlaceGeneration).toBe(0);
+    expect(calls[2]?.text).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)');
+    expect(calls[2]?.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(calls[2]?.params[1]).toBe(publicKeyHexFromSecret(secret(2)));
+    const plain = await decryptNostrSecret(calls[2]?.params[2] as Uint8Array, KEK, `shop:${ID_A}`);
+    expect([...plain]).toEqual([...secret(2)]);
+    expect(calls[2]?.params[6]).toBe('Coffee Lab');
+  });
+
+  it('returns the stored row when the adopted key is already there', async () => {
+    const { sql, calls } = fakeSql([[sqlIdentity()]]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    expect((await store.adoptKnownSecret(ID_A, secret(2), KEK)).nostrPubkey).toBe(
+      publicKeyHexFromSecret(secret(2)),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses a different stored key, a key held by another note, and a lost insert', async () => {
+    const other = 'ab'.repeat(32);
+    const held = fakeSql([[], [sqlIdentity({ message_id: ID_B })]]);
+    const heldStore = new PostgresShopIdentityStore(held.sql, messages);
+    await expect(heldStore.adoptKnownSecret(ID_A, secret(2), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    const different = fakeSql([[sqlIdentity({ nostr_pubkey: other })]]);
+    await expect(
+      new PostgresShopIdentityStore(different.sql, messages).adoptKnownSecret(ID_A, secret(2), KEK),
+    ).rejects.toThrow('shop nostr pubkey already exists');
+    const lostSame = fakeSql([[], [], [], [sqlIdentity()]]);
+    expect(
+      (
+        await new PostgresShopIdentityStore(lostSame.sql, messages).adoptKnownSecret(
+          ID_A,
+          secret(2),
+          KEK,
+        )
+      ).nostrPubkey,
+    ).toBe(publicKeyHexFromSecret(secret(2)));
+    const lostDifferent = fakeSql([[], [], [], [sqlIdentity({ nostr_pubkey: other })]]);
+    await expect(
+      new PostgresShopIdentityStore(lostDifferent.sql, messages).adoptKnownSecret(
+        ID_A,
+        secret(2),
+        KEK,
+      ),
+    ).rejects.toThrow('shop nostr pubkey already exists');
+    const lostMissing = fakeSql([[], [], [], []]);
+    await expect(
+      new PostgresShopIdentityStore(lostMissing.sql, messages).adoptKnownSecret(
+        ID_A,
+        secret(2),
+        KEK,
+      ),
+    ).rejects.toThrow('shop note not found');
+  });
+
+  it('refuses an adopted key when the note or the secret is unusable', async () => {
+    const { sql, calls } = fakeSql([]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    await expect(store.adoptKnownSecret(ID_C, secret(2), KEK)).rejects.toThrow(
+      'shop note not found',
+    );
+    await expect(store.adoptKnownSecret(ID_A, secret(2).slice(0, 16), KEK)).rejects.toThrow(
+      '32 bytes',
+    );
+    expect(calls).toHaveLength(0);
   });
 
   it('inserts a new key with a locked, unchanged note and queues its place', async () => {

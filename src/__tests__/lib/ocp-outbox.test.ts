@@ -82,6 +82,7 @@ type Stub = { [K in keyof ShopIdentityStore]: ReturnType<typeof vi.fn> };
 function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
   return {
     ensureListed: vi.fn(),
+    adoptKnownSecret: vi.fn(),
     getByMessageId: vi.fn(() => Promise.resolve(row ?? undefined)),
     getByPubkey: vi.fn(),
     getNostrCiphertext: vi.fn(),
@@ -246,7 +247,7 @@ describe('runOcpPlaceOutboxPass', () => {
   it('resets the photos and deletes a shop that is not listed', async () => {
     const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
     const { push, sent } = mapPush(() => new Response('{"deleted":false}', { status: 200 }));
-    const ids = stubIdentities();
+    const ids = stubIdentities(identity({ ocpRevision: 1 }));
     await runOcpPlaceOutboxPass(deps(ids, messages, push));
     expect(ids.resetPhotosForDelete).toHaveBeenCalledWith(CLAIM);
     expect(sent[0]?.method).toBe('DELETE');
@@ -257,10 +258,21 @@ describe('runOcpPlaceOutboxPass', () => {
   it('deletes when the note is gone', async () => {
     const messages = { getById: () => Promise.resolve(undefined) } as unknown as MessageStore;
     const { push, sent } = mapPush(() => new Response(null, { status: 204 }));
-    const ids = stubIdentities();
+    const ids = stubIdentities(identity({ ocpRevision: 1 }));
     await runOcpPlaceOutboxPass(deps(ids, messages, push));
     expect(sent[0]?.method).toBe('DELETE');
     expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'delete');
+  });
+
+  it('does not delete a place this outbox has never sent', async () => {
+    const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
   });
 
   it('releases a row whose identity vanished', async () => {
@@ -331,7 +343,7 @@ describe('runOcpPlaceOutboxPass', () => {
             status: 400,
           }),
       );
-      const ids = stubIdentities();
+      const ids = stubIdentities(identity({ ocpRevision: 1 }));
       await runOcpPlaceOutboxPass(deps(ids, messages, push));
       expect(sent.map((request) => request.method)).toEqual([method]);
       expect(ids.finishPlace).not.toHaveBeenCalled();

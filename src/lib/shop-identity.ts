@@ -2,9 +2,12 @@
  * Durable Nostr identities and OpenCryptoPay outboxes for shop notes
  * (`docs/shop-identity.md` S1 and S5).
  *
- * One random custodial key per listed shop note, stored in `shop_identity`
- * and encrypted with the account KEK under the AAD `shop:<messageId>`. The
- * same row carries the place and photo outboxes. On Postgres, the row
+ * One custodial key per shop note, stored in `shop_identity` and encrypted
+ * with the account KEK under the AAD `shop:<messageId>`. A new shop gets a
+ * random key. A note that already has a Nostr key at OpenCryptoPay keeps
+ * that key (`shopKeyMustBeAdopted`, `adoptKnownSecret`); it is not minted
+ * again. The same row carries the place and photo outboxes. On Postgres, the
+ * row
  * triggers `trg_shop_identity_place`, `trg_shop_identity_cover` and
  * `trg_shop_identity_extra_photo` queue every store write that changes a
  * shop note, in the writing transaction and after its row lock; the
@@ -165,6 +168,23 @@ export interface ShopIdentityStore {
     kek: Uint8Array,
     keygen?: NostrKeygen,
   ): Promise<ShopIdentityRow | undefined>;
+  /**
+   * Store a shop's existing 32-byte secret, once.
+   *
+   * The same public key is returned unchanged. A different key for this
+   * note, or this key on another note, throws. The insert does not queue
+   * a place push.
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow>;
   /**
    * Identity of one note.
    *
@@ -584,6 +604,47 @@ export function shopNpub(identity: Pick<ShopIdentityRow, 'nostrPubkey'>): string
 }
 
 /**
+ * Forum notes whose Nostr key already exists at OpenCryptoPay.
+ *
+ * `ensureListed` must not mint a second key for these message ids. The
+ * matching private key is stored with `adoptKnownSecret`. The ids are the
+ * OpenCryptoPay `externalId` values. This list holds no key material.
+ */
+const ADOPTED_SHOP_MESSAGE_IDS: ReadonlySet<string> = new Set([
+  '01234513-9ed1-4bf1-ac19-2cc59ba6ae3b',
+  '0a8bb5d4-32d2-4316-8f0a-f40e09ccb57e',
+  '0cc5c2eb-aaf1-4f36-be26-f1b967e7bbe5',
+  '0e54d662-e955-4c66-94d6-1d5f895506eb',
+  '23d08047-df13-4f59-a541-99703e1e8fbc',
+  '2e5c0aaf-a2f1-4d3a-8640-4463cba227f6',
+  '4ba2c157-76a9-460f-9335-dc0ee8177b90',
+  '5732c809-562e-4df3-b804-f287be068314',
+  '61f13589-f04b-4319-9677-7e6b3dbab24a',
+  '746b992c-ee86-4c27-b36e-8f661e27a3d0',
+  '764288f2-2ac9-4758-9506-eb81a6f8bcbf',
+  '7eebacb2-cd04-46af-8d3d-fa761a4b4905',
+  '83a72d54-7070-4a8a-b3f4-9f0ca8d0dc30',
+  '8a7d0c1a-1428-4d32-b28c-665b75dd8313',
+  '8cb805cd-3fbe-4d19-8a51-8d2e36d169ab',
+  '96ecd063-94e9-4866-bd97-a7dcfba7e5d9',
+  '9980925c-42cb-4fe6-bbd9-1ddb27c9936f',
+  '9e6642fd-3a62-497d-bcbc-9b9daa9d55c7',
+  'd9ec7a6a-d4e0-43bc-95a4-dbfccebccbe2',
+  'e942dd1c-1fc4-4ce9-8252-8922f7e93fdf',
+  'ed3c5451-57c2-41c2-9450-b4e92df8d8db',
+]);
+
+/**
+ * Whether this shop note already has a Nostr key at OpenCryptoPay.
+ *
+ * @param messageId - Forum note id, the OpenCryptoPay `externalId`.
+ * @returns `true` when `ensureListed` must not mint a key for it.
+ */
+export function shopKeyMustBeAdopted(messageId: string): boolean {
+  return ADOPTED_SHOP_MESSAGE_IDS.has(messageId);
+}
+
+/**
  * Structural rows read per returned shop. The directory stops after
  * `20 * limit` of them, including rows it then drops.
  */
@@ -715,6 +776,77 @@ function copyIdentity(row: ShopIdentityRow): ShopIdentityRow {
   };
 }
 
+/**
+ * Profile name stored with an adopted key.
+ *
+ * A public shop keeps {@link publicShop}'s name. Another note keeps a
+ * non-blank pin label, or `Shop` when it has none.
+ *
+ * @param note - The forum note the key belongs to.
+ * @returns A non-empty name.
+ */
+function adoptedProfileName(note: MessageRow): string {
+  const shop = publicShop(note);
+  if (shop !== null) return shop.name;
+  const label = note.place?.label?.trim() ?? '';
+  return label === '' ? 'Shop' : label;
+}
+
+/**
+ * Build an identity row from a known 32-byte secret.
+ *
+ * The place outbox stays idle (`ocpPlacePending` false, generation 0): the
+ * OpenCryptoPay place already exists under this key, and a pending flag
+ * would queue a push. The caller zeroizes its own buffer; this function
+ * zeroizes only its copy.
+ *
+ * @param messageId - Shop note id, also the AAD suffix.
+ * @param secret - Raw secp256k1 secret. Not retained.
+ * @param kek - Key-encryption key.
+ * @param profileName - Name stored on the row.
+ * @param createdAt - Insert time.
+ * @returns The row to insert. Throws when the secret is not a usable
+ *   secp256k1 secret. The caller rejects a secret that is not 32 bytes.
+ */
+async function knownShopIdentity(
+  messageId: string,
+  secret: Uint8Array,
+  kek: Uint8Array,
+  profileName: string,
+  createdAt: Date,
+): Promise<ShopIdentityRow> {
+  const owned = secret.slice();
+  try {
+    let nostrPubkey: string;
+    try {
+      nostrPubkey = publicKeyHexFromSecret(owned);
+    } catch {
+      throw new Error('Invalid Nostr secret');
+    }
+    return {
+      messageId,
+      nostrPubkey,
+      nostrNsecCiphertext: await encryptNostrSecret(owned, kek, `shop:${messageId}`),
+      nostrKekId: NOSTR_KEK_ID_V1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: createdAt,
+      profileName,
+      ocpPhotosHash: null,
+      ocpPhotosPending: false,
+      ocpPhotosGeneration: 0,
+      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaim: 0,
+      ocpPlacePending: false,
+      ocpPlaceGeneration: 0,
+      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaim: 0,
+      ocpRevision: 0,
+    };
+  } finally {
+    zeroizeSecret(owned);
+  }
+}
+
 async function freshIdentity(
   messageId: string,
   profileName: string,
@@ -838,6 +970,9 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       if (note !== undefined) await this.renameIfListed(note);
       return copyIdentity(existing);
     }
+    // A note that already has a key at OpenCryptoPay stays unkeyed until
+    // adoptKnownSecret stores that same secret.
+    if (shopKeyMustBeAdopted(messageId)) return undefined;
     if (name === null) return undefined;
     const created = await freshIdentity(messageId, name, kek, keygen, new Date(this.#now()));
     // The note can change while the key is generated. Take the name and the
@@ -855,6 +990,64 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     created.profileName = latestName;
     this.#rows.set(messageId, created);
     this.#seen.set(messageId, { place: shopListingFingerprint(latest), photos });
+    if (this.#messages instanceof InMemoryMessageStore) {
+      this.#messages.setShopNpub(messageId, shopNpub(created));
+    }
+    return copyIdentity(created);
+  }
+
+  /**
+   * Store a shop's existing secret, once.
+   *
+   * The same public key is returned unchanged, including its outbox flags.
+   * A different key for this note, or this key on another note, throws.
+   * The insert does not queue a place push.
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  async adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow> {
+    if (secret.length !== 32) {
+      throw new Error('Nostr secret must be 32 bytes');
+    }
+    const note = await this.#messages.getById(messageId);
+    if (note === undefined) {
+      throw new Error('shop note not found');
+    }
+    const created = await knownShopIdentity(
+      messageId,
+      secret,
+      kek,
+      adoptedProfileName(note),
+      new Date(this.#now()),
+    );
+    await this.#sync();
+    const existing = this.#rows.get(messageId);
+    if (existing !== undefined) {
+      if (existing.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return copyIdentity(existing);
+    }
+    if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    const photos = await photoFingerprint(this.#messages, messageId);
+    const won = this.#rows.get(messageId);
+    if (won !== undefined) {
+      if (won.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return copyIdentity(won);
+    }
+    this.#rows.set(messageId, created);
+    this.#seen.set(messageId, { place: shopListingFingerprint(note), photos });
     if (this.#messages instanceof InMemoryMessageStore) {
       this.#messages.setShopNpub(messageId, shopNpub(created));
     }
@@ -1307,6 +1500,9 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       if (shop === null || shop.name === existing.profileName) return existing;
       return (await this.#renameLocked(messageId, shop)) ?? existing;
     }
+    // A note that already has a key at OpenCryptoPay stays unkeyed until
+    // adoptKnownSecret stores that same secret.
+    if (shopKeyMustBeAdopted(messageId)) return undefined;
     if (shop === null) return undefined;
     const generated = await freshIdentity(messageId, shop.name, kek, keygen, new Date());
     // One statement: lock the note (FOR UPDATE) and insert only while every
@@ -1337,6 +1533,79 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     );
     const inserted = rows[0];
     return inserted === undefined ? this.getByMessageId(messageId) : mapIdentity(inserted);
+  }
+
+  /**
+   * Store a shop's existing secret, once.
+   *
+   * The same public key is returned unchanged, including its outbox flags.
+   * A different key for this note, or this key on another note, throws.
+   * The insert does not queue a place push (`ocp_place_pending` stays false).
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  async adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow> {
+    if (secret.length !== 32) {
+      throw new Error('Nostr secret must be 32 bytes');
+    }
+    const note = await this.#messages.getById(messageId);
+    if (note === undefined) {
+      throw new Error('shop note not found');
+    }
+    const created = await knownShopIdentity(
+      messageId,
+      secret,
+      kek,
+      adoptedProfileName(note),
+      new Date(),
+    );
+    const existing = await this.getByMessageId(messageId);
+    if (existing !== undefined) {
+      if (existing.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return existing;
+    }
+    const holder = await this.getByPubkey(created.nostrPubkey);
+    if (holder !== undefined) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `INSERT INTO shop_identity (
+         message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
+         nostr_key_custody, nostr_key_created_at, profile_name,
+         ocp_place_pending, ocp_place_generation
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)
+       ON CONFLICT (message_id) DO NOTHING
+       RETURNING ${IDENTITY_COLUMNS}`,
+      [
+        messageId,
+        created.nostrPubkey,
+        created.nostrNsecCiphertext,
+        created.nostrKekId,
+        created.nostrKeyCustody,
+        created.nostrKeyCreatedAt,
+        created.profileName,
+      ],
+    );
+    const inserted = rows[0];
+    if (inserted !== undefined) return mapIdentity(inserted);
+    const stored = await this.getByMessageId(messageId);
+    if (stored === undefined) {
+      throw new Error('shop note not found');
+    }
+    if (stored.nostrPubkey !== created.nostrPubkey) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    return stored;
   }
 
   /**

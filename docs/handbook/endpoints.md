@@ -301,6 +301,13 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/shop-keys
+
+- **Purpose:** Stores the OpenCryptoPay private key of one shop note that already has that key. Body `{ messageId, secret }`. `messageId` is the forum note. `secret` is 64 hex characters and is not logged or returned. Response `{ messageId, npub }`. The same key again is a success. A different key already stored is refused. The insert does not queue a place push.
+- **Errors:** 503 Debug is not configured; 503 Shop keys are not configured; 401 Unauthorized; 400 Invalid shop key; 404 Not found; 409 Shop key already exists.
+- **Used by:** The operator import of shop keys that already exist at OpenCryptoPay.
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: POST /debug/passkey-renew/reopen
 
 - **Purpose:** Operator delete of one account's failed passkey-renew rows so the blocking dialog opens again at the explanation. Body `{ accountId }` UUID. Returns `{ deleted }`. Succeeded and cancelled rows stay. Does not change the account. Refuses when `walletRequired` is true.
