@@ -598,6 +598,28 @@ test('Function: shopOcpPlaceInput — OCP map target blank, the listed shop is s
   request,
 }) => servedWithoutMap(request, 'OcpIn'));
 
+test('Function: debugShopKeyRoutes — POST /debug/shop-keys without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: shopKeyMustBeAdopted — POST /debug/shop-keys rejects a note outside the adopted set', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys', {
+    headers: DEBUG,
+    data: {
+      messageId: '00000000-0000-4000-8000-000000000001',
+      secret: '11'.repeat(32),
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid shop key' });
+});
+
 test('Function: resolveMapPush — OCP map target blank, the listed shop is still served', ({
   request,
 }) => servedWithoutMap(request, 'OcpMp'));
