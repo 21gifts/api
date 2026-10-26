@@ -2359,7 +2359,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Decode the top-level fields of a protobuf message in wire order. Varint fields come back as `bigint`, length-delimited fields as raw bytes (the caller decodes strings and embedded messages). Fixed 64-bit and 32-bit fields are skipped.
 - **Inputs:** Serialised message bytes.
 - **Returns / side effects:** `ProtoField[]`. Throws on a truncated varint or field, a varint longer than 64 bits, field number 0, or wire types 3, 4, 6, 7. No I/O.
-- **Used by:** `parseQuerySparkInvoicesResponse`.
+- **Used by:** `parseQuerySparkInvoicesResponse` and `decodeSparkAddress` (which `walletPaymentClassifier` calls for `POST /me/wallet/report` on the default boot).
 
 ## Function: encodeSparkInvoice
 

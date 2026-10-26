@@ -611,7 +611,7 @@ repayment bill of a loan, and a loan is a post, which needs a verified wallet (t
 posting 409 `missing: ['lightning-address']`);
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
 `concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL`) or when free in-app payments are on;
-`protoVarintField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
+`protoVarintField`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
 `startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments

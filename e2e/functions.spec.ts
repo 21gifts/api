@@ -2272,10 +2272,22 @@ test('Function: protoBytesField — free in-app payments are off on the default 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+test('Function: decodeProto — a wallet report with a Spark address invoice is acknowledged', async ({
   request,
 }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'spark-address',
+        invoice: 'spark1pgssyzwt0544600n5zkya7rvlnaz98l622mg04uhyaxgv6wt6534anx4kc986w',
+        method: 'spark',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['spark-address'] });
 });
 test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
   request,
