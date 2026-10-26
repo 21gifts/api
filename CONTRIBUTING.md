@@ -176,7 +176,7 @@ api/
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── login-gate.ts     # LoginGate (login switch, allowlist, platform account), LOGINS_OPEN_DEFAULT and APP_BUILD_REQUIRED resolvers, X-App-Build check
 │   │   ├── login-gate-store.ts # LoginGateStore port, InMemory/Postgres adapters, LOGIN_GATE_SCHEMA_SQL (app_setting + login_allowlist)
-│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column; envelope hex, never decrypt)
+│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column except the derived `account.spark_address`; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
