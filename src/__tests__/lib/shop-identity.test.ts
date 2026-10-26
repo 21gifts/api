@@ -1043,6 +1043,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     await store.ensureListed(ID_C, KEK, keygenFrom(4));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const next = async (): Promise<string | undefined> =>
@@ -1088,19 +1089,20 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('reserves a photo revision only while the place is confirmed and the generation holds', async () => {
     const { messages, store, claim } = await claimed();
+    expect(await store.nextRevision('place', claim)).toBe(1);
     await store.finishPlace(claim, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     expect(
       await store.nextRevision('photos', { ...photo, generation: photo.generation + 1 }),
     ).toBeUndefined();
-    expect(await store.nextRevision('photos', photo)).toBe(1);
+    expect(await store.nextRevision('photos', photo)).toBe(2);
     // A hide after the claim queues the place: no further photo revision.
     await messages.markDeleted(ID_A, new Date(), 'staff');
     expect(await store.nextRevision('photos', photo)).toBeUndefined();
-    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(1);
+    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(2);
     // The place lane still gets its revision.
     const [place] = await store.claimPlaces(1, 60_000);
-    expect(await store.nextRevision('place', place!)).toBe(2);
+    expect(await store.nextRevision('place', place!)).toBe(3);
   });
 
   it('releases only with the matching token, for either lane, ending the lease now', async () => {
@@ -1112,7 +1114,9 @@ describe('InMemoryShopIdentityStore claims', () => {
     clock.now += 1_000;
     await store.release('place', claim);
     expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(new Date(clock.now));
-    await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'put');
+    const confirmed = (await store.claimPlaces(1, 60_000))[0]!;
+    await store.nextRevision('place', confirmed);
+    await store.finishPlace(confirmed, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     clock.now += 1_000;
     await store.release('photos', photo);
@@ -1182,9 +1186,18 @@ describe('InMemoryShopIdentityStore claims', () => {
     });
   });
 
+  it('does not claim photos while the place was never sent', async () => {
+    const { store, claim } = await claimed();
+    await store.finishPlace(claim, 'put');
+    expect(await store.claimPhoto(60_000)).toBeUndefined();
+    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(0);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
+  });
+
   it('claims one photo set whose place is confirmed', async () => {
     const { store, clock, claim } = await claimed();
     expect(await store.claimPhoto(60_000)).toBeUndefined();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     const photo = await store.claimPhoto(60_000);
     expect(photo).toEqual({ messageId: ID_A, generation: 1, claim: 1 });
@@ -1197,6 +1210,7 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('settles a photo claim by generation', async () => {
     const { messages, store, clock, claim } = await claimed();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     let photo = (await store.claimPhoto(60_000))!;
     await store.clearPhotoHash({ ...photo, claim: 9 });
@@ -1265,6 +1279,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const photo = (await store.claimPhoto(60_000))!;
@@ -1298,6 +1313,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const photo = (await store.claimPhoto(60_000))!;
@@ -1328,6 +1344,7 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('defers photos: keeps the photo state and holds the queued place until the photo lease ends', async () => {
     const { store, clock, claim } = await claimed();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     const photoUntil = new Date(clock.now + 60_000);
@@ -1871,6 +1888,7 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[0]?.params).toEqual([20, 60_000]);
     expect(await store.claimPhoto(60_000)).toEqual({ messageId: ID_A, generation: 3, claim: 5 });
     expect(calls[1]?.text).toContain('NOT ocp_place_pending');
+    expect(calls[1]?.text).toContain('ocp_revision > 0');
     expect(calls[1]?.text).toContain(
       'ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id',
     );

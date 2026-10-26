@@ -5037,8 +5037,11 @@ the hidden-row count, never the pubkey. On store throw it logs
 Hiding a shop note that has a key queues its OpenCryptoPay place outbox in
 the same write (`trg_shop_identity_place` on `deleted_at`), whatever its pin
 was when the route read it, because a pin set concurrently may already be on
-the map; the sender then sends DELETE to `/map/places`, since a hidden note is
-not listed. A note without a key was never sent, and nothing is queued.
+the map. The sender sends DELETE to `/map/places` only when this outbox has
+already sent the place (`ocp_revision` greater than 0). A key that was never
+sent, including one stored from an existing map identity, is not deleted. A
+photo update does not raise that revision. A note without a key was never
+sent, and nothing is queued.
 Delivery is asynchronous; a failure never changes the 204.
 
 ### `PATCH /messages/:id/place`

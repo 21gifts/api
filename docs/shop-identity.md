@@ -51,7 +51,9 @@ shop that never had a complete address is not created on the map. A keyed
 shop that is no longer public is deleted from the map only after this
 outbox has sent the place (`ocp_revision` greater than 0). A key that has
 never been sent, including one adopted from an existing OpenCryptoPay
-identity, is not deleted.
+identity, is not deleted. A photo update does not raise a revision that is
+still 0. The photo claim skips that row, and the photo sender releases it
+without a request, so the photos stay pending until the place lane has sent.
 
 The shop description is the note text without the `#21GiftsShop` token
 (`shopDescription`). The map rules come from 21gifts/api#478.
@@ -681,7 +683,10 @@ Rules for every claim:
 - Before each request, the worker raises `ocp_revision` (conditional on
   `c`) and sends the new value as `revision`. Place and photo requests share
   this counter, so OpenCryptoPay accepts them only in the order they were
-  sent.
+  sent. The photo sender does not raise it while it is still 0, and
+  `claimPhoto` skips those rows (`ocp_revision > 0`). The set stays pending
+  until the place lane has sent, so a photo update cannot arm a delete of a
+  place this outbox never created.
 - The photo sender raises it only while, in the same `UPDATE`, the place is
   not pending (`NOT ocp_place_pending`) and `ocp_photos_generation` is still
   its `g`. The photo claim checks that the place is not pending only when

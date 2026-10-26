@@ -294,12 +294,15 @@ export interface ShopIdentityStore {
    */
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
   /**
-   * Claim one pending photo set whose place is not pending, least recently
-   * claimed first (`ocp_photos_claimed_until` null, never claimed, first,
-   * then by the stored end of the last claim: the lease end of a failed send,
-   * the time of every other end of a claim; then by `message_id`), so a set
-   * that keeps failing, keeps being released or keeps changing never holds
-   * the place of later shops.
+   * Claim one pending photo set whose place is not pending and whose
+   * revision is already greater than 0, least recently claimed first
+   * (`ocp_photos_claimed_until` null, never claimed, first, then by the
+   * stored end of the last claim: the lease end of a failed send, the time
+   * of every other end of a claim; then by `message_id`), so a set that
+   * keeps failing, keeps being released or keeps changing never holds the
+   * place of later shops. A row at revision 0 has never been sent. Leaving
+   * it unclaimed keeps a photo update from raising that revision and later
+   * arming a delete of a place this outbox did not create.
    *
    * @param leaseMs - Lease length.
    * @returns The claim, or `undefined` when nothing is due.
@@ -1192,6 +1195,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       (item) =>
         item.ocpPhotosPending &&
         !item.ocpPlacePending &&
+        item.ocpRevision > 0 &&
         leaseFree(item.ocpPhotosClaimedUntil, nowMs),
     );
     if (row === undefined) return undefined;
@@ -1892,6 +1896,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `WITH picked AS (
          SELECT message_id FROM shop_identity
          WHERE ocp_photos_pending AND NOT ocp_place_pending
+           AND ocp_revision > 0
            AND (ocp_photos_claimed_until IS NULL OR ocp_photos_claimed_until <= now())
          ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id
          LIMIT 1

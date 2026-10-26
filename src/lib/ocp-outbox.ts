@@ -330,12 +330,16 @@ async function skippedCount(response: Response): Promise<number> {
  * least recently claimed first ({@link ShopIdentityStore.claimPhoto}).
  *
  * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
- * cleared without a request. Otherwise the revision is reserved first, only
- * while the place is not pending and the photo generation is still the
- * claim's (`nextRevision`); otherwise the claim is released without a
- * request and with the stored hash kept, and the photos are sent after the
- * place lane has settled. After the reservation the hash is nulled, then up
- * to 10 photos are sent in note order as base64.
+ * cleared without a request. A row whose revision is still 0 is released
+ * without a request and without raising it: a photo update must not arm a
+ * later delete of a place this outbox has never sent. The photos stay
+ * pending until the place lane has raised the revision. Otherwise the
+ * revision is reserved first, only while the place is not pending and the
+ * photo generation is still the claim's (`nextRevision`); otherwise the
+ * claim is released without a request and with the stored hash kept, and
+ * the photos are sent after the place lane has settled. After the
+ * reservation the hash is nulled, then up to 10 photos are sent in note
+ * order as base64.
  * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
@@ -372,6 +376,12 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
   const hash = ocpPhotoSetHash(photos);
   if (identity.ocpPhotosHash === hash) {
     await identities.clearPhotoWithoutSend(claim);
+    return;
+  }
+  if (identity.ocpRevision === 0) {
+    // This outbox has never sent the place. Do not raise the shared
+    // revision: a later hide would then DELETE a map row it did not create.
+    await identities.release('photos', claim);
     return;
   }
   const revision = await identities.nextRevision('photos', claim);
