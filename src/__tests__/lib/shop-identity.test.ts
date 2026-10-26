@@ -1644,6 +1644,45 @@ describe('PostgresShopIdentityStore', () => {
     expect([...plain]).toEqual([...secret(2)]);
   });
 
+  it('locks null place columns when a public shop has no pin or no label', async () => {
+    const name = 'Fresh coffee roasted here every morning.';
+    const unpinned = new InMemoryMessageStore([shopRow(ID_C, { place: null })]);
+    const bare = fakeSql([[], [sqlIdentity({ message_id: ID_C, profile_name: name })]]);
+    const bareStore = new PostgresShopIdentityStore(bare.sql, unpinned);
+    expect((await bareStore.ensureListed(ID_C, KEK, keygenFrom(2)))?.profileName).toBe(name);
+    expect(bare.calls[1]?.params.slice(1, 10)).toEqual([
+      null,
+      TEXT,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(bare.calls[1]?.params[15]).toBe(name);
+
+    const unlabeled = new InMemoryMessageStore([
+      shopRow(ID_C, { place: { lat: 47.3, lng: 8.5, label: null, address: null } }),
+    ]);
+    const pin = fakeSql([[], [sqlIdentity({ message_id: ID_C, profile_name: name })]]);
+    const pinStore = new PostgresShopIdentityStore(pin.sql, unlabeled);
+    expect((await pinStore.ensureListed(ID_C, KEK, keygenFrom(2)))?.messageId).toBe(ID_C);
+    expect(pin.calls[1]?.params.slice(1, 10)).toEqual([
+      null,
+      TEXT,
+      47.3,
+      8.5,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(pin.calls[1]?.params[15]).toBe(name);
+  });
+
   it('returns the winner when the insert adds no row', async () => {
     const { sql } = fakeSql([[], [], [sqlIdentity({ nostr_pubkey: 'ab'.repeat(32) })]]);
     const store = new PostgresShopIdentityStore(sql, messages);
