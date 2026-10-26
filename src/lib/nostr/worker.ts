@@ -66,7 +66,7 @@ import {
   type ShopIdentityRow,
   type ShopIdentityStore,
 } from '@/lib/shop-identity';
-import { listedShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
+import { publicShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
@@ -936,10 +936,10 @@ const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
 /**
  * Create keys for listed shops that have none (S1 backfill), reading at most
  * `WORKER_BATCH` raw candidates per tick. Candidates are live top-level
- * pinned `#21GiftsShop` notes with a till account, keyed or not; the page is
- * bounded before the key check, the cursor advances on that raw page, and
- * only the candidates without a key go to `ensureListed`, which checks
- * completeness in code. The keyset cursor by (`created_at`, `id`) moves past
+ * `#21GiftsShop` notes with a till account, pinned or not, keyed or not; the
+ * page is bounded before the key check, the cursor advances on that raw page,
+ * and only the candidates without a key go to `ensureListed`, which checks
+ * {@link publicShop} in code. The keyset cursor by (`created_at`, `id`) moves past
  * keyed and rejected notes and resets to the start only after a short raw
  * page, so neither an incomplete note nor a run of keyed shops holds the slot
  * of an unkeyed listed shop behind it, and a lap over keyed shops never reads
@@ -1501,7 +1501,7 @@ async function shopKind0Args(
 ): Promise<ShopKind0Args | 'nip05_stale' | 'note_changed'> {
   const note = await deps.messages.getById(identity.messageId);
   const website = `${shopSiteOrigin(deps.env)}/${shopNpub(identity)}`;
-  const shop = listedShop(note);
+  const shop = publicShop(note);
   if (note === undefined || shop === null) {
     const gone = note === undefined || note.deletedAt !== null;
     return {

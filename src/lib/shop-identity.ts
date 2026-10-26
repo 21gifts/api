@@ -27,10 +27,9 @@ import {
 } from '@/lib/nostr/keys';
 import {
   isListedShop,
-  listedShop,
-  listedShopName,
+  publicShop,
   shopListingFingerprint,
-  type ListedShop,
+  type PublicShop,
   type ShopListingFields,
 } from '@/lib/shop-place';
 
@@ -115,10 +114,10 @@ export interface ShopDirectoryItem {
   createdAt: Date;
   /** Canonical npub ({@link shopNpub}). */
   npub: string;
-  /** Pin label. */
+  /** Pin label, or the description line when the pin has no label. */
   name: string;
-  /** Complete pin. */
-  place: ListedShop['place'];
+  /** Pin when the note has coordinates. Null when it has none. */
+  place: PublicShop['place'];
 }
 
 /** One directory page of at most `limit` keyed listed shops. */
@@ -225,13 +224,13 @@ export interface ShopIdentityStore {
    */
   renameIfListed(note: MessageRow): Promise<void>;
   /**
-   * One raw page of key-backfill candidates: live top-level pinned
-   * `#21GiftsShop` notes with a till account, whether or not they already
-   * have a key. The page is bounded before the key check, so a lap where
-   * every candidate has a key still returns at most `limit` rows per call;
-   * the caller advances its cursor on this raw page and skips `keyed` rows.
+   * One raw page of key-backfill candidates: live top-level `#21GiftsShop`
+   * notes with a till account, whether or not they have a pin or a key.
+   * The page is bounded before the key check, so a lap where every candidate
+   * has a key still returns at most `limit` rows per call; the caller
+   * advances its cursor on this raw page and skips `keyed` rows.
    * With a cursor, the Postgres read is a separate statement whose cursor is
-   * always an index condition on `message_shop_candidate_idx`.
+   * always an index condition on `message_shop_directory_idx`.
    *
    * @param cursor - Last row of the previous page, or `null` for the first page.
    * @param limit - Page size.
@@ -239,8 +238,8 @@ export interface ShopIdentityStore {
    */
   listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidate[]>;
   /**
-   * One page of up to `limit` keyed listed shops, newest note first.
-   * A note without a key and a note {@link listedShop} rejects are omitted,
+   * One page of up to `limit` keyed public shops, newest note first.
+   * A note without a key and a note {@link publicShop} rejects are omitted,
    * but each one is examined. The read examines at most `20 * limit`
    * structural rows. `next` is the last kept shop when the page fills in
    * the middle of that read, the last examined note when the cap is hit
@@ -386,10 +385,9 @@ export interface ShopIdentityStore {
 }
 
 /**
- * SQL condition of a listed shop that the database can check on a `message`
- * row named `m`: everything except the completeness text rules of #478, which
- * the code checks. Used to narrow candidates, the directory read
- * (`listDirectory`) and photo queueing.
+ * SQL condition of a map-complete shop that the database can check on a
+ * `message` row named `m`. Photo queueing uses it. The public directory uses
+ * {@link DIRECTORY_SQL}, which does not require a pin.
  */
 const LISTED_SHAPE_SQL = (m: string): string =>
   `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
@@ -397,6 +395,14 @@ const LISTED_SHAPE_SQL = (m: string): string =>
    AND ${m}.place_street IS NOT NULL AND ${m}.place_house_number IS NOT NULL
    AND ${m}.place_postal_code IS NOT NULL AND ${m}.place_city IS NOT NULL
    AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
+
+/**
+ * SQL condition of a public shop: live, top-level, a till account, and the
+ * shop tag. A pin is not required. Used by the key backfill and `GET /shops`.
+ */
+const DIRECTORY_SQL = (m: string): string =>
+  `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
+   AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
 
 /**
  * Fixed `pg_advisory_xact_lock` key of the shop identity migration. Every
@@ -477,6 +483,10 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      ON message (created_at, id)
      WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
        AND place_lat IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS message_shop_directory_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND text ~* '#21giftsshop([^a-z0-9_]|$)'`,
   replaceTrigger(
     'message',
     `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
@@ -585,15 +595,15 @@ interface DirectoryStructuralRow {
   id: string;
   /** Note creation time. */
   createdAt: Date;
-  /** Fields {@link listedShop} reads. */
+  /** Fields {@link publicShop} reads. */
   note: ShopListingFields;
   /** Hex pubkey, or null when `shop_identity` has no row. */
   nostrPubkey: string | null;
 }
 
 /**
- * Whether `row` is a structural listed shop: the same columns as
- * {@link LISTED_SHAPE_SQL}, and not the text rules of {@link listedShop}.
+ * Whether `row` is a public shop the directory can read: the same columns as
+ * {@link DIRECTORY_SQL}. A missing pin still matches.
  *
  * @param row - Forum note.
  * @returns `true` when the note would match the directory `WHERE`.
@@ -602,9 +612,6 @@ function listedShape(row: MessageRow): boolean {
   if (row.parentId !== null) return false;
   if (row.deletedAt !== null) return false;
   if (row.shopAccount === undefined || row.shopAccount === null) return false;
-  if (row.place === undefined || row.place === null) return false;
-  if (row.place.label === null) return false;
-  if (row.place.address === null) return false;
   return textHasHashtagToken(row.text, '21GiftsShop');
 }
 
@@ -644,7 +651,7 @@ function byDirectoryOrder(
 }
 
 /**
- * A kept shop, or null when the row has no key or {@link listedShop} rejects it.
+ * A kept shop, or null when the row has no key or {@link publicShop} rejects it.
  * A null result was still examined by the caller.
  *
  * @param row - One structural note.
@@ -652,7 +659,7 @@ function byDirectoryOrder(
  */
 function directoryItem(row: DirectoryStructuralRow): ShopDirectoryItem | null {
   if (row.nostrPubkey === null) return null;
-  const shop = listedShop(row.note);
+  const shop = publicShop(row.note);
   if (shop === null) return null;
   return {
     id: row.id,
@@ -821,7 +828,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   ): Promise<ShopIdentityRow | undefined> {
     await this.#sync();
     const note = await this.#messages.getById(messageId);
-    const name = listedShopName(note);
+    const name = note === undefined ? null : (publicShop(note)?.name ?? null);
     const existing = this.#rows.get(messageId);
     if (existing !== undefined) {
       // The same conditional rename as `renameIfListed` (and the locked
@@ -840,7 +847,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const latest = await this.#messages.getById(messageId);
     const won = this.#rows.get(messageId);
     if (won !== undefined) return copyIdentity(won);
-    const latestName = listedShopName(latest);
+    const latestName = latest === undefined ? null : (publicShop(latest)?.name ?? null);
     if (latestName === null) return undefined;
     if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
       throw new Error('shop nostr pubkey already exists');
@@ -911,12 +918,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const notes = await Promise.all(refs.map((ref) => this.#messages.getById(ref.id)));
     return notes
       .filter((row): row is MessageRow => row !== undefined)
-      .filter(
-        (row) =>
-          row.place !== undefined &&
-          row.place !== null &&
-          textHasHashtagToken(row.text, '21GiftsShop'),
-      )
+      .filter((row) => textHasHashtagToken(row.text, '21GiftsShop'))
       .filter(
         (row) =>
           cursor === null ||
@@ -1225,41 +1227,48 @@ function mapIdentity(row: IdentitySqlRow): ShopIdentityRow {
 }
 
 /**
- * Locks the note `$1` (`FOR UPDATE`) only while every column the listed
- * check in code read is unchanged: top-level, live, a till account, the
- * text `$3` and the complete pin (`$2` is the label, which is the shop
- * name; `$4`–`$5` are the coordinates and `$6`–`$10` the address). Shared
- * by the key insert and the rename (`ensureListed`, `renameIfListed`) in
- * `PostgresShopIdentityStore`.
+ * Locks the note `$1` (`FOR UPDATE`) only while every column the public-shop
+ * check read is unchanged: top-level, live, a till account, the text `$3`
+ * and the pin. `$2` is the stored label (null when the note has none) and is
+ * not the public name. `$4`–`$5` are the coordinates and `$6`–`$10` the
+ * address. Nullable pin columns use `IS NOT DISTINCT FROM`, because `=`
+ * never matches NULL. Shared by the key insert and the rename
+ * (`ensureListed`, `renameIfListed`) in `PostgresShopIdentityStore`.
  */
 const LOCK_LISTED_NOTE_SQL = `SELECT id FROM message
          WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
            AND shop_account_id IS NOT NULL
-           AND text = $3 AND place_lat = $4 AND place_lng = $5 AND place_label = $2
-           AND place_street = $6 AND place_house_number = $7 AND place_postal_code = $8
-           AND place_city = $9 AND place_country = $10
+           AND text = $3
+           AND place_label IS NOT DISTINCT FROM $2
+           AND place_lat IS NOT DISTINCT FROM $4 AND place_lng IS NOT DISTINCT FROM $5
+           AND place_street IS NOT DISTINCT FROM $6
+           AND place_house_number IS NOT DISTINCT FROM $7
+           AND place_postal_code IS NOT DISTINCT FROM $8
+           AND place_city IS NOT DISTINCT FROM $9 AND place_country IS NOT DISTINCT FROM $10
          FOR UPDATE`;
 
 /**
- * Shop name and the parameters `$2`–`$10` of {@link LOCK_LISTED_NOTE_SQL}
- * for one note snapshot, or `null` when that snapshot is not listed.
+ * Public shop name and the parameters `$2`–`$10` of {@link LOCK_LISTED_NOTE_SQL}
+ * for one note snapshot, or `null` when that snapshot is not a public shop.
+ * The name is not one of those parameters: a shop with no label still has a name.
  */
 function listedSnapshot(note: MessageRow): { name: string; params: unknown[] } | null {
-  const shop = listedShop(note);
+  const shop = publicShop(note);
   if (shop === null) return null;
-  const { lat, lng, label, address } = shop.place;
+  const place = note.place ?? null;
+  const address = place?.address ?? null;
   return {
     name: shop.name,
     params: [
-      label,
+      place?.label ?? null,
       note.text,
-      lat,
-      lng,
-      address.street,
-      address.houseNumber,
-      address.postalCode,
-      address.city,
-      address.country,
+      place?.lat ?? null,
+      place?.lng ?? null,
+      address?.street ?? null,
+      address?.houseNumber ?? null,
+      address?.postalCode ?? null,
+      address?.city ?? null,
+      address?.country ?? null,
     ],
   };
 }
@@ -1312,7 +1321,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          nostr_key_custody, nostr_key_created_at, profile_name,
          ocp_place_pending, ocp_place_generation
        )
-       SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked
+       SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
@@ -1323,6 +1332,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
         generated.nostrKekId,
         generated.nostrKeyCustody,
         generated.nostrKeyCreatedAt,
+        shop.name,
       ],
     );
     const inserted = rows[0];
@@ -1342,12 +1352,12 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   ): Promise<ShopIdentityRow | undefined> {
     const renamed = await this.#sql.query<IdentitySqlRow>(
       `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
-       UPDATE shop_identity SET profile_name = $2
+       UPDATE shop_identity SET profile_name = $11
        FROM locked
        WHERE shop_identity.message_id = locked.id
-         AND shop_identity.profile_name IS DISTINCT FROM $2
+         AND shop_identity.profile_name IS DISTINCT FROM $11
        RETURNING ${IDENTITY_COLUMNS}`,
-      [messageId, ...shop.params],
+      [messageId, ...shop.params, shop.name],
     );
     return renamed[0] === undefined ? undefined : mapIdentity(renamed[0]);
   }
@@ -1436,7 +1446,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     cursor: ShopCandidateCursor | null,
     limit: number,
   ): Promise<ShopCandidate[]> {
-    // Walks the partial index message_shop_candidate_idx: the WHERE implies
+    // Walks the partial index message_shop_directory_idx: the WHERE implies
     // its predicate, and LIMIT bounds the raw page before the key check (an
     // EXISTS in the select list, evaluated per returned row only), so a page
     // returns at most `limit` rows even when every candidate has a key. The
@@ -1447,7 +1457,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     const select = `SELECT m.id, m.created_at,
          EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed
        FROM message m
-       WHERE ${LISTED_SHAPE_SQL('m')}`;
+       WHERE ${DIRECTORY_SQL('m')}`;
     const rows =
       cursor === null
         ? await this.#sql.query<CandidateSqlRow>(
@@ -1474,7 +1484,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     cursor: ShopDirectoryCursor | null,
     limit: number,
   ): Promise<ShopDirectoryPage> {
-    // The WHERE implies message_shop_candidate_idx, and LIMIT bounds the page
+    // The WHERE implies message_shop_directory_idx, and LIMIT bounds the page
     // before the pubkey lookup. Two statements keep the cursor an index
     // condition under a cached generic plan of a prepared statement. The
     // pubkey subquery must not become a join: a join would let that plan turn
@@ -1485,14 +1495,14 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       text: string;
       parent_id: string | null;
       deleted_at: Date | string | null;
-      place_lat: number | string;
-      place_lng: number | string;
+      place_lat: number | string | null;
+      place_lng: number | string | null;
       place_label: string | null;
-      place_street: string;
-      place_house_number: string;
-      place_postal_code: string;
-      place_city: string;
-      place_country: string;
+      place_street: string | null;
+      place_house_number: string | null;
+      place_postal_code: string | null;
+      place_city: string | null;
+      place_country: string | null;
       shop_account_id: string;
       nostr_pubkey: string | null;
     };
@@ -1503,7 +1513,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          m.shop_account_id,
          (SELECT s.nostr_pubkey FROM shop_identity s WHERE s.message_id = m.id) AS nostr_pubkey
        FROM message m
-       WHERE ${LISTED_SHAPE_SQL('m')}`;
+       WHERE ${DIRECTORY_SQL('m')}`;
     const rows =
       cursor === null
         ? await this.#sql.query<DirectorySqlRow>(
@@ -1528,18 +1538,28 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
           parentId: row.parent_id,
           deletedAt: row.deleted_at === null ? null : sqlDate(row.deleted_at),
           text: row.text,
-          place: {
-            lat: Number(row.place_lat),
-            lng: Number(row.place_lng),
-            label: row.place_label,
-            address: {
-              street: row.place_street,
-              houseNumber: row.place_house_number,
-              postalCode: row.place_postal_code,
-              city: row.place_city,
-              country: row.place_country,
-            },
-          },
+          place:
+            row.place_lat === null || row.place_lng === null
+              ? null
+              : {
+                  lat: Number(row.place_lat),
+                  lng: Number(row.place_lng),
+                  label: row.place_label,
+                  address:
+                    row.place_street === null ||
+                    row.place_house_number === null ||
+                    row.place_postal_code === null ||
+                    row.place_city === null ||
+                    row.place_country === null
+                      ? null
+                      : {
+                          street: row.place_street,
+                          houseNumber: row.place_house_number,
+                          postalCode: row.place_postal_code,
+                          city: row.place_city,
+                          country: row.place_country,
+                        },
+                },
           shopAccount: { id: row.shop_account_id },
         },
       })),

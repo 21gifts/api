@@ -10,8 +10,9 @@
  * it again. So no row that keeps failing, keeps being released or keeps
  * changing holds the place of later shops. Every request carries the next
  * `revision` of the shop's shared counter. The worker decides at send time
- * from the note as it is then: a listed shop gets `PUT /map/places`,
- * anything else `DELETE /map/places`.
+ * from the note as it is then: a listed shop gets `PUT /map/places`, a
+ * public shop that is not listed clears its place flag and sends nothing,
+ * and anything that is no longer public gets `DELETE /map/places`.
  */
 
 import { createHash } from 'node:crypto';
@@ -21,7 +22,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { WORKER_BATCH, WORKER_INTERVAL_MS, WORKER_LEASE_MS } from '@/lib/nostr/worker';
 import { shopOcpPlaceInput, type MapPush } from '@/lib/ocp-place';
 import type { ShopIdentityStore, ShopOcpClaim } from '@/lib/shop-identity';
-import { isListedShop, listedShop } from '@/lib/shop-place';
+import { isListedShop, listedShop, publicShop } from '@/lib/shop-place';
 
 /** Timeout of one place request (as the former `mapPlacesRequest`). */
 export const OCP_PLACE_TIMEOUT_MS = 5_000;
@@ -128,7 +129,9 @@ function send(
 
 /**
  * Send one claimed place: `PUT` with `nostrPubkey` and `revision` for a
- * listed shop, otherwise reset the photo state and `DELETE`.
+ * listed shop. A public shop that is not listed clears the place flag and
+ * sends nothing. Anything that is no longer public resets the photo state
+ * and `DELETE`s.
  */
 async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void> {
   const { identities } = deps;
@@ -141,9 +144,21 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
     await identities.release('place', claim);
     return;
   }
+  // A public shop without a complete map pin stays on the directory. Clear
+  // the place flag and do not PUT or DELETE it.
+  if (publicShop(note) !== null && shop === null) {
+    await identities.finishPlace(claim, 'reject');
+    return;
+  }
   if (note !== undefined && shop !== null) {
+    const input = shopOcpPlaceInput(messageId, note.text, shop.place);
+    /* v8 ignore next 4 -- listedShop already rejected an incomplete pin */
+    if (input === null) {
+      await identities.finishPlace(claim, 'reject');
+      return;
+    }
     body = {
-      ...shopOcpPlaceInput(messageId, note.text, shop.place),
+      ...input,
       nostrPubkey: identity.nostrPubkey,
     };
   } else {

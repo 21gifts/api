@@ -18,49 +18,54 @@ does not hold keys and does not maintain profiles. Its side is specified in
 
 ## What a shop is
 
-A **listed shop** is a top-level forum note (`parent_id` null) that:
+A **public shop** is a top-level forum note (`parent_id` null) that:
 
 - is live: `deleted_at` null. A staff hide sets `deleted_at` too, so a hidden
-  note is not listed;
+  note is not public;
 - has the hashtag token `21GiftsShop` in its text, with the same token rule
   as `GET /shops/activity`;
-- has a place pin;
 - has `shop_account_id` set. The till account does not need a username: an
   account without one (for example the survivor of an account merge, which
-  keeps its own username) still lists the shop; only `payUsername` is
-  `null` and the shop kind 0 has no `lud16`;
-- is complete under 21gifts/api#478: `shopPlaceProblem` (label, structured
-  address, label without the address) and `shopTextProblem` (description)
-  both return `null`. This is the same check `shopOcpPlaceInput` makes before
-  it sends a place to OpenCryptoPay.
+  keeps its own username) still publishes the shop; only `payUsername` is
+  `null` and the shop kind 0 has no `lud16`.
 
-"Listed" is the single rule for everything in this document: which notes get
-a key, which kind 0 content a shop identity publishes (S2 publishes every
-identity, listed or not, with different content), which shops
-`GET /shops/:npub` serves with 200, and which shops are on the OpenCryptoPay
-map. A note that stops meeting any of the five conditions is no longer
-listed. It keeps its identity. An older shop note that is not complete gets
-no key until its owner completes it.
+A pin and a structured address are optional. The public name is the pin
+label when that label is non-blank. Otherwise it is the first non-blank line
+of the description (`shopDescription`), cut at 80 characters, or `Shop` when
+that line is empty. The author's display name is not the shop name.
 
-The shop name is the pin label, which a listed shop always has. The shop
-description is the note text without the `#21GiftsShop` token
-(`shopDescription`). Both come from 21gifts/api#478, which makes shops
-complete for the map and adds the structured pin address. This concept
-builds on that change.
+This is the rule for a key, for `GET /shops`, for a 200 from
+`GET /shops/:npub`, for the shop NIP-05 name and for the shop kind 0
+content. A note that stops meeting it is no longer public. It keeps its
+identity. `place` is null when the note has no coordinates. `address` is
+null unless street, house number, postal code, city and country are all
+non-blank.
+
+A **listed shop** is a public shop that is also complete for the
+OpenCryptoPay map: `shopPlaceProblem` (label, structured address, label
+without the address) and `shopTextProblem` (description) both return
+`null`. This is the same check `shopOcpPlaceInput` makes before a place
+PUT. A public shop that is not listed stays in the directory. The place
+sender clears its place flag and does not PUT and does not DELETE, so a
+shop that never had a complete address is not created on the map. A keyed
+shop that is no longer public is deleted from the map.
+
+The shop description is the note text without the `#21GiftsShop` token
+(`shopDescription`). The map rules come from 21gifts/api#478.
 
 ## S1 Key per shop
 
 - One random key per shop note, from the same `generateSecretKey()` path as
   account keys (`src/lib/nostr/keys.ts`). No master seed, no derivation.
 - The key is created after the commit of any write that makes a note a
-  listed shop for the first time: `POST /messages`,
+  public shop for the first time: `POST /messages`,
   `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
   `PATCH /messages/:id/shop-account`, `PUT /me/about` (the profile note's
   text) and the staff restore `POST /debug/messages/:id/restore`.
   - The insert runs in a transaction that first locks the note
     (`SELECT … FROM message WHERE id = $1 FOR UPDATE`), the same in the
     backfill below, and then checks the five conditions again. If the note
-    is no longer listed, no key is created. A concurrent edit of that note
+    is no longer public, no key is created. A concurrent edit of that note
     therefore either commits first, and the check and the new key's first
     push see it, or waits and then queues itself (S5).
     Implemented as one statement (`PostgresShopIdentityStore.ensureListed`):
@@ -71,7 +76,7 @@ builds on that change.
     insert a no-op; that edit's own write path or the backfill then creates
     the key from the new state. The in-memory adapter reads the note again
     after the key is generated and takes the name and the fingerprints from
-    that read, creating nothing if it is no longer listed.
+    that read, creating nothing if it is no longer public.
   - For an existing key, `ensureListed` rewrites `profile_name` under the
     same lock and the same unchanged-columns condition (`UPDATE … FROM` the
     locked note), so a request that read the note before a newer rename
@@ -83,21 +88,25 @@ builds on that change.
     fail the request, the same as the lazy account key at login.
   - The worker backfill also picks up listed shops without a key, next to
     the existing account backfill. Each tick reads one raw page of at most
-    20 candidate notes (live, top-level, pinned `#21GiftsShop` notes with a
-    till account), keyed or not: the `LIMIT` bounds the page before the key
+    20 candidate notes (live, top-level `#21GiftsShop` notes with a
+    till account, with or without a pin), keyed or not: the `LIMIT` bounds
+    the page before the key
     check, which is an `EXISTS` on `shop_identity` per returned row. The
     keyset cursor by (`created_at`, `id`) advances to the last note of that
     raw page, keyed notes are skipped without generating a key, and the
-    cursor resets to the start only after a short raw page. Completeness
-    under #478 is checked in code, not in SQL, so the cursor also moves past
-    rejected (incomplete) notes. An older incomplete note or a run of keyed
-    shops can therefore never hold the slot of an unkeyed listed shop behind
+    cursor resets to the start only after a short raw page. `publicShop`
+    is checked in code, not in SQL. A note on this page is already a public
+    shop, so the check mints its key. A run of keyed
+    shops can therefore never hold the slot of an unkeyed public shop behind
     it, and a lap where every shop has its key reads one page per tick
     instead of every candidate. The page walks the partial index
-    `message_shop_candidate_idx` on `message` (`created_at`, `id`), limited
-    to live top-level notes with a till account and a pin
+    `message_shop_directory_idx` on `message` (`created_at`, `id`), limited
+    to live top-level notes with a till account and the shop hashtag
     (`parent_id IS NULL`, `deleted_at IS NULL`, `shop_account_id IS NOT NULL`,
-    `place_lat IS NOT NULL`), so a tick does not scan every live note, and a
+    and the `#21GiftsShop` token), so a tick does not scan every live note
+    and a note with no pin is included. `message_shop_candidate_idx` remains
+    for live top-level till notes that have a latitude. This query does not
+    imply that index. A
     page returns at most `limit` rows. The first page has no cursor
     predicate; every later page is a separate statement with only
     `(created_at, id) > ($1, $2)`, so the cursor is always an index
@@ -320,10 +329,10 @@ release publishes `website` as `<site origin>/{npub}` and deploys after
 that page is live (see Rollout). Accounts keep the fixed
 `https://21.gifts` behavior.
 
-Kind 0 of a shop that is no longer listed:
+Kind 0 of a shop that is no longer public:
 
 - `name` and `display_name`: `profile_name`, the name it had when it was last
-  listed. If the note is hidden or deleted, `Shop` instead, so a name staff
+  public. If the note is hidden or deleted, `Shop` instead, so a name staff
   removed is not kept on the relays.
 - `about`: `This shop is no longer listed on 21.gifts.`
 - `website`: unchanged.
@@ -407,15 +416,18 @@ spec adds no zap receipts for a shop key.
 
 ## S3 API
 
-`GET /shops` lists only keyed listed shops, newest note first. A note is
-included only when `listedShop` accepts it and `shop_identity` already has a
-key for that note. Unlisted identities are omitted.
+`GET /shops` lists keyed public shops, newest note first. A note is
+included when `publicShop` accepts it and `shop_identity` already has a
+key for that note. A public shop with no coordinates has `place: null`.
+A pin whose structured address is missing or blank has `address: null`.
+Identities that are no longer public are omitted.
 
 ### `GET /shops/:npub`
 
 New. `GET /messages/:id` keeps serving a note by its note id. This route
 resolves a shop by its NOSTR identity, the id that OpenCryptoPay, NIP-05 and
-the shop page use, and answers for a shop that is no longer listed with 410.
+the shop page use, and answers for a known shop that is no longer public
+with 410.
 
 No session; a missing or invalid bearer gets the same answer. Registered
 after `GET /shops/activity`, so `activity` keeps its own handler. It takes any
@@ -424,9 +436,9 @@ gets the 404 body and headers below.
 
 | Request                                  | Response                                                                                                |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                              |
+| npub of a public shop                    | **200** `{ "shop": Shop }`                                                                              |
 | 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}`                                                                              |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`                                          |
+| npub of a known shop that is not public  | **410** `{ "error": "Shop is no longer listed", "npub": "…" }`                                          |
 | anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
 | store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
 | NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
@@ -598,13 +610,13 @@ dropped it, is refused there instead of overwriting newer state. The outbox
 replaces the former fire-and-forget place push (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logged and swallowed
 failures); that path is removed. The cases 21gifts/api#494 added to it are
-decided by the sender from the note at send time instead: a keyed shop whose
-pin and text end up incomplete after concurrent place and text edits, whose
-note is hidden or gone after a place, text or till account write, or which
-is hidden without a pin when the route read it gets `DELETE`. `PATCH
-/messages/:id/place` does not accept `place: null`. A concurrent store write
-that drops the pin, then a complete pin again before the send, gets one
-`PUT`. #494's per-note map
+decided by the sender from the note at send time instead: a keyed shop that
+is no longer public (hidden, gone, or no longer a shop note) gets `DELETE`;
+a public shop that is not listed clears the place flag and sends nothing, so
+a place already on the map stays there when the pin or its address is lost.
+`PATCH /messages/:id/place` does not accept `place: null`. A concurrent store
+write that drops the pin while the note stays public sends nothing. A
+complete pin set again before the send gets one `PUT`. #494's per-note map
 queue in the route is not needed, because the revision orders the requests
 of one shop and the last request reflects the last write. A shop without a
 key was never sent by the outbox, so nothing is deleted for it.
@@ -735,7 +747,8 @@ Rules for every claim:
   from one read of the whole set (`MessageStore.getPhotoSet`).
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
-  hex), anything else gets `DELETE /map/places`. No earlier decision is
+  hex). A public shop that is not listed clears the place flag and sends
+  nothing. Anything that is no longer public gets `DELETE /map/places`. No earlier decision is
   stored, so a stale queue entry cannot remove a listed shop. Before it
   sends a `DELETE`, it sets `ocp_photos_hash` to null, clears
   `ocp_photos_pending` and raises `ocp_photos_generation`, conditional only

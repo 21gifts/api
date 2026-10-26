@@ -3,9 +3,9 @@
  *
  * Coordinates follow the same 6-decimal rounding as forum pins. A complete
  * shop note pin maps onto one OCP place (`origin` `21gifts`, `techProvider`
- * `21.gifts`). An incomplete shop is not put; the place outbox
- * (`src/lib/ocp-outbox.ts`) sends `DELETE` for a keyed shop that is no longer
- * listed, so an older complete version does not stay on the map.
+ * `21.gifts`). An incomplete shop is not put. The place outbox
+ * (`src/lib/ocp-outbox.ts`) sends nothing for a public shop that is not
+ * listed, and `DELETE` only when the shop is no longer public.
  */
 
 import type { ForumPlace } from '@/lib/place';

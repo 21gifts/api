@@ -903,15 +903,14 @@ describe('GET /shops', () => {
     expect(await second.json()).toEqual({ shops: [] });
   });
 
-  it('returns the listed shop after more than 20 text-rule failures', async () => {
+  it('returns the keyed shop after more than 20 unkeyed shops', async () => {
     const good = directoryId(1);
     const specs = [
       { id: good, createdAt: new Date('2026-10-01T00:00:00.000Z'), key: 1, label: 'Coffee Lab' },
       ...Array.from({ length: 21 }, (_, index) => ({
         id: directoryId(index + 2),
         createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)),
-        key: index + 2,
-        label: '',
+        key: null,
       })),
     ];
     const { app } = await directoryOf(specs);

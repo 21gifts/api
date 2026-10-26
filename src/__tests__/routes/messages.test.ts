@@ -12160,7 +12160,7 @@ describe('shop place outbox after forum writes', () => {
     });
   });
 
-  it('creates the key and queues the place when a shop-account change lists a pinned shop, and nothing without a pin', async () => {
+  it('creates the key when a shop-account change lists a shop, and queues the place only with a pin', async () => {
     const authWithPlace = await staffStore('Ada');
     await addShopkeep(authWithPlace);
     const placed = new InMemoryMessageStore();
@@ -12187,7 +12187,16 @@ describe('shop place outbox after forum writes', () => {
     const withoutPlace = mountShops(authWithoutPlace, bare);
     const bareRes = await patch(withoutPlace.app, '/shop-account', { username: 'shopkeep' });
     expect(bareRes.status).toBe(200);
-    expect(await withoutPlace.shops.listAll()).toEqual([]);
+    expect(((await bareRes.json()) as { shopNpub: string | null }).shopNpub).toBeNull();
+    expect(await withoutPlace.shops.getByMessageId(SHOP_ID)).toMatchObject({
+      profileName: 'Coffee roasted on site and served at the bar every morning.',
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 1,
+    });
+    expect(await placePass(withoutPlace.shops, bare)).toEqual([]);
+    expect(await withoutPlace.shops.getByMessageId(SHOP_ID)).toMatchObject({
+      ocpPlacePending: false,
+    });
   });
 
   it('queues the place push when a listed shop is hidden', async () => {
@@ -12287,29 +12296,27 @@ describe('shop place outbox after forum writes', () => {
     },
   );
 
-  it('sends DELETE when a place write is followed by an incomplete concurrent pin', async () => {
+  it('sends nothing when a concurrent pin drops its address', async () => {
     const { app, shops, messages } = await confirmedShop();
     expect((await patch(app, '/place', { place: MOVED })).status).toBe(200);
-    // A concurrent writer leaves the pin without its address.
+    // A concurrent writer leaves the pin without its address. The shop stays
+    // public, so the map place is left as it is.
     expect(await messages.setPlace(SHOP_ID, { ...MOVED, address: null })).toBe(true);
-    const sent = await placePass(shops, messages);
-    expect(sent.map((call) => call.method)).toEqual(['DELETE']);
-    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
+    expect(await placePass(shops, messages)).toEqual([]);
   });
 
-  it('sends DELETE when the text of a listed shop whose pin lost its address changes', async () => {
+  it('sends nothing when the text changes after the pin loses its address', async () => {
     const { app, shops, messages } = await confirmedShop();
     expect(await messages.setPlace(SHOP_ID, { ...PIN, address: null })).toBe(true);
     // An incomplete pin skips the description check, so the short text is stored.
     const res = await patch(app, '/text', { text: 'Cafe Sol' });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
-    const sent = await placePass(shops, messages);
-    expect(sent.map((call) => call.method)).toEqual(['DELETE']);
-    expect(sent[0]?.body).toEqual({ origin: '21gifts', externalId: SHOP_ID, revision: 2 });
+    expect(await placePass(shops, messages)).toEqual([]);
+    expect(await shops.getByMessageId(SHOP_ID)).toMatchObject({ profileName: 'Stall' });
   });
 
-  it('sends nothing for a text write on a shop without an address that was never listed', async () => {
+  it('mints a key and sends nothing for a text write on a shop that has no address', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
     await shopNote(messages, {
@@ -12318,7 +12325,11 @@ describe('shop place outbox after forum writes', () => {
     });
     const { app, shops } = mountShops(auth, messages);
     expect((await patch(app, '/text', { text: 'Cafe Sol' })).status).toBe(200);
-    expect(await shops.listAll()).toEqual([]);
+    expect(await shops.getByMessageId(SHOP_ID)).toMatchObject({
+      profileName: 'Neighborhood Espresso House',
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 1,
+    });
     expect(await placePass(shops, messages)).toEqual([]);
   });
 
@@ -12335,9 +12346,7 @@ describe('shop place outbox after forum writes', () => {
     const dropped = await confirmedShop();
     expect((await patch(dropped.app, '/place', { place: MOVED })).status).toBe(200);
     expect(await dropped.messages.setPlace(SHOP_ID, null)).toBe(true);
-    expect((await placePass(dropped.shops, dropped.messages)).map((call) => call.method)).toEqual([
-      'DELETE',
-    ]);
+    expect(await placePass(dropped.shops, dropped.messages)).toEqual([]);
   });
 
   it('sends DELETE when a listed shop is hidden after a refused clear', async () => {

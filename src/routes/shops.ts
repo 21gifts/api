@@ -15,7 +15,7 @@ import { imageHeaderSize } from '@/lib/nostr/image';
 import { resolvePublicApiBase } from '@/lib/nostr/relays';
 import { nip05Directory, nip05Domain } from '@/lib/nip05';
 import { shopNpub, type ShopDirectoryCursor, type ShopIdentityStore } from '@/lib/shop-identity';
-import { listedShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
+import { publicShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 
 /** Collaborators for `GET /shops/:npub`. */
 export interface ShopRouteDeps {
@@ -230,7 +230,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
       let refreshed = false;
       for (let round = 1; ; round += 1) {
         const note = read;
-        const shop = listedShop(note);
+        const shop = publicShop(note);
         if (note === undefined || shop === null) {
           return c.json({ error: 'Shop is no longer listed', npub }, 410, PUBLIC_CACHE);
         }

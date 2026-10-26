@@ -57,16 +57,9 @@ BEGIN
 END;
 $shop_identity$;
 
--- Backfill candidates (ShopIdentityStore.listCandidates): every 'all' or
--- 'fast' worker tick reads one raw keyset page by (created_at, id) of live
--- top-level pinned notes with a till account, keyed or not; the key check is
--- an EXISTS in the select list, evaluated only for the rows the LIMIT returns.
--- The partial index holds only those notes, so the page does not scan every
--- live note, and it returns at most `limit` rows also once every shop has its
--- key. The query's WHERE implies the index predicate. The first page has no
--- cursor predicate; every later page is a separate statement with only
--- (created_at, id) > ($1, $2), so the cursor is always an index condition,
--- also under a cached generic plan of the prepared statement.
+-- Live top-level till notes that have a latitude. The directory and the key
+-- backfill do not use this index: their query does not require place_lat.
+-- Photo triggers still require the full listed shape in their WHEN clause.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
@@ -74,6 +67,23 @@ BEGIN
     ON message (created_at, id)
     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
       AND place_lat IS NOT NULL;
+END;
+$shop_identity$;
+
+-- Public directory and key backfill (ShopIdentityStore.listDirectory and
+-- listCandidates): one raw keyset page by (created_at, id) of live top-level
+-- notes with a till account and the #21GiftsShop token, pinned or not. The
+-- query's WHERE implies this index. A note with no pin is included. The
+-- first page has no cursor predicate; every later page is a separate
+-- statement with only the row comparison, so the cursor is always an index
+-- condition, also under a cached generic plan of the prepared statement.
+DO $shop_identity$
+BEGIN
+  PERFORM pg_advisory_xact_lock(21499001);
+  CREATE INDEX IF NOT EXISTS message_shop_directory_idx
+    ON message (created_at, id)
+    WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+      AND text ~* '#21giftsshop([^a-z0-9_]|$)';
 END;
 $shop_identity$;
 

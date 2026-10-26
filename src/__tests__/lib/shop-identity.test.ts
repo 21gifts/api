@@ -108,10 +108,16 @@ describe('migrateShopIdentitySchema', () => {
      WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
        AND place_lat IS NOT NULL;`,
     );
+    expect(run[3]).toContain(
+      `CREATE INDEX IF NOT EXISTS message_shop_directory_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND text ~* '#21giftsshop([^a-z0-9_]|$)';`,
+    );
   });
 
   it('runs every statement under the migration advisory lock', () => {
-    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(6);
+    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(7);
     for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
       expect(
         statement.startsWith(
@@ -123,7 +129,7 @@ describe('migrateShopIdentitySchema', () => {
   });
 
   it('replaces each trigger function and trigger inside one locked step', () => {
-    const steps = SHOP_IDENTITY_SCHEMA_SQL.slice(3);
+    const steps = SHOP_IDENTITY_SCHEMA_SQL.slice(4);
     for (const [index, [fn, name, table]] of [
       ['queue_shop_identity_place', 'trg_shop_identity_place', 'message'],
       ['queue_shop_identity_cover', 'trg_shop_identity_cover', 'message'],
@@ -216,6 +222,18 @@ describe('InMemoryShopIdentityStore key creation', () => {
     expect(await store.ensureListed(ID_A, KEK, unlisting)).toBeUndefined();
     expect(await store.listAll()).toEqual([]);
     expect((await messages.getById(ID_A))?.shopNpub ?? null).toBeNull();
+  });
+
+  it('creates nothing when the note disappears during key generation', async () => {
+    const { messages, store } = setup();
+    const disappearing = {
+      generateSecretKey: () => {
+        void messages.deleteById(ID_A);
+        return secret(2);
+      },
+    };
+    expect(await store.ensureListed(ID_A, KEK, disappearing)).toBeUndefined();
+    expect(await store.listAll()).toEqual([]);
   });
 
   it('refuses a public key that another shop already holds', async () => {
@@ -358,12 +376,13 @@ describe('InMemoryShopIdentityStore reads', () => {
     ];
     const { store } = setup(rows);
     const all = await store.listCandidates(null, 10);
-    expect(all.map((row) => row.id)).toEqual([ID_A, ID_B, ID_C]);
+    const unpinned = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    expect(all.map((row) => row.id)).toEqual([ID_A, ID_B, ID_C, unpinned]);
     expect(
       (await store.listCandidates({ createdAt: t('2026-01-01T00:00:00Z'), id: ID_A }, 10)).map(
         (row) => row.id,
       ),
-    ).toEqual([ID_B, ID_C]);
+    ).toEqual([ID_B, ID_C, unpinned]);
     expect(await store.listCandidates(null, 1)).toEqual([
       { id: ID_A, createdAt: t('2026-01-01T00:00:00Z'), keyed: false },
     ]);
@@ -375,6 +394,7 @@ describe('InMemoryShopIdentityStore reads', () => {
       [ID_A, true],
       [ID_B, false],
       [ID_C, false],
+      ['dddddddd-dddd-4ddd-8ddd-dddddddddddd', false],
     ]);
   });
 
@@ -467,14 +487,14 @@ describe('InMemoryShopIdentityStore listDirectory', () => {
     expect(await messages.setPlace(directoryId(9), { ...PLACE, label: '' })).toBe(true);
     const page = await store.listDirectory(null, 10);
     expect(page.next).toBeNull();
-    expect(page.shops.map((shop) => shop.id)).toEqual([ID_C, ID_B, ID_A]);
+    expect(page.shops.map((shop) => shop.id)).toEqual([ID_C, ID_B, ID_A, directoryId(9)]);
     expect(page.shops[0]).toMatchObject({
       npub: shopNpub({ nostrPubkey: publicKeyHexFromSecret(secret(4)) }),
       name: 'Coffee Lab',
       place: PLACE,
     });
     const olderPage = await store.listDirectory({ createdAt: same, id: ID_B }, 10);
-    expect(olderPage.shops.map((shop) => shop.id)).toEqual([ID_A]);
+    expect(olderPage.shops.map((shop) => shop.id)).toEqual([ID_A, directoryId(9)]);
     expect(olderPage.next).toBeNull();
   });
 
@@ -519,29 +539,35 @@ describe('InMemoryShopIdentityStore listDirectory', () => {
     expect(await store.listDirectory(null, 20)).toEqual({ shops: [], next: null });
   });
 
-  it('continues past more than 20 * limit text-rule failures', async () => {
-    const good = directoryId(1);
-    const failures = Array.from({ length: 21 }, (_, index) => directoryId(index + 2));
-    const rows = [
-      shopRow(good, { createdAt: new Date('2026-10-01T00:00:00.000Z') }),
-      ...failures.map((id, index) =>
-        shopRow(id, { createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)) }),
-      ),
-    ];
-    const { messages, store } = setup(rows);
-    await keyed(store, good, 1);
-    for (const [index, id] of failures.entries()) {
-      await keyed(store, id, index + 2);
-      expect(await messages.setPlace(id, { ...PLACE, label: '' })).toBe(true);
-    }
-    const first = await store.listDirectory(null, 1);
-    expect(first.shops).toEqual([]);
-    expect(first.next).toEqual({
-      createdAt: new Date(Date.UTC(2026, 9, 2, 0, 1)),
-      id: directoryId(3),
+  it('lists a keyed shop whose pin has no label and one with no pin', async () => {
+    const labeled = directoryId(8);
+    const blank = directoryId(9);
+    const unpinned = directoryId(7);
+    const { messages, store } = setup([
+      shopRow(labeled, {
+        place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+      }),
+      shopRow(blank),
+      shopRow(unpinned, { place: null }),
+    ]);
+    await keyed(store, labeled, 2);
+    await keyed(store, blank, 3);
+    await keyed(store, unpinned, 4);
+    expect(await messages.setPlace(blank, { ...PLACE, label: '' })).toBe(true);
+    const page = await store.listDirectory(null, 10);
+    expect(page.shops.map((shop) => shop.id)).toEqual([blank, labeled, unpinned]);
+    expect(page.shops[0]).toMatchObject({
+      name: 'Fresh coffee roasted here every morning.',
+      place: { ...PLACE, label: '' },
     });
-    const second = await store.listDirectory(first.next, 1);
-    expect(second.shops.map((shop) => shop.id)).toEqual([good]);
+    expect(page.shops[1]).toMatchObject({
+      name: 'Stall',
+      place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+    });
+    expect(page.shops[2]).toMatchObject({
+      name: 'Fresh coffee roasted here every morning.',
+      place: null,
+    });
   });
 
   it('continues past more than 20 * limit shaped notes that have no key', async () => {
@@ -1352,11 +1378,12 @@ describe('PostgresShopIdentityStore', () => {
     expect(insert.text).toContain('FOR UPDATE');
     expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
     expect(insert.text).toContain('true, 1 FROM locked');
-    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked');
+    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked');
     expect(insert.params[0]).toBe(ID_A);
     expect(insert.params.slice(1, 10)).toEqual(SNAPSHOT);
     expect(insert.params[10]).toBe(publicKeyHexFromSecret(secret(2)));
-    expect(insert.params.slice(12)).toEqual([1, 'custodial', expect.any(Date)]);
+    expect(insert.params.slice(12, 15)).toEqual([1, 'custodial', expect.any(Date)]);
+    expect(insert.params[15]).toBe('Coffee Lab');
     const plain = await decryptNostrSecret(insert.params[11] as Uint8Array, KEK, `shop:${ID_A}`);
     expect([...plain]).toEqual([...secret(2)]);
   });
@@ -1386,10 +1413,10 @@ describe('PostgresShopIdentityStore', () => {
     ]);
     const store = new PostgresShopIdentityStore(sql, messages);
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
-    expect(calls[1]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
+    expect(calls[1]?.text).toContain('UPDATE shop_identity SET profile_name = $11');
     expect(calls[1]?.text).toContain('FOR UPDATE');
-    expect(calls[1]?.text).toContain('AND text = $3 AND place_lat = $4');
-    expect(calls[1]?.params).toEqual([ID_A, ...SNAPSHOT]);
+    expect(calls[1]?.text).toContain('AND place_label IS NOT DISTINCT FROM $2');
+    expect(calls[1]?.params).toEqual([ID_A, ...SNAPSHOT, 'Coffee Lab']);
     expect((await store.ensureListed(ID_B, KEK))?.profileName).toBe('Old');
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
     expect(calls).toHaveLength(4);
@@ -1502,6 +1529,78 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[1]?.text).not.toContain('nostr_nsec_ciphertext');
   });
 
+  it('maps a directory row with no pin and rows whose address is incomplete', async () => {
+    const created = new Date('2026-10-04T00:00:00.000Z');
+    const pubkey = publicKeyHexFromSecret(secret(4));
+    const full = {
+      created_at: created,
+      text: TEXT,
+      parent_id: null,
+      deleted_at: null,
+      place_lat: '47.3',
+      place_lng: 8.5,
+      place_label: 'Coffee Lab',
+      place_street: 'Main Street',
+      place_house_number: '1',
+      place_postal_code: '8001',
+      place_city: 'Zürich',
+      place_country: 'CH',
+      shop_account_id: 'till',
+      nostr_pubkey: pubkey,
+    };
+    const none = {
+      place_lat: null,
+      place_lng: null,
+      place_label: null,
+      place_street: null,
+      place_house_number: null,
+      place_postal_code: null,
+      place_city: null,
+      place_country: null,
+    };
+    const ids = [
+      ID_A,
+      ID_B,
+      ID_C,
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      '11111111-1111-4111-8111-111111111111',
+    ];
+    const rows = [
+      { ...full, ...none, id: ids[0] },
+      { ...full, id: ids[1], place_lng: null },
+      { ...full, id: ids[2], place_street: null },
+      { ...full, id: ids[3], place_house_number: null },
+      { ...full, id: ids[4], place_postal_code: null },
+      { ...full, id: ids[5], place_city: null },
+      { ...full, id: ids[6], place_country: null, place_label: null },
+    ];
+    const { sql } = fakeSql([rows]);
+    const page = await new PostgresShopIdentityStore(sql, messages).listDirectory(null, 10);
+    const description = 'Fresh coffee roasted here every morning.';
+    const pin = { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null };
+    expect(page.next).toBeNull();
+    expect(page.shops.map((shop) => shop.place)).toEqual([
+      null,
+      null,
+      pin,
+      pin,
+      pin,
+      pin,
+      { lat: 47.3, lng: 8.5, label: '', address: null },
+    ]);
+    expect(page.shops.map((shop) => shop.name)).toEqual([
+      description,
+      description,
+      'Coffee Lab',
+      'Coffee Lab',
+      'Coffee Lab',
+      'Coffee Lab',
+      description,
+    ]);
+  });
+
   it('queues a page of identities by message id', async () => {
     const { sql, calls } = fakeSql([[{ message_id: ID_B }, { message_id: ID_A }], []]);
     const store = new PostgresShopIdentityStore(sql, messages);
@@ -1593,9 +1692,9 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[8]?.params).toEqual([ID_A, 6, 4, 'hash']);
     expect(calls[9]?.params).toEqual([ID_A, 6, 4, true]);
     expect(calls).toHaveLength(12);
-    expect(calls[10]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
+    expect(calls[10]?.text).toContain('UPDATE shop_identity SET profile_name = $11');
     expect(calls[10]?.text).toContain('FOR UPDATE');
-    expect(calls[10]?.params).toEqual([ID_A, ...SNAPSHOT]);
+    expect(calls[10]?.params).toEqual([ID_A, ...SNAPSHOT, 'Coffee Lab']);
     // An unlisted snapshot sends nothing.
     await store.renameIfListed(shopRow(ID_B, { text: 'No tag in this text at all here.' }));
     expect(calls).toHaveLength(12);

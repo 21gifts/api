@@ -7,7 +7,7 @@ import { logEvent } from '@/lib/log';
 import { resolveWriteSet, writeRelayUrls } from '@/lib/nostr/relays';
 import type { MessageStore } from '@/lib/message-store';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
-import { listedShopName } from '@/lib/shop-place';
+import { publicShop } from '@/lib/shop-place';
 
 /** One NIP-05 mapping ready to publish on kind:0 and in `nostr.json`. */
 export interface Nip05Entry {
@@ -291,7 +291,7 @@ export async function listShopNip05Entries(
   );
   const out: ShopNip05Entry[] = [];
   for (const identity of identities) {
-    const name = listedShopName(notes.get(identity.messageId));
+    const name = publicShop(notes.get(identity.messageId))?.name ?? null;
     if (name === null) {
       continue;
     }

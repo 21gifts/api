@@ -231,6 +231,18 @@ describe('runOcpPlaceOutboxPass', () => {
     expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'created');
   });
 
+  it('clears a public shop that has no structured address without a request', async () => {
+    const messages = await messagesWith(
+      shopNote({ place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null } }),
+    );
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+  });
+
   it('resets the photos and deletes a shop that is not listed', async () => {
     const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
     const { push, sent } = mapPush(() => new Response('{"deleted":false}', { status: 200 }));
