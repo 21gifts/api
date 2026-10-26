@@ -2,8 +2,9 @@
  * Completeness rules for a 21.gifts shop pin on the OpenCryptoPay map.
  *
  * A shop is a top-level forum note whose text has `#21GiftsShop` and a till
- * account. Creating one requires a pin, because the shop name is the pin
- * label; the route rejects a missing pin with `Shop name is required`.
+ * account. `POST /messages` requires a pin, because that route's shop name
+ * is the pin label; it rejects a missing pin with `Shop name is required`.
+ * `POST /debug/shop-notes` stores a note that already has a till and no pin.
  * The public directory lists every such note. A pin and a structured
  * address are optional there. The map still requires a short name that is not
  * the address, a full structured address, and a description.

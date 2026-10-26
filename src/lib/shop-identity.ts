@@ -109,7 +109,7 @@ export interface ShopDirectoryCursor {
   id: string;
 }
 
-/** One keyed listed shop. `id` and `createdAt` stay on the cursor, not the JSON. */
+/** One keyed public shop. `id` and `createdAt` stay on the cursor, not the JSON. */
 export interface ShopDirectoryItem {
   /** Note id. */
   id: string;
@@ -123,9 +123,9 @@ export interface ShopDirectoryItem {
   place: PublicShop['place'];
 }
 
-/** One directory page of at most `limit` keyed listed shops. */
+/** One directory page of at most `limit` keyed public shops. */
 export interface ShopDirectoryPage {
-  /** Keyed listed shops, newest note first. */
+  /** Keyed public shops, newest note first. */
   shops: ShopDirectoryItem[];
   /**
    * Last examined note, when another structural row may exist. Null when the

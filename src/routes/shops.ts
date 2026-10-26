@@ -154,14 +154,14 @@ const READ_ROUNDS = 2;
  * `GET /` is the public directory. No session; a bearer is ignored. `limit`
  * defaults to 20 and, when present, must be a canonical base-10 integer from
  * 1 to 100. `cursor`, when present, is base64url JSON `{ c, i }` of the
- * previous page. 200 `{ shops, nextCursor? }` lists keyed listed shops,
+ * previous page. 200 `{ shops, nextCursor? }` lists keyed public shops,
  * newest note first, each `{ npub, name, place }`. A bad limit or cursor is
  * 400 with the public cache header and does not read the store. A store
  * failure is 503 (`shops.list.failed`, `no-store`).
  *
- * `GET /:npub`: 200 `{ shop }` for a listed shop's npub, 301 to
+ * `GET /:npub`: 200 `{ shop }` for a public shop's npub, 301 to
  * `/shops/{npub}` for the hex form of a known key, 410 for a known key whose
- * note is not listed, 404 for anything else, 503 on a store failure
+ * note is not public, 404 for anything else, 503 on a store failure
  * (`shops.detail.failed`).
  *
  * One answer comes from one state of the note. The photos come from one read
@@ -174,11 +174,11 @@ const READ_ROUNDS = 2;
  * note this round read. On the first missing entry or other name the request
  * asks once for a forced refresh of the directory (rate-limited per store
  * set, so a stream of requests for a renamed shop cannot each force one) and
- * checks again; when it still does not match (renamed or unlisted between
+ * checks again; when it still does not match (renamed or not public between
  * the two reads) it goes round once more with a re-read of the note, and on
  * the last round the answer is 503 (`shops.detail.failed` with
  * `reason: 'nip05_stale'`), so a 200 never pairs a name with another name's
- * NIP-05 or a listed shop with a null NIP-05. After the photo set the note is
+ * NIP-05 or a public shop with a null NIP-05. After the photo set the note is
  * read again; when its text, pin, till account or `deletedAt` differ from the
  * round's note (a rename, text or pin change inside the gap), the route goes
  * round once more with that re-read, and on the last round the answer is 503

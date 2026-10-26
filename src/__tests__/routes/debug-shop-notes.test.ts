@@ -20,7 +20,7 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
     lightningAddress: null,
     lightningAddressVerified: false,
     forumLawsDismissed: false,
-    viewKey: 'a'.repeat(64),
+    viewKey: overrides.id.replaceAll('-', '').padEnd(64, 'a'),
     createdAt: 1,
     rulesAgreedAt: null,
     ...overrides,

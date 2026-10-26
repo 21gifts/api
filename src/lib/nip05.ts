@@ -72,7 +72,7 @@ export function nip05Slug(name: string): string {
  * later collisions append 8 hex chars of the account id (a shop passes its
  * message id).
  *
- * @param name - Display name (or listed shop name).
+ * @param name - Display name (or public shop name).
  * @param accountId - Account id, or the shop's message id.
  * @param taken - Locals already assigned in this pass.
  * @returns Unique local-part.
@@ -237,11 +237,11 @@ export async function listNip05Entries(
   return entries;
 }
 
-/** One listed shop in the NIP-05 directory. */
+/** One public shop in the NIP-05 directory. */
 export interface ShopNip05Entry {
   /** Shop note id. */
   messageId: string;
-  /** Shop name (pin label). */
+  /** Public shop name. */
   name: string;
   /** Shop hex pubkey. */
   pubkey: string;
@@ -250,13 +250,13 @@ export interface ShopNip05Entry {
 }
 
 /**
- * NIP-05 locals of listed shops, allocated after every account.
+ * NIP-05 locals of public shops, allocated after every account.
  *
  * Accounts are allocated first with the set and order of
  * {@link listNip05Entries}, so an account never loses its local part to a
  * shop. Shops follow in `nostr_key_created_at`, then `message_id` order,
  * with the same slug and collision suffix ({@link allocateNip05Local}) from
- * the current shop name. Shops that are not listed get no local.
+ * the current shop name. Shops that are not public get no local.
  *
  * Cost per call: one read of every account (none when `accounts` is
  * given), one of every shop identity and one bulk read of their notes
@@ -266,14 +266,14 @@ export interface ShopNip05Entry {
  *
  * @param auth - Auth store (read only when `accounts` is omitted).
  * @param shops - Shop identities (ordered by key creation).
- * @param messages - Forum store that decides whether a shop is listed.
+ * @param messages - Forum store that decides whether a shop is public.
  * @param accounts - Optional snapshot of every account. A caller that
  *   combines these entries with the account entries of
  *   {@link listNip05Entries} passes both the same snapshot; a second read
  *   could miss an account renamed or merged in between, and a shop could then
  *   get the local part that account already holds. Omitted, the accounts are
  *   read once with `auth.listAccounts()`.
- * @returns One entry per listed shop with a key.
+ * @returns One entry per public shop with a key.
  */
 export async function listShopNip05Entries(
   auth: AuthStore,
@@ -325,14 +325,14 @@ export const NIP05_DIRECTORY_REFRESH_MS = 10_000;
 
 /**
  * The NIP-05 allocation of one account snapshot: every account, then every
- * listed shop. The lookup maps by local part are built once per computation,
+ * public shop. The lookup maps by local part are built once per computation,
  * so a `nostr.json?name=` answer is a map lookup, not a walk over every
  * entry.
  */
 export interface Nip05Directory {
   /** Account entries in `nostr.json` order ({@link listNip05Entries}). */
   accounts: readonly Nip05Entry[];
-  /** Listed shop entries by message id, in allocation order ({@link listShopNip05Entries}). */
+  /** Public shop entries by message id, in allocation order ({@link listShopNip05Entries}). */
   shops: ReadonlyMap<string, ShopNip05Entry>;
   /** Account entries by local part (stored usernames are unique, so one entry per local). */
   accountsByLocal: ReadonlyMap<string, Nip05Entry>;
@@ -423,7 +423,7 @@ async function computeDirectory(
  * The NIP-05 directory of a store set from a shared in-process cache.
  *
  * One directory is computed from one account read (accounts with
- * {@link listNip05Entries}, then listed shops with {@link listShopNip05Entries}
+ * {@link listNip05Entries}, then public shops with {@link listShopNip05Entries}
  * on the same snapshot) and kept per auth store, shop identity store and
  * message store for {@link NIP05_DIRECTORY_TTL_MS}. Callers that arrive while
  * a computation runs share it (single flight), so a burst of reads computes
@@ -517,7 +517,7 @@ function atMostOne<T>(byLocal: ReadonlyMap<string, T>, key: string): T[] {
  * @param auth - Auth store.
  * @param env - Process env for write-set relays.
  * @param nameFilter - Optional `?name=` filter (NIP-05 clients send this).
- * @param shops - Optional shop identities and forum store; listed shops
+ * @param shops - Optional shop identities and forum store; public shops
  *   follow the accounts ({@link listShopNip05Entries}).
  * @param now - Clock reading in epoch milliseconds for the directory cache.
  *   Default `Date.now()`.

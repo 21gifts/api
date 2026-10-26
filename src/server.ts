@@ -246,7 +246,7 @@ export interface AppDeps {
   nostrKek?: Uint8Array;
   /**
    * AES-256 KEK for new shop keys (`docs/shop-identity.md` S1). Default
-   * `nostrKek`. Memory boots pass a process-ephemeral key so listed shops get
+   * `nostrKek`. Memory boots pass a process-ephemeral key so public shops get
    * an npub without Postgres; the keys live and die with the in-memory rows.
    */
   shopKek?: Uint8Array;
