@@ -226,7 +226,7 @@ runs and checks that neither the note nor a `shop_identity` row is left.
 - The `db_change` audit log stores a shop's `nostr_nsec_ciphertext` only as
   a SHA-256 hash, as it does for accounts.
 - A memory boot (blank `DATABASE_URL`) has no `NOSTR_NSEC_KEK`. It passes a
-  random process-ephemeral key as `shopKek` to `createApp`, so listed shops
+  random process-ephemeral key as `shopKek` to `createApp`, so public shops
   still get a key and `GET /shops/:npub` works (Playwright e2e uses this).
   Those keys live in `InMemoryShopIdentityStore` and vanish with the process,
   like every other memory row; no shop kind 0 is published without Postgres.
@@ -301,7 +301,7 @@ not, in the same loop and with the same rules as account profiles
   cache entry (a kind 0 read that throws before it leaves the entry as it
   was).
 
-Kind 0 content of a listed shop:
+Kind 0 content of a public shop:
 
 | Field          | Value                                                                       |
 | -------------- | --------------------------------------------------------------------------- |
@@ -374,7 +374,7 @@ spec adds no zap receipts for a shop key.
 
 ### NIP-05
 
-- Listed shops join the existing `/.well-known/nostr.json` (api route and the
+- Public shops join the existing `/.well-known/nostr.json` (api route and the
   app proxy).
 - The local part comes from `allocateNip05Local(shopName, messageId, taken)`,
   the same slug and the same collision suffix as accounts.
@@ -384,7 +384,7 @@ spec adds no zap receipts for a shop key.
 - `listNip05Entries` (for `nostr.json`) reserves every account with a
   username, while `nip05Identifier` in `publishProfiles` only sees accounts
   with a name. Shop local parts come from one allocation that both use: the
-  account set and order of `listNip05Entries`, then the listed shops. A test
+  account set and order of `listNip05Entries`, then the public shops. A test
   checks that a shop's kind 0 `nip05` equals its `nostr.json` entry, also
   when a nameless account's username equals the shop's slug.
 - The local part follows the current shop name. A rename, or a new account
@@ -536,8 +536,10 @@ answers 410.
 }
 ```
 
-`lat` and `lng` as in `GET /messages/places`. `address` is always present,
-because a listed shop is complete under #478. `payUsername` is the till
+The JSON above is a map-complete shop. `place` is null when the note has no
+finite coordinates. When `place` is present, `lat` and `lng` are as in
+`GET /messages/places`, and `address` is null unless every structured part
+is non-blank. `payUsername` is the till
 account's username when the account has a username and a non-empty linked
 Lightning address is stored; otherwise `null`. Whether that address resolves
 at payment time is not checked here; the pay page reports that as it does for

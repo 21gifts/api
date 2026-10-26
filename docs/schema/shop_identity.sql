@@ -1,4 +1,4 @@
--- One custodial Nostr key per listed shop note (docs/shop-identity.md S1) and
+-- One custodial Nostr key per public shop note (docs/shop-identity.md S1) and
 -- the two durable OpenCryptoPay outboxes (S5). migrateShopIdentitySchema
 -- (SHOP_IDENTITY_SCHEMA_SQL in src/lib/shop-identity.ts) runs these idempotent
 -- statements on every boot, after migrateMessageSchema.

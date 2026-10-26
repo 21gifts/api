@@ -34,7 +34,7 @@ export interface WellKnownRouteDeps {
   /** Clock in epoch milliseconds (pending charges, NIP-05 directory cache). Default `Date.now`. */
   now?: () => number;
   /**
-   * Shop identities and the forum store. Listed shops join `nostr.json`
+   * Shop identities and the forum store. Public shops join `nostr.json`
    * after every account. Omitted → accounts only.
    */
   shops?: { identities: ShopIdentityStore; messages: MessageStore };

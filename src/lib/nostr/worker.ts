@@ -1634,7 +1634,7 @@ async function publishShopProfiles(
   ): Promise<ShopNip05Entry | undefined> => {
     let entry = await directoryEntry(messageId, false);
     if (entry?.name !== name) {
-      // Listed or renamed after the cached directory: ask for a fresh one.
+      // Published or renamed after the cached directory: ask for a fresh one.
       entry = await directoryEntry(messageId, true);
     }
     return entry?.name === name ? entry : undefined;
