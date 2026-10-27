@@ -369,6 +369,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         attempts: row.attempts,
         claimedUntil: iso(row.claimedUntil),
         createdAt: row.createdAt.toISOString(),
+        finishedAt: iso(row.finishedAt),
         deliveredEndpoints: row.deliveredEndpoints,
         skipEndpoints: row.skipEndpoints,
       }));

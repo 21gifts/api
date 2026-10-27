@@ -317,7 +317,7 @@ function sameClaimDismissesTag(rows: readonly PushOutboxRow[], row: PushOutboxRo
  * that payload tag for the same account, so a later tick cannot deliver the
  * content after the dismiss.
  *
- * @param deps - Store, sender, clock.
+ * @param deps - Store, sender, clock, auth store.
  */
 export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
   if (!deps.sender.isConfigured()) {

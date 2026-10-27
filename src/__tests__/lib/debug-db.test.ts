@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
-import { DEBUG_DB_PAGE_SIZE, DebugDbCursorError, PostgresDebugDbStore } from '@/lib/debug-db';
+import {
+  DEBUG_DB_PAGE_SIZE,
+  DEBUG_DB_SECRET_COLUMNS,
+  DebugDbCursorError,
+  PostgresDebugDbStore,
+} from '@/lib/debug-db';
 
 interface Call {
   text: string;
@@ -122,6 +127,12 @@ function scripted(
 function cursorOf(values: unknown): string {
   return Buffer.from(JSON.stringify(values), 'utf8').toString('base64url');
 }
+
+describe('DEBUG_DB_SECRET_COLUMNS', () => {
+  it('lists the push subscription session token as a secret', () => {
+    expect(DEBUG_DB_SECRET_COLUMNS).toContain('session_token');
+  });
+});
 
 describe('PostgresDebugDbStore', () => {
   it('lists only safe tables and never quotes an unsafe name into FROM', async () => {

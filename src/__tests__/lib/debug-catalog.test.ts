@@ -414,7 +414,7 @@ describe('loadDebugTables', () => {
       status: 'sent',
       attempts: 0,
       claimedUntil: null,
-      finishedAt: null,
+      finishedAt: new Date('2026-09-01T04:00:05.000Z'),
       createdAt: new Date('2026-09-01T04:00:00.000Z'),
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -598,9 +598,11 @@ describe('loadDebugTables', () => {
       expect.arrayContaining([
         expect.objectContaining({
           id: 'outbox-1',
+          finishedAt: null,
           deliveredEndpoints: ['https://push.example/sent'],
           skipEndpoints: ['https://push.example/skip'],
         }),
+        expect.objectContaining({ id: 'outbox-3', finishedAt: '2026-09-01T04:00:05.000Z' }),
       ]),
     );
     expect(tables.trust_edge).toHaveLength(3);
