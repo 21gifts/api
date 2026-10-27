@@ -620,13 +620,14 @@ type `SHORT` with count 1; anything else counts as orientation 1.
 "Listed" is the only rule for what is on the OpenCryptoPay map. Every push
 goes through a durable outbox on `shop_identity`, so a failed request is
 repeated and this side never has two place requests, or two photo
-requests, for one shop in flight; a place and a photo request can overlap,
-and the revision below orders them.
+requests, for one shop in flight; a place and a photo request can overlap.
 A request that carries a `revision` (OpenCryptoPay R8) takes it from one
-counter per shop, and a photo request while that counter is still 0 carries
-no revision and does not raise the counter. A request that OpenCryptoPay
-applies late, after the timeout here dropped it, is refused there instead
-of overwriting newer state. The outbox
+counter per shop, and that revision orders those requests. A request that
+carries a revision and that OpenCryptoPay applies late, after the timeout
+here dropped it, is refused there instead of overwriting newer state. A
+photo request while that counter is still 0 carries no revision and does
+not raise the counter. After the pass reads the note again, that request
+is sent without revision ordering. The outbox
 replaces the former fire-and-forget place push (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logged and swallowed
 failures); that path is removed. The cases 21gifts/api#494 added to it are
