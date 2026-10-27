@@ -19,6 +19,12 @@ export interface PushSubscriptionRecord {
   auth: string;
   /** When the subscription was first stored. */
   createdAt: Date;
+  /**
+   * Bearer token of the session that last registered this endpoint. `null`
+   * on a row stored before subscriptions were bound to a session; such a row
+   * is never sent to and the sweep removes it.
+   */
+  sessionToken: string | null;
 }
 
 /** One queued notification awaiting the push worker. */
@@ -41,6 +47,8 @@ export interface PushOutboxRow {
   claimedUntil: Date | null;
   /** Enqueue time. */
   createdAt: Date;
+  /** When the row became `sent` or `failed`; null while pending and on rows finished before this column existed. */
+  finishedAt: Date | null;
   /** Endpoints that already received this payload (url strings). */
   deliveredEndpoints: string[];
   /** Endpoints that must not receive this payload (url strings). */
@@ -52,7 +60,8 @@ export interface PushOutboxRow {
  */
 export interface PushStore {
   /**
-   * Insert or rebind a subscription by endpoint.
+   * Insert or rebind a subscription by endpoint. A rebind replaces the
+   * account, keys, and session token.
    *
    * @param row - Fully formed subscription.
    * @returns The stored row (original `createdAt` on endpoint conflict).
@@ -117,18 +126,31 @@ export interface PushStore {
   claimPending(limit: number, nowMs: number, leaseMs: number): Promise<PushOutboxRow[]>;
 
   /**
-   * Mark an outbox row as sent.
+   * Mark an outbox row as sent and stamp `finishedAt`.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finishedAt`.
    */
-  markSent(id: string): Promise<void>;
+  markSent(id: string, nowMs: number): Promise<void>;
 
   /**
-   * Increment attempts; terminal failed at 8, otherwise re-queue pending.
+   * Increment attempts; terminal failed at 8 (stamps `finishedAt`),
+   * otherwise re-queue pending.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finishedAt` when the row turns failed.
    */
-  markFailed(id: string): Promise<void>;
+  markFailed(id: string, nowMs: number): Promise<void>;
+
+  /**
+   * Delete `sent` and `failed` rows that finished before `beforeMs`. A row
+   * finished before `finishedAt` existed counts from its `createdAt`.
+   * Pending rows are never deleted.
+   *
+   * @param beforeMs - Cutoff (epoch ms, exclusive).
+   * @returns Number of rows deleted.
+   */
+  deleteFinishedOutbox(beforeMs: number): Promise<number>;
 
   /**
    * Union `endpoints` into the stored delivered list for this outbox row.
@@ -150,6 +172,7 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
   created_at timestamptz NOT NULL
 )`,
   `CREATE INDEX IF NOT EXISTS push_subscription_account_id_idx ON push_subscription (account_id)`,
+  `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text`,
   `CREATE TABLE IF NOT EXISTS push_outbox (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
@@ -166,6 +189,7 @@ export const PUSH_SCHEMA_SQL: readonly string[] = [
   `CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending'`,
   `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]'`,
   `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS skip_endpoints text NOT NULL DEFAULT '[]'`,
+  `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz`,
   `DO $push_outbox_type$
 BEGIN
   ALTER TABLE push_outbox DROP CONSTRAINT IF EXISTS push_outbox_type_check;
@@ -247,6 +271,7 @@ function copyOutbox(row: PushOutboxRow): PushOutboxRow {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     claimedUntil: row.claimedUntil === null ? null : new Date(row.claimedUntil.getTime()),
+    finishedAt: row.finishedAt === null ? null : new Date(row.finishedAt.getTime()),
     deliveredEndpoints: row.deliveredEndpoints.slice(),
     skipEndpoints: row.skipEndpoints.slice(),
   };
@@ -275,6 +300,7 @@ export class InMemoryPushStore implements PushStore {
         p256dh: row.p256dh,
         auth: row.auth,
         createdAt: new Date(existing.createdAt.getTime()),
+        sessionToken: row.sessionToken,
       };
       this.#subs.set(row.endpoint, stored);
       return Promise.resolve(copySub(stored));
@@ -403,11 +429,13 @@ export class InMemoryPushStore implements PushStore {
    * Mark an outbox row sent.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finishedAt`.
    */
-  markSent(id: string): Promise<void> {
+  markSent(id: string, nowMs: number): Promise<void> {
     const row = this.#outbox.find((item) => item.id === id);
     if (row !== undefined) {
       row.status = 'sent';
+      row.finishedAt = new Date(nowMs);
     }
     return Promise.resolve();
   }
@@ -416,8 +444,9 @@ export class InMemoryPushStore implements PushStore {
    * Increment attempts; fail at 8, else clear lease and stay pending.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finishedAt` when the row turns failed.
    */
-  markFailed(id: string): Promise<void> {
+  markFailed(id: string, nowMs: number): Promise<void> {
     const row = this.#outbox.find((item) => item.id === id);
     if (row === undefined) {
       return Promise.resolve();
@@ -425,11 +454,33 @@ export class InMemoryPushStore implements PushStore {
     row.attempts += 1;
     if (row.attempts >= 8) {
       row.status = 'failed';
+      row.finishedAt = new Date(nowMs);
     } else {
       row.status = 'pending';
       row.claimedUntil = null;
     }
     return Promise.resolve();
+  }
+
+  /**
+   * Drop finished rows whose `finishedAt` (else `createdAt`) is before the cutoff.
+   *
+   * @param beforeMs - Cutoff (epoch ms, exclusive).
+   * @returns Number of rows deleted.
+   */
+  deleteFinishedOutbox(beforeMs: number): Promise<number> {
+    let deleted = 0;
+    for (let i = this.#outbox.length - 1; i >= 0; i -= 1) {
+      const row = this.#outbox[i] as PushOutboxRow;
+      if (row.status === 'pending') {
+        continue;
+      }
+      if ((row.finishedAt ?? row.createdAt).getTime() < beforeMs) {
+        this.#outbox.splice(i, 1);
+        deleted += 1;
+      }
+    }
+    return Promise.resolve(deleted);
   }
 
   /**
@@ -455,6 +506,7 @@ interface PushSubSqlRow {
   p256dh: string;
   auth: string;
   created_at: Date | string;
+  session_token: string | null;
 }
 
 /** Row shape selected from `push_outbox`. */
@@ -468,6 +520,7 @@ interface PushOutboxSqlRow {
   attempts: number;
   claimed_until: Date | string | null;
   created_at: Date | string;
+  finished_at: Date | string | null;
   delivered_endpoints: string | null;
   skip_endpoints: string | null;
 }
@@ -479,6 +532,7 @@ function mapSub(row: PushSubSqlRow): PushSubscriptionRecord {
     p256dh: row.p256dh,
     auth: row.auth,
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    sessionToken: row.session_token ?? null,
   };
 }
 
@@ -509,13 +563,21 @@ function mapOutbox(row: PushOutboxSqlRow): PushOutboxRow {
           ? row.claimed_until
           : new Date(row.claimed_until),
     createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    finishedAt:
+      row.finished_at === null || row.finished_at === undefined
+        ? null
+        : row.finished_at instanceof Date
+          ? row.finished_at
+          : new Date(row.finished_at),
     deliveredEndpoints: parseDeliveredEndpoints(row.delivered_endpoints),
     skipEndpoints: parseDeliveredEndpoints(row.skip_endpoints),
   };
 }
 
 const OUTBOX_SELECT =
-  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints, skip_endpoints';
+  'id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, finished_at, delivered_endpoints, skip_endpoints';
+
+const SUB_SELECT = 'endpoint, account_id, p256dh, auth, created_at, session_token';
 
 /**
  * Durable {@link PushStore} backed by Postgres.
@@ -537,34 +599,22 @@ export class PostgresPushStore implements PushStore {
    * @returns The stored row from `RETURNING` (original `created_at` on conflict).
    */
   async upsertSubscription(row: PushSubscriptionRecord): Promise<PushSubscriptionRecord> {
-    const rows = await this.#sql.query<{
-      endpoint: string;
-      account_id: string;
-      p256dh: string;
-      auth: string;
-      created_at: Date | string;
-    }>(
-      `INSERT INTO push_subscription (endpoint, account_id, p256dh, auth, created_at)
-       VALUES ($1, $2, $3, $4, $5)
+    const rows = await this.#sql.query<PushSubSqlRow>(
+      `INSERT INTO push_subscription (endpoint, account_id, p256dh, auth, created_at, session_token)
+       VALUES ($1, $2, $3, $4, $5, $6)
        ON CONFLICT (endpoint) DO UPDATE SET
          account_id = EXCLUDED.account_id,
          p256dh = EXCLUDED.p256dh,
-         auth = EXCLUDED.auth
-       RETURNING endpoint, account_id, p256dh, auth, created_at`,
-      [row.endpoint, row.accountId, row.p256dh, row.auth, row.createdAt],
+         auth = EXCLUDED.auth,
+         session_token = EXCLUDED.session_token
+       RETURNING ${SUB_SELECT}`,
+      [row.endpoint, row.accountId, row.p256dh, row.auth, row.createdAt, row.sessionToken],
     );
     const stored = rows[0];
     if (stored === undefined) {
       throw new Error('push.subscription.upsert_empty');
     }
-    return {
-      endpoint: stored.endpoint,
-      accountId: stored.account_id,
-      p256dh: stored.p256dh,
-      auth: stored.auth,
-      createdAt:
-        stored.created_at instanceof Date ? stored.created_at : new Date(stored.created_at),
-    };
+    return mapSub(stored);
   }
 
   /**
@@ -590,7 +640,7 @@ export class PostgresPushStore implements PushStore {
    */
   async listByAccount(accountId: string): Promise<PushSubscriptionRecord[]> {
     const rows = await this.#sql.query<PushSubSqlRow>(
-      `SELECT endpoint, account_id, p256dh, auth, created_at
+      `SELECT ${SUB_SELECT}
        FROM push_subscription WHERE account_id = $1`,
       [accountId],
     );
@@ -599,7 +649,7 @@ export class PostgresPushStore implements PushStore {
 
   async listAllSubscriptions(): Promise<PushSubscriptionRecord[]> {
     const rows = await this.#sql.query<PushSubSqlRow>(
-      `SELECT endpoint, account_id, p256dh, auth, created_at FROM push_subscription
+      `SELECT ${SUB_SELECT} FROM push_subscription
        ORDER BY created_at DESC, endpoint DESC`,
     );
     return rows.map((row) => mapSub(row));
@@ -635,8 +685,8 @@ export class PostgresPushStore implements PushStore {
   async enqueue(row: PushOutboxRow): Promise<void> {
     await this.#sql.execute(
       `INSERT INTO push_outbox
-         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, delivered_endpoints, skip_endpoints)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, finished_at, delivered_endpoints, skip_endpoints)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)`,
       [
         row.id,
         row.accountId,
@@ -647,6 +697,7 @@ export class PostgresPushStore implements PushStore {
         row.attempts,
         row.claimedUntil,
         row.createdAt,
+        row.finishedAt,
         JSON.stringify(row.deliveredEndpoints),
         JSON.stringify(row.skipEndpoints),
       ],
@@ -691,25 +742,48 @@ export class PostgresPushStore implements PushStore {
    * Mark an outbox row sent.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finished_at`.
    */
-  async markSent(id: string): Promise<void> {
-    await this.#sql.execute(`UPDATE push_outbox SET status = 'sent' WHERE id = $1`, [id]);
+  async markSent(id: string, nowMs: number): Promise<void> {
+    await this.#sql.execute(
+      `UPDATE push_outbox SET status = 'sent', finished_at = $2 WHERE id = $1`,
+      [id, new Date(nowMs)],
+    );
   }
 
   /**
    * Increment attempts; terminal failed at 8, else pending with cleared lease.
    *
    * @param id - Outbox id.
+   * @param nowMs - Clock stored as `finished_at` when the row turns failed.
    */
-  async markFailed(id: string): Promise<void> {
+  async markFailed(id: string, nowMs: number): Promise<void> {
     await this.#sql.execute(
       `UPDATE push_outbox SET
          attempts = attempts + 1,
          status = CASE WHEN attempts + 1 >= 8 THEN 'failed' ELSE 'pending' END,
-         claimed_until = CASE WHEN attempts + 1 >= 8 THEN claimed_until ELSE NULL END
+         claimed_until = CASE WHEN attempts + 1 >= 8 THEN claimed_until ELSE NULL END,
+         finished_at = CASE WHEN attempts + 1 >= 8 THEN $2 ELSE finished_at END
        WHERE id = $1`,
-      [id],
+      [id, new Date(nowMs)],
     );
+  }
+
+  /**
+   * Delete finished rows whose `finished_at` (else `created_at`) is before the cutoff.
+   *
+   * @param beforeMs - Cutoff (epoch ms, exclusive).
+   * @returns Number of rows deleted.
+   */
+  async deleteFinishedOutbox(beforeMs: number): Promise<number> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `DELETE FROM push_outbox
+       WHERE status IN ('sent', 'failed')
+         AND COALESCE(finished_at, created_at) < $1
+       RETURNING id`,
+      [new Date(beforeMs)],
+    );
+    return rows.length;
   }
 
   /**

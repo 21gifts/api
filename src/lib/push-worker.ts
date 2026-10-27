@@ -2,6 +2,8 @@
  * Enqueue helpers and the Web Push outbox worker.
  */
 
+import { resolveSession } from '@/lib/auth/service';
+import type { AuthStore } from '@/lib/auth/store';
 import { logEvent } from '@/lib/log';
 import {
   buildForumPushPayload,
@@ -10,7 +12,7 @@ import {
   type PushPayload,
 } from '@/lib/push';
 import type { PushSender } from '@/lib/push-sender';
-import type { PushOutboxRow, PushStore } from '@/lib/push-store';
+import type { PushOutboxRow, PushStore, PushSubscriptionRecord } from '@/lib/push-store';
 
 /** Max outbox rows claimed per tick. */
 export const PUSH_WORKER_BATCH = 20;
@@ -20,6 +22,16 @@ export const PUSH_WORKER_LEASE_MS = 60_000;
 
 /** Default `setInterval` period (ms). */
 export const PUSH_WORKER_INTERVAL_MS = 2_000;
+
+/** Period of {@link sweepPushStore} inside {@link startPushWorker} (ms). */
+export const PUSH_SWEEP_INTERVAL_MS = 60 * 60 * 1000;
+
+/**
+ * How long a `sent` or `failed` outbox row is kept after it finished (ms).
+ * Long enough to look at a delivery problem reported a few days later,
+ * short enough that notification text does not pile up in the table.
+ */
+export const PUSH_OUTBOX_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Debug ping payload (zap type, null message id). */
 function buildDebugPushPayload(): PushPayload {
@@ -68,6 +80,7 @@ export async function enqueueForumPushes(
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt,
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -115,6 +128,7 @@ export async function enqueueReplyPush(
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt,
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -161,6 +175,7 @@ export async function enqueueZapPush(
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt,
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -195,6 +210,7 @@ export async function enqueueDebugPush(
     status: 'pending',
     attempts: 0,
     claimedUntil: null,
+    finishedAt: null,
     createdAt: new Date(nowMs),
     deliveredEndpoints: [],
     skipEndpoints: [],
@@ -211,6 +227,24 @@ export interface PushWorkerDeps {
   sender: PushSender;
   /** Clock. */
   now: () => number;
+  /** Auth store whose sessions the subscriptions are bound to. */
+  authStore: AuthStore;
+}
+
+/**
+ * Whether the session that registered `sub` still authenticates its account
+ * (same rule as a bearer request: known, not expired, account not refused).
+ */
+async function subscriptionSessionLive(
+  authStore: AuthStore,
+  nowMs: number,
+  sub: PushSubscriptionRecord,
+): Promise<boolean> {
+  if (sub.sessionToken === null) {
+    return false;
+  }
+  const account = await resolveSession(authStore, nowMs, sub.sessionToken);
+  return account !== null && account.id === sub.accountId;
 }
 
 function payloadTag(payload: string): string | undefined {
@@ -275,8 +309,9 @@ function sameClaimDismissesTag(rows: readonly PushOutboxRow[], row: PushOutboxRo
 
 /**
  * Claim a batch and deliver each row to every subscription for its account.
- * Does not send endpoints listed in `skipEndpoints`. A skipped endpoint is
- * not recorded as delivered. Skips endpoints already recorded on the outbox
+ * A subscription whose session no longer authenticates its account is
+ * deleted instead of sent to. Does not send endpoints listed in
+ * `skipEndpoints`. A skipped endpoint is not recorded as delivered. Skips endpoints already recorded on the outbox
  * row so retries do not re-send a payload that succeeded on a previous tick.
  * A failed send is marked sent when the same claim includes a dismiss for
  * that payload tag for the same account, so a later tick cannot deliver the
@@ -295,7 +330,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     const skip = new Set(row.skipEndpoints);
     const targets = subs.filter((sub) => !skip.has(sub.endpoint));
     if (targets.length === 0) {
-      await deps.store.markSent(row.id);
+      await deps.store.markSent(row.id, nowMs);
       continue;
     }
     const delivered = new Set(row.deliveredEndpoints);
@@ -303,6 +338,10 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     let anyFail = false;
     for (const sub of targets) {
       if (delivered.has(sub.endpoint)) {
+        continue;
+      }
+      if (!(await subscriptionSessionLive(deps.authStore, nowMs, sub))) {
+        await deps.store.deleteSubscription(sub.accountId, sub.endpoint);
         continue;
       }
       const result = await deps.sender.send(sub, row.payload);
@@ -327,22 +366,54 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
     }
     if (anyFail) {
       if (sameClaimDismissesTag(rows, row)) {
-        await deps.store.markSent(row.id);
+        await deps.store.markSent(row.id, nowMs);
       } else {
-        await deps.store.markFailed(row.id);
+        await deps.store.markFailed(row.id, nowMs);
       }
     } else {
-      await deps.store.markSent(row.id);
+      await deps.store.markSent(row.id, nowMs);
     }
   }
 }
 
 /**
- * Start a periodic push worker. Returns a handle to stop the interval.
+ * Delete every subscription whose session no longer authenticates its
+ * account (expired, removed, or refused; or a row stored without a session),
+ * then every `sent` or `failed` outbox row that finished more than
+ * {@link PUSH_OUTBOX_RETENTION_MS} ago. Pending rows stay. Runs whether or
+ * not a push sender is configured.
  *
- * @param deps - Store, sender, clock.
+ * @param deps - Store, auth store, clock (the sender is not used).
+ * @returns Counts of deleted subscriptions and outbox rows.
+ */
+export async function sweepPushStore(
+  deps: Pick<PushWorkerDeps, 'store' | 'authStore' | 'now'>,
+): Promise<{ subscriptions: number; outbox: number }> {
+  const nowMs = deps.now();
+  let subscriptions = 0;
+  for (const sub of await deps.store.listAllSubscriptions()) {
+    if (await subscriptionSessionLive(deps.authStore, nowMs, sub)) {
+      continue;
+    }
+    if (await deps.store.deleteSubscription(sub.accountId, sub.endpoint)) {
+      subscriptions += 1;
+    }
+  }
+  const outbox = await deps.store.deleteFinishedOutbox(nowMs - PUSH_OUTBOX_RETENTION_MS);
+  if (subscriptions > 0 || outbox > 0) {
+    logEvent('push.sweep', { subscriptions, outbox });
+  }
+  return { subscriptions, outbox };
+}
+
+/**
+ * Start a periodic push worker. Each tick delivers the outbox; once at start
+ * and then every {@link PUSH_SWEEP_INTERVAL_MS} it runs {@link sweepPushStore}.
+ * Returns a handle to stop both intervals.
+ *
+ * @param deps - Store, sender, clock, auth store.
  * @param intervalMs - Tick period (default {@link PUSH_WORKER_INTERVAL_MS}).
- * @returns `{ stop }` to clear the interval.
+ * @returns `{ stop }` to clear the intervals.
  */
 export function startPushWorker(
   deps: PushWorkerDeps,
@@ -359,9 +430,19 @@ export function startPushWorker(
       inFlight = false;
     });
   }, intervalMs);
+  const sweep = (): void => {
+    void sweepPushStore(deps).catch((error: unknown) => {
+      logEvent('push.sweep.failed', {
+        error: error instanceof Error ? error.message : String(error),
+      });
+    });
+  };
+  sweep();
+  const sweepTimer = setInterval(sweep, PUSH_SWEEP_INTERVAL_MS);
   return {
     stop: () => {
       clearInterval(timer);
+      clearInterval(sweepTimer);
     },
   };
 }

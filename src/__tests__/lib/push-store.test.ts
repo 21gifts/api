@@ -38,6 +38,7 @@ const SUB: PushSubscriptionRecord = {
   p256dh: 'p256',
   auth: 'auth',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  sessionToken: null,
 };
 
 function pending(
@@ -51,6 +52,7 @@ function pending(
     attempts: 0,
     claimedUntil: null,
     createdAt: new Date('2026-08-01T00:00:00.000Z'),
+    finishedAt: null,
     deliveredEndpoints: [],
     skipEndpoints: [],
     ...overrides,
@@ -59,20 +61,24 @@ function pending(
 
 describe('PUSH_SCHEMA_SQL', () => {
   it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(7);
+    expect(PUSH_SCHEMA_SQL).toHaveLength(9);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
-    expect(PUSH_SCHEMA_SQL[2]).toMatch(/CREATE TABLE IF NOT EXISTS push_outbox/i);
-    expect(PUSH_SCHEMA_SQL[2]).toMatch(/delivered_endpoints/);
-    expect(PUSH_SCHEMA_SQL[2]).toMatch(/skip_endpoints/);
-    expect(PUSH_SCHEMA_SQL[3]).toMatch(/push_outbox_pending_idx/i);
-    expect(PUSH_SCHEMA_SQL[4]).toMatch(/ADD COLUMN IF NOT EXISTS delivered_endpoints/i);
-    expect(PUSH_SCHEMA_SQL[5]).toMatch(/ADD COLUMN IF NOT EXISTS skip_endpoints/i);
-    expect(PUSH_SCHEMA_SQL[2]).toMatch(/'conversation'/);
-    expect(PUSH_SCHEMA_SQL[2]).toMatch(/'dismiss'/);
-    expect(PUSH_SCHEMA_SQL[6]).toMatch(/push_outbox_type_check/);
-    expect(PUSH_SCHEMA_SQL[6]).toMatch(/'conversation'/);
-    expect(PUSH_SCHEMA_SQL[6]).toMatch(/'dismiss'/);
+    expect(PUSH_SCHEMA_SQL[2]).toMatch(
+      /ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text$/,
+    );
+    expect(PUSH_SCHEMA_SQL[3]).toMatch(/CREATE TABLE IF NOT EXISTS push_outbox/i);
+    expect(PUSH_SCHEMA_SQL[3]).toMatch(/delivered_endpoints/);
+    expect(PUSH_SCHEMA_SQL[3]).toMatch(/skip_endpoints/);
+    expect(PUSH_SCHEMA_SQL[4]).toMatch(/push_outbox_pending_idx/i);
+    expect(PUSH_SCHEMA_SQL[5]).toMatch(/ADD COLUMN IF NOT EXISTS delivered_endpoints/i);
+    expect(PUSH_SCHEMA_SQL[6]).toMatch(/ADD COLUMN IF NOT EXISTS skip_endpoints/i);
+    expect(PUSH_SCHEMA_SQL[7]).toMatch(/ADD COLUMN IF NOT EXISTS finished_at timestamptz$/);
+    expect(PUSH_SCHEMA_SQL[3]).toMatch(/'conversation'/);
+    expect(PUSH_SCHEMA_SQL[3]).toMatch(/'dismiss'/);
+    expect(PUSH_SCHEMA_SQL[8]).toMatch(/push_outbox_type_check/);
+    expect(PUSH_SCHEMA_SQL[8]).toMatch(/'conversation'/);
+    expect(PUSH_SCHEMA_SQL[8]).toMatch(/'dismiss'/);
   });
 });
 
@@ -85,10 +91,11 @@ describe('migratePushSchema', () => {
 });
 
 describe('InMemoryPushStore', () => {
-  it('upserts, rebinds account, and keeps original createdAt', async () => {
+  it('upserts, rebinds account and session, and keeps original createdAt', async () => {
     const store = new InMemoryPushStore();
-    const first = await store.upsertSubscription(SUB);
+    const first = await store.upsertSubscription({ ...SUB, sessionToken: 'tok-1' });
     expect(first.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
+    expect(first.sessionToken).toBe('tok-1');
     const later = new Date('2026-08-10T00:00:00.000Z');
     const rebound = await store.upsertSubscription({
       ...SUB,
@@ -96,11 +103,14 @@ describe('InMemoryPushStore', () => {
       p256dh: 'new',
       auth: 'new-auth',
       createdAt: later,
+      sessionToken: 'tok-2',
     });
     expect(rebound.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
+    expect(rebound.sessionToken).toBe('tok-2');
     const listed = await store.listByAccount('acc-b');
     expect(listed).toHaveLength(1);
     expect(listed[0]?.accountId).toBe('acc-b');
+    expect(listed[0]?.sessionToken).toBe('tok-2');
     expect(listed[0]?.p256dh).toBe('new');
     expect(listed[0]?.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
     expect(await store.listByAccount('acc-a')).toEqual([]);
@@ -187,22 +197,58 @@ describe('InMemoryPushStore', () => {
   it('markSent and markFailed including terminal at 8 attempts', async () => {
     const store = new InMemoryPushStore();
     await store.enqueue(pending({ id: 'x', accountId: 'a' }));
-    await store.markSent('missing');
-    await store.markFailed('missing');
-    await store.markSent('x');
+    await store.markSent('missing', 5);
+    await store.markFailed('missing', 5);
+    await store.markSent('x', 5);
     const claimed = await store.claimPending(10, 1, 1000);
     expect(claimed).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]?.finishedAt?.getTime()).toBe(5);
 
     await store.enqueue(pending({ id: 'y', accountId: 'a' }));
     for (let i = 0; i < 7; i += 1) {
-      await store.markFailed('y');
+      await store.markFailed('y', 6);
     }
     const requeued = await store.claimPending(10, 1, 1000);
     expect(requeued).toHaveLength(1);
     expect(requeued[0]?.attempts).toBe(7);
     expect(requeued[0]?.claimedUntil).not.toBeNull();
-    await store.markFailed('y');
+    expect(requeued[0]?.finishedAt).toBeNull();
+    await store.markFailed('y', 9);
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
+    const failed = (await store.listAllOutbox(10)).find((row) => row.id === 'y');
+    expect(failed?.status).toBe('failed');
+    expect(failed?.finishedAt?.getTime()).toBe(9);
+  });
+
+  it('deleteFinishedOutbox drops only sent/failed rows that finished before the cutoff', async () => {
+    const store = new InMemoryPushStore();
+    const created = new Date(1_000);
+    await store.enqueue(pending({ id: 'old-pending', accountId: 'a', createdAt: created }));
+    await store.enqueue(
+      pending({ id: 'old-sent', accountId: 'a', status: 'sent', finishedAt: new Date(2_000) }),
+    );
+    await store.enqueue(
+      pending({ id: 'old-failed', accountId: 'a', status: 'failed', finishedAt: new Date(2_000) }),
+    );
+    await store.enqueue(
+      pending({ id: 'new-sent', accountId: 'a', status: 'sent', finishedAt: new Date(10_000) }),
+    );
+    // Finished before `finishedAt` existed: ages from createdAt.
+    await store.enqueue(
+      pending({ id: 'legacy-sent', accountId: 'a', status: 'sent', createdAt: created }),
+    );
+    await store.enqueue(
+      pending({
+        id: 'legacy-new',
+        accountId: 'a',
+        status: 'failed',
+        createdAt: new Date(10_000),
+      }),
+    );
+    expect(await store.deleteFinishedOutbox(5_000)).toBe(3);
+    const left = (await store.listAllOutbox(10)).map((row) => row.id).sort();
+    expect(left).toEqual(['legacy-new', 'new-sent', 'old-pending']);
+    expect(await store.deleteFinishedOutbox(5_000)).toBe(0);
   });
 
   it('recordDelivered unions unique endpoints and isolates claimed copies', async () => {
@@ -217,7 +263,7 @@ describe('InMemoryPushStore', () => {
       'https://push.example/b',
     ]);
     claimed[0]?.deliveredEndpoints.push('https://push.example/mutated');
-    await store.markFailed('o');
+    await store.markFailed('o', 1);
     const again = await store.claimPending(10, 1, 1000);
     expect(again[0]?.deliveredEndpoints).toEqual([
       'https://push.example/a',
@@ -243,7 +289,23 @@ describe('PostgresPushStore', () => {
     expect(sql.queries[0]?.text).toMatch(/ON CONFLICT \(endpoint\) DO UPDATE/i);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/i);
     expect(sql.queries[0]?.text).not.toMatch(/created_at = EXCLUDED/i);
+    expect(sql.queries[0]?.text).toMatch(/session_token = EXCLUDED\.session_token/);
     expect(stored.createdAt.toISOString()).toBe(SUB.createdAt.toISOString());
+    expect(stored.sessionToken).toBeNull();
+
+    sql.nextRows = [
+      {
+        endpoint: SUB.endpoint,
+        account_id: SUB.accountId,
+        p256dh: SUB.p256dh,
+        auth: SUB.auth,
+        created_at: SUB.createdAt,
+        session_token: 'tok-1',
+      },
+    ];
+    const bound = await store.upsertSubscription({ ...SUB, sessionToken: 'tok-1' });
+    expect(sql.queries.at(-1)?.params.at(-1)).toBe('tok-1');
+    expect(bound.sessionToken).toBe('tok-1');
 
     sql.nextRows = [
       {
@@ -340,10 +402,54 @@ describe('PostgresPushStore', () => {
     expect(claimed[0]?.deliveredEndpoints).toEqual([]);
     expect(sql.queries.at(-1)?.text).toMatch(/FOR UPDATE SKIP LOCKED/);
 
-    await store.markSent('o1');
-    expect(sql.executes.at(-1)?.text).toMatch(/status = 'sent'/);
-    await store.markFailed('o1');
+    await store.markSent('o1', 7);
+    expect(sql.executes.at(-1)?.text).toMatch(/status = 'sent', finished_at = \$2/);
+    expect(sql.executes.at(-1)?.params).toEqual(['o1', new Date(7)]);
+    await store.markFailed('o1', 8);
     expect(sql.executes.at(-1)?.text).toMatch(/attempts = attempts \+ 1/);
+    expect(sql.executes.at(-1)?.text).toMatch(
+      /finished_at = CASE WHEN attempts \+ 1 >= 8 THEN \$2 ELSE finished_at END/,
+    );
+    expect(sql.executes.at(-1)?.params).toEqual(['o1', new Date(8)]);
+  });
+
+  it('deleteFinishedOutbox deletes only sent/failed rows older than the cutoff', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [{ id: 'a' }, { id: 'b' }];
+    expect(await store.deleteFinishedOutbox(5_000)).toBe(2);
+    const query = sql.queries.at(-1);
+    expect(query?.text).toMatch(/DELETE FROM push_outbox/);
+    expect(query?.text).toMatch(/status IN \('sent', 'failed'\)/);
+    expect(query?.text).toMatch(/COALESCE\(finished_at, created_at\) < \$1/);
+    expect(query?.params).toEqual([new Date(5_000)]);
+  });
+
+  it('maps finished_at from Postgres as a string or a Date', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    const base = {
+      account_id: 'acc-a',
+      type: 'forum',
+      message_id: null,
+      payload: '{}',
+      status: 'sent',
+      attempts: 0,
+      claimed_until: null,
+      created_at: new Date('2026-08-01T00:00:00.000Z'),
+      delivered_endpoints: '[]',
+    };
+    sql.nextRows = [
+      { ...base, id: 'b', finished_at: '2026-08-02T00:00:00.000Z' },
+      { ...base, id: 'a', finished_at: new Date('2026-08-03T00:00:00.000Z') },
+      { ...base, id: 'c', finished_at: null },
+    ];
+    const rows = await store.listAllOutbox(5);
+    expect(rows.map((row) => row.finishedAt?.toISOString() ?? null)).toEqual([
+      '2026-08-02T00:00:00.000Z',
+      '2026-08-03T00:00:00.000Z',
+      null,
+    ]);
   });
 
   it('recordDelivered selects and updates delivered_endpoints; unknown id is a no-op', async () => {

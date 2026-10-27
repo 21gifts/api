@@ -142,6 +142,7 @@ describe('POST /debug/push-ping', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const one = await mount({
       authStore: auth,

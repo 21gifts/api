@@ -171,7 +171,7 @@
 
 ## Endpoint: GET /debug/db
 
-- **Purpose:** Operator read of every ordinary table in schema `public`. With no `table`, returns `{ tables: [{ name, rowCount }] }` sorted by name. With `table`, returns one page of 200 rows (`columns`, `rows`) and `nextCursor` when another page exists. Follow `nextCursor` until it is absent to read the whole table. `bytea` values, including `nostr_nsec_ciphertext`, are octet lengths (or null), never the bytes. Text columns named `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, or `skip_endpoints` are the string `"redacted"` when not null. A primary key that is one of those secret columns is paged by `ctid`, so `nextCursor` is not the secret. There is no `limit` that stops early.
+- **Purpose:** Operator read of every ordinary table in schema `public`. With no `table`, returns `{ tables: [{ name, rowCount }] }` sorted by name. With `table`, returns one page of 200 rows (`columns`, `rows`) and `nextCursor` when another page exists. Follow `nextCursor` until it is absent to read the whole table. `bytea` values, including `nostr_nsec_ciphertext`, are octet lengths (or null), never the bytes. Text columns named `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, `skip_endpoints`, or `session_token` are the string `"redacted"` when not null. A primary key that is one of those secret columns is paged by `ctid`, so `nextCursor` is not the secret. There is no `limit` that stops early.
 - **Errors:** 503 `{ error: 'Debug is not configured' }` only when `DEBUG_TOKEN` and `DEBUG_READ_TOKEN` are both empty after trim; 401 `{ error: 'Unauthorized' }` when the bearer matches no configured token; 503 `{ error: 'Database is not configured' }` when this process has no SQL client; 404 `{ error: 'Not found' }` when `table` is not an ordinary public table; 400 `{ error: 'Invalid cursor' }` when `cursor` is present without `table` or does not match the table key; 503 `{ error: 'Database is unavailable' }` if the store throws (`debug.db.failed`).
 - **Used by:** Operators reading the whole database (`gifts-debug db`).
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`. `DEBUG_READ_TOKEN` applies to GET and HEAD `/debug/db` and otherwise only to the operator reads of `GET /funding/goal`, `GET /funding/payout-days`, `GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/daily-roster`, `GET /trust/proposals`, `GET /members/:accountId/activity`, `GET /messages/hidden`, and `GET /messages/:id/edits`. HEAD is the same GET handler. Not an end-user session.
@@ -282,7 +282,7 @@
 
 ## Endpoint: POST /me/push-subscriptions
 
-- **Purpose:** Bearer session. Upserts `{ endpoint, keys: { p256dh, auth } }` for the account. Rebinds the endpoint if another account owned it.
+- **Purpose:** Bearer session. Upserts `{ endpoint, keys: { p256dh, auth } }` for the account and records the bearer session that posted it. Rebinds the endpoint (account and session) if another account or session held it. The push worker sends to the endpoint only while that session is still valid and deletes it once the session expires, is removed, or its account is refused sessions; the app's start-up re-POST binds it to the current session.
 - **Errors:** 401 Unauthorized; 503 Push is not configured; 400 `{ error: 'Invalid subscription' }`.
 - **Used by:** App `postPushSubscription`.
 - **Auth:** `Authorization: Bearer` member session.

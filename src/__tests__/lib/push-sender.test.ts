@@ -19,6 +19,7 @@ const SUB: PushSubscriptionRecord = {
   p256dh: 'p256',
   auth: 'auth',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  sessionToken: null,
 };
 
 describe('webPushTopicFromTag', () => {

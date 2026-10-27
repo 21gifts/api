@@ -2020,6 +2020,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/author',
@@ -2027,6 +2028,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const app = new Hono().route(
       '/messages',
@@ -2063,6 +2065,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const app = new Hono().route(
       '/messages',
@@ -2599,6 +2602,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2635,6 +2639,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2690,6 +2695,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/sub',
@@ -2697,6 +2703,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2772,6 +2779,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/sub',
@@ -2779,6 +2787,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2819,6 +2828,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(await namedStore('Ada'), messageStore, {
       notificationStore,
@@ -2872,6 +2882,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2913,6 +2924,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -2963,6 +2975,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, { pushStore }).request('/messages', {
       method: 'POST',
@@ -3016,6 +3029,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(authStore, messageStore, {
       notificationStore,
@@ -3414,6 +3428,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const app = new Hono().route(
       '/messages',
@@ -4027,6 +4042,7 @@ describe('POST /messages', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const existing = {
       id: 'existing-collapsed',
@@ -8598,6 +8614,7 @@ describe('forum video', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const app = new Hono().route(
       '/messages',
@@ -8631,6 +8648,7 @@ describe('forum video', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/author',
@@ -8638,6 +8656,7 @@ describe('forum video', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const app = new Hono().route(
       '/messages',

@@ -88,6 +88,7 @@ async function subscribe(
     p256dh: 'p',
     auth: 'a',
     createdAt: NOW,
+    sessionToken: null,
   });
 }
 
