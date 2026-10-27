@@ -811,14 +811,29 @@ describe('runOcpPhotoOutboxPass', () => {
   });
 
   it('stores the hash and logs ocp.photos.rejected on 400 or 413', async () => {
-    const messages = await messagesWith(shopNote());
+    const messages = await messagesWith(shopNote(), [PNG]);
     for (const status of [400, 413]) {
       const ids = sentShop();
       const { push } = mapPush(() => new Response('{"error":"x"}', { status }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
-      expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
+      expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([PNG]));
     }
     expect(logged('ocp.photos.rejected').map((line) => line['status'])).toEqual([400, 413]);
+  });
+
+  it('keeps the stored hash when an empty set gets 400 or 413', async () => {
+    const messages = await messagesWith(shopNote());
+    for (const status of [400, 413]) {
+      const ids = sentShop();
+      const { push, sent } = mapPush(() => new Response('{}', { status }));
+      await runOcpPhotoOutboxPass(deps(ids, messages, push));
+      expect(sent).toHaveLength(1);
+      expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+      expect(ids.finishPhotos).not.toHaveBeenCalled();
+      expect(ids.release).not.toHaveBeenCalled();
+    }
+    expect(logged('ocp.photos.failed').map((line) => line['status'])).toEqual([400, 413]);
+    expect(logged('ocp.photos.rejected')).toEqual([]);
   });
 
   it('queues the place again on 404 while the shop is still listed', async () => {

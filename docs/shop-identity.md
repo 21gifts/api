@@ -934,9 +934,11 @@ Rules for every claim:
     claim. An empty set does not change the hash and only releases the
     claim. A send at revision 0 does not call `finishPhotos` and does not
     raise `ocp_revision`.
-  - 400 or 413: store the sent hash, clear the flag (both only while `g`
-    still matches) and log `ocp.photos.rejected`. The same set is not sent
-    again.
+  - 400 or 413: a non-empty set stores the sent hash and clears the flag
+    (both only while `g` still matches) and logs `ocp.photos.rejected`.
+    That same set is not sent again. An empty set does not store the empty
+    hash, does not clear the flag, does not release the claim and logs
+    `ocp.photos.failed`, so the next pass sends the empty list again.
   - 404 `{"error":"Place not found"}` (openCryptoPay/api#26 does not know a
     place with this key): set the hash to null, clear the flag, and, if the
     shop is still listed, queue the place (set `ocp_place_pending`, raise

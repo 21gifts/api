@@ -472,8 +472,12 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
       return;
     }
     if (response.status === 400 || response.status === 413) {
-      logEvent('ocp.photos.rejected', { messageId, status: response.status });
-      await identities.finishPhotos(claim, hash);
+      if (photos.length !== 0) {
+        logEvent('ocp.photos.rejected', { messageId, status: response.status });
+        await identities.finishPhotos(claim, hash);
+        return;
+      }
+      logEvent('ocp.photos.failed', { messageId, status: response.status });
       return;
     }
     if (response.status === 404) {
