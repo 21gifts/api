@@ -586,6 +586,7 @@ describe('runOcpPhotoOutboxPass', () => {
     });
     expect(ids.nextRevision).toHaveBeenCalled();
     expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
   });
 
   it('logs skipped photos and tolerates odd 200 bodies', async () => {
@@ -677,7 +678,7 @@ describe('runOcpPhotoOutboxPass', () => {
 
   it('sends stills of a public shop that is not listed without a revision', async () => {
     const messages = await publicUnlisted();
-    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0, ocpPlacePending: false }));
     const { push, sent } = mapPush(
       () => new Response('{"photos":[],"skipped":[]}', { status: 200 }),
     );
@@ -700,7 +701,7 @@ describe('runOcpPhotoOutboxPass', () => {
 
   it('does not raise the revision or finish the photos on 409 while the revision is still 0', async () => {
     const messages = await publicUnlisted();
-    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0, ocpPlacePending: false }));
     const { push, sent } = mapPush(
       () => new Response('{"error":"Stale revision"}', { status: 409 }),
     );
@@ -710,15 +711,64 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(ids.nextRevision).not.toHaveBeenCalled();
     expect(ids.finishPhotos).not.toHaveBeenCalled();
     expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
-    expect(ids.clearPhotoHash).toHaveBeenCalled();
+    expect(ids.clearPhotoHash).toHaveBeenCalledTimes(2);
+    expect(ids.clearPhotoHash).toHaveBeenCalledWith(CLAIM);
   });
 
   it('does not queue a place when a public shop that is not listed answers Place not found', async () => {
     const messages = await publicUnlisted();
-    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0, ocpPlacePending: false }));
     const { push } = mapPush(() => new Response('{"error":"Place not found"}', { status: 404 }));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, false);
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('releases without a request when a revision-0 set is place-pending', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(identity({ ocpRevision: 0, ocpPlacePending: true }));
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('releases without a request when a revision-0 photo generation is not the claim', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(
+      identity({ ocpRevision: 0, ocpPlacePending: false, ocpPhotosGeneration: 2 }),
+    );
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('releases without a request when a revision-0 note is no longer a public shop', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(
+      identity({ ocpRevision: 0, ocpPlacePending: false, ocpPhotosGeneration: 1 }),
+    );
+    const originalGet = messages.getById.bind(messages);
+    let reads = 0;
+    messages.getById = async (id: string) => {
+      reads += 1;
+      const row = await originalGet(id);
+      if (reads !== 2 || row === undefined) return row;
+      return { ...row, deletedAt: new Date(0) };
+    };
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
     expect(ids.nextRevision).not.toHaveBeenCalled();
     expect(ids.finishPhotos).not.toHaveBeenCalled();
   });
@@ -736,14 +786,28 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(ids.clearPhotoHash).not.toHaveBeenCalled();
   });
 
-  it('nulls the hash and releases on 409 Stale revision', async () => {
+  it('keeps the stored hash and releases when an empty set gets 409', async () => {
     const messages = await messagesWith(shopNote());
     const ids = sentShop();
-    const { push } = mapPush(() => new Response('{"error":"Stale revision"}', { status: 409 }));
+    const { push, sent } = mapPush(
+      () => new Response('{"error":"Stale revision"}', { status: 409 }),
+    );
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
-    expect(ids.clearPhotoHash).toHaveBeenCalledTimes(2);
+    expect(sent).toHaveLength(1);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
     expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
     expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('keeps the stored hash when an empty set gets 500', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = sentShop();
+    const { push, sent } = mapPush(() => new Response('{}', { status: 500 }));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toHaveLength(1);
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+    expect(ids.release).not.toHaveBeenCalled();
   });
 
   it('stores the hash and logs ocp.photos.rejected on 400 or 413', async () => {

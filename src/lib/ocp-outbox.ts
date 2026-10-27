@@ -337,19 +337,26 @@ async function skippedCount(response: Response): Promise<number> {
  * stored hash is null, or an empty set while `ocpRevision` is still 0, is
  * cleared without a request: an empty list would delete covers this outbox
  * did not write. A non-empty set at revision 0 does not call `nextRevision`
- * and does not change `ocp_revision`. Its body is `origin`, `nostrPubkey`
- * and `photos` only, with no `revision` key, so a later hide cannot DELETE
- * a place this outbox never sent. The stored hash is nulled before that
- * request. When `ocpRevision` is already greater than 0, the revision is
+ * and does not change `ocp_revision`. Immediately before the request it
+ * reads the identity and the note again, and when the place is pending, the
+ * photo generation is not the claim's, or the note is no longer a public
+ * shop, it releases the claim, sends nothing and leaves the stored hash
+ * unchanged. Otherwise its body is `origin`, `nostrPubkey` and `photos`
+ * only, with no `revision` key, so a later hide cannot DELETE a place this
+ * outbox never sent, and the stored hash is nulled before the request. When
+ * `ocpRevision` is already greater than 0, the revision is
  * reserved first, only while the place is not pending and the photo
  * generation is still the claim's (`nextRevision`); otherwise the claim is
  * released without a request and with the stored hash kept. That path still
  * sends an empty list when the stored hash was non-null. After the
- * reservation the hash is nulled, then up to 10 photos are sent in note
+ * reservation a non-empty set nulls the hash before the request, and an
+ * empty set does not, so a lost empty delete keeps the hash and the next
+ * pass sends the empty list again. Then up to 10 photos are sent in note
  * order as base64.
  * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
- * 409 `Stale revision` nulls the hash and releases, and a revision-0 send
+ * 409 `Stale revision` nulls the hash when the set is non-empty, leaves the
+ * stored hash when the set is empty, and releases, and a revision-0 send
  * does not call `finishPhotos` or raise `ocp_revision`; 400 or 413 store the
  * hash and log `ocp.photos.rejected`; 404 `{"error":"Place not found"}`
  * (openCryptoPay/api#26 does not know the place by key) clears the flag and
@@ -419,7 +426,26 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
     }
     body.revision = revision;
   }
-  await identities.clearPhotoHash(claim);
+  // Revision 0 has no `nextRevision` gate. Read again immediately before the
+  // request: a pending place, a photo generation that is not the claim's, or
+  // a note that is no longer a public shop releases the claim. The stored
+  // hash stays, and nothing is sent.
+  if (identity.ocpRevision === 0) {
+    const latest = await identities.getByMessageId(messageId);
+    const latestNote = await deps.messages.getById(messageId);
+    if (
+      latest === undefined ||
+      latest.ocpPlacePending === true ||
+      latest.ocpPhotosGeneration !== claim.generation ||
+      publicShop(latestNote) === null
+    ) {
+      await identities.release('photos', claim);
+      return;
+    }
+  }
+  if (photos.length !== 0) {
+    await identities.clearPhotoHash(claim);
+  }
   if (!(await identities.leaseHasTime('photos', claim, minimumMs))) {
     await identities.release('photos', claim);
     return;
@@ -439,7 +465,9 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
       return;
     }
     if (await isStaleRevision(response)) {
-      await identities.clearPhotoHash(claim);
+      if (photos.length !== 0) {
+        await identities.clearPhotoHash(claim);
+      }
       await identities.release('photos', claim);
       return;
     }

@@ -895,14 +895,20 @@ Rules for every claim:
     `{ origin: "21gifts", nostrPubkey, photos: [{ contentType, data }] }`
     with no `revision` key. The stored hash is set to null before the
     request, conditional only on the token `c`, so a lost answer cannot
-    hide a later set.
+    hide a later set. Immediately before this request it reads the identity
+    and the note again. When the place is pending, the photo generation is
+    not the claim's, or the note is no longer a public shop, it releases the
+    claim, sends nothing and does not change the stored hash. It does not
+    call `nextRevision`.
   - When `ocp_revision` is already greater than 0, it first reserves the
     revision (see above), including an empty list when the stored hash is
     non-null. A refused reservation leaves `ocp_photos_hash` as it was, so
-    an unchanged set is not sent again. After the reservation it sets
-    `ocp_photos_hash` to null, conditional only on the token `c`, so an
-    answer that is lost or loses the generation check leaves no hash that
-    could hide a different set on OpenCryptoPay. Then it sends up to 10
+    an unchanged set is not sent again. After the reservation a non-empty
+    set sets `ocp_photos_hash` to null before the request, conditional only
+    on the token `c`, so an answer that is lost or loses the generation
+    check leaves no hash that could hide a different set on OpenCryptoPay.
+    An empty set leaves the stored hash until `finishPhotos` replaces it, so
+    a lost empty delete is sent again. Then it sends up to 10
     photos, in note order (every still the set returns, by stored index; a
     still with an unrecognized type drops only itself, photo 0 included, so
     a set with only recognized types gives the same list, and the same
@@ -916,14 +922,17 @@ Rules for every claim:
     text.
 - **Results.**
   - 200: store the sent hash and clear the flag, both only while `g` still
-    matches; otherwise the hash stays null and the next pass sends again.
+    matches; otherwise a non-empty set leaves the hash null and the next
+    pass sends again, and an empty set keeps the stored hash and the next
+    pass sends the empty list again.
     OpenCryptoPay may skip single
     photos it does not accept and lists them in its answer; those are logged
     as `ocp.photos.skipped` and not retried for this set.
   - 409 `Stale revision`: a newer request for this shop was already
-    applied; the worker sets the hash to null and only releases the claim.
-    A send at revision 0 does not call `finishPhotos` and does not raise
-    `ocp_revision`.
+    applied. A non-empty set sets the hash to null and only releases the
+    claim. An empty set does not change the hash and only releases the
+    claim. A send at revision 0 does not call `finishPhotos` and does not
+    raise `ocp_revision`.
   - 400 or 413: store the sent hash, clear the flag (both only while `g`
     still matches) and log `ocp.photos.rejected`. The same set is not sent
     again.
