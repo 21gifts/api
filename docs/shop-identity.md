@@ -601,8 +601,10 @@ failures); that path is removed. The cases 21gifts/api#494 added to it are
 decided by the sender from the note at send time instead: a keyed shop whose
 pin and text end up incomplete after concurrent place and text edits, whose
 note is hidden or gone after a place, text or till account write, or which
-is hidden without a pin when the route read it gets `DELETE`; a pin cleared
-and set complete again before the send gets one `PUT`. #494's per-note map
+is hidden without a pin when the route read it gets `DELETE`. `PATCH
+/messages/:id/place` does not accept `place: null`. A concurrent store write
+that drops the pin, then a complete pin again before the send, gets one
+`PUT`. #494's per-note map
 queue in the route is not needed, because the revision orders the requests
 of one shop and the last request reflects the last write. A shop without a
 key was never sent by the outbox, so nothing is deleted for it.

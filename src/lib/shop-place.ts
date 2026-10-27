@@ -1,9 +1,11 @@
 /**
  * Completeness rules for a 21.gifts shop pin on the OpenCryptoPay map.
  *
- * A shop is a top-level forum note whose text has `#21GiftsShop`. A shop
- * without a pin stays allowed. A shop with a pin must have a short name
- * that is not the address, a full structured address, and a description.
+ * A shop is a top-level forum note whose text has `#21GiftsShop`. Creating
+ * one requires a pin, because the shop name is the pin label; the route
+ * rejects a missing pin with `Shop name is required`. A shop pin must have
+ * a short name that is not the address, a full structured address, and a
+ * description.
  */
 
 import type { ForumPlace, ForumPlaceAddress } from '@/lib/place';
@@ -14,7 +16,8 @@ export const SHOP_DESCRIPTION_MIN = 20;
 /** Maximum shop description length after the shop tag is stripped. */
 export const SHOP_DESCRIPTION_MAX = 1000;
 
-const SHOP_NAME_REQUIRED = 'Shop name is required';
+/** Caller-visible error when a shop note has no shop name. */
+export const SHOP_NAME_REQUIRED = 'Shop name is required';
 const SHOP_NAME_CONTAINS_ADDRESS = 'Shop name must not contain the address';
 const SHOP_ADDRESS_REQUIRED = 'Shop address is required';
 const SHOP_DESCRIPTION_RANGE =
