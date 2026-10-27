@@ -138,7 +138,7 @@ The shop description is the note text without the `#21GiftsShop` token
     queueing and paged start-up pass ship together in this release.
 - The identity belongs to the note. It is never deleted and never moved to
   another note:
-  - A note that stops being listed and is listed again gets the same npub
+  - A note that stops being public and is public again gets the same npub
     back.
   - Changing the till account (`shop_account_id`) or the pin does not change
     the identity.
@@ -240,7 +240,7 @@ custodial-to-user step of Open Question #9 in `CONCEPT.md`.
 
 ## S2 Profile
 
-The worker publishes a profile for **every** `shop_identity` row, listed or
+The worker publishes a profile for **every** `shop_identity` row, public or
 not, in the same loop and with the same rules as account profiles
 (`publishProfiles` in `src/lib/nostr/worker.ts`):
 
@@ -626,10 +626,13 @@ dropped it, is refused there instead of overwriting newer state. The outbox
 replaces the former fire-and-forget place push (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logged and swallowed
 failures); that path is removed. The cases 21gifts/api#494 added to it are
-decided by the sender from the note at send time instead: a keyed shop that
-is no longer public (hidden, gone, or no longer a shop note) gets `DELETE`;
-a public shop that is not listed clears the place flag and sends nothing, so
-a place already on the map stays there when the pin or its address is lost.
+decided by the sender from the note at send time instead: a listed shop gets
+`PUT`. A public shop that is not listed clears the place flag and sends
+nothing, so a place already on the map stays there when the pin or its
+address is lost. A shop that is no longer public (hidden, gone, or no longer
+a shop note) gets `DELETE` only after this outbox has sent the place
+(`ocpRevision` greater than 0). A key that has never been sent, including
+one adopted from OpenCryptoPay, is not deleted.
 `PATCH /messages/:id/place` does not accept `place: null`. A concurrent store
 write that drops the pin while the note stays public sends nothing. A
 complete pin set again before the send gets one `PUT`. #494's per-note map
@@ -767,7 +770,10 @@ Rules for every claim:
 - **Sending.** The worker decides at send time, from the note as it is then:
   a listed shop gets `PUT /map/places` with its `nostrPubkey` (64 lowercase
   hex). A public shop that is not listed clears the place flag and sends
-  nothing. Anything that is no longer public gets `DELETE /map/places`. No earlier decision is
+  nothing. Anything that is no longer public gets `DELETE /map/places` only
+  after this outbox has sent the place (`ocpRevision` greater than 0). A key
+  that has never been sent, including one adopted from OpenCryptoPay, is not
+  deleted. No earlier decision is
   stored, so a stale queue entry cannot remove a listed shop. Before it
   sends a `DELETE`, it sets `ocp_photos_hash` to null, clears
   `ocp_photos_pending` and raises `ocp_photos_generation`, conditional only
