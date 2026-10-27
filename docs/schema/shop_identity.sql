@@ -90,7 +90,8 @@ $shop_identity$;
 -- Place outbox: every write that changes the text, pin, till account or
 -- deleted_at of a note queues its row, in the writing transaction. A key that
 -- a concurrent insert committed is seen because each PL/pgSQL statement takes
--- a fresh snapshot after the message row is locked.
+-- a fresh snapshot after the message row is locked. A public shop also queues
+-- its photos.
 -- Each trigger function is replaced and its trigger dropped and recreated in
 -- one step that first takes ACCESS EXCLUSIVE on its table, the lock DROP
 -- TRIGGER needs, so no writer ever sees the table without the trigger and
@@ -104,6 +105,12 @@ BEGIN
     UPDATE shop_identity SET ocp_place_pending = true,
       ocp_place_generation = ocp_place_generation + 1
     WHERE message_id = NEW.id;
+    IF NEW.parent_id IS NULL AND NEW.deleted_at IS NULL AND NEW.shop_account_id IS NOT NULL
+       AND NEW.text ~* '#21giftsshop([^a-z0-9_]|$)' THEN
+      UPDATE shop_identity SET ocp_photos_pending = true,
+        ocp_photos_generation = ocp_photos_generation + 1
+      WHERE message_id = NEW.id;
+    END IF;
     RETURN NEW;
   END
   $$ LANGUAGE plpgsql;

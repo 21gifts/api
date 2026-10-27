@@ -519,6 +519,11 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      UPDATE shop_identity SET ocp_place_pending = true,
        ocp_place_generation = ocp_place_generation + 1
      WHERE message_id = NEW.id;
+     IF ${DIRECTORY_SQL('NEW')} THEN
+       UPDATE shop_identity SET ocp_photos_pending = true,
+         ocp_photos_generation = ocp_photos_generation + 1
+       WHERE message_id = NEW.id;
+     END IF;
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
@@ -916,7 +921,10 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
  * adapter has no transactions, so before every call that syncs it compares each
  * identity's note (text, pin, till account, `deletedAt`) and photo set with
  * the last fingerprint it saw and queues a change the same way the triggers
- * do: a place change always, a photo change while the note is a public shop.
+ * do: a place change always queues the place; when the note is a public shop
+ * the same sync queues the photos once; a photo-fingerprint change queues
+ * photos only while the note is a public shop; when both fingerprints change
+ * in one sync the photo generation rises by 1, not by 2.
  * The photo fingerprint of an {@link InMemoryMessageStore} is its
  * `photoRevision`, so a sync reads no photo bytes; another message store is
  * hashed from one `getPhotoSet` read per shop.
@@ -943,18 +951,18 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       const note = await this.#messages.getById(row.messageId);
       const seen = this.#seen.get(row.messageId) as { place: string; photos: string };
       const place = shopListingFingerprint(note);
-      if (place !== seen.place) {
+      const placeChanged = place !== seen.place;
+      if (placeChanged) {
         seen.place = place;
         row.ocpPlacePending = true;
         row.ocpPlaceGeneration += 1;
       }
       const photos = await photoFingerprint(this.#messages, row.messageId);
-      if (photos !== seen.photos) {
-        seen.photos = photos;
-        if (publicShop(note) !== null) {
-          row.ocpPhotosPending = true;
-          row.ocpPhotosGeneration += 1;
-        }
+      const photosChanged = photos !== seen.photos;
+      if (photosChanged) seen.photos = photos;
+      if (publicShop(note) !== null && (placeChanged || photosChanged)) {
+        row.ocpPhotosPending = true;
+        row.ocpPhotosGeneration += 1;
       }
     }
   }

@@ -862,19 +862,87 @@ describe('InMemoryShopIdentityStore queueing', () => {
     expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosPending: true });
     const photoGen = row.ocpPhotosGeneration;
 
+    expect(photoGen).toBe(2);
+
     await messages.updateText(ID_A, `${TEXT} More beans.`);
     row = (await store.getByMessageId(ID_A))!;
-    expect(row).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 2 });
+    expect(row).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 2,
+      ocpPhotosGeneration: photoGen + 1,
+      ocpRevision: 0,
+    });
 
     await messages.replacePhotos(ID_A, [PNG, JPEG]);
     row = (await store.getByMessageId(ID_A))!;
-    expect(row.ocpPhotosGeneration).toBe(photoGen + 1);
+    expect(row.ocpPhotosGeneration).toBe(photoGen + 2);
 
     await messages.markDeleted(ID_A, new Date(0), 'staff');
     await messages.replacePhotos(ID_A, [JPEG]);
     row = (await store.getByMessageId(ID_A))!;
     expect(row.ocpPlaceGeneration).toBe(3);
-    expect(row.ocpPhotosGeneration).toBe(photoGen + 1);
+    expect(row.ocpPhotosGeneration).toBe(photoGen + 2);
+  });
+
+  it('queues photos once when an adopted note later becomes a public shop', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, TEXT);
+    await messages.setShopAccount(ID_A, { id: 'till', username: 'coffee', name: 'Coffee' });
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
+      ocpPlacePending: true,
+      ocpRevision: 0,
+    });
+    expect((await messages.getById(ID_A))?.place?.address).toBeNull();
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(1);
+  });
+
+  it('queues a place change of a note that stays private and leaves its photos', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, 'Still no shop tag, only a longer note about coffee.');
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPlacePending: true,
+      ocpPhotosPending: false,
+      ocpPhotosGeneration: 0,
+      ocpRevision: 0,
+    });
+    expect((await messages.getById(ID_A))?.place?.address).toBeNull();
+  });
+
+  it('queues photos once when a note becomes public and its photos change together', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, TEXT);
+    await messages.replacePhotos(ID_A, [PNG]);
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
+      ocpRevision: 0,
+    });
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(1);
   });
 
   it('queues a photo change of a public shop that is not listed', async () => {
@@ -1174,7 +1242,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(row).toMatchObject({
       ocpPlacePending: true,
       ocpPlaceClaimedUntil: new Date(clock.now),
-      ocpPhotosGeneration: 2,
+      ocpPhotosGeneration: 4,
     });
 
     const third = (await store.claimPlaces(1, 60_000))[0]!;
@@ -1185,17 +1253,17 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPlacePending: true,
       ocpPhotosHash: null,
       ocpPhotosPending: true,
-      ocpPhotosGeneration: 3,
+      ocpPhotosGeneration: 6,
     });
 
     const fourth = (await store.claimPlaces(1, 60_000))[0]!;
     await store.finishPlace(fourth, 'created');
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(4);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(7);
 
     await messages.updateText(ID_A, `${TEXT} Change four.`);
     await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'delete');
     row = (await store.getByMessageId(ID_A))!;
-    expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosGeneration: 4 });
+    expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosGeneration: 8 });
 
     await messages.updateText(ID_A, `${TEXT} Change five.`);
     await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'reject');

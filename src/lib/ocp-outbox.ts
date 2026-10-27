@@ -8,8 +8,10 @@
  * result, a settle) ends the lease now, so the row goes behind never-claimed
  * rows (null lease) and leases that ended earlier, also when a change queues
  * it again. So no row that keeps failing, keeps being released or keeps
- * changing holds the place of later shops. Every request carries the next
- * `revision` of the shop's shared counter. The worker decides at send time
+ * changing holds the place of later shops. A request that carries a revision
+ * sends the next value of the shop's shared counter, and a photo request
+ * while that counter is still 0 carries no revision and does not raise it.
+ * The worker decides at send time
  * from the note as it is then: a listed shop gets `PUT /map/places`, a
  * public shop that is not listed clears its place flag and sends nothing,
  * and anything that is no longer public gets `DELETE /map/places` only

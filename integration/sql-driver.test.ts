@@ -894,7 +894,13 @@ describe('shop identity on Postgres', () => {
 
       await ctx.messages.updateText(row.id, `${TEXT} More beans.`);
       identity = (await ctx.shops.getByMessageId(row.id))!;
-      expect(identity).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 2 });
+      expect(identity).toMatchObject({
+        ocpPlacePending: true,
+        ocpPlaceGeneration: 2,
+        ocpPhotosPending: true,
+        ocpPhotosGeneration: 3,
+        ocpRevision: 1,
+      });
 
       await ctx.messages.replacePhotos(row.id, [PNG]);
       expect((await ctx.shops.getByMessageId(row.id))!.ocpPhotosGeneration).toBeGreaterThan(1);

@@ -622,9 +622,11 @@ goes through a durable outbox on `shop_identity`, so a failed request is
 repeated and this side never has two place requests, or two photo
 requests, for one shop in flight; a place and a photo request can overlap,
 and the revision below orders them.
-Every request carries a `revision` (OpenCryptoPay R8) from one counter per
-shop, so a request that OpenCryptoPay applies late, after the timeout here
-dropped it, is refused there instead of overwriting newer state. The outbox
+A request that carries a `revision` (OpenCryptoPay R8) takes it from one
+counter per shop, and a photo request while that counter is still 0 carries
+no revision and does not raise the counter. A request that OpenCryptoPay
+applies late, after the timeout here dropped it, is refused there instead
+of overwriting newer state. The outbox
 replaces the former fire-and-forget place push (`syncShopOcpPlace` and
 `removeShopOcpPlace` over `mapPlacesRequest`, which logged and swallowed
 failures); that path is removed. The cases 21gifts/api#494 added to it are
@@ -840,8 +842,8 @@ Rules for every claim:
   to the surviving account through its generic rewrite of every
   single-column foreign key to `account` (`src/lib/account-merge.ts:382-404`),
   so a merge keeps the shop listed. The place trigger queues that change
-  like any other till account change, so the merge re-sends the same place
-  once; nothing else is queued. A regression test covers that column.
+  like any other till account change. When the note is a public shop, that
+  same trigger also queues its photos. A regression test covers that column.
 
 ### Photo push
 
@@ -850,7 +852,9 @@ Rules for every claim:
   `ocp_photos_generation`. `reject` does not. A new key (`ensureListed`)
   queues the photos together with the place (`ocp_photos_pending` true,
   generation 1). Adopting a known secret queues the photos only when the
-  note is a public shop. Every store write that changes the photos of a
+  note is a public shop. A place-field change of a public shop queues the
+  photos in that same trigger, once, and does not raise `ocp_revision`. A
+  note that is not a public shop queues only the place. Every store write that changes the photos of a
   public shop does the same: `replacePhotos`
   (`PATCH /messages/:id/photos`) and `updatePhoto` (the profile note's
   first photo, `src/routes/me.ts`). The queueing runs in the same
