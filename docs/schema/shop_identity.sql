@@ -58,8 +58,8 @@ END;
 $shop_identity$;
 
 -- Live top-level till notes that have a latitude. The directory, the key
--- backfill and the photo triggers do not use this index: a public shop is
--- queued without a pin.
+-- backfill and the photo triggers do not use this index: a pin is not
+-- required for a public shop to be queued.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
