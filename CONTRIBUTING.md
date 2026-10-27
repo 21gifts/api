@@ -574,11 +574,11 @@ CI will fail on the same conditions; catching them locally is faster.
 ### A38
 
 This repository requires A38 according to the canonical A38 standard in
-[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/b66d97d5d2bde8dce012fbe5c0cc80426fadb788/docs/a38.md)
-at commit `b66d97d5d2bde8dce012fbe5c0cc80426fadb788`. Repo job selection:
+[DFXswiss/agent](https://github.com/DFXswiss/agent/blob/e63980625f5b778c5a93104b0bf5de7fb5e379a8/docs/a38.md)
+at commit `e63980625f5b778c5a93104b0bf5de7fb5e379a8`. Repo job selection:
 `.github/a38.json`. Target-branch applicability and fork workflow approval:
 `.github/pr-guard.json`. `dfx pr guard` is
-[wired in](https://github.com/DFXswiss/agent/blob/b66d97d5d2bde8dce012fbe5c0cc80426fadb788/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
+[wired in](https://github.com/DFXswiss/agent/blob/e63980625f5b778c5a93104b0bf5de7fb5e379a8/docs/a38-guard.md#how-fork-github-actions-are-meant-to-work).
 
 This is a **public** repository. GitHub-hosted runners execute the heavy suite
 (typecheck, handbook completeness, e2e completeness, Vitest with the coverage
@@ -591,8 +591,16 @@ test, the production build, or Playwright locally for A38.
 Draft pull requests run the GitHub CI jobs. GitHub holds fork runs from
 external contributors as `action_required`. Ready does not start CI. After a
 fresh A38 enforce pass on the current head, `dfx pr guard` approves those
-waiting initial runs, then sets Ready when the required GitHub jobs are green
-and the PR is mergeable. The newest well-formed second review comment that
+waiting initial runs, then sets Ready when the review rule below is met, the
+required GitHub jobs are green, and the PR is mergeable.
+
+Two reviews are required before Ready. One review is enough only when the
+pull request opener is listed in one_review_authors in the trusted
+.github/pr-guard.json on the default branch. A missing file, a missing key,
+or an empty list keeps two reviews required. An entry that exists only on
+the pull request head does not count.
+
+The newest well-formed second review comment that
 covers the current head returns a Ready pull request to draft when its
 `blocks_merge` is true and it counts at least one defect; a newer well-formed
 second review with `blocks_merge` false clears that. The merger does not click
