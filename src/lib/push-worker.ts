@@ -4,7 +4,7 @@
 
 import { resolveSession } from '@/lib/auth/service';
 import type { AuthStore } from '@/lib/auth/store';
-import { logEvent } from '@/lib/log';
+import { errorLogFields, logEvent } from '@/lib/log';
 import {
   buildForumPushPayload,
   buildReplyPushPayload,
@@ -351,7 +351,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
         continue;
       }
       if (result.reason === 'gone') {
-        await deps.store.deleteSubscription(row.accountId, sub.endpoint);
+        await deps.store.deleteStaleSubscription(sub);
         continue;
       }
       anyFail = true;
@@ -432,9 +432,8 @@ export function startPushWorker(
   }, intervalMs);
   const sweep = (): void => {
     void sweepPushStore(deps).catch((error: unknown) => {
-      logEvent('push.sweep.failed', {
-        error: error instanceof Error ? error.message : String(error),
-      });
+      // No message: a driver error can embed bound values such as a session token.
+      logEvent('push.sweep.failed', errorLogFields(error));
     });
   };
   sweep();

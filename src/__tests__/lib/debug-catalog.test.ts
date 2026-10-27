@@ -375,7 +375,7 @@ describe('loadDebugTables', () => {
       p256dh: 'p256c',
       auth: 'authc',
       createdAt: new Date('2026-09-02T00:00:00.000Z'),
-      sessionToken: null,
+      sessionToken: 'tok-dump',
     });
     await push.enqueue({
       id: 'outbox-1',
@@ -593,6 +593,12 @@ describe('loadDebugTables', () => {
     );
     expect(tables.trust_edge[0]).toEqual(expect.objectContaining({ id: 'edge-0' }));
     expect(tables.push_subscription).toHaveLength(3);
+    expect(tables.push_subscription).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ endpoint: 'https://push.example/0', sessionToken: 'tok-dump' }),
+        expect.objectContaining({ endpoint: 'https://push.example/1', sessionToken: null }),
+      ]),
+    );
     expect(tables.push_outbox).toHaveLength(3);
     expect(tables.push_outbox).toEqual(
       expect.arrayContaining([

@@ -355,6 +355,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         p256dh: row.p256dh,
         auth: row.auth,
         createdAt: row.createdAt.toISOString(),
+        sessionToken: row.sessionToken,
       }));
     }
     case 'push_outbox': {

@@ -9,7 +9,8 @@ import {
 } from '@/lib/push-store';
 
 const logEvent = vi.fn();
-vi.mock('@/lib/log', () => ({
+vi.mock('@/lib/log', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/log')>()),
   logEvent: (...args: unknown[]) => logEvent(...args),
 }));
 
@@ -322,6 +323,22 @@ describe('runPushWorkerTick', () => {
       status: 'sent',
       deliveredEndpoints: [target.endpoint],
     });
+  });
+
+  it('keeps a gone endpoint that a re-POST rebound to another session during the send', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true, [{ ok: false, reason: 'gone' }]);
+    const send = sender.send.bind(sender);
+    vi.spyOn(sender, 'send').mockImplementation(async (sub, payload) => {
+      await store.upsertSubscription({ ...SUB_B, sessionToken: 'tok-other-2' });
+      return send(sub, payload);
+    });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
+    expect((await store.listByAccount('other')).map((sub) => sub.sessionToken)).toEqual([
+      'tok-other-2',
+    ]);
   });
 
   it('deletes gone subscriptions and marks sent when all gone', async () => {
@@ -640,21 +657,28 @@ describe('startPushWorker', () => {
   });
 
   it.each([
-    [new Error('db down'), 'db down'],
-    ['plain', 'plain'],
-  ])('logs push.sweep.failed when the sweep rejects with %j', async (thrown, message) => {
-    vi.useFakeTimers();
-    const store = new InMemoryPushStore();
-    vi.spyOn(store, 'listAllSubscriptions').mockRejectedValue(thrown);
-    const handle = startPushWorker(
-      { store, sender: new FakeSender(false), now: () => 1, authStore: auth },
-      PUSH_SWEEP_INTERVAL_MS * 2,
-    );
-    await vi.advanceTimersByTimeAsync(0);
-    expect(logEvent).toHaveBeenCalledWith('push.sweep.failed', { error: message });
-    handle.stop();
-    vi.useRealTimers();
-  });
+    [
+      Object.assign(new Error('token tok-secret in params'), { code: 'ERR_POSTGRES' }),
+      { name: 'Error', code: 'ERR_POSTGRES' },
+    ],
+    ['tok-secret', {}],
+  ])(
+    'logs push.sweep.failed without the error text when the sweep rejects with %j',
+    async (thrown, fields) => {
+      vi.useFakeTimers();
+      const store = new InMemoryPushStore();
+      vi.spyOn(store, 'listAllSubscriptions').mockRejectedValue(thrown);
+      const handle = startPushWorker(
+        { store, sender: new FakeSender(false), now: () => 1, authStore: auth },
+        PUSH_SWEEP_INTERVAL_MS * 2,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(logEvent).toHaveBeenCalledWith('push.sweep.failed', fields);
+      expect(JSON.stringify(logEvent.mock.calls)).not.toContain('tok-secret');
+      handle.stop();
+      vi.useRealTimers();
+    },
+  );
 });
 
 describe('runPushWorkerTick session binding', () => {

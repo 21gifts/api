@@ -604,7 +604,7 @@
 - **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing or unusable.
 - **Inputs:** `env` record (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, optional `VAPID_SUBJECT`).
 - **Returns / side effects:** `{ publicKey, privateKey, subject }` when both keys decode (URL-safe base64) to 65-byte uncompressed P-256 public and 32-byte private, and `subject` is `https:` or `mailto:` (default `https://21.gifts`). Otherwise `null`. Never logs the private key. `src/index.ts` still try/catches `WebPushSender` construction so a library throw cannot kill listen.
-- **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender + worker gate).
+- **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender; the push worker starts on every boot, with or without VAPID).
 
 ## Function: UnconfiguredPushSender
 
@@ -701,14 +701,14 @@
 
 - **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. Before each send the subscription's `sessionToken` must still pass `resolveSession` for the subscription's account (known, not past `SESSION_TTL_MS`, account not session-refused); otherwise the subscription is deleted (`deleteStaleSubscription`, so a concurrent rebind survives) and not sent to, so a device whose login ended stops receiving notification text. When every subscription is skipped, or none remain, the row is `markSent`.
 - **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`, `authStore`). Batch size and lease from module constants.
-- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them (`deleteStaleSubscription`, so an endpoint rebound to another session meanwhile stays); logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
 
 ## Function: startPushWorker
 
 - **Purpose:** Start a periodic `setInterval` that runs `runPushWorkerTick` until stopped, and run `sweepPushStore` once at start and then every `PUSH_SWEEP_INTERVAL_MS` (1 hour).
 - **Inputs:** `PushWorkerDeps` and optional `intervalMs` (default `PUSH_WORKER_INTERVAL_MS` = 2s).
-- **Returns / side effects:** `{ stop }` clears both intervals. Does not throw on tick failures inside the timer callback. A rejected sweep logs `push.sweep.failed` with the error message and the next sweep runs on schedule.
+- **Returns / side effects:** `{ stop }` clears both intervals. Does not throw on tick failures inside the timer callback. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
 - **Used by:** `src/index.ts` on every boot. Without VAPID the ticks send nothing, but the sweep still runs.
 
 ## Function: sweepPushStore
@@ -2240,7 +2240,7 @@
 
 ## Function: loadDebugTables
 
-- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No media payloads; missing photo is `null` / `0` / `[]`. A `push_outbox` dump row includes `finishedAt` (ISO or null), `deliveredEndpoints`, and `skipEndpoints`; `shop_identity` rows carry the key metadata (`messageId`, `nostrPubkey`, `nostrKekId`, `nostrKeyCustody`, `nostrKeyCreatedAt`, `profileName`) and every outbox field, read with `ShopIdentityStore.listDebug(200)` (the first 200 identities in the `listAll()` order, `LIMIT $1` on Postgres); the encrypted secret is never dumped.
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No media payloads; missing photo is `null` / `0` / `[]`. A `push_subscription` dump row includes `sessionToken` (string or null, like the `auth_session` token in the same dump); the `push_outbox` dump row includes `finishedAt` (ISO or null), `deliveredEndpoints`, and `skipEndpoints`; `shop_identity` rows carry the key metadata (`messageId`, `nostrPubkey`, `nostrKekId`, `nostrKeyCustody`, `nostrKeyCreatedAt`, `profileName`) and every outbox field, read with `ShopIdentityStore.listDebug(200)` (the first 200 identities in the `listAll()` order, `LIMIT $1` on Postgres); the encrypted secret is never dumped.
 - **Inputs:** `DebugCatalogDeps` (including optional shop identities) and optional table name.
 - **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
 - **Used by:** `debugCatalogRoutes`.
