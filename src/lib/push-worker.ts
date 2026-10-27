@@ -341,7 +341,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
         continue;
       }
       if (!(await subscriptionSessionLive(deps.authStore, nowMs, sub))) {
-        await deps.store.deleteSubscription(sub.accountId, sub.endpoint);
+        await deps.store.deleteStaleSubscription(sub);
         continue;
       }
       const result = await deps.sender.send(sub, row.payload);
@@ -395,7 +395,7 @@ export async function sweepPushStore(
     if (await subscriptionSessionLive(deps.authStore, nowMs, sub)) {
       continue;
     }
-    if (await deps.store.deleteSubscription(sub.accountId, sub.endpoint)) {
+    if (await deps.store.deleteStaleSubscription(sub)) {
       subscriptions += 1;
     }
   }

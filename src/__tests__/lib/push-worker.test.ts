@@ -770,11 +770,30 @@ describe('sweepPushStore', () => {
   it('does not count a subscription removed concurrently', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription({ ...SUB_B, sessionToken: null });
-    vi.spyOn(store, 'deleteSubscription').mockResolvedValue(false);
+    vi.spyOn(store, 'deleteStaleSubscription').mockResolvedValue(false);
     expect(await sweepPushStore({ store, now: () => 1, authStore: auth })).toEqual({
       subscriptions: 0,
       outbox: 0,
     });
+  });
+
+  it('keeps a subscription that was rebound to a live session after the scan read it', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_B, sessionToken: null });
+    const listAll = store.listAllSubscriptions.bind(store);
+    vi.spyOn(store, 'listAllSubscriptions').mockImplementation(async () => {
+      const snapshot = await listAll();
+      // The device re-registers from its live session between scan and delete.
+      await store.upsertSubscription(SUB_B);
+      return snapshot;
+    });
+    expect(await sweepPushStore({ store, now: () => 1, authStore: auth })).toEqual({
+      subscriptions: 0,
+      outbox: 0,
+    });
+    expect((await store.listByAccount('other')).map((sub) => sub.sessionToken)).toEqual([
+      'tok-other',
+    ]);
   });
 
   it('deletes only terminal outbox rows older than PUSH_OUTBOX_RETENTION_MS', async () => {

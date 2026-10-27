@@ -630,7 +630,7 @@
 ## Function: InMemoryPushStore
 
 - **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
-- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
 
@@ -644,7 +644,7 @@
 ## Function: PostgresPushStore
 
 - **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -699,7 +699,7 @@
 
 ## Function: runPushWorkerTick
 
-- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. Before each send the subscription's `sessionToken` must still pass `resolveSession` for the subscription's account (known, not past `SESSION_TTL_MS`, account not session-refused); otherwise the subscription is deleted and not sent to, so a device whose login ended stops receiving notification text. When every subscription is skipped, or none remain, the row is `markSent`.
+- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. Before each send the subscription's `sessionToken` must still pass `resolveSession` for the subscription's account (known, not past `SESSION_TTL_MS`, account not session-refused); otherwise the subscription is deleted (`deleteStaleSubscription`, so a concurrent rebind survives) and not sent to, so a device whose login ended stops receiving notification text. When every subscription is skipped, or none remain, the row is `markSent`.
 - **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`, `authStore`). Batch size and lease from module constants.
 - **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
@@ -715,7 +715,7 @@
 
 - **Purpose:** Delete every push subscription whose session no longer authenticates its account (unknown or removed session, past `SESSION_TTL_MS`, session-refused account, a session of another account, or a row stored without a session), then every `sent` or `failed` outbox row that finished more than `PUSH_OUTBOX_RETENTION_MS` (7 days) ago. Pending rows are never deleted.
 - **Inputs:** `store`, `authStore`, and `now` from `PushWorkerDeps`; the sender is not used.
-- **Returns / side effects:** `{ subscriptions, outbox }` deleted counts. Logs `push.sweep` with those counts when either is above zero; no endpoint, token, or payload is logged. A subscription that another caller removed first is not counted.
+- **Returns / side effects:** `{ subscriptions, outbox }` deleted counts. Logs `push.sweep` with those counts when either is above zero; no endpoint, token, or payload is logged. Deletes use `deleteStaleSubscription`, so a subscription that another caller removed first, or that a re-POST rebound to a new session after the scan read it, is neither deleted nor counted.
 - **Used by:** `startPushWorker`; unit tests.
 
 ## Function: parsePushSubscription

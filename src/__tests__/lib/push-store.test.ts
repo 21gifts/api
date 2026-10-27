@@ -138,6 +138,19 @@ describe('InMemoryPushStore', () => {
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(false);
   });
 
+  it('deleteStaleSubscription removes only a row that still matches account and session', async () => {
+    const store = new InMemoryPushStore();
+    expect(await store.deleteStaleSubscription(SUB)).toBe(false);
+    await store.upsertSubscription({ ...SUB, sessionToken: 'tok-new' });
+    expect(await store.deleteStaleSubscription(SUB)).toBe(false);
+    expect(
+      await store.deleteStaleSubscription({ ...SUB, accountId: 'other', sessionToken: 'tok-new' }),
+    ).toBe(false);
+    expect(await store.listByAccount('acc-a')).toHaveLength(1);
+    expect(await store.deleteStaleSubscription({ ...SUB, sessionToken: 'tok-new' })).toBe(true);
+    expect(await store.listByAccount('acc-a')).toEqual([]);
+  });
+
   it('lists distinct account ids with subscriptions', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB);
@@ -349,6 +362,14 @@ describe('PostgresPushStore', () => {
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(true);
     sql.nextRows = [];
     expect(await store.deleteSubscription('acc-a', SUB.endpoint)).toBe(false);
+
+    sql.nextRows = [{ endpoint: SUB.endpoint }];
+    expect(await store.deleteStaleSubscription({ ...SUB, sessionToken: 'tok-1' })).toBe(true);
+    expect(sql.queries.at(-1)?.text).toMatch(/session_token IS NOT DISTINCT FROM \$3/);
+    expect(sql.queries.at(-1)?.params).toEqual(['acc-a', SUB.endpoint, 'tok-1']);
+    sql.nextRows = [];
+    expect(await store.deleteStaleSubscription(SUB)).toBe(false);
+    expect(sql.queries.at(-1)?.params).toEqual(['acc-a', SUB.endpoint, null]);
 
     sql.nextRows = [
       {

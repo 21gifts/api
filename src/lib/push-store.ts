@@ -78,6 +78,16 @@ export interface PushStore {
   deleteSubscription(accountId: string, endpoint: string): Promise<boolean>;
 
   /**
+   * Remove a subscription only while it still matches the listed row's
+   * account, endpoint, and session token. A re-POST that rebound the
+   * endpoint after the row was read keeps the new binding.
+   *
+   * @param sub - Subscription as it was read (account, endpoint, session token).
+   * @returns Whether a matching row was removed.
+   */
+  deleteStaleSubscription(sub: PushSubscriptionRecord): Promise<boolean>;
+
+  /**
    * List subscriptions for one account (caller-owned copies).
    *
    * @param accountId - Account id.
@@ -322,6 +332,25 @@ export class InMemoryPushStore implements PushStore {
       return Promise.resolve(false);
     }
     this.#subs.delete(endpoint);
+    return Promise.resolve(true);
+  }
+
+  /**
+   * Remove the subscription when account, endpoint, and session token still match.
+   *
+   * @param sub - Subscription as it was read.
+   * @returns Whether a row was removed.
+   */
+  deleteStaleSubscription(sub: PushSubscriptionRecord): Promise<boolean> {
+    const existing = this.#subs.get(sub.endpoint);
+    if (
+      existing === undefined ||
+      existing.accountId !== sub.accountId ||
+      existing.sessionToken !== sub.sessionToken
+    ) {
+      return Promise.resolve(false);
+    }
+    this.#subs.delete(sub.endpoint);
     return Promise.resolve(true);
   }
 
@@ -628,6 +657,22 @@ export class PostgresPushStore implements PushStore {
     const rows = await this.#sql.query<{ endpoint: string }>(
       `DELETE FROM push_subscription WHERE account_id = $1 AND endpoint = $2 RETURNING endpoint`,
       [accountId, endpoint],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Delete by account + endpoint while `session_token` still equals the listed value.
+   *
+   * @param sub - Subscription as it was read.
+   * @returns Whether a row was removed.
+   */
+  async deleteStaleSubscription(sub: PushSubscriptionRecord): Promise<boolean> {
+    const rows = await this.#sql.query<{ endpoint: string }>(
+      `DELETE FROM push_subscription
+       WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3
+       RETURNING endpoint`,
+      [sub.accountId, sub.endpoint, sub.sessionToken],
     );
     return rows.length > 0;
   }
