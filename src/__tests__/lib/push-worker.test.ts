@@ -638,6 +638,53 @@ describe('startPushWorker', () => {
     vi.useRealTimers();
   });
 
+  it('logs push.tick.failed without the error text and keeps ticking', async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryPushStore();
+    const claim = vi
+      .spyOn(store, 'claimPending')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('token tok-secret in params'), { code: 'ERR_POSTGRES' }),
+      );
+    const handle = startPushWorker(
+      { store, sender: new FakeSender(true), now: () => 1, authStore: auth },
+      1_000,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(logEvent).toHaveBeenCalledWith('push.tick.failed', {
+      name: 'Error',
+      code: 'ERR_POSTGRES',
+    });
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain('tok-secret');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(claim).toHaveBeenCalledTimes(2);
+    handle.stop();
+    vi.useRealTimers();
+  });
+
+  it('skips a tick while the previous one is still running', async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryPushStore();
+    let release: () => void = () => undefined;
+    const claim = vi.spyOn(store, 'claimPending').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve([]);
+        }),
+    );
+    const handle = startPushWorker(
+      { store, sender: new FakeSender(true), now: () => 1, authStore: auth },
+      1_000,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(claim).toHaveBeenCalledTimes(1);
+    release();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(claim).toHaveBeenCalledTimes(2);
+    handle.stop();
+    vi.useRealTimers();
+  });
+
   it('sweeps once at start and again every PUSH_SWEEP_INTERVAL_MS until stopped', async () => {
     vi.useFakeTimers();
     const store = new InMemoryPushStore();

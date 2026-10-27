@@ -407,7 +407,8 @@ export async function sweepPushStore(
 }
 
 /**
- * Start a periodic push worker. Each tick delivers the outbox; once at start
+ * Start a periodic push worker. Each tick delivers the outbox (a rejected
+ * tick logs `push.tick.failed` and the next tick still runs); once at start
  * and then every {@link PUSH_SWEEP_INTERVAL_MS} it runs {@link sweepPushStore}.
  * Returns a handle to stop both intervals.
  *
@@ -420,15 +421,20 @@ export function startPushWorker(
   intervalMs: number = PUSH_WORKER_INTERVAL_MS,
 ): { stop: () => void } {
   let inFlight = false;
-  /* v8 ignore next 8 -- interval callback */
   const timer = setInterval(() => {
     if (inFlight) {
       return;
     }
     inFlight = true;
-    void runPushWorkerTick(deps).finally(() => {
-      inFlight = false;
-    });
+    void runPushWorkerTick(deps)
+      .catch((error: unknown) => {
+        // A tick queries by session token; a rejection must not reach the
+        // process handler, which prints the raw error and exits.
+        logEvent('push.tick.failed', errorLogFields(error));
+      })
+      .finally(() => {
+        inFlight = false;
+      });
   }, intervalMs);
   const sweep = (): void => {
     void sweepPushStore(deps).catch((error: unknown) => {

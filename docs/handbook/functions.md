@@ -708,7 +708,7 @@
 
 - **Purpose:** Start a periodic `setInterval` that runs `runPushWorkerTick` until stopped, and run `sweepPushStore` once at start and then every `PUSH_SWEEP_INTERVAL_MS` (1 hour).
 - **Inputs:** `PushWorkerDeps` and optional `intervalMs` (default `PUSH_WORKER_INTERVAL_MS` = 2s).
-- **Returns / side effects:** `{ stop }` clears both intervals. Does not throw on tick failures inside the timer callback. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
+- **Returns / side effects:** `{ stop }` clears both intervals. A tick still running skips the next interval. A rejected tick logs `push.tick.failed` with `errorLogFields` only (a tick queries by session token, and an unhandled rejection would reach the process handler, which prints the raw error and exits); the next tick still runs. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
 - **Used by:** `src/index.ts` on every boot. Without VAPID the ticks send nothing, but the sweep still runs.
 
 ## Function: sweepPushStore
@@ -1192,7 +1192,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected sweep, `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`).
 
 ## Function: meRoutes
 
