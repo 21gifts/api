@@ -201,7 +201,14 @@ keeps these rules:
    route (`POST /lnurlpay/:pubkey/recover`) also passes a pending recovery's
    new key.
 6. **Answers.** The transfer route answers like the register route
-   (`src/routes/lnurl-server.ts`).
+   (`src/routes/lnurl-server.ts`). Begin answers 503 `UNAVAILABLE`, like the
+   forwarded routes, while the old wallet's lookup is not verified or a
+   forwarded pending recovery is kept, and the app tries again after the
+   forward window. For a previous wallet's key, or a pending recovery it
+   commits, begin answers that the account was already recovered and to sign
+   in with the new passkey. When the old key no longer holds the username and
+   no pending recovery remains, begin refuses and the account needs an
+   operator.
 
 ### If not everything succeeds
 
@@ -267,7 +274,8 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - **21.gifts share.** How 21.gifts keeps and manually releases its share.
   Proposal: sealed to a 21.gifts offline key, so the api can never read it.
 - **LNURL server.** That the self-hosted LNURL server accepts
-  `POST /lnurlpay/:pubkey/transfer`, and drops a transfer the api aborted.
+  `POST /lnurlpay/:pubkey/transfer`, and moves no name later than twice
+  `LNURL_SERVER_TIMEOUT_MS` after the forward.
 - **Signature scheme.** The exact `signMessage` scheme, pinned with a test
   vector.
 - **Later:** a printed copy of a person's share against cleared browser
