@@ -385,6 +385,7 @@ export async function runPushWorkerTick(deps: PushWorkerDeps): Promise<void> {
  *
  * @param deps - Store, auth store, clock (the sender is not used).
  * @returns Counts of deleted subscriptions and outbox rows.
+ * @throws If a push store or auth store operation rejects.
  */
 export async function sweepPushStore(
   deps: Pick<PushWorkerDeps, 'store' | 'authStore' | 'now'>,
