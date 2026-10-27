@@ -678,7 +678,9 @@ describe('runOcpPhotoOutboxPass', () => {
   it('sends stills of a public shop that is not listed without a revision', async () => {
     const messages = await publicUnlisted();
     const ids = stubIdentities(identity({ ocpRevision: 0 }));
-    const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}', { status: 200 }));
+    const { push, sent } = mapPush(
+      () => new Response('{"photos":[],"skipped":[]}', { status: 200 }),
+    );
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(sent).toHaveLength(1);
     expect(sent[0]).toMatchObject({
