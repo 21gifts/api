@@ -925,6 +925,7 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
  * the same sync queues the photos once; a photo-fingerprint change queues
  * photos only while the note is a public shop; when both fingerprints change
  * in one sync the photo generation rises by 1, not by 2.
+ * Neither this sync nor the place trigger raises `ocp_revision`.
  * The photo fingerprint of an {@link InMemoryMessageStore} is its
  * `photoRevision`, so a sync reads no photo bytes; another message store is
  * hashed from one `getPhotoSet` read per shop.
