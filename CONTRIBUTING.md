@@ -456,7 +456,7 @@ booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
-`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `QueryGiftStore`,
+`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push sweep, and a closed SQL connection), `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
