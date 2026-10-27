@@ -76,11 +76,13 @@ happen remotely, for example with the QR code shown in a video call.
 2. The phone splits the 16 bytes into three shares. Before any share leaves
    the phone, it checks that each of the three pairs gives the same 16 bytes.
 3. The owner's phone shows share 1 as a QR code. Person 1 scans it in the
-   21.gifts app, which keeps it on that phone under the owner's name and the
-   share's SLIP-39 identifier.
-4. The same for share 2 and person 2. A phone that already holds a share with
-   the same identifier refuses the second one, so one phone never holds two
-   shares of one set.
+   21.gifts app, which keeps it on that phone under the owner's account id and
+   the share's SLIP-39 identifier.
+4. The same for share 2 and person 2. A phone that already holds a share for
+   the same owner with the same identifier refuses the new one, so one phone
+   never holds two shares of one set. The identifier is a random 15-bit value;
+   if a new set happens to draw the identifier of an old set a person still
+   holds, that phone refuses it too, and setup starts again with a new split.
 5. Share 3 goes to 21.gifts as described under [Open points](#open-points).
 
 Remotely, both shares are never shown over the same call or service, and the
@@ -99,20 +101,29 @@ new phone with the 21.gifts app.
 
 1. The owner taps **Account über Social Recovery wiederherstellen**.
 2. The owner's new phone scans the QR code of person 1.
-3. It scans the QR code of person 2.
-4. The app puts the 16 bytes back together, derives the old 12 words, opens
-   the old wallet with them and reads its identity public key. It begins a
+3. It scans the QR code of person 2. Instead of steps 2 and 3, the owner may
+   type the old 12 words.
+4. The app puts the 16 bytes back together, or takes the typed words, derives
+   the old 12 words, opens the old wallet with them and reads its identity
+   public key. It begins a
    recovery ceremony with that key, next to the existing register, replace and
    seed passkey ceremonies, behind the same app build check and login switch.
    The server finds the account whose verified `spark_pubkey` equals the key
    and refuses an unknown key, an unverified key and an account with
-   `session_refused`. It returns the account id and WebAuthn creation options:
-   the relying party, `user.id` the account id, the PRF salt as for a seed
-   passkey, and a challenge stored like every passkey challenge, with a new
-   ceremony type `recovery` and the same `CHALLENGE_TTL_MS` window.
+   `session_refused`. A key that is the account's previous wallet gets its own
+   answer: the account was already recovered, sign in with the new passkey.
+   It returns the account id and WebAuthn creation options: the relying party,
+   `user.id` the account id, the PRF extension as for a seed passkey (the app
+   adds the `eval.first` salt itself, as it does for the seed passkey), and a
+   challenge stored like every passkey challenge, with a new ceremony type
+   `recovery` and the same `CHALLENGE_TTL_MS` window. When the account already
+   has a pending recovery, begin returns that recovery's credential id and new
+   key instead, and the app resumes with them.
 5. The app creates the new passkey with those options, derives the new 12
    words from it and opens the new wallet. The new passkey is not linked to
-   the account yet.
+   the account yet. While a pending recovery exists, the app never creates a
+   second passkey for the account: a second one with the same `user.id` would
+   replace the first in the authenticator.
 6. One button, **Übertragen**, does the rest in this order:
    1. **Account and Lightning address, together.** The old wallet signs the
       recovery message (`signMessage` in the Breez SDK), and the app finishes
@@ -154,8 +165,10 @@ The recovery finish accepts it only when:
   verification, and that credential id, as the seed passkey finish does.
 
 It then consumes the challenge and stores the pending recovery: account id,
-old key, new key, the verified new credential (not linked), and an expiry of
-`CHALLENGE_TTL_MS`. It mints no session.
+old key, new key and the verified new credential (not linked). It mints no
+session. A pending recovery whose transfer was never forwarded expires after
+`CHALLENGE_TTL_MS`. Once the transfer was forwarded, it stays until it
+commits, because the LNURL server may already have moved the address.
 
 ### The transfer route and the commit
 
@@ -183,26 +196,39 @@ When the LNURL server answers 2xx, one transaction commits the recovery:
 
 When the LNURL server refuses, nothing changes. The username stays throughout.
 Of two pending recoveries for the same old key, only the first commit can
-succeed.
+succeed: the LNURL server moves a username once.
+
+When the outcome is unclear (the forward timed out, or the commit failed after
+a 2xx), the route answers that the recovery is still pending. The LNURL server
+does not accept the same transfer twice, so the app reconciles instead of
+claiming again: the new wallet looks up its own address
+(`POST /lnurlpay/<new key>/recover`, which the forwarded routes also pass for a
+pending recovery's new key). If the LNURL server returns the account's
+username for the new key, the server commits as above. If it returns no
+address, nothing was moved, and the claim is tried again.
 
 ### If not everything succeeds
 
 The button can be pressed again while the app still holds the old words in
-memory. Each press resumes at the first step not done yet: step 6.1 is done
-when the account's `spark_pubkey` is the new key, and step 6.2 is done when the
-old wallet's balance is 0.
+memory. Each press resumes at the first step not done yet. The app checks step
+6.1 by signing in with the new passkey: before the commit that sign-in is
+refused, after it the account belongs to the new passkey. Step 6.2 is done
+when the old wallet's balance is 0.
 
-- **Step 6.1 did not commit.** Nothing changed. The press starts again at step
-  4, with the words still in memory, and a new pending recovery. Once the app
-  is closed, the two QR codes are scanned again. A passkey created in an
-  earlier step 5 is unused and can be deleted from the phone.
+- **Step 6.1 did not commit.** The press resumes the pending recovery: it
+  reconciles when the transfer was forwarded, and otherwise starts again at
+  step 4 with the words still in memory and the same new passkey. Once the app
+  is closed, the two QR codes are scanned again or the old 12 words are typed
+  again.
 - **Step 6.2 failed.** The account belongs to the new passkey. The settings
   show the previous wallet and a button **Restguthaben übertragen**. It needs
-  the two QR codes again, opens the old wallet and repeats step 6.2 only.
-  Before the scan, the balance is read live from the public Spark explorer API
-  by the previous `spark_address`, and shown as unknown when that is not
-  reachable. After the scan, the app shows the old wallet's own balance.
-  Payments that reach the old wallet later are swept the same way.
+  the two QR codes or the old 12 words again, opens the old wallet and repeats
+  step 6.2 only. Before that, the balance is read live from the public Spark
+  explorer API by the previous `spark_address`, and shown as unknown when that
+  is not reachable. After it, the app shows the old wallet's own balance.
+  Payments that reach the old wallet later are swept the same way. The old
+  wallet's own address lookup answers 404 after the commit, which the Breez
+  SDK treats as no address; the sweep does not need one.
 
 The owner drops the previous wallet in the settings when its balance is 0. An
 old key never moves the account again: step 4 only finds an account by its
@@ -210,12 +236,15 @@ current verified key.
 
 ## After recovery
 
+After the commit the app shows the new 12 words and says that 12 words
+written down earlier now open only the previous wallet.
+
 The old shares rebuild only the old wallet. They stay on the people's phones
 as long as **Restguthaben übertragen** may need them. The app asks the owner
 to set up new shares for the new 12 words, with the same or other people. A
 person's phone keeps the new share next to the old one, told apart by the
-SLIP-39 identifier. Each person deletes the old share by hand when the owner
-asks, after the previous wallet is dropped.
+owner's account id and the SLIP-39 identifier. Each person deletes the old
+share by hand when the owner asks, after the previous wallet is dropped.
 
 ## What the server stores
 
@@ -225,7 +254,7 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - `spark_pubkey` and `spark_address` of the current wallet, and of the
   previous wallet until the owner drops it.
 - The recovery challenge, stored as a passkey challenge of type `recovery`.
-- The pending recovery, until it commits or expires.
+- The pending recovery, until it commits or, if never forwarded, expires.
 
 ## Security
 
@@ -271,11 +300,6 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - **LNURL server transfer.** That the self-hosted LNURL server accepts
   `POST /lnurlpay/:pubkey/transfer` for a username it already serves must be
   checked.
-- **Previous wallet on the forwarded LNURL routes.** When the old wallet is
-  opened again for **Restguthaben übertragen**, the Breez SDK may look up its
-  own address through `POST /lnurlpay/:pubkey/recover`. Its gate accepts only
-  the account's current key (`isSparkPubkeyClaimed`), so it must also accept
-  the previous wallet key until that wallet is dropped.
 - **NOSTR after v1.** In the planned non-custodial phase the NOSTR key comes
   from the 12 words (NIP-06, see [CONCEPT.md](../CONCEPT.md)). There, a
   recovery with new 12 words would give the account a new npub. How that phase
@@ -285,8 +309,10 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 
 - Each pair of the three shares rebuilds the original 16 bytes and 12 words.
   One share does not.
+- Recovery with the typed old 12 words alone works the same way.
 - Setup stops when the 12 words do not open the account's verified wallet.
-- A phone refuses a second share with the same SLIP-39 identifier.
+- A phone refuses a second share for the same owner with the same SLIP-39
+  identifier.
 - A person's share never appears in a request to the api.
 - The api has no path that reads, returns or uses the 21.gifts share.
 - Recovery without a valid signature by the account's verified `spark_pubkey`
@@ -300,6 +326,9 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   verification time kept, the old key as the previous wallet, the same
   username and Lightning address.
 - Of two pending recoveries for the same old key, exactly one commits.
+- While a pending recovery exists, no second passkey is created for the
+  account, and a commit lost after the LNURL server's 2xx is completed by
+  reconciling.
 - The old key cannot start a second account transfer.
 - No row and no log contains the 12 words, the 16 bytes, a share or PRF
   output.

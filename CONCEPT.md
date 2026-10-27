@@ -332,6 +332,9 @@ with its own new 12 words, and the old words move the Lightning address and
 the whole wallet balance to the new wallet. The v1 custodial NOSTR key does not
 change; with NIP-06 keys after v1, new 12 words would mean a new npub. Specified in
 [`docs/social-recovery.md`](./docs/social-recovery.md). Not implemented.
+The shop payment in
+[`docs/shop-stablecoin-payment.md`](./docs/shop-stablecoin-payment.md) does not read
+those words and does not deliver to a Spark address.
 
 **The server never holds the nsec.** All NOSTR signing happens in the browser.
 
