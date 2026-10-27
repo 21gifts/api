@@ -119,8 +119,11 @@ new phone with the 21.gifts app.
    as it does for the seed passkey), and a challenge stored like every passkey
    challenge, with a new ceremony type `recovery` and the same
    `CHALLENGE_TTL_MS` window. Before that, begin settles a pending recovery
-   of the account as described under [Pending recoveries](#pending-recoveries),
-   so no passkey is created while an earlier one may still be committed.
+   of the account as described under [Pending recoveries](#pending-recoveries).
+   Begin acts only on a lookup by the old wallet that the LNURL server
+   verified, and it hands out no options while a forwarded pending recovery
+   remains, so no passkey is created while an earlier one may still be
+   committed.
 5. The app creates the new passkey with those options, derives the new 12
    words from it and opens the new wallet. The new passkey is not linked to
    the account yet. A later new passkey with the same `user.id` replaces this
@@ -176,9 +179,15 @@ the phone, also across restarts, until the recovery commits or is dropped.
 
 ### Pending recoveries
 
-An account has at most one pending recovery. Where the username sits is known
-only to the LNURL server, so the server asks it with a wallet's signed address
-lookup (`POST /lnurlpay/<key>/recover`). For one key the answer is:
+An account has at most one pending recovery. Begin, the finish and the
+transfer route's admission each run as one step under a lock on the account:
+begin's check, settle, consume, drop and issue; the finish's consume, verify
+and store, so a finish consumes its challenge only in the step that stores the
+pending recovery; and the transfer's admit and mark.
+
+Where the username sits is known only to the LNURL server, so the server asks
+it with a wallet's signed address lookup (`POST /lnurlpay/<key>/recover`). For
+one key the answer is:
 
 - **holds**: the LNURL server answers 2xx with the account's username,
 - **does not hold**: the LNURL server answers its own 404 "user not found" to
@@ -188,32 +197,37 @@ lookup (`POST /lnurlpay/<key>/recover`). For one key the answer is:
 
 A forward is **in flight** while less than twice `LNURL_SERVER_TIMEOUT_MS`
 (`src/lib/lnurl-server.ts`) has passed since the pending recovery was marked
-forwarded.
+forwarded. A lookup sent while a forward is in flight counts as unknown, even
+when its answer arrives later.
 
-- **Not forwarded.** It expires after `CHALLENGE_TTL_MS`. A new begin drops
-  it and consumes every earlier unconsumed `recovery` challenge of the account,
-  so only the newest ceremony can finish, and nothing can be forwarded after
-  begin has handed out new creation options. A finish replaces a pending
-  recovery only while it is not forwarded, checked in the same step as the
-  replace; when the account's pending recovery is forwarded, the finish
-  refuses and changes nothing.
+Begin acts only on the old wallet's lookup it carries. When that answer is
+unknown, begin answers 503 `UNAVAILABLE`, the same answer the forwarded LNURL
+routes give when the LNURL server cannot be used, and changes nothing: it
+drops nothing, consumes nothing and issues no challenge. Only a verified
+lookup proves that the caller holds the old wallet, so a stranger who knows
+the public old key cannot disturb a recovery in progress.
+
+- **Not forwarded.** It expires after `CHALLENGE_TTL_MS`. A finish replaces it
+  only while it is not forwarded, checked in its step; when the account's
+  pending recovery is forwarded, the finish refuses and changes nothing. A
+  begin with a verified lookup drops it, again only while it is not
+  forwarded, and consumes every earlier unconsumed `recovery` challenge of the
+  account, so only the newest ceremony can finish.
 - **Forwarded.** The transfer route marks it forwarded, with the time, in the
-  same step that admits the forward, so one pending recovery is never
-  forwarded twice at once. From then on it is:
+  step that admits the forward, so one pending recovery is never forwarded
+  twice at once. From then on it is:
   - **committed** when the new key holds the username, or when the old key
-    does not hold it and no forward is in flight: the name can only have gone
-    to this recovery's new key, the only key its authorization names,
-  - **dropped** when the old key holds the username and no forward is in
-    flight: nothing moved,
-  - **kept** in every other case.
+    does not hold it: the name can only have gone to this recovery's new key,
+    the only key its authorization names,
+  - **dropped** when the old key holds the username: nothing moved,
+  - **kept** in every other case, an unknown answer included.
 
-Begin applies these rules with the old wallet's lookup it carries, before it
-does anything else. A not forwarded pending recovery is dropped. A forwarded
-one is committed, and begin then answers that the account was already
-recovered, sign in with the passkey of that recovery; or it is dropped, and
-begin continues; or it is kept, and begin answers 503 `UNAVAILABLE`, the same
-answer the forwarded LNURL routes give when the LNURL server cannot be used,
-and the app tries again shortly.
+When begin finds a forwarded pending recovery, it settles it with these rules
+and hands out no options unless it was dropped. When it commits, begin answers
+that the account was already recovered, sign in with the passkey of that
+recovery. When it is dropped, begin continues. When it is kept, begin answers
+503 `UNAVAILABLE`, and the app tries again once the in-flight window has
+passed.
 
 ### The transfer route and the commit
 
@@ -256,7 +270,7 @@ looks up its own address (`POST /lnurlpay/<new key>/recover`, which the
 forwarded routes also pass for a pending recovery's new key), and the old
 wallet looks up its own. The server applies the rules above: it commits, or it
 drops, and the app starts again at step 4 with the words still in memory, or it
-keeps, and the app waits and reconciles again.
+keeps, and the app reconciles again once the in-flight window has passed.
 
 ### If not everything succeeds
 
@@ -333,6 +347,9 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   same call or service, and setup calls are not recorded.
 - **A replayed signature** is refused: the message binds the account, a
   single-use challenge, the new passkey and the new wallet key.
+- **A stranger with the public wallet key** cannot disturb a recovery in
+  progress: begin acts only on a lookup by the old wallet that the LNURL
+  server verified.
 - **The lost phone** loses its sessions and push subscriptions, so it gets no
   more private messages.
 - **A new phone lost during recovery.** When the address already moved to a
@@ -389,15 +406,21 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   username and Lightning address.
 - An account has at most one pending recovery, and at most one recovery per
   old key commits.
+- Begin, the finish and the transfer admission each run as one step under a
+  lock on the account, and a finish consumes its challenge only when it
+  stores the pending recovery.
+- Begin changes nothing and issues no challenge without a lookup by the old
+  wallet that the LNURL server verified.
 - A forwarded pending recovery commits only when the new key holds the
-  username, or when the old key does not hold it and no forward is in flight.
-  It is dropped only when the old key holds the username and no forward is in
-  flight. An unknown answer, and any answer of the transfer itself other than
-  2xx, changes nothing.
+  username or the old key does not hold it, and is dropped only when the old
+  key holds it, each by a lookup sent after the in-flight window. An unknown
+  answer, and any answer of the transfer itself other than 2xx, changes
+  nothing.
 - Begin consumes earlier unconsumed `recovery` challenges, drops a not
   forwarded pending recovery and settles a forwarded one before any new
-  passkey is created; a finish never replaces a forwarded pending recovery, and a commit lost after the LNURL server
-  moved the name is completed by reconciling or by the next begin.
+  passkey is created; a finish never replaces a forwarded pending recovery;
+  a commit lost after the LNURL server moved the name is completed by
+  reconciling or by the next begin.
 - A second recovery keeps the first previous wallet listed until it is
   dropped.
 - The old key cannot start a second account transfer.
