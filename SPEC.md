@@ -167,7 +167,7 @@ Public base URLs used in examples:
 | GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/shops`                                             | Public                                       | Public. shops of { npub, name, place }, optional nextCursor, limit default 20 max 100, 400 Invalid limit / Invalid cursor, 503 Shops are unavailable.                                                                                                                                                                                                                                                                                                                                                           |
-| GET    | `/shops/:npub`                                       | Public                                       | Listed shop by npub; known hex redirects; unlisted identity 410                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/shops/:npub`                                       | Public                                       | Public shop by npub; known hex redirects; a shop that is no longer public is 410                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | POST   | `/messages`                                          | Bearer                                       | Post text/photo; 409 if rules/name/username/Lightning Address missing; 403 text-only below verified                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                   | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                             |
@@ -234,6 +234,8 @@ Public base URLs used in examples:
 | POST   | `/me/push-subscriptions`                             | Bearer                                       | Upsert a browser PushSubscription                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | DELETE | `/me/push-subscriptions`                             | Bearer                                       | Remove a browser PushSubscription                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| POST   | `/debug/shop-keys`                                   | Bearer `DEBUG_TOKEN`                         | Store the existing OpenCryptoPay private key of one named shop note. Body `{ messageId, secret }`. Returns `{ messageId, npub }`. Does not log or return the secret. The same key again is success. A different stored key is 409.                                                                                                                                                                                                                                                                              |
+| POST   | `/debug/shop-notes`                                  | Bearer `DEBUG_TOKEN`                         | Store one live top-level shop note that has a till account and no pin. Body `{ text, shopUsername, authorId }`. The pin is not accepted. Returns `{ id, shopNpub }`. `POST /messages` still refuses a shop without a pin.                                                                                                                                                                                                                                                                                       |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/debug/dump`                                        | `Authorization: Bearer`                      | Operator catalog of allowlisted tables (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/debug/dump/:table`                                 | `Authorization: Bearer`                      | Operator catalog of one allowlisted table (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
@@ -1460,12 +1462,16 @@ not create a BOLT11 invoice. A store throw → **503**
 
 ### `GET /shops`
 
-Public directory of listed shops
-([docs/shop-identity.md](docs/shop-identity.md) S3). A row is returned only
-when `listedShop` accepts the note and `shop_identity` already holds a key
-for that note. Unlisted identities are omitted. Newest note first
-(`createdAt` descending, then `id` descending). No session; a bearer is
-ignored.
+Public directory of public shops
+([docs/shop-identity.md](docs/shop-identity.md) S3). A row is returned when
+`publicShop` accepts the note and `shop_identity` already holds a key
+for that note. Identities that are no longer public are omitted. Newest
+note first (`createdAt` descending, then `id` descending). No session; a
+bearer is ignored. `place` is null when the note has no coordinates.
+`address` is null unless street, house number, postal code, city and
+country are all non-blank. `name` is the pin label when that label is
+non-blank, otherwise the first non-blank description line (at most 80
+characters), otherwise `Shop`.
 
 ### `GET /shops/:npub`
 
@@ -1477,9 +1483,9 @@ and validates it inside the handler.
 
 | Request                                  | Response                                                                                                |
 | ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| npub of a listed shop                    | **200** `{ "shop": Shop }`                                                                              |
+| npub of a public shop                    | **200** `{ "shop": Shop }`                                                                              |
 | 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                        |
-| npub of a known shop that is not listed  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                     |
+| npub of a known shop that is not public  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                     |
 | anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
 | store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
 | NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
@@ -1489,10 +1495,12 @@ and validates it inside the handler.
 `Cache-Control: no-store` on 503. The 410 body carries no name.
 
 `Shop` is
-`{ "npub", "messageId", "name", "description", "place": { "lat", "lng", "label", "address": { "street", "houseNumber", "postalCode", "city", "country" } }, "photos": [{ "url", "width", "height" }], "payUsername", "nip05", "createdAt" }`.
-`name` is the pin label, `description` the note text without the
-`#21GiftsShop` token. `lat` and `lng` are as in `GET /messages/places`.
-`address` is always present (a listed shop is complete). `photos` are the
+`{ "npub", "messageId", "name", "description", "place": { "lat", "lng", "label", "address": { "street", "houseNumber", "postalCode", "city", "country" } } | null, "photos": [{ "url", "width", "height" }], "payUsername", "nip05", "createdAt" }`.
+`name` is the public shop name, `description` the note text without the
+`#21GiftsShop` token. `place` is null when the note has no finite
+coordinates. When `place` is present, `lat` and `lng` are as in
+`GET /messages/places` and `address` is null unless every structured part
+is non-blank. `photos` are the
 note's photos in note order (at most 10), from one read of the whole set
 (`MessageStore.getPhotoSet`), never photo 0 of one set with the extras of
 another: photo 0 is
@@ -1513,8 +1521,8 @@ process for 60 s per store set. Its entry must carry the name of the note
 this request read; on the first missing entry or other name the request asks
 once for a forced refresh of the directory (at most one computation per 10 s
 per store set) and checks again, and when it still does not match (renamed
-or unlisted in between) the route reads the note again (a note no longer
-listed is then 410); a mismatch on the last round answers the 503 with
+or no longer public in between) the route reads the note again (a note
+no longer public is then 410); a mismatch on the last round answers the 503 with
 `reason: "nip05_stale"`. After
 the photo set the route reads the note again; when its text, pin, till
 account id or `deletedAt` differ from the note the answer is built from (a
@@ -1527,10 +1535,12 @@ photo set at most twice
 ([docs/shop-identity.md](docs/shop-identity.md) S3). `createdAt` is the note's
 ISO-8601 creation time.
 
-A **listed shop** is a live top-level note with the `#21GiftsShop` token, a
-pin, a till account (`shop_account_id`) and a complete pin and description
-(`shopPlaceProblem` and `shopTextProblem` both null). A write that makes a
-note a listed shop for the first time (`POST /messages`,
+A **public shop** is a live top-level note with the `#21GiftsShop` token and
+a till account (`shop_account_id`). A pin and a structured address are
+optional. A **listed shop** is a public shop whose pin and description are
+complete (`shopPlaceProblem` and `shopTextProblem` both null); only that
+shop is sent to the OpenCryptoPay map. A write that makes a
+note a public shop for the first time (`POST /messages`,
 `PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
 `PATCH /messages/:id/shop-account`, `PUT /me/about`,
 `POST /debug/messages/:id/restore`) creates its key after the commit with the
@@ -4470,11 +4480,12 @@ Success → **Response** `200`:
 }
 ```
 
-A new note that is a listed shop when it is read again after the commit gets
+A new note that is a public shop when it is read again after the commit gets
 its shop key, and creating the key queues its OpenCryptoPay place outbox (see
-the listed shop rule above); the sender then PUTs the complete stored shop. A
-note gone, hidden, unpinned or incomplete by that read gets no key, and
-nothing is sent. A replay creates no key and queues nothing.
+the public shop rule above); the sender then PUTs a shop that is listed. A
+public shop that is not listed clears that flag and sends nothing. A note
+gone, hidden, or no longer a shop by that read gets no key, and nothing is
+sent. A replay creates no key and queues nothing.
 
 ### `POST /messages/:id/invoice`
 
@@ -5027,8 +5038,11 @@ the hidden-row count, never the pubkey. On store throw it logs
 Hiding a shop note that has a key queues its OpenCryptoPay place outbox in
 the same write (`trg_shop_identity_place` on `deleted_at`), whatever its pin
 was when the route read it, because a pin set concurrently may already be on
-the map; the sender then sends DELETE to `/map/places`, since a hidden note is
-not listed. A note without a key was never sent, and nothing is queued.
+the map. The sender sends DELETE to `/map/places` only when this outbox has
+already sent the place (`ocp_revision` greater than 0). A key that was never
+sent, including one stored from an existing map identity, is not deleted. A
+photo update does not raise that revision. A note without a key was never
+sent, and nothing is queued.
 Delivery is asynchronous; a failure never changes the 204.
 
 ### `PATCH /messages/:id/place`
@@ -5063,12 +5077,12 @@ no hide stamps). Logs `messages.place.updated` with `messageId`,
 pin change appends `message_edit`. An identical pin does not. A pin change
 on a shop with a key queues its OpenCryptoPay place outbox in the same
 write. The sender reads the note when it sends: a listed shop gets PUT to
-`/map/places`, and a shop that is no longer listed (pin and text
-incomplete, pin or till account cleared, hidden or gone, also by a
-concurrent request) gets DELETE. This route does not accept `place: null`,
-so it does not queue a clear. A concurrent store write that drops the pin,
-or a hide, still makes the next send DELETE. A later complete pin before
-the send is one PUT (an incomplete pin set again still gets DELETE).
+`/map/places`. A public shop that is not listed clears the place flag and
+sends nothing, so a pin that is incomplete leaves the map place as it is.
+This route does not accept `place: null`, so it does not queue a clear.
+A shop that is no longer public (tag removed, till account cleared, hidden,
+or gone, also by a concurrent request) gets DELETE. A later complete pin
+before the send is one PUT.
 Each send carries a new revision, so concurrent edits of one shop reach the
 map in order and the last send matches the last write.
 

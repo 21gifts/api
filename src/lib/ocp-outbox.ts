@@ -10,8 +10,12 @@
  * it again. So no row that keeps failing, keeps being released or keeps
  * changing holds the place of later shops. Every request carries the next
  * `revision` of the shop's shared counter. The worker decides at send time
- * from the note as it is then: a listed shop gets `PUT /map/places`,
- * anything else `DELETE /map/places`.
+ * from the note as it is then: a listed shop gets `PUT /map/places`, a
+ * public shop that is not listed clears its place flag and sends nothing,
+ * and anything that is no longer public gets `DELETE /map/places` only
+ * after this outbox has sent the place (`ocpRevision` greater than 0). A
+ * key that has never been sent, including one adopted from OpenCryptoPay,
+ * is not deleted.
  */
 
 import { createHash } from 'node:crypto';
@@ -21,7 +25,7 @@ import type { MessageStore } from '@/lib/message-store';
 import { WORKER_BATCH, WORKER_INTERVAL_MS, WORKER_LEASE_MS } from '@/lib/nostr/worker';
 import { shopOcpPlaceInput, type MapPush } from '@/lib/ocp-place';
 import type { ShopIdentityStore, ShopOcpClaim } from '@/lib/shop-identity';
-import { isListedShop, listedShop } from '@/lib/shop-place';
+import { isListedShop, listedShop, publicShop } from '@/lib/shop-place';
 
 /** Timeout of one place request (as the former `mapPlacesRequest`). */
 export const OCP_PLACE_TIMEOUT_MS = 5_000;
@@ -128,7 +132,11 @@ function send(
 
 /**
  * Send one claimed place: `PUT` with `nostrPubkey` and `revision` for a
- * listed shop, otherwise reset the photo state and `DELETE`.
+ * listed shop. A public shop that is not listed clears the place flag and
+ * sends nothing. Anything that is no longer public resets the photo state
+ * and `DELETE`s, except a key this outbox has never sent (`ocpRevision`
+ * is 0): that flag is cleared and nothing is sent, so an adopted
+ * OpenCryptoPay place is not deleted.
  */
 async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void> {
   const { identities } = deps;
@@ -141,11 +149,28 @@ async function sendPlace(deps: OcpOutboxDeps, claim: ShopOcpClaim): Promise<void
     await identities.release('place', claim);
     return;
   }
+  // A public shop without a complete map pin stays on the directory. Clear
+  // the place flag and do not PUT or DELETE it.
+  if (publicShop(note) !== null && shop === null) {
+    await identities.finishPlace(claim, 'reject');
+    return;
+  }
   if (note !== undefined && shop !== null) {
+    const input = shopOcpPlaceInput(messageId, note.text, shop.place);
+    /* v8 ignore next 4 -- listedShop already rejected an incomplete pin */
+    if (input === null) {
+      await identities.finishPlace(claim, 'reject');
+      return;
+    }
     body = {
-      ...shopOcpPlaceInput(messageId, note.text, shop.place),
+      ...input,
       nostrPubkey: identity.nostrPubkey,
     };
+  } else if (identity.ocpRevision === 0) {
+    // This outbox has never sent the place. Do not DELETE a map row it
+    // did not create. An adopted OpenCryptoPay key starts at revision 0.
+    await identities.finishPlace(claim, 'reject');
+    return;
   } else {
     await identities.resetPhotosForDelete(claim);
     body = { origin: '21gifts', externalId: messageId };
@@ -305,12 +330,16 @@ async function skippedCount(response: Response): Promise<number> {
  * least recently claimed first ({@link ShopIdentityStore.claimPhoto}).
  *
  * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
- * cleared without a request. Otherwise the revision is reserved first, only
- * while the place is not pending and the photo generation is still the
- * claim's (`nextRevision`); otherwise the claim is released without a
- * request and with the stored hash kept, and the photos are sent after the
- * place lane has settled. After the reservation the hash is nulled, then up
- * to 10 photos are sent in note order as base64.
+ * cleared without a request. A row whose revision is still 0 is released
+ * without a request and without raising it: a photo update must not arm a
+ * later delete of a place this outbox has never sent. The photos stay
+ * pending until the place lane has raised the revision. Otherwise the
+ * revision is reserved first, only while the place is not pending and the
+ * photo generation is still the claim's (`nextRevision`); otherwise the
+ * claim is released without a request and with the stored hash kept, and
+ * the photos are sent after the place lane has settled. After the
+ * reservation the hash is nulled, then up to 10 photos are sent in note
+ * order as base64.
  * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
@@ -347,6 +376,12 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
   const hash = ocpPhotoSetHash(photos);
   if (identity.ocpPhotosHash === hash) {
     await identities.clearPhotoWithoutSend(claim);
+    return;
+  }
+  if (identity.ocpRevision === 0) {
+    // This outbox has never sent the place. Do not raise the shared
+    // revision: a later hide would then DELETE a map row it did not create.
+    await identities.release('photos', claim);
     return;
   }
   const revision = await identities.nextRevision('photos', claim);

@@ -251,6 +251,92 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
   expect(body.shops.map((row) => row.name)).not.toContain(label);
 });
 
+/**
+ * A live shop note with a till account and no pin. The directory still lists it.
+ * `POST /messages` refuses this shape, so the note is stored through
+ * `POST /debug/shop-notes` and then read back.
+ */
+async function shopWithoutPin(
+  request: APIRequestContext,
+  tag: string,
+  text: string,
+): Promise<void> {
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const authorName = `E2eOpenMod${tag}${stamp}`;
+  const tillName = `E2eOpenTill${tag}${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        { name: authorName, lightningAddress: `e2e-openmod-${stamp}@walletofsatoshi.com` },
+        { name: tillName, lightningAddress: `e2e-opentill-${stamp}@walletofsatoshi.com` },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const author = accounts.find((row) => row.name === authorName);
+  const till = accounts.find((row) => row.name === tillName);
+  expect(author?.id).toBeTruthy();
+  expect(till?.username).toBeTruthy();
+  const posted = await request.post('/debug/shop-notes', {
+    headers: { ...DEBUG, 'content-type': 'application/json' },
+    data: { text, shopUsername: till?.username, authorId: author?.id },
+  });
+  expect(posted.status()).toBe(200);
+}
+
+test('Function: debugShopNoteRoutes — POST /debug/shop-notes without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-notes');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: publicShop — GET /shops lists a shop that has no pin', async ({ request }) => {
+  const line = `Morning stall ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;
+  await shopWithoutPin(request, 'Open', `${line}\n\n#21GiftsShop`);
+  const response = await request.get('/shops?limit=100');
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    shops: Array<{ npub: string; name: string; place: unknown }>;
+  };
+  const row = body.shops.find((item) => item.name === line);
+  expect(row).toEqual({
+    npub: expect.stringMatching(/^npub1[02-9ac-hj-np-z]{58}$/),
+    name: line,
+    place: null,
+  });
+  const detail = await request.get(`/shops/${row?.npub}`);
+  expect(detail.status()).toBe(200);
+  expect((await detail.json()) as { shop: { name: string; place: unknown } }).toMatchObject({
+    shop: { name: line, place: null },
+  });
+});
+
+test('Function: publicShopName — a shop with no pin is named from its description', async ({
+  request,
+}) => {
+  const line = `Corner stall ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;
+  await shopWithoutPin(request, 'Name', `${line}\n\n#21GiftsShop`);
+  const response = await request.get('/shops?limit=100');
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    shops: Array<{ npub: string; name: string; place: unknown }>;
+  };
+  const row = body.shops.find((item) => item.name === line);
+  expect(row?.place).toBeNull();
+  const detail = await request.get(`/shops/${row?.npub}`);
+  expect(detail.status()).toBe(200);
+  expect(((await detail.json()) as { shop: { name: string } }).shop.name).toBe(line);
+});
+
 test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', async ({
   request,
 }) => {
@@ -511,6 +597,28 @@ test('Function: startOcpOutboxWorker — OCP map target blank, the listed shop i
 test('Function: shopOcpPlaceInput — OCP map target blank, the listed shop is still served', ({
   request,
 }) => servedWithoutMap(request, 'OcpIn'));
+
+test('Function: debugShopKeyRoutes — POST /debug/shop-keys without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: shopKeyMustBeAdopted — POST /debug/shop-keys rejects a note outside the adopted set', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys', {
+    headers: DEBUG,
+    data: {
+      messageId: '00000000-0000-4000-8000-000000000001',
+      secret: '11'.repeat(32),
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid shop key' });
+});
 
 test('Function: resolveMapPush — OCP map target blank, the listed shop is still served', ({
   request,

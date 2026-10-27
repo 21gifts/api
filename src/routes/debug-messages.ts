@@ -35,7 +35,7 @@ export interface DebugMessagesRouteDeps {
   debugToken: string | undefined;
   /**
    * Shop identities. With `shopKek`, a restore that makes the note a
-   * listed shop creates its key. The restore write queues the
+   * public shop creates its key. The restore write queues the
    * OpenCryptoPay outbox itself. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;

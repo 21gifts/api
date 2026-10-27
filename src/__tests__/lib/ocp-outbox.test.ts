@@ -82,6 +82,7 @@ type Stub = { [K in keyof ShopIdentityStore]: ReturnType<typeof vi.fn> };
 function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
   return {
     ensureListed: vi.fn(),
+    adoptKnownSecret: vi.fn(),
     getByMessageId: vi.fn(() => Promise.resolve(row ?? undefined)),
     getByPubkey: vi.fn(),
     getNostrCiphertext: vi.fn(),
@@ -105,6 +106,11 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     missingPhotoPlace: vi.fn(() => Promise.resolve()),
     deferPhotos: vi.fn(() => Promise.resolve()),
   };
+}
+
+/** A shop whose place this outbox has already sent, so the photo lane may reserve. */
+function sentShop(): Stub {
+  return stubIdentities(identity({ ocpRevision: 1 }));
 }
 
 type Sent = { url: string; method: string; body: Record<string, unknown>; init: RequestInit };
@@ -231,10 +237,22 @@ describe('runOcpPlaceOutboxPass', () => {
     expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'created');
   });
 
+  it('clears a public shop that has no structured address without a request', async () => {
+    const messages = await messagesWith(
+      shopNote({ place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null } }),
+    );
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    const ids = stubIdentities();
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
+  });
+
   it('resets the photos and deletes a shop that is not listed', async () => {
     const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
     const { push, sent } = mapPush(() => new Response('{"deleted":false}', { status: 200 }));
-    const ids = stubIdentities();
+    const ids = stubIdentities(identity({ ocpRevision: 1 }));
     await runOcpPlaceOutboxPass(deps(ids, messages, push));
     expect(ids.resetPhotosForDelete).toHaveBeenCalledWith(CLAIM);
     expect(sent[0]?.method).toBe('DELETE');
@@ -245,10 +263,21 @@ describe('runOcpPlaceOutboxPass', () => {
   it('deletes when the note is gone', async () => {
     const messages = { getById: () => Promise.resolve(undefined) } as unknown as MessageStore;
     const { push, sent } = mapPush(() => new Response(null, { status: 204 }));
-    const ids = stubIdentities();
+    const ids = stubIdentities(identity({ ocpRevision: 1 }));
     await runOcpPlaceOutboxPass(deps(ids, messages, push));
     expect(sent[0]?.method).toBe('DELETE');
     expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'delete');
+  });
+
+  it('does not delete a place this outbox has never sent', async () => {
+    const messages = await messagesWith(shopNote({ text: 'Only coffee here, no tag at all.' }));
+    const { push, sent } = mapPush(() => new Response('{}', { status: 200 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    await runOcpPlaceOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.resetPhotosForDelete).not.toHaveBeenCalled();
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPlace).toHaveBeenCalledWith(CLAIM, 'reject');
   });
 
   it('releases a row whose identity vanished', async () => {
@@ -319,7 +348,7 @@ describe('runOcpPlaceOutboxPass', () => {
             status: 400,
           }),
       );
-      const ids = stubIdentities();
+      const ids = stubIdentities(identity({ ocpRevision: 1 }));
       await runOcpPlaceOutboxPass(deps(ids, messages, push));
       expect(sent.map((request) => request.method)).toEqual([method]);
       expect(ids.finishPlace).not.toHaveBeenCalled();
@@ -483,7 +512,7 @@ describe('runOcpPhotoOutboxPass', () => {
       bytes: new Uint8Array([index]),
     }));
     const messages = await messagesWith(shopNote({ hasPhoto: true }), photos);
-    const ids = stubIdentities();
+    const ids = sentShop();
     const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(ids.leaseHasTime).toHaveBeenCalledTimes(2);
@@ -521,7 +550,7 @@ describe('runOcpPhotoOutboxPass', () => {
         bytes: new Uint8Array([9]),
       } as unknown as ForumPhoto;
       const messages = await messagesWith(shopNote({ hasPhoto: true }), stills);
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       // Only the unrecognized still is left out: an unrecognized photo 0
@@ -539,7 +568,7 @@ describe('runOcpPhotoOutboxPass', () => {
 
   it('sends an empty list for a shop without photos', async () => {
     const messages = await messagesWith(shopNote());
-    const ids = stubIdentities();
+    const ids = sentShop();
     const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(sent[0]?.body['photos']).toEqual([]);
@@ -553,7 +582,7 @@ describe('runOcpPhotoOutboxPass', () => {
       '{"photos":[],"skipped":"none"}',
       'not json',
     ]) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push } = mapPush(() => new Response(body, { status: 200 }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       expect(ids.finishPhotos).toHaveBeenCalledTimes(1);
@@ -566,7 +595,7 @@ describe('runOcpPhotoOutboxPass', () => {
   it('releases when the lease is short before or after reading the bytes', async () => {
     const messages = await messagesWith(shopNote());
     for (const results of [[false], [true, false]]) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       for (const value of results) ids.leaseHasTime.mockResolvedValueOnce(value);
       const { push, sent } = mapPush(() => new Response('{}'));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
@@ -599,9 +628,21 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(sent).toEqual([]);
   });
 
+  it('releases without raising a revision when the place was never sent', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
   it('sends nothing and releases when no revision is reserved', async () => {
     const messages = await messagesWith(shopNote());
-    const ids = stubIdentities();
+    const ids = sentShop();
     ids.nextRevision.mockResolvedValueOnce(undefined);
     const { push, sent } = mapPush(() => new Response('{}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
@@ -614,7 +655,7 @@ describe('runOcpPhotoOutboxPass', () => {
 
   it('nulls the hash and releases on 409 Stale revision', async () => {
     const messages = await messagesWith(shopNote());
-    const ids = stubIdentities();
+    const ids = sentShop();
     const { push } = mapPush(() => new Response('{"error":"Stale revision"}', { status: 409 }));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(ids.clearPhotoHash).toHaveBeenCalledTimes(2);
@@ -625,7 +666,7 @@ describe('runOcpPhotoOutboxPass', () => {
   it('stores the hash and logs ocp.photos.rejected on 400 or 413', async () => {
     const messages = await messagesWith(shopNote());
     for (const status of [400, 413]) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push } = mapPush(() => new Response('{"error":"x"}', { status }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
@@ -648,7 +689,7 @@ describe('runOcpPhotoOutboxPass', () => {
       [listed, true],
       [flipping, false],
     ] as const) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push } = mapPush(() => new Response('{"error":"Place not found"}', { status: 404 }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, expected);
@@ -660,7 +701,7 @@ describe('runOcpPhotoOutboxPass', () => {
     const secret = `SECRET-SENTINEL-${'x'.repeat(300)}`;
     const bodies = ['404 Not Found', '{"error":"Not found"}', 'null', secret];
     for (const body of bodies) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push, sent } = mapPush(() => new Response(body, { status: 404 }));
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       expect(sent.map((request) => request.url)).toEqual(['https://map.test/map/places/photos']);
@@ -691,7 +732,7 @@ describe('runOcpPhotoOutboxPass', () => {
       () => new Response('{"error":"other"}', { status: 409 }),
       () => Promise.reject(new Error('reset')),
     ]) {
-      const ids = stubIdentities();
+      const ids = sentShop();
       const { push } = mapPush(answer);
       await runOcpPhotoOutboxPass(deps(ids, messages, push));
       expect(ids.finishPhotos).not.toHaveBeenCalled();

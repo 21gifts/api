@@ -99,7 +99,7 @@ export interface MeRouteDeps {
   spendPing?: SpendPing;
   /**
    * Shop identities. With `shopKek` (or `nostrKek`), `PUT /me/about` creates
-   * the key when the profile note becomes a listed shop. Omitted → no shop keys.
+   * the key when the profile note becomes a public shop. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;
   /** KEK for new shop keys. Default `nostrKek`. */
