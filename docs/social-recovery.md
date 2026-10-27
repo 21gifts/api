@@ -105,14 +105,14 @@ new phone with the 21.gifts app.
 3. The app rebuilds the old 12 words, opens the old wallet and starts a
    recovery ceremony with the old wallet's identity key and its signed address
    lookup (`POST /lnurlpay/<old key>/recover`), behind the same app build check
-   and login switch as the other passkey ceremonies. The server finds the
+   and login switch as the register and authenticate ceremonies. The server finds the
    account whose verified `spark_pubkey` is that key, refuses an account with
    `session_refused`, and returns WebAuthn creation options for a new passkey
    on that account: as for a seed passkey, with a stored passkey challenge of
    the new type `recovery` and the same `CHALLENGE_TTL_MS` window.
 4. The app creates the new passkey, derives the new 12 words from it and opens
    the new wallet. The new passkey is not linked to the account yet.
-5. One button, **Übertragen**, does the rest:
+5. One button, **Übertragen**, does the rest in this order:
    1. **Account.** The old wallet signs the recovery message (`signMessage`
       in the Breez SDK). The app finishes the ceremony with it and the new
       passkey's attestation, and the server stores a **pending recovery**.
@@ -122,10 +122,11 @@ new phone with the 21.gifts app.
       sends the claim to `POST /lnurlpay/<new key>/transfer`, a new route
       forwarded like `POST /lnurlpay/:pubkey`. When the LNURL server accepts
       it, the server commits the account transfer.
-   3. **Balance.** The old wallet sends its whole balance to the new wallet,
-      if it is above 0.
+   3. **Balance.** After the commit, which the app confirms by signing in
+      with the new passkey, the old wallet sends its whole balance to the new
+      wallet, if it is above 0.
 
-The app then signs in with the new passkey through the normal authenticate
+The app signs in with the new passkey through the normal authenticate
 ceremony. Until the commit, nothing on the account changes. The QR codes use
 the app's existing `QrCode` and `QrScanner` components, and the new 12 words
 are shown on the existing phrase screen.
@@ -172,24 +173,39 @@ The account transfer depends on the LNURL server, which can answer late, not
 at all, or with an error after it already moved the name. An implementation
 keeps these rules:
 
-- An account has at most one pending recovery. Begin, the finish and the
-  transfer route's admission each run as one locked step per account.
-- Begin changes nothing unless the LNURL server verified the old wallet's
-  lookup, so knowing the public wallet key is not enough to disturb a
-  recovery.
-- Only the LNURL server knows where the username is. Whether a pending
-  recovery commits or is dropped is decided by the signed address lookups of
-  the old and the new wallet, never by an error code, and only by lookups sent
-  after a forward could still land (twice `LNURL_SERVER_TIMEOUT_MS`).
-- No new passkey is created while a pending recovery that was forwarded
-  remains; begin settles it first.
-- The transfer route answers like the register route
-  (`src/routes/lnurl-server.ts`).
+1. **One at a time.** An account has at most one pending recovery. Begin, the
+   finish and the transfer route's admission each run as one locked step per
+   account. A finish consumes its challenge only when it stores the pending
+   recovery, and never replaces one that was forwarded.
+2. **Only the newest ceremony.** Begin consumes the account's earlier
+   `recovery` challenges and drops a pending recovery that was not forwarded;
+   one that was not forwarded also ends after `CHALLENGE_TTL_MS`. A new
+   passkey for the same account replaces the earlier one in the
+   authenticator, so begin hands out no options while a forwarded pending
+   recovery remains. It settles it first.
+3. **Proof first.** Begin changes nothing unless the LNURL server verified the
+   old wallet's lookup, and it starts a recovery only while the old key holds
+   the username. Knowing the public wallet key is not enough.
+4. **Admission.** The transfer route forwards a claim only for the account's
+   pending recovery that is not forwarded yet and whose new key is the path
+   key, authorized by that recovery's old key, still the verified
+   `spark_pubkey`, for the account's username. It marks the recovery forwarded
+   in the same step.
+5. **Settling.** Apart from the commit on the claim's own 2xx, a forwarded
+   pending recovery commits when the new key's lookup returns the username,
+   or when the LNURL server answers its own "user not found" to a verified
+   lookup of the old key. It is dropped when the old key's lookup returns the
+   username. Any other answer keeps it. Only lookups sent later than twice
+   `LNURL_SERVER_TIMEOUT_MS` after the forward count. The forwarded lookup
+   route (`POST /lnurlpay/:pubkey/recover`) also passes a pending recovery's
+   new key.
+6. **Answers.** The transfer route answers like the register route
+   (`src/routes/lnurl-server.ts`).
 
 ### If not everything succeeds
 
-The button can be pressed again while the app still holds the old words; it
-resumes where it stopped. If the account did not move, recovery starts again,
+The button can be pressed again while the app still holds the old words; each
+press resumes at the first step not done. If the account did not move, recovery starts again,
 with the two QR codes or the old 12 words once the app was closed.
 
 If the balance did not move, the settings list each previous wallet with its
@@ -207,7 +223,7 @@ The app shows the new 12 words and says that words written down earlier now
 open only the previous wallet. It asks the owner to set up new shares for the
 new words. The old shares stay on the people's phones, told apart by the
 owner's account id and the SLIP-39 identifier, until the owner drops the
-previous wallet and asks them to delete it by hand.
+previous wallet and asks each person to delete their old share by hand.
 
 ## What the server stores
 
@@ -243,9 +259,8 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 
 ## Open points
 
-- **21.gifts share.** How 21.gifts keeps and manually releases its share, or
-  whether to drop it. Proposal: sealed to a 21.gifts offline key, so the api
-  can never read it.
+- **21.gifts share.** How 21.gifts keeps and manually releases its share.
+  Proposal: sealed to a 21.gifts offline key, so the api can never read it.
 - **LNURL server.** That the self-hosted LNURL server accepts
   `POST /lnurlpay/:pubkey/transfer`, and drops a transfer the api aborted.
 - **Signature scheme.** The exact `signMessage` scheme, pinned with a test
