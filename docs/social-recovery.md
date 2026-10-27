@@ -190,9 +190,13 @@ A forward is **in flight** while less than twice `LNURL_SERVER_TIMEOUT_MS`
 (`src/lib/lnurl-server.ts`) has passed since the pending recovery was marked
 forwarded.
 
-- **Not forwarded.** It expires after `CHALLENGE_TTL_MS`. A new finish for the
-  account replaces it, and a new begin drops it, so it cannot be forwarded
-  after begin has handed out new creation options.
+- **Not forwarded.** It expires after `CHALLENGE_TTL_MS`. A new begin drops
+  it and consumes every earlier unconsumed `recovery` challenge of the account,
+  so only the newest ceremony can finish, and nothing can be forwarded after
+  begin has handed out new creation options. A finish replaces a pending
+  recovery only while it is not forwarded, checked in the same step as the
+  replace; when the account's pending recovery is forwarded, the finish
+  refuses and changes nothing.
 - **Forwarded.** The transfer route marks it forwarded, with the time, in the
   same step that admits the forward, so one pending recovery is never
   forwarded twice at once. From then on it is:
@@ -207,7 +211,9 @@ Begin applies these rules with the old wallet's lookup it carries, before it
 does anything else. A not forwarded pending recovery is dropped. A forwarded
 one is committed, and begin then answers that the account was already
 recovered, sign in with the passkey of that recovery; or it is dropped, and
-begin continues; or it is kept, and begin asks to try again shortly.
+begin continues; or it is kept, and begin answers 503 `UNAVAILABLE`, the same
+answer the forwarded LNURL routes give when the LNURL server cannot be used,
+and the app tries again shortly.
 
 ### The transfer route and the commit
 
@@ -233,10 +239,13 @@ When the LNURL server answers 2xx, one transaction commits the recovery:
   (the welcome gift) do not start again,
 - deletes every pending recovery of the account.
 
-The answers follow the register route: a 2xx passes through after the commit,
-and 409 `UNCONFIRMED` follows a 2xx whose commit refused or did not land; a
-4xx passes through unchanged; anything else, an unreachable LNURL server or a
-timeout, is 503 `UNAVAILABLE`. Only a commit changes the pending recovery; a
+The answers follow the register route (`src/routes/lnurl-server.ts`). After a
+2xx the route commits. It passes the 2xx through when the commit lands, and
+also when the account's verified `spark_pubkey` already is this recovery's new
+key (an earlier commit). It answers 409 `UNCONFIRMED` when the commit refuses
+for any other reason, and 503 `UNAVAILABLE` when the commit fails with an
+error. A 4xx passes through unchanged. Anything else, an unreachable LNURL
+server or a timeout, is 503 `UNAVAILABLE`. Only a commit changes the pending recovery; a
 4xx leaves it forwarded, because the Breez LNURL server also answers 404 or 409
 when the name has already left the old key. The username stays throughout.
 The LNURL server moves a username once, so at most one recovery per old key
@@ -385,8 +394,9 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   It is dropped only when the old key holds the username and no forward is in
   flight. An unknown answer, and any answer of the transfer itself other than
   2xx, changes nothing.
-- Begin drops a not forwarded pending recovery and settles a forwarded one
-  before any new passkey is created, and a commit lost after the LNURL server
+- Begin consumes earlier unconsumed `recovery` challenges, drops a not
+  forwarded pending recovery and settles a forwarded one before any new
+  passkey is created; a finish never replaces a forwarded pending recovery, and a commit lost after the LNURL server
   moved the name is completed by reconciling or by the next begin.
 - A second recovery keeps the first previous wallet listed until it is
   dropped.
