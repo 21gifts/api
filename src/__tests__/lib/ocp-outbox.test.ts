@@ -1143,6 +1143,25 @@ describe('queueAllShopPhotos', () => {
     ]);
     expect(ids.queueAllPlacePage).not.toHaveBeenCalled();
   });
+
+  it('resumes after the given cursor and reports the last id of each page', async () => {
+    const page = Array.from({ length: 200 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const ids = stubIdentities();
+    ids.queueAllPhotoPage
+      .mockResolvedValueOnce(page)
+      .mockResolvedValueOnce(['z'])
+      .mockResolvedValueOnce([]);
+    const reported: string[] = [];
+    const store = ids as unknown as ShopIdentityStore;
+    expect(await queueAllShopPhotos(store, 'id-x', (last) => reported.push(last))).toBe(201);
+    expect(await queueAllShopPhotos(store, 'z', (last) => reported.push(last))).toBe(0);
+    expect(ids.queueAllPhotoPage.mock.calls).toEqual([
+      ['id-x', 200],
+      ['id-199', 200],
+      ['z', 200],
+    ]);
+    expect(reported).toEqual(['id-199', 'z']);
+  });
 });
 
 describe('queueAllShopPlaces', () => {
