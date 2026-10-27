@@ -1192,7 +1192,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), and `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), and `startPushWorker` (a rejected sweep, `push.sweep.failed`).
 
 ## Function: meRoutes
 
