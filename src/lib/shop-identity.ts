@@ -2,9 +2,12 @@
  * Durable Nostr identities and OpenCryptoPay outboxes for shop notes
  * (`docs/shop-identity.md` S1 and S5).
  *
- * One random custodial key per listed shop note, stored in `shop_identity`
- * and encrypted with the account KEK under the AAD `shop:<messageId>`. The
- * same row carries the place and photo outboxes. On Postgres, the row
+ * One custodial key per shop note, stored in `shop_identity` and encrypted
+ * with the account KEK under the AAD `shop:<messageId>`. A new shop gets a
+ * random key. A note that already has a Nostr key at OpenCryptoPay keeps
+ * that key (`shopKeyMustBeAdopted`, `adoptKnownSecret`); it is not minted
+ * again. The same row carries the place and photo outboxes. On Postgres, the
+ * row
  * triggers `trg_shop_identity_place`, `trg_shop_identity_cover` and
  * `trg_shop_identity_extra_photo` queue every store write that changes a
  * shop note, in the writing transaction and after its row lock; the
@@ -27,10 +30,9 @@ import {
 } from '@/lib/nostr/keys';
 import {
   isListedShop,
-  listedShop,
-  listedShopName,
+  publicShop,
   shopListingFingerprint,
-  type ListedShop,
+  type PublicShop,
   type ShopListingFields,
 } from '@/lib/shop-place';
 
@@ -48,7 +50,7 @@ export interface ShopIdentityRow {
   nostrKeyCustody: 'custodial' | 'user';
   /** Insert time of the key. */
   nostrKeyCreatedAt: Date;
-  /** Shop name while it was last listed. */
+  /** Shop name while it was last public. */
   profileName: string;
   /** SHA-256 of the photo set OpenCryptoPay last answered, or `null`. */
   ocpPhotosHash: string | null;
@@ -107,7 +109,7 @@ export interface ShopDirectoryCursor {
   id: string;
 }
 
-/** One keyed listed shop. `id` and `createdAt` stay on the cursor, not the JSON. */
+/** One keyed public shop. `id` and `createdAt` stay on the cursor, not the JSON. */
 export interface ShopDirectoryItem {
   /** Note id. */
   id: string;
@@ -115,15 +117,15 @@ export interface ShopDirectoryItem {
   createdAt: Date;
   /** Canonical npub ({@link shopNpub}). */
   npub: string;
-  /** Pin label. */
+  /** Pin label, or the description line when the pin has no label. */
   name: string;
-  /** Complete pin. */
-  place: ListedShop['place'];
+  /** Pin when the note has coordinates. Null when it has none. */
+  place: PublicShop['place'];
 }
 
-/** One directory page of at most `limit` keyed listed shops. */
+/** One directory page of at most `limit` keyed public shops. */
 export interface ShopDirectoryPage {
-  /** Keyed listed shops, newest note first. */
+  /** Keyed public shops, newest note first. */
   shops: ShopDirectoryItem[];
   /**
    * Last examined note, when another structural row may exist. Null when the
@@ -150,22 +152,44 @@ export type ShopOcpLane = 'place' | 'photos';
 /** Persistence port for shop identities and their OpenCryptoPay outboxes. */
 export interface ShopIdentityStore {
   /**
-   * Create the key of a listed shop note once, or return the existing one.
-   * A new key queues the place push. An existing key gets its
-   * `profile_name` rewritten while the note is listed and still matches the
-   * snapshot this call read (the rule of {@link renameIfListed}), so a call
-   * with an older snapshot than a stored rename changes nothing.
+   * Create the key of a public shop once, or return the existing one.
+   *
+   * A public shop is live, top-level, tagged `#21GiftsShop`, and has a till
+   * account. A pin is optional. A new key queues the place push. An existing
+   * key gets its `profile_name` rewritten while the note is still a public
+   * shop and still matches the snapshot this call read (the rule of
+   * {@link renameIfListed}), so a call with an older snapshot than a stored
+   * rename changes nothing. A note whose key must be adopted is left without
+   * a row.
    *
    * @param messageId - Shop note id.
    * @param kek - Key-encryption key for the new secret.
    * @param keygen - Secret key source (default {@link defaultNostrKeygen}).
-   * @returns The identity, or `undefined` when the note is not listed and has no key.
+   * @returns The identity, or `undefined` when there is no key yet and the
+   *   note is not a public shop, or when its key must be adopted.
    */
   ensureListed(
     messageId: string,
     kek: Uint8Array,
     keygen?: NostrKeygen,
   ): Promise<ShopIdentityRow | undefined>;
+  /**
+   * Store a shop's existing 32-byte secret, once.
+   *
+   * The same public key is returned unchanged. A different key for this
+   * note, or this key on another note, throws. The insert does not queue
+   * a place push.
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow>;
   /**
    * Identity of one note.
    *
@@ -214,24 +238,24 @@ export interface ShopIdentityStore {
   listRound(cursor: ShopIdentityCursor | null, limit: number): Promise<ShopIdentityRow[]>;
   /**
    * Write `profile_name` from a note snapshot, only while that snapshot is
-   * listed and the stored note still shows it (the same note lock and
+   * a public shop and the stored note still shows it (the same note lock and
    * unchanged-columns condition as the rename in {@link ensureListed}). A
    * caller holding an older snapshot than a committed rename changes
    * nothing, so it cannot put an older name back.
    *
    * @param note - The note as the caller read it.
-   * @returns Resolves when done (no key, an unlisted snapshot, a changed note
-   *   or an unchanged name is a no-op).
+   * @returns Resolves when done (no key, a snapshot that is not a public
+   *   shop, a changed note, or an unchanged name is a no-op).
    */
   renameIfListed(note: MessageRow): Promise<void>;
   /**
-   * One raw page of key-backfill candidates: live top-level pinned
-   * `#21GiftsShop` notes with a till account, whether or not they already
-   * have a key. The page is bounded before the key check, so a lap where
-   * every candidate has a key still returns at most `limit` rows per call;
-   * the caller advances its cursor on this raw page and skips `keyed` rows.
+   * One raw page of key-backfill candidates: live top-level `#21GiftsShop`
+   * notes with a till account, whether or not they have a pin or a key.
+   * The page is bounded before the key check, so a lap where every candidate
+   * has a key still returns at most `limit` rows per call; the caller
+   * advances its cursor on this raw page and skips `keyed` rows.
    * With a cursor, the Postgres read is a separate statement whose cursor is
-   * always an index condition on `message_shop_candidate_idx`.
+   * always an index condition on `message_shop_directory_idx`.
    *
    * @param cursor - Last row of the previous page, or `null` for the first page.
    * @param limit - Page size.
@@ -239,8 +263,8 @@ export interface ShopIdentityStore {
    */
   listCandidates(cursor: ShopCandidateCursor | null, limit: number): Promise<ShopCandidate[]>;
   /**
-   * One page of up to `limit` keyed listed shops, newest note first.
-   * A note without a key and a note {@link listedShop} rejects are omitted,
+   * One page of up to `limit` keyed public shops, newest note first.
+   * A note without a key and a note {@link publicShop} rejects are omitted,
    * but each one is examined. The read examines at most `20 * limit`
    * structural rows. `next` is the last kept shop when the page fills in
    * the middle of that read, the last examined note when the cap is hit
@@ -275,12 +299,15 @@ export interface ShopIdentityStore {
    */
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
   /**
-   * Claim one pending photo set whose place is not pending, least recently
-   * claimed first (`ocp_photos_claimed_until` null, never claimed, first,
-   * then by the stored end of the last claim: the lease end of a failed send,
-   * the time of every other end of a claim; then by `message_id`), so a set
-   * that keeps failing, keeps being released or keeps changing never holds
-   * the place of later shops.
+   * Claim one pending photo set whose place is not pending and whose
+   * revision is already greater than 0, least recently claimed first
+   * (`ocp_photos_claimed_until` null, never claimed, first, then by the
+   * stored end of the last claim: the lease end of a failed send, the time
+   * of every other end of a claim; then by `message_id`), so a set that
+   * keeps failing, keeps being released or keeps changing never holds the
+   * place of later shops. A row at revision 0 has never been sent. Leaving
+   * it unclaimed keeps a photo update from raising that revision and later
+   * arming a delete of a place this outbox did not create.
    *
    * @param leaseMs - Lease length.
    * @returns The claim, or `undefined` when nothing is due.
@@ -386,10 +413,9 @@ export interface ShopIdentityStore {
 }
 
 /**
- * SQL condition of a listed shop that the database can check on a `message`
- * row named `m`: everything except the completeness text rules of #478, which
- * the code checks. Used to narrow candidates, the directory read
- * (`listDirectory`) and photo queueing.
+ * SQL condition of a map-complete shop that the database can check on a
+ * `message` row named `m`. Photo queueing uses it. The public directory uses
+ * {@link DIRECTORY_SQL}, which does not require a pin.
  */
 const LISTED_SHAPE_SQL = (m: string): string =>
   `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
@@ -397,6 +423,14 @@ const LISTED_SHAPE_SQL = (m: string): string =>
    AND ${m}.place_street IS NOT NULL AND ${m}.place_house_number IS NOT NULL
    AND ${m}.place_postal_code IS NOT NULL AND ${m}.place_city IS NOT NULL
    AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
+
+/**
+ * SQL condition of a public shop: live, top-level, a till account, and the
+ * shop tag. A pin is not required. Used by the key backfill and `GET /shops`.
+ */
+const DIRECTORY_SQL = (m: string): string =>
+  `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
+   AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
 
 /**
  * Fixed `pg_advisory_xact_lock` key of the shop identity migration. Every
@@ -477,6 +511,10 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      ON message (created_at, id)
      WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
        AND place_lat IS NOT NULL`,
+  `CREATE INDEX IF NOT EXISTS message_shop_directory_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND text ~* '#21giftsshop([^a-z0-9_]|$)'`,
   replaceTrigger(
     'message',
     `CREATE OR REPLACE FUNCTION queue_shop_identity_place() RETURNS trigger AS $$
@@ -574,6 +612,47 @@ export function shopNpub(identity: Pick<ShopIdentityRow, 'nostrPubkey'>): string
 }
 
 /**
+ * Forum notes whose Nostr key already exists at OpenCryptoPay.
+ *
+ * `ensureListed` must not mint a second key for these message ids. The
+ * matching private key is stored with `adoptKnownSecret`. The ids are the
+ * OpenCryptoPay `externalId` values. This list holds no key material.
+ */
+const ADOPTED_SHOP_MESSAGE_IDS: ReadonlySet<string> = new Set([
+  '01234513-9ed1-4bf1-ac19-2cc59ba6ae3b',
+  '0a8bb5d4-32d2-4316-8f0a-f40e09ccb57e',
+  '0cc5c2eb-aaf1-4f36-be26-f1b967e7bbe5',
+  '0e54d662-e955-4c66-94d6-1d5f895506eb',
+  '23d08047-df13-4f59-a541-99703e1e8fbc',
+  '2e5c0aaf-a2f1-4d3a-8640-4463cba227f6',
+  '4ba2c157-76a9-460f-9335-dc0ee8177b90',
+  '5732c809-562e-4df3-b804-f287be068314',
+  '61f13589-f04b-4319-9677-7e6b3dbab24a',
+  '746b992c-ee86-4c27-b36e-8f661e27a3d0',
+  '764288f2-2ac9-4758-9506-eb81a6f8bcbf',
+  '7eebacb2-cd04-46af-8d3d-fa761a4b4905',
+  '83a72d54-7070-4a8a-b3f4-9f0ca8d0dc30',
+  '8a7d0c1a-1428-4d32-b28c-665b75dd8313',
+  '8cb805cd-3fbe-4d19-8a51-8d2e36d169ab',
+  '96ecd063-94e9-4866-bd97-a7dcfba7e5d9',
+  '9980925c-42cb-4fe6-bbd9-1ddb27c9936f',
+  '9e6642fd-3a62-497d-bcbc-9b9daa9d55c7',
+  'd9ec7a6a-d4e0-43bc-95a4-dbfccebccbe2',
+  'e942dd1c-1fc4-4ce9-8252-8922f7e93fdf',
+  'ed3c5451-57c2-41c2-9450-b4e92df8d8db',
+]);
+
+/**
+ * Whether this shop note already has a Nostr key at OpenCryptoPay.
+ *
+ * @param messageId - Forum note id, the OpenCryptoPay `externalId`.
+ * @returns `true` when `ensureListed` must not mint a key for it.
+ */
+export function shopKeyMustBeAdopted(messageId: string): boolean {
+  return ADOPTED_SHOP_MESSAGE_IDS.has(messageId);
+}
+
+/**
  * Structural rows read per returned shop. The directory stops after
  * `20 * limit` of them, including rows it then drops.
  */
@@ -585,15 +664,15 @@ interface DirectoryStructuralRow {
   id: string;
   /** Note creation time. */
   createdAt: Date;
-  /** Fields {@link listedShop} reads. */
+  /** Fields {@link publicShop} reads. */
   note: ShopListingFields;
   /** Hex pubkey, or null when `shop_identity` has no row. */
   nostrPubkey: string | null;
 }
 
 /**
- * Whether `row` is a structural listed shop: the same columns as
- * {@link LISTED_SHAPE_SQL}, and not the text rules of {@link listedShop}.
+ * Whether `row` is a public shop the directory can read: the same columns as
+ * {@link DIRECTORY_SQL}. A missing pin still matches.
  *
  * @param row - Forum note.
  * @returns `true` when the note would match the directory `WHERE`.
@@ -602,9 +681,6 @@ function listedShape(row: MessageRow): boolean {
   if (row.parentId !== null) return false;
   if (row.deletedAt !== null) return false;
   if (row.shopAccount === undefined || row.shopAccount === null) return false;
-  if (row.place === undefined || row.place === null) return false;
-  if (row.place.label === null) return false;
-  if (row.place.address === null) return false;
   return textHasHashtagToken(row.text, '21GiftsShop');
 }
 
@@ -644,7 +720,7 @@ function byDirectoryOrder(
 }
 
 /**
- * A kept shop, or null when the row has no key or {@link listedShop} rejects it.
+ * A kept shop, or null when the row has no key or {@link publicShop} rejects it.
  * A null result was still examined by the caller.
  *
  * @param row - One structural note.
@@ -652,7 +728,7 @@ function byDirectoryOrder(
  */
 function directoryItem(row: DirectoryStructuralRow): ShopDirectoryItem | null {
   if (row.nostrPubkey === null) return null;
-  const shop = listedShop(row.note);
+  const shop = publicShop(row.note);
   if (shop === null) return null;
   return {
     id: row.id,
@@ -706,6 +782,77 @@ function copyIdentity(row: ShopIdentityRow): ShopIdentityRow {
     ocpPlaceClaimedUntil:
       row.ocpPlaceClaimedUntil === null ? null : new Date(row.ocpPlaceClaimedUntil),
   };
+}
+
+/**
+ * Profile name stored with an adopted key.
+ *
+ * A public shop keeps {@link publicShop}'s name. Another note keeps a
+ * non-blank pin label, or `Shop` when it has none.
+ *
+ * @param note - The forum note the key belongs to.
+ * @returns A non-empty name.
+ */
+function adoptedProfileName(note: MessageRow): string {
+  const shop = publicShop(note);
+  if (shop !== null) return shop.name;
+  const label = note.place?.label?.trim() ?? '';
+  return label === '' ? 'Shop' : label;
+}
+
+/**
+ * Build an identity row from a known 32-byte secret.
+ *
+ * The place outbox stays idle (`ocpPlacePending` false, generation 0): the
+ * OpenCryptoPay place already exists under this key, and a pending flag
+ * would queue a push. The caller zeroizes its own buffer; this function
+ * zeroizes only its copy.
+ *
+ * @param messageId - Shop note id, also the AAD suffix.
+ * @param secret - Raw secp256k1 secret. Not retained.
+ * @param kek - Key-encryption key.
+ * @param profileName - Name stored on the row.
+ * @param createdAt - Insert time.
+ * @returns The row to insert. Throws when the secret is not a usable
+ *   secp256k1 secret. The caller rejects a secret that is not 32 bytes.
+ */
+async function knownShopIdentity(
+  messageId: string,
+  secret: Uint8Array,
+  kek: Uint8Array,
+  profileName: string,
+  createdAt: Date,
+): Promise<ShopIdentityRow> {
+  const owned = secret.slice();
+  try {
+    let nostrPubkey: string;
+    try {
+      nostrPubkey = publicKeyHexFromSecret(owned);
+    } catch {
+      throw new Error('Invalid Nostr secret');
+    }
+    return {
+      messageId,
+      nostrPubkey,
+      nostrNsecCiphertext: await encryptNostrSecret(owned, kek, `shop:${messageId}`),
+      nostrKekId: NOSTR_KEK_ID_V1,
+      nostrKeyCustody: 'custodial',
+      nostrKeyCreatedAt: createdAt,
+      profileName,
+      ocpPhotosHash: null,
+      ocpPhotosPending: false,
+      ocpPhotosGeneration: 0,
+      ocpPhotosClaimedUntil: null,
+      ocpPhotosClaim: 0,
+      ocpPlacePending: false,
+      ocpPlaceGeneration: 0,
+      ocpPlaceClaimedUntil: null,
+      ocpPlaceClaim: 0,
+      ocpRevision: 0,
+    };
+  } finally {
+    zeroizeSecret(owned);
+  }
 }
 
 async function freshIdentity(
@@ -785,7 +932,8 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   readonly #seen = new Map<string, { place: string; photos: string }>();
 
   /**
-   * @param messages - Forum store whose notes decide whether a shop is listed.
+   * @param messages - Forum store. Keys follow `publicShop`. Photo
+   *   queueing follows `isListedShop`.
    * @param now - Lease clock in epoch ms (default `Date.now`).
    */
   constructor(messages: MessageStore, now: () => number = Date.now) {
@@ -821,7 +969,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   ): Promise<ShopIdentityRow | undefined> {
     await this.#sync();
     const note = await this.#messages.getById(messageId);
-    const name = listedShopName(note);
+    const name = note === undefined ? null : (publicShop(note)?.name ?? null);
     const existing = this.#rows.get(messageId);
     if (existing !== undefined) {
       // The same conditional rename as `renameIfListed` (and the locked
@@ -831,6 +979,9 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       if (note !== undefined) await this.renameIfListed(note);
       return copyIdentity(existing);
     }
+    // A note that already has a key at OpenCryptoPay stays unkeyed until
+    // adoptKnownSecret stores that same secret.
+    if (shopKeyMustBeAdopted(messageId)) return undefined;
     if (name === null) return undefined;
     const created = await freshIdentity(messageId, name, kek, keygen, new Date(this.#now()));
     // The note can change while the key is generated. Take the name and the
@@ -840,7 +991,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const latest = await this.#messages.getById(messageId);
     const won = this.#rows.get(messageId);
     if (won !== undefined) return copyIdentity(won);
-    const latestName = listedShopName(latest);
+    const latestName = latest === undefined ? null : (publicShop(latest)?.name ?? null);
     if (latestName === null) return undefined;
     if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
       throw new Error('shop nostr pubkey already exists');
@@ -848,6 +999,64 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     created.profileName = latestName;
     this.#rows.set(messageId, created);
     this.#seen.set(messageId, { place: shopListingFingerprint(latest), photos });
+    if (this.#messages instanceof InMemoryMessageStore) {
+      this.#messages.setShopNpub(messageId, shopNpub(created));
+    }
+    return copyIdentity(created);
+  }
+
+  /**
+   * Store a shop's existing secret, once.
+   *
+   * The same public key is returned unchanged, including its outbox flags.
+   * A different key for this note, or this key on another note, throws.
+   * The insert does not queue a place push.
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  async adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow> {
+    if (secret.length !== 32) {
+      throw new Error('Nostr secret must be 32 bytes');
+    }
+    const note = await this.#messages.getById(messageId);
+    if (note === undefined) {
+      throw new Error('shop note not found');
+    }
+    const created = await knownShopIdentity(
+      messageId,
+      secret,
+      kek,
+      adoptedProfileName(note),
+      new Date(this.#now()),
+    );
+    await this.#sync();
+    const existing = this.#rows.get(messageId);
+    if (existing !== undefined) {
+      if (existing.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return copyIdentity(existing);
+    }
+    if ([...this.#rows.values()].some((row) => row.nostrPubkey === created.nostrPubkey)) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    const photos = await photoFingerprint(this.#messages, messageId);
+    const won = this.#rows.get(messageId);
+    if (won !== undefined) {
+      if (won.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return copyIdentity(won);
+    }
+    this.#rows.set(messageId, created);
+    this.#seen.set(messageId, { place: shopListingFingerprint(note), photos });
     if (this.#messages instanceof InMemoryMessageStore) {
       this.#messages.setShopNpub(messageId, shopNpub(created));
     }
@@ -911,12 +1120,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     const notes = await Promise.all(refs.map((ref) => this.#messages.getById(ref.id)));
     return notes
       .filter((row): row is MessageRow => row !== undefined)
-      .filter(
-        (row) =>
-          row.place !== undefined &&
-          row.place !== null &&
-          textHasHashtagToken(row.text, '21GiftsShop'),
-      )
+      .filter((row) => textHasHashtagToken(row.text, '21GiftsShop'))
       .filter(
         (row) =>
           cursor === null ||
@@ -997,6 +1201,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       (item) =>
         item.ocpPhotosPending &&
         !item.ocpPlacePending &&
+        item.ocpRevision > 0 &&
         leaseFree(item.ocpPhotosClaimedUntil, nowMs),
     );
     if (row === undefined) return undefined;
@@ -1225,41 +1430,48 @@ function mapIdentity(row: IdentitySqlRow): ShopIdentityRow {
 }
 
 /**
- * Locks the note `$1` (`FOR UPDATE`) only while every column the listed
- * check in code read is unchanged: top-level, live, a till account, the
- * text `$3` and the complete pin (`$2` is the label, which is the shop
- * name; `$4`–`$5` are the coordinates and `$6`–`$10` the address). Shared
- * by the key insert and the rename (`ensureListed`, `renameIfListed`) in
- * `PostgresShopIdentityStore`.
+ * Locks the note `$1` (`FOR UPDATE`) only while every column the public-shop
+ * check read is unchanged: top-level, live, a till account, the text `$3`
+ * and the pin. `$2` is the stored label (null when the note has none) and is
+ * not the public name. `$4`–`$5` are the coordinates and `$6`–`$10` the
+ * address. Nullable pin columns use `IS NOT DISTINCT FROM`, because `=`
+ * never matches NULL. Shared by the key insert and the rename
+ * (`ensureListed`, `renameIfListed`) in `PostgresShopIdentityStore`.
  */
 const LOCK_LISTED_NOTE_SQL = `SELECT id FROM message
          WHERE id = $1 AND parent_id IS NULL AND deleted_at IS NULL
            AND shop_account_id IS NOT NULL
-           AND text = $3 AND place_lat = $4 AND place_lng = $5 AND place_label = $2
-           AND place_street = $6 AND place_house_number = $7 AND place_postal_code = $8
-           AND place_city = $9 AND place_country = $10
+           AND text = $3
+           AND place_label IS NOT DISTINCT FROM $2
+           AND place_lat IS NOT DISTINCT FROM $4 AND place_lng IS NOT DISTINCT FROM $5
+           AND place_street IS NOT DISTINCT FROM $6
+           AND place_house_number IS NOT DISTINCT FROM $7
+           AND place_postal_code IS NOT DISTINCT FROM $8
+           AND place_city IS NOT DISTINCT FROM $9 AND place_country IS NOT DISTINCT FROM $10
          FOR UPDATE`;
 
 /**
- * Shop name and the parameters `$2`–`$10` of {@link LOCK_LISTED_NOTE_SQL}
- * for one note snapshot, or `null` when that snapshot is not listed.
+ * Public shop name and the parameters `$2`–`$10` of {@link LOCK_LISTED_NOTE_SQL}
+ * for one note snapshot, or `null` when that snapshot is not a public shop.
+ * The name is not one of those parameters: a shop with no label still has a name.
  */
 function listedSnapshot(note: MessageRow): { name: string; params: unknown[] } | null {
-  const shop = listedShop(note);
+  const shop = publicShop(note);
   if (shop === null) return null;
-  const { lat, lng, label, address } = shop.place;
+  const place = note.place ?? null;
+  const address = place?.address ?? null;
   return {
     name: shop.name,
     params: [
-      label,
+      place?.label ?? null,
       note.text,
-      lat,
-      lng,
-      address.street,
-      address.houseNumber,
-      address.postalCode,
-      address.city,
-      address.country,
+      place?.lat ?? null,
+      place?.lng ?? null,
+      address?.street ?? null,
+      address?.houseNumber ?? null,
+      address?.postalCode ?? null,
+      address?.city ?? null,
+      address?.country ?? null,
     ],
   };
 }
@@ -1279,7 +1491,8 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
 
   /**
    * @param sql - Shared SQL client.
-   * @param messages - Forum store for the listed check in code.
+   * @param messages - Forum store. Keys follow `publicShop` in code.
+   *   Photo queueing follows `isListedShop`.
    */
   constructor(sql: SqlClient, messages: MessageStore) {
     this.#sql = sql;
@@ -1298,10 +1511,13 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       if (shop === null || shop.name === existing.profileName) return existing;
       return (await this.#renameLocked(messageId, shop)) ?? existing;
     }
+    // A note that already has a key at OpenCryptoPay stays unkeyed until
+    // adoptKnownSecret stores that same secret.
+    if (shopKeyMustBeAdopted(messageId)) return undefined;
     if (shop === null) return undefined;
     const generated = await freshIdentity(messageId, shop.name, kek, keygen, new Date());
     // One statement: lock the note (FOR UPDATE) and insert only while every
-    // column the listed check read above is unchanged. A concurrent edit
+    // column the public-shop check read above is unchanged. A concurrent edit
     // either committed before the lock (the values differ, no key; the edit's
     // own write path or the backfill mints it) or waits and then queues
     // itself through the trigger, which sees the committed row.
@@ -1312,7 +1528,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          nostr_key_custody, nostr_key_created_at, profile_name,
          ocp_place_pending, ocp_place_generation
        )
-       SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked
+       SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
@@ -1323,10 +1539,84 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
         generated.nostrKekId,
         generated.nostrKeyCustody,
         generated.nostrKeyCreatedAt,
+        shop.name,
       ],
     );
     const inserted = rows[0];
     return inserted === undefined ? this.getByMessageId(messageId) : mapIdentity(inserted);
+  }
+
+  /**
+   * Store a shop's existing secret, once.
+   *
+   * The same public key is returned unchanged, including its outbox flags.
+   * A different key for this note, or this key on another note, throws.
+   * The insert does not queue a place push (`ocp_place_pending` stays false).
+   *
+   * @param messageId - Shop note id. The note must exist.
+   * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
+   * @param kek - Key-encryption key.
+   * @returns The stored identity.
+   */
+  async adoptKnownSecret(
+    messageId: string,
+    secret: Uint8Array,
+    kek: Uint8Array,
+  ): Promise<ShopIdentityRow> {
+    if (secret.length !== 32) {
+      throw new Error('Nostr secret must be 32 bytes');
+    }
+    const note = await this.#messages.getById(messageId);
+    if (note === undefined) {
+      throw new Error('shop note not found');
+    }
+    const created = await knownShopIdentity(
+      messageId,
+      secret,
+      kek,
+      adoptedProfileName(note),
+      new Date(),
+    );
+    const existing = await this.getByMessageId(messageId);
+    if (existing !== undefined) {
+      if (existing.nostrPubkey !== created.nostrPubkey) {
+        throw new Error('shop nostr pubkey already exists');
+      }
+      return existing;
+    }
+    const holder = await this.getByPubkey(created.nostrPubkey);
+    if (holder !== undefined) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    const rows = await this.#sql.query<IdentitySqlRow>(
+      `INSERT INTO shop_identity (
+         message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
+         nostr_key_custody, nostr_key_created_at, profile_name,
+         ocp_place_pending, ocp_place_generation
+       )
+       VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)
+       ON CONFLICT (message_id) DO NOTHING
+       RETURNING ${IDENTITY_COLUMNS}`,
+      [
+        messageId,
+        created.nostrPubkey,
+        created.nostrNsecCiphertext,
+        created.nostrKekId,
+        created.nostrKeyCustody,
+        created.nostrKeyCreatedAt,
+        created.profileName,
+      ],
+    );
+    const inserted = rows[0];
+    if (inserted !== undefined) return mapIdentity(inserted);
+    const stored = await this.getByMessageId(messageId);
+    if (stored === undefined) {
+      throw new Error('shop note not found');
+    }
+    if (stored.nostrPubkey !== created.nostrPubkey) {
+      throw new Error('shop nostr pubkey already exists');
+    }
+    return stored;
   }
 
   /**
@@ -1342,12 +1632,12 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   ): Promise<ShopIdentityRow | undefined> {
     const renamed = await this.#sql.query<IdentitySqlRow>(
       `WITH locked AS (${LOCK_LISTED_NOTE_SQL})
-       UPDATE shop_identity SET profile_name = $2
+       UPDATE shop_identity SET profile_name = $11
        FROM locked
        WHERE shop_identity.message_id = locked.id
-         AND shop_identity.profile_name IS DISTINCT FROM $2
+         AND shop_identity.profile_name IS DISTINCT FROM $11
        RETURNING ${IDENTITY_COLUMNS}`,
-      [messageId, ...shop.params],
+      [messageId, ...shop.params, shop.name],
     );
     return renamed[0] === undefined ? undefined : mapIdentity(renamed[0]);
   }
@@ -1436,7 +1726,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     cursor: ShopCandidateCursor | null,
     limit: number,
   ): Promise<ShopCandidate[]> {
-    // Walks the partial index message_shop_candidate_idx: the WHERE implies
+    // Walks the partial index message_shop_directory_idx: the WHERE implies
     // its predicate, and LIMIT bounds the raw page before the key check (an
     // EXISTS in the select list, evaluated per returned row only), so a page
     // returns at most `limit` rows even when every candidate has a key. The
@@ -1447,7 +1737,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     const select = `SELECT m.id, m.created_at,
          EXISTS (SELECT 1 FROM shop_identity s WHERE s.message_id = m.id) AS keyed
        FROM message m
-       WHERE ${LISTED_SHAPE_SQL('m')}`;
+       WHERE ${DIRECTORY_SQL('m')}`;
     const rows =
       cursor === null
         ? await this.#sql.query<CandidateSqlRow>(
@@ -1474,7 +1764,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     cursor: ShopDirectoryCursor | null,
     limit: number,
   ): Promise<ShopDirectoryPage> {
-    // The WHERE implies message_shop_candidate_idx, and LIMIT bounds the page
+    // The WHERE implies message_shop_directory_idx, and LIMIT bounds the page
     // before the pubkey lookup. Two statements keep the cursor an index
     // condition under a cached generic plan of a prepared statement. The
     // pubkey subquery must not become a join: a join would let that plan turn
@@ -1485,14 +1775,14 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       text: string;
       parent_id: string | null;
       deleted_at: Date | string | null;
-      place_lat: number | string;
-      place_lng: number | string;
+      place_lat: number | string | null;
+      place_lng: number | string | null;
       place_label: string | null;
-      place_street: string;
-      place_house_number: string;
-      place_postal_code: string;
-      place_city: string;
-      place_country: string;
+      place_street: string | null;
+      place_house_number: string | null;
+      place_postal_code: string | null;
+      place_city: string | null;
+      place_country: string | null;
       shop_account_id: string;
       nostr_pubkey: string | null;
     };
@@ -1503,7 +1793,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
          m.shop_account_id,
          (SELECT s.nostr_pubkey FROM shop_identity s WHERE s.message_id = m.id) AS nostr_pubkey
        FROM message m
-       WHERE ${LISTED_SHAPE_SQL('m')}`;
+       WHERE ${DIRECTORY_SQL('m')}`;
     const rows =
       cursor === null
         ? await this.#sql.query<DirectorySqlRow>(
@@ -1528,18 +1818,28 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
           parentId: row.parent_id,
           deletedAt: row.deleted_at === null ? null : sqlDate(row.deleted_at),
           text: row.text,
-          place: {
-            lat: Number(row.place_lat),
-            lng: Number(row.place_lng),
-            label: row.place_label,
-            address: {
-              street: row.place_street,
-              houseNumber: row.place_house_number,
-              postalCode: row.place_postal_code,
-              city: row.place_city,
-              country: row.place_country,
-            },
-          },
+          place:
+            row.place_lat === null || row.place_lng === null
+              ? null
+              : {
+                  lat: Number(row.place_lat),
+                  lng: Number(row.place_lng),
+                  label: row.place_label,
+                  address:
+                    row.place_street === null ||
+                    row.place_house_number === null ||
+                    row.place_postal_code === null ||
+                    row.place_city === null ||
+                    row.place_country === null
+                      ? null
+                      : {
+                          street: row.place_street,
+                          houseNumber: row.place_house_number,
+                          postalCode: row.place_postal_code,
+                          city: row.place_city,
+                          country: row.place_country,
+                        },
+                },
           shopAccount: { id: row.shop_account_id },
         },
       })),
@@ -1603,6 +1903,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `WITH picked AS (
          SELECT message_id FROM shop_identity
          WHERE ocp_photos_pending AND NOT ocp_place_pending
+           AND ocp_revision > 0
            AND (ocp_photos_claimed_until IS NULL OR ocp_photos_claimed_until <= now())
          ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id
          LIMIT 1

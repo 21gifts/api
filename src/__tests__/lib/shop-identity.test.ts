@@ -10,6 +10,7 @@ import {
   PostgresShopIdentityStore,
   SHOP_IDENTITY_SCHEMA_SQL,
   migrateShopIdentitySchema,
+  shopKeyMustBeAdopted,
   shopNpub,
   type ShopIdentityRow,
   type ShopOcpClaim,
@@ -83,6 +84,156 @@ describe('shopNpub', () => {
   });
 });
 
+const ADOPTED_ID = '0cc5c2eb-aaf1-4f36-be26-f1b967e7bbe5';
+
+describe('shopKeyMustBeAdopted', () => {
+  it('names only the shops whose key already exists', () => {
+    expect(shopKeyMustBeAdopted(ADOPTED_ID)).toBe(true);
+    expect(shopKeyMustBeAdopted(ID_A)).toBe(false);
+    expect(shopKeyMustBeAdopted(ADOPTED_ID.toUpperCase())).toBe(false);
+  });
+});
+
+describe('adoptKnownSecret', () => {
+  it('stores the supplied secret and does not mint another one', async () => {
+    const { messages, store, clock } = setup([shopRow(ADOPTED_ID)]);
+    expect(await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(9))).toBeUndefined();
+    expect(await store.listAll()).toEqual([]);
+    const first = await store.adoptKnownSecret(ADOPTED_ID, secret(4), KEK);
+    expect(first).toMatchObject({
+      messageId: ADOPTED_ID,
+      nostrPubkey: publicKeyHexFromSecret(secret(4)),
+      nostrKekId: 1,
+      nostrKeyCustody: 'custodial',
+      profileName: 'Coffee Lab',
+      ocpPlacePending: false,
+      ocpPlaceGeneration: 0,
+      ocpRevision: 0,
+    });
+    expect(first.nostrKeyCreatedAt.getTime()).toBe(clock.now);
+    const plain = await decryptNostrSecret(first.nostrNsecCiphertext, KEK, `shop:${ADOPTED_ID}`);
+    expect([...plain]).toEqual([...secret(4)]);
+    expect((await messages.getById(ADOPTED_ID))?.shopNpub).toBe(shopNpub(first));
+    const again = await store.adoptKnownSecret(ADOPTED_ID, secret(4).slice(), KEK);
+    expect(again.nostrNsecCiphertext).toEqual(first.nostrNsecCiphertext);
+    expect((await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(9)))?.nostrPubkey).toBe(
+      first.nostrPubkey,
+    );
+    expect((await store.getByMessageId(ADOPTED_ID))?.ocpPlacePending).toBe(false);
+  });
+
+  it('keeps a pin label when the note is not a public shop', async () => {
+    const { store } = setup([
+      shopRow(ID_A, { text: 'No shop tag in this long enough note.', shopAccount: null }),
+    ]);
+    const row = await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(row.profileName).toBe('Coffee Lab');
+    expect(row.ocpPlacePending).toBe(false);
+  });
+
+  it('uses Shop when the note has no public name and no label', async () => {
+    const blank = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 1, lng: 2, label: '   ', address: null },
+      }),
+    ]);
+    expect((await blank.store.adoptKnownSecret(ID_A, secret(4), KEK)).profileName).toBe('Shop');
+    const missing = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: null,
+      }),
+    ]);
+    expect((await missing.store.adoptKnownSecret(ID_A, secret(4), KEK)).profileName).toBe('Shop');
+  });
+
+  it('refuses a missing note, a bad secret, a different key and a shared key', async () => {
+    const { store } = setup([shopRow(ID_A), shopRow(ID_B)]);
+    await expect(store.adoptKnownSecret(ID_C, secret(4), KEK)).rejects.toThrow(
+      'shop note not found',
+    );
+    await expect(store.adoptKnownSecret(ID_A, secret(4).slice(0, 31), KEK)).rejects.toThrow(
+      '32 bytes',
+    );
+    await expect(store.adoptKnownSecret(ID_A, new Uint8Array(32), KEK)).rejects.toThrow(
+      'Invalid Nostr secret',
+    );
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await expect(store.adoptKnownSecret(ID_A, secret(5), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect((await store.getByMessageId(ID_A))?.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    await expect(store.adoptKnownSecret(ID_B, secret(4), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect(await store.getByMessageId(ID_B)).toBeUndefined();
+  });
+
+  it('returns the key stored while its own fingerprint was being read', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const box: { store: InMemoryShopIdentityStore } = {
+      store: undefined as unknown as InMemoryShopIdentityStore,
+    };
+    let nested = false;
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: async (id: string) => {
+        const set = await messages.getPhotoSet(id);
+        if (!nested) {
+          nested = true;
+          await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+        }
+        return set;
+      },
+    } as unknown as MessageStore;
+    box.store = new InMemoryShopIdentityStore(wrapped);
+    const row = await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(row.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    expect(await box.store.listAll()).toHaveLength(1);
+  });
+
+  it('refuses a different key stored while its own fingerprint was being read', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const box: { store: InMemoryShopIdentityStore } = {
+      store: undefined as unknown as InMemoryShopIdentityStore,
+    };
+    let nested = false;
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: async (id: string) => {
+        const set = await messages.getPhotoSet(id);
+        if (!nested) {
+          nested = true;
+          await box.store.adoptKnownSecret(ID_A, secret(4), KEK);
+        }
+        return set;
+      },
+    } as unknown as MessageStore;
+    box.store = new InMemoryShopIdentityStore(wrapped);
+    await expect(box.store.adoptKnownSecret(ID_A, secret(5), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    expect((await box.store.getByMessageId(ID_A))?.nostrPubkey).toBe(
+      publicKeyHexFromSecret(secret(4)),
+    );
+  });
+
+  it('stores the key without attaching an npub on another message store', async () => {
+    const messages = new InMemoryMessageStore([shopRow(ID_A)]);
+    const wrapped = {
+      getById: (id: string) => messages.getById(id),
+      getPhotoSet: (id: string) => messages.getPhotoSet(id),
+    } as unknown as MessageStore;
+    const store = new InMemoryShopIdentityStore(wrapped);
+    const created = await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    expect(created.nostrPubkey).toBe(publicKeyHexFromSecret(secret(4)));
+    expect((await messages.getById(ID_A))?.shopNpub ?? null).toBeNull();
+  });
+});
+
 describe('migrateShopIdentitySchema', () => {
   it('runs every statement in order', async () => {
     const run: string[] = [];
@@ -108,10 +259,16 @@ describe('migrateShopIdentitySchema', () => {
      WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
        AND place_lat IS NOT NULL;`,
     );
+    expect(run[3]).toContain(
+      `CREATE INDEX IF NOT EXISTS message_shop_directory_idx
+     ON message (created_at, id)
+     WHERE parent_id IS NULL AND deleted_at IS NULL AND shop_account_id IS NOT NULL
+       AND text ~* '#21giftsshop([^a-z0-9_]|$)';`,
+    );
   });
 
   it('runs every statement under the migration advisory lock', () => {
-    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(6);
+    expect(SHOP_IDENTITY_SCHEMA_SQL).toHaveLength(7);
     for (const statement of SHOP_IDENTITY_SCHEMA_SQL) {
       expect(
         statement.startsWith(
@@ -123,7 +280,7 @@ describe('migrateShopIdentitySchema', () => {
   });
 
   it('replaces each trigger function and trigger inside one locked step', () => {
-    const steps = SHOP_IDENTITY_SCHEMA_SQL.slice(3);
+    const steps = SHOP_IDENTITY_SCHEMA_SQL.slice(4);
     for (const [index, [fn, name, table]] of [
       ['queue_shop_identity_place', 'trg_shop_identity_place', 'message'],
       ['queue_shop_identity_cover', 'trg_shop_identity_cover', 'message'],
@@ -216,6 +373,18 @@ describe('InMemoryShopIdentityStore key creation', () => {
     expect(await store.ensureListed(ID_A, KEK, unlisting)).toBeUndefined();
     expect(await store.listAll()).toEqual([]);
     expect((await messages.getById(ID_A))?.shopNpub ?? null).toBeNull();
+  });
+
+  it('creates nothing when the note disappears during key generation', async () => {
+    const { messages, store } = setup();
+    const disappearing = {
+      generateSecretKey: () => {
+        void messages.deleteById(ID_A);
+        return secret(2);
+      },
+    };
+    expect(await store.ensureListed(ID_A, KEK, disappearing)).toBeUndefined();
+    expect(await store.listAll()).toEqual([]);
   });
 
   it('refuses a public key that another shop already holds', async () => {
@@ -358,12 +527,13 @@ describe('InMemoryShopIdentityStore reads', () => {
     ];
     const { store } = setup(rows);
     const all = await store.listCandidates(null, 10);
-    expect(all.map((row) => row.id)).toEqual([ID_A, ID_B, ID_C]);
+    const unpinned = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
+    expect(all.map((row) => row.id)).toEqual([ID_A, ID_B, ID_C, unpinned]);
     expect(
       (await store.listCandidates({ createdAt: t('2026-01-01T00:00:00Z'), id: ID_A }, 10)).map(
         (row) => row.id,
       ),
-    ).toEqual([ID_B, ID_C]);
+    ).toEqual([ID_B, ID_C, unpinned]);
     expect(await store.listCandidates(null, 1)).toEqual([
       { id: ID_A, createdAt: t('2026-01-01T00:00:00Z'), keyed: false },
     ]);
@@ -375,6 +545,7 @@ describe('InMemoryShopIdentityStore reads', () => {
       [ID_A, true],
       [ID_B, false],
       [ID_C, false],
+      ['dddddddd-dddd-4ddd-8ddd-dddddddddddd', false],
     ]);
   });
 
@@ -467,14 +638,14 @@ describe('InMemoryShopIdentityStore listDirectory', () => {
     expect(await messages.setPlace(directoryId(9), { ...PLACE, label: '' })).toBe(true);
     const page = await store.listDirectory(null, 10);
     expect(page.next).toBeNull();
-    expect(page.shops.map((shop) => shop.id)).toEqual([ID_C, ID_B, ID_A]);
+    expect(page.shops.map((shop) => shop.id)).toEqual([ID_C, ID_B, ID_A, directoryId(9)]);
     expect(page.shops[0]).toMatchObject({
       npub: shopNpub({ nostrPubkey: publicKeyHexFromSecret(secret(4)) }),
       name: 'Coffee Lab',
       place: PLACE,
     });
     const olderPage = await store.listDirectory({ createdAt: same, id: ID_B }, 10);
-    expect(olderPage.shops.map((shop) => shop.id)).toEqual([ID_A]);
+    expect(olderPage.shops.map((shop) => shop.id)).toEqual([ID_A, directoryId(9)]);
     expect(olderPage.next).toBeNull();
   });
 
@@ -519,29 +690,35 @@ describe('InMemoryShopIdentityStore listDirectory', () => {
     expect(await store.listDirectory(null, 20)).toEqual({ shops: [], next: null });
   });
 
-  it('continues past more than 20 * limit text-rule failures', async () => {
-    const good = directoryId(1);
-    const failures = Array.from({ length: 21 }, (_, index) => directoryId(index + 2));
-    const rows = [
-      shopRow(good, { createdAt: new Date('2026-10-01T00:00:00.000Z') }),
-      ...failures.map((id, index) =>
-        shopRow(id, { createdAt: new Date(Date.UTC(2026, 9, 2, 0, index)) }),
-      ),
-    ];
-    const { messages, store } = setup(rows);
-    await keyed(store, good, 1);
-    for (const [index, id] of failures.entries()) {
-      await keyed(store, id, index + 2);
-      expect(await messages.setPlace(id, { ...PLACE, label: '' })).toBe(true);
-    }
-    const first = await store.listDirectory(null, 1);
-    expect(first.shops).toEqual([]);
-    expect(first.next).toEqual({
-      createdAt: new Date(Date.UTC(2026, 9, 2, 0, 1)),
-      id: directoryId(3),
+  it('lists a keyed shop whose pin has no label and one with no pin', async () => {
+    const labeled = directoryId(8);
+    const blank = directoryId(9);
+    const unpinned = directoryId(7);
+    const { messages, store } = setup([
+      shopRow(labeled, {
+        place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+      }),
+      shopRow(blank),
+      shopRow(unpinned, { place: null }),
+    ]);
+    await keyed(store, labeled, 2);
+    await keyed(store, blank, 3);
+    await keyed(store, unpinned, 4);
+    expect(await messages.setPlace(blank, { ...PLACE, label: '' })).toBe(true);
+    const page = await store.listDirectory(null, 10);
+    expect(page.shops.map((shop) => shop.id)).toEqual([blank, labeled, unpinned]);
+    expect(page.shops[0]).toMatchObject({
+      name: 'Fresh coffee roasted here every morning.',
+      place: { ...PLACE, label: '' },
     });
-    const second = await store.listDirectory(first.next, 1);
-    expect(second.shops.map((shop) => shop.id)).toEqual([good]);
+    expect(page.shops[1]).toMatchObject({
+      name: 'Stall',
+      place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+    });
+    expect(page.shops[2]).toMatchObject({
+      name: 'Fresh coffee roasted here every morning.',
+      place: null,
+    });
   });
 
   it('continues past more than 20 * limit shaped notes that have no key', async () => {
@@ -866,6 +1043,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     await store.ensureListed(ID_C, KEK, keygenFrom(4));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const next = async (): Promise<string | undefined> =>
@@ -911,19 +1089,20 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('reserves a photo revision only while the place is confirmed and the generation holds', async () => {
     const { messages, store, claim } = await claimed();
+    expect(await store.nextRevision('place', claim)).toBe(1);
     await store.finishPlace(claim, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     expect(
       await store.nextRevision('photos', { ...photo, generation: photo.generation + 1 }),
     ).toBeUndefined();
-    expect(await store.nextRevision('photos', photo)).toBe(1);
+    expect(await store.nextRevision('photos', photo)).toBe(2);
     // A hide after the claim queues the place: no further photo revision.
     await messages.markDeleted(ID_A, new Date(), 'staff');
     expect(await store.nextRevision('photos', photo)).toBeUndefined();
-    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(1);
+    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(2);
     // The place lane still gets its revision.
     const [place] = await store.claimPlaces(1, 60_000);
-    expect(await store.nextRevision('place', place!)).toBe(2);
+    expect(await store.nextRevision('place', place!)).toBe(3);
   });
 
   it('releases only with the matching token, for either lane, ending the lease now', async () => {
@@ -935,7 +1114,9 @@ describe('InMemoryShopIdentityStore claims', () => {
     clock.now += 1_000;
     await store.release('place', claim);
     expect((await store.getByMessageId(ID_A))?.ocpPlaceClaimedUntil).toEqual(new Date(clock.now));
-    await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'put');
+    const confirmed = (await store.claimPlaces(1, 60_000))[0]!;
+    await store.nextRevision('place', confirmed);
+    await store.finishPlace(confirmed, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     clock.now += 1_000;
     await store.release('photos', photo);
@@ -1005,9 +1186,18 @@ describe('InMemoryShopIdentityStore claims', () => {
     });
   });
 
+  it('does not claim photos while the place was never sent', async () => {
+    const { store, claim } = await claimed();
+    await store.finishPlace(claim, 'put');
+    expect(await store.claimPhoto(60_000)).toBeUndefined();
+    expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(0);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
+  });
+
   it('claims one photo set whose place is confirmed', async () => {
     const { store, clock, claim } = await claimed();
     expect(await store.claimPhoto(60_000)).toBeUndefined();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     const photo = await store.claimPhoto(60_000);
     expect(photo).toEqual({ messageId: ID_A, generation: 1, claim: 1 });
@@ -1020,6 +1210,7 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('settles a photo claim by generation', async () => {
     const { messages, store, clock, claim } = await claimed();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     let photo = (await store.claimPhoto(60_000))!;
     await store.clearPhotoHash({ ...photo, claim: 9 });
@@ -1088,6 +1279,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const photo = (await store.claimPhoto(60_000))!;
@@ -1121,6 +1313,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
     await store.ensureListed(ID_B, KEK, keygenFrom(3));
     for (const claim of await store.claimPlaces(20, 60_000)) {
+      await store.nextRevision('place', claim);
       await store.finishPlace(claim, 'put');
     }
     const photo = (await store.claimPhoto(60_000))!;
@@ -1151,6 +1344,7 @@ describe('InMemoryShopIdentityStore claims', () => {
 
   it('defers photos: keeps the photo state and holds the queued place until the photo lease ends', async () => {
     const { store, clock, claim } = await claimed();
+    await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     const photo = (await store.claimPhoto(60_000))!;
     const photoUntil = new Date(clock.now + 60_000);
@@ -1343,6 +1537,94 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[3]?.params).toEqual([cursor.createdAt, ID_A, 1]);
   });
 
+  it('does not mint a key that must be adopted', async () => {
+    const adoptedMessages = new InMemoryMessageStore([shopRow(ADOPTED_ID)]);
+    const { sql, calls } = fakeSql([[]]);
+    const store = new PostgresShopIdentityStore(sql, adoptedMessages);
+    expect(await store.ensureListed(ADOPTED_ID, KEK, keygenFrom(2))).toBeUndefined();
+    expect(calls).toHaveLength(1);
+    expect(calls[0]?.text).toContain('WHERE message_id = $1');
+    expect(calls[0]?.text).not.toContain('INSERT');
+  });
+
+  it('inserts an adopted secret without queueing the place', async () => {
+    const { sql, calls } = fakeSql([
+      [],
+      [],
+      [sqlIdentity({ ocp_place_pending: false, ocp_place_generation: 0 })],
+    ]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    const created = await store.adoptKnownSecret(ID_A, secret(2), KEK);
+    expect(created?.ocpPlacePending).toBe(false);
+    expect(created?.ocpPlaceGeneration).toBe(0);
+    expect(calls[2]?.text).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)');
+    expect(calls[2]?.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(calls[2]?.params[1]).toBe(publicKeyHexFromSecret(secret(2)));
+    const plain = await decryptNostrSecret(calls[2]?.params[2] as Uint8Array, KEK, `shop:${ID_A}`);
+    expect([...plain]).toEqual([...secret(2)]);
+    expect(calls[2]?.params[6]).toBe('Coffee Lab');
+  });
+
+  it('returns the stored row when the adopted key is already there', async () => {
+    const { sql, calls } = fakeSql([[sqlIdentity()]]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    expect((await store.adoptKnownSecret(ID_A, secret(2), KEK)).nostrPubkey).toBe(
+      publicKeyHexFromSecret(secret(2)),
+    );
+    expect(calls).toHaveLength(1);
+  });
+
+  it('refuses a different stored key, a key held by another note, and a lost insert', async () => {
+    const other = 'ab'.repeat(32);
+    const held = fakeSql([[], [sqlIdentity({ message_id: ID_B })]]);
+    const heldStore = new PostgresShopIdentityStore(held.sql, messages);
+    await expect(heldStore.adoptKnownSecret(ID_A, secret(2), KEK)).rejects.toThrow(
+      'shop nostr pubkey already exists',
+    );
+    const different = fakeSql([[sqlIdentity({ nostr_pubkey: other })]]);
+    await expect(
+      new PostgresShopIdentityStore(different.sql, messages).adoptKnownSecret(ID_A, secret(2), KEK),
+    ).rejects.toThrow('shop nostr pubkey already exists');
+    const lostSame = fakeSql([[], [], [], [sqlIdentity()]]);
+    expect(
+      (
+        await new PostgresShopIdentityStore(lostSame.sql, messages).adoptKnownSecret(
+          ID_A,
+          secret(2),
+          KEK,
+        )
+      ).nostrPubkey,
+    ).toBe(publicKeyHexFromSecret(secret(2)));
+    const lostDifferent = fakeSql([[], [], [], [sqlIdentity({ nostr_pubkey: other })]]);
+    await expect(
+      new PostgresShopIdentityStore(lostDifferent.sql, messages).adoptKnownSecret(
+        ID_A,
+        secret(2),
+        KEK,
+      ),
+    ).rejects.toThrow('shop nostr pubkey already exists');
+    const lostMissing = fakeSql([[], [], [], []]);
+    await expect(
+      new PostgresShopIdentityStore(lostMissing.sql, messages).adoptKnownSecret(
+        ID_A,
+        secret(2),
+        KEK,
+      ),
+    ).rejects.toThrow('shop note not found');
+  });
+
+  it('refuses an adopted key when the note or the secret is unusable', async () => {
+    const { sql, calls } = fakeSql([]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    await expect(store.adoptKnownSecret(ID_C, secret(2), KEK)).rejects.toThrow(
+      'shop note not found',
+    );
+    await expect(store.adoptKnownSecret(ID_A, secret(2).slice(0, 16), KEK)).rejects.toThrow(
+      '32 bytes',
+    );
+    expect(calls).toHaveLength(0);
+  });
+
   it('inserts a new key with a locked, unchanged note and queues its place', async () => {
     const { sql, calls } = fakeSql([[], [sqlIdentity()]]);
     const store = new PostgresShopIdentityStore(sql, messages);
@@ -1352,13 +1634,53 @@ describe('PostgresShopIdentityStore', () => {
     expect(insert.text).toContain('FOR UPDATE');
     expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
     expect(insert.text).toContain('true, 1 FROM locked');
-    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $2, true, 1 FROM locked');
+    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked');
     expect(insert.params[0]).toBe(ID_A);
     expect(insert.params.slice(1, 10)).toEqual(SNAPSHOT);
     expect(insert.params[10]).toBe(publicKeyHexFromSecret(secret(2)));
-    expect(insert.params.slice(12)).toEqual([1, 'custodial', expect.any(Date)]);
+    expect(insert.params.slice(12, 15)).toEqual([1, 'custodial', expect.any(Date)]);
+    expect(insert.params[15]).toBe('Coffee Lab');
     const plain = await decryptNostrSecret(insert.params[11] as Uint8Array, KEK, `shop:${ID_A}`);
     expect([...plain]).toEqual([...secret(2)]);
+  });
+
+  it('locks null place columns when a public shop has no pin or no label', async () => {
+    const name = 'Fresh coffee roasted here every morning.';
+    const unpinned = new InMemoryMessageStore([shopRow(ID_C, { place: null })]);
+    const bare = fakeSql([[], [sqlIdentity({ message_id: ID_C, profile_name: name })]]);
+    const bareStore = new PostgresShopIdentityStore(bare.sql, unpinned);
+    expect((await bareStore.ensureListed(ID_C, KEK, keygenFrom(2)))?.profileName).toBe(name);
+    expect(bare.calls[1]?.params.slice(1, 10)).toEqual([
+      null,
+      TEXT,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(bare.calls[1]?.params[15]).toBe(name);
+
+    const unlabeled = new InMemoryMessageStore([
+      shopRow(ID_C, { place: { lat: 47.3, lng: 8.5, label: null, address: null } }),
+    ]);
+    const pin = fakeSql([[], [sqlIdentity({ message_id: ID_C, profile_name: name })]]);
+    const pinStore = new PostgresShopIdentityStore(pin.sql, unlabeled);
+    expect((await pinStore.ensureListed(ID_C, KEK, keygenFrom(2)))?.messageId).toBe(ID_C);
+    expect(pin.calls[1]?.params.slice(1, 10)).toEqual([
+      null,
+      TEXT,
+      47.3,
+      8.5,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
+    expect(pin.calls[1]?.params[15]).toBe(name);
   });
 
   it('returns the winner when the insert adds no row', async () => {
@@ -1386,10 +1708,10 @@ describe('PostgresShopIdentityStore', () => {
     ]);
     const store = new PostgresShopIdentityStore(sql, messages);
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
-    expect(calls[1]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
+    expect(calls[1]?.text).toContain('UPDATE shop_identity SET profile_name = $11');
     expect(calls[1]?.text).toContain('FOR UPDATE');
-    expect(calls[1]?.text).toContain('AND text = $3 AND place_lat = $4');
-    expect(calls[1]?.params).toEqual([ID_A, ...SNAPSHOT]);
+    expect(calls[1]?.text).toContain('AND place_label IS NOT DISTINCT FROM $2');
+    expect(calls[1]?.params).toEqual([ID_A, ...SNAPSHOT, 'Coffee Lab']);
     expect((await store.ensureListed(ID_B, KEK))?.profileName).toBe('Old');
     expect((await store.ensureListed(ID_A, KEK))?.profileName).toBe('Coffee Lab');
     expect(calls).toHaveLength(4);
@@ -1502,6 +1824,78 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[1]?.text).not.toContain('nostr_nsec_ciphertext');
   });
 
+  it('maps a directory row with no pin and rows whose address is incomplete', async () => {
+    const created = new Date('2026-10-04T00:00:00.000Z');
+    const pubkey = publicKeyHexFromSecret(secret(4));
+    const full = {
+      created_at: created,
+      text: TEXT,
+      parent_id: null,
+      deleted_at: null,
+      place_lat: '47.3',
+      place_lng: 8.5,
+      place_label: 'Coffee Lab',
+      place_street: 'Main Street',
+      place_house_number: '1',
+      place_postal_code: '8001',
+      place_city: 'Zürich',
+      place_country: 'CH',
+      shop_account_id: 'till',
+      nostr_pubkey: pubkey,
+    };
+    const none = {
+      place_lat: null,
+      place_lng: null,
+      place_label: null,
+      place_street: null,
+      place_house_number: null,
+      place_postal_code: null,
+      place_city: null,
+      place_country: null,
+    };
+    const ids = [
+      ID_A,
+      ID_B,
+      ID_C,
+      'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      'ffffffff-ffff-4fff-8fff-ffffffffffff',
+      '11111111-1111-4111-8111-111111111111',
+    ];
+    const rows = [
+      { ...full, ...none, id: ids[0] },
+      { ...full, id: ids[1], place_lng: null },
+      { ...full, id: ids[2], place_street: null },
+      { ...full, id: ids[3], place_house_number: null },
+      { ...full, id: ids[4], place_postal_code: null },
+      { ...full, id: ids[5], place_city: null },
+      { ...full, id: ids[6], place_country: null, place_label: null },
+    ];
+    const { sql } = fakeSql([rows]);
+    const page = await new PostgresShopIdentityStore(sql, messages).listDirectory(null, 10);
+    const description = 'Fresh coffee roasted here every morning.';
+    const pin = { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null };
+    expect(page.next).toBeNull();
+    expect(page.shops.map((shop) => shop.place)).toEqual([
+      null,
+      null,
+      pin,
+      pin,
+      pin,
+      pin,
+      { lat: 47.3, lng: 8.5, label: '', address: null },
+    ]);
+    expect(page.shops.map((shop) => shop.name)).toEqual([
+      description,
+      description,
+      'Coffee Lab',
+      'Coffee Lab',
+      'Coffee Lab',
+      'Coffee Lab',
+      description,
+    ]);
+  });
+
   it('queues a page of identities by message id', async () => {
     const { sql, calls } = fakeSql([[{ message_id: ID_B }, { message_id: ID_A }], []]);
     const store = new PostgresShopIdentityStore(sql, messages);
@@ -1533,6 +1927,7 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[0]?.params).toEqual([20, 60_000]);
     expect(await store.claimPhoto(60_000)).toEqual({ messageId: ID_A, generation: 3, claim: 5 });
     expect(calls[1]?.text).toContain('NOT ocp_place_pending');
+    expect(calls[1]?.text).toContain('ocp_revision > 0');
     expect(calls[1]?.text).toContain(
       'ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id',
     );
@@ -1593,9 +1988,9 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[8]?.params).toEqual([ID_A, 6, 4, 'hash']);
     expect(calls[9]?.params).toEqual([ID_A, 6, 4, true]);
     expect(calls).toHaveLength(12);
-    expect(calls[10]?.text).toContain('UPDATE shop_identity SET profile_name = $2');
+    expect(calls[10]?.text).toContain('UPDATE shop_identity SET profile_name = $11');
     expect(calls[10]?.text).toContain('FOR UPDATE');
-    expect(calls[10]?.params).toEqual([ID_A, ...SNAPSHOT]);
+    expect(calls[10]?.params).toEqual([ID_A, ...SNAPSHOT, 'Coffee Lab']);
     // An unlisted snapshot sends nothing.
     await store.renameIfListed(shopRow(ID_B, { text: 'No tag in this text at all here.' }));
     expect(calls).toHaveLength(12);

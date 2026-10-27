@@ -272,7 +272,8 @@ export interface MessagesRouteDeps {
   spendPing?: SpendPing;
   /**
    * Shop identities. With `shopKek` (or `nostrKek`), a write that makes a
-   * note a listed shop creates its key after the commit. The OpenCryptoPay
+   * note a public shop creates its key after the commit. The response
+   * carries `shopNpub` only for a listed shop. The OpenCryptoPay
    * outbox is queued by the store write itself. Omitted → no shop keys.
    */
   shopIdentities?: ShopIdentityStore;
@@ -345,8 +346,9 @@ const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
 
 /**
- * After a committed write that can make a note a listed shop: create its key
- * once (S1). The OpenCryptoPay outbox is queued by the store write itself.
+ * After a committed write that can make a note a public shop: create its key
+ * once (S1). The HTTP response carries `shopNpub` only for a listed shop.
+ * The OpenCryptoPay outbox is queued by the store write itself.
  * A failure logs `shop.nostr_key.failed` and never fails the request.
  *
  * @param deps - Route deps (shop identities and KEK).

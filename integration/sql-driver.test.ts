@@ -640,6 +640,7 @@ describe('shop identity on Postgres', () => {
            queue_shop_identity_photo() CASCADE`,
       );
       await ctx.client.execute('DROP INDEX message_shop_candidate_idx');
+      await ctx.client.execute('DROP INDEX message_shop_directory_idx');
       // One connection per boot, as 18 processes would open.
       const boots = Array.from({ length: 18 }, () =>
         createBunSqlClient(String(databaseUrl), { max: 1 }),
@@ -680,11 +681,12 @@ describe('shop identity on Postgres', () => {
         await ctx.client.query<{ name: string; n: string }>(
           `SELECT relname AS name, count(*)::text AS n FROM pg_class
            WHERE relname IN ('shop_identity', 'shop_identity_key_order_idx',
-             'message_shop_candidate_idx')
+             'message_shop_candidate_idx', 'message_shop_directory_idx')
            GROUP BY relname ORDER BY relname`,
         ),
       ).toEqual([
         { name: 'message_shop_candidate_idx', n: '1' },
+        { name: 'message_shop_directory_idx', n: '1' },
         { name: 'shop_identity', n: '1' },
         { name: 'shop_identity_key_order_idx', n: '1' },
       ]);
@@ -693,7 +695,7 @@ describe('shop identity on Postgres', () => {
     }
   });
 
-  test('the backfill candidate read walks message_shop_candidate_idx', async () => {
+  test('the backfill candidate read walks message_shop_directory_idx', async () => {
     const ctx = await setup();
     try {
       expect(
@@ -733,7 +735,7 @@ describe('shop identity on Postgres', () => {
         `EXPLAIN (FORMAT JSON) ${read!.text}`,
         read!.params,
       );
-      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_candidate_idx"');
+      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_directory_idx"');
       // The page after a cursor is its own statement. Even under the generic
       // plan a prepared statement may cache, the cursor is an index condition.
       const cursor = { createdAt: first[0]!.createdAt, id: first[0]!.id };
@@ -764,7 +766,7 @@ describe('shop identity on Postgres', () => {
         }
         if (node === null || typeof node !== 'object') return;
         const record = node as Record<string, unknown>;
-        if (record['Index Name'] === 'message_shop_candidate_idx') nodes.push(record);
+        if (record['Index Name'] === 'message_shop_directory_idx') nodes.push(record);
         Object.values(record).forEach(walk);
       };
       walk(generic);
@@ -832,7 +834,7 @@ describe('shop identity on Postgres', () => {
         `EXPLAIN (FORMAT JSON) ${read!.text}`,
         read!.params,
       );
-      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_candidate_idx"');
+      expect(JSON.stringify(plan)).toContain('"Index Name":"message_shop_directory_idx"');
     } finally {
       await ctx.cleanup();
     }
@@ -953,6 +955,10 @@ describe('shop identity on Postgres', () => {
       const confirmed = await ctx.shops.claimPlaces(20, 60_000);
       expect(confirmed.map((claim) => claim.messageId).sort()).toEqual([a, b, c]);
       for (const claim of confirmed) await ctx.shops.finishPlace(claim, 'put');
+      // A place this outbox has not sent stays at revision 0, so its photos
+      // are not claimed. The place lane raises the revision, then they are.
+      expect(await ctx.shops.claimPhoto(60_000)).toBeUndefined();
+      for (const claim of confirmed) expect(await ctx.shops.nextRevision('place', claim)).toBe(1);
       const photo = async (): Promise<string | undefined> => {
         await Bun.sleep(5);
         return (await ctx.shops.claimPhoto(1))?.messageId;
@@ -992,8 +998,11 @@ describe('shop identity on Postgres', () => {
       expect(secondPlace?.messageId).toBe(second.id);
       const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
       expect(firstAgain?.messageId).toBe(first.id);
-      // Both places settle, which queues both photo sets.
+      // Both places settle, which queues both photo sets. The revision is
+      // raised first, as the place sender does before the request.
+      await ctx.shops.nextRevision('place', secondPlace!);
       await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.nextRevision('place', firstAgain!);
       await ctx.shops.finishPlace(firstAgain!, 'put');
       // The same for the photos of the first shop.
       const photo = (await ctx.shops.claimPhoto(60_000))!;
@@ -1034,7 +1043,9 @@ describe('shop identity on Postgres', () => {
       expect(secondPlace?.messageId).toBe(second.id);
       const [firstAgain] = await ctx.shops.claimPlaces(1, 60_000);
       expect(firstAgain?.messageId).toBe(first.id);
+      await ctx.shops.nextRevision('place', secondPlace!);
       await ctx.shops.finishPlace(secondPlace!, 'put');
+      await ctx.shops.nextRevision('place', firstAgain!);
       await ctx.shops.finishPlace(firstAgain!, 'put');
       // The same for the photos of the first shop.
       const photo = (await ctx.shops.claimPhoto(60_000))!;
@@ -1050,15 +1061,27 @@ describe('shop identity on Postgres', () => {
     }
   });
 
-  test('creates no key for an incomplete or changed note', async () => {
+  test('creates no key for a note that is not a shop, and keys a pin-only shop', async () => {
     const ctx = await setup();
     try {
-      const incomplete = ctx.note({ text: 'Too short #21GiftsShop' });
-      await ctx.messages.create(incomplete);
-      expect(await ctx.shops.ensureListed(incomplete.id, KEK)).toBeUndefined();
+      const untagged = ctx.note({ text: 'A forum note without the shop tag.' });
+      await ctx.messages.create(untagged);
+      expect(await ctx.shops.ensureListed(untagged.id, KEK)).toBeUndefined();
       expect(
-        (await ctx.shops.listCandidates(null, 1000)).some((row) => row.id === incomplete.id),
+        (await ctx.shops.listCandidates(null, 1000)).some((row) => row.id === untagged.id),
+      ).toBe(false);
+      const pinOnly = ctx.note({
+        place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+      });
+      await ctx.messages.create(pinOnly);
+      expect((await ctx.shops.ensureListed(pinOnly.id, KEK))?.profileName).toBe('Stall');
+      const page = await ctx.shops.listDirectory(null, 10);
+      expect(
+        page.shops.some((shop) => shop.id === pinOnly.id && shop.place?.address === null),
       ).toBe(true);
+      const bare = ctx.note({ place: null, text: '#21GiftsShop' });
+      await ctx.messages.create(bare);
+      expect((await ctx.shops.ensureListed(bare.id, KEK))?.profileName).toBe('Shop');
       const moved = ctx.note();
       await ctx.messages.create(moved);
       const stale = new PostgresShopIdentityStore(ctx.client, {

@@ -10,6 +10,8 @@ import {
   isListedShop,
   listedShop,
   listedShopName,
+  publicShop,
+  publicShopName,
   shopListingFingerprint,
 } from '@/lib/shop-place';
 
@@ -210,6 +212,86 @@ describe('listedShop', () => {
       expect(listedShopName(row)).toBeNull();
       expect(isListedShop(row)).toBe(false);
     }
+  });
+});
+
+describe('publicShop', () => {
+  const text = 'Fresh coffee roasted here every morning. #21GiftsShop';
+  const note = {
+    parentId: null,
+    deletedAt: null,
+    text,
+    place: PIN,
+    shopAccount: { id: 'till' },
+  };
+
+  it('keeps a complete shop and drops an address that has a blank part', () => {
+    expect(publicShop(note)).toEqual({
+      name: 'Stall',
+      place: PIN,
+      tillAccountId: 'till',
+    });
+    expect(
+      publicShop({
+        ...note,
+        place: { ...PIN, address: { ...ADDRESS, street: '  ' } },
+      })?.place?.address,
+    ).toBeNull();
+  });
+
+  it('lists a pin that has no structured address', () => {
+    expect(
+      publicShop({
+        ...note,
+        place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+      }),
+    ).toEqual({
+      name: 'Stall',
+      place: { lat: 14.6, lng: 120.9, label: 'Stall', address: null },
+      tillAccountId: 'till',
+    });
+    expect(publicShop({ ...note, place: { ...PIN, label: null } })?.place).toEqual({
+      ...PIN,
+      label: '',
+    });
+  });
+
+  it('lists a shop with no coordinates and names it from the description', () => {
+    expect(publicShop({ ...note, place: null })).toEqual({
+      name: 'Fresh coffee roasted here every morning.',
+      place: null,
+      tillAccountId: 'till',
+    });
+    expect(publicShop({ ...note, place: { ...PIN, label: '   ' } })?.name).toBe(
+      'Fresh coffee roasted here every morning.',
+    );
+    expect(publicShop({ ...note, place: { ...PIN, lat: Number.NaN } })?.place).toBeNull();
+  });
+
+  it('uses Shop when the note has neither a label nor a description', () => {
+    expect(publicShopName('#21GiftsShop', null)).toBe('Shop');
+    expect(publicShop({ ...note, text: '#21GiftsShop\n\n', place: null })?.name).toBe('Shop');
+  });
+
+  it('cuts a description name at 80 characters', () => {
+    const line = `${'a'.repeat(90)}`;
+    expect(publicShopName(`${line} #21GiftsShop`, null)).toBe('a'.repeat(80));
+  });
+
+  it('rejects a reply, a hidden note, a missing till and a missing tag', () => {
+    expect(publicShop(undefined)).toBeNull();
+    expect(publicShop({ ...note, parentId: 'parent' })).toBeNull();
+    expect(publicShop({ ...note, deletedAt: new Date(0) })).toBeNull();
+    expect(publicShop({ ...note, shopAccount: null })).toBeNull();
+    expect(
+      publicShop({
+        parentId: note.parentId,
+        deletedAt: note.deletedAt,
+        text: note.text,
+        place: note.place,
+      }),
+    ).toBeNull();
+    expect(publicShop({ ...note, text: 'Fresh coffee roasted here every morning.' })).toBeNull();
   });
 });
 
