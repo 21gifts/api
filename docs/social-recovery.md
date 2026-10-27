@@ -258,9 +258,10 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - **A stranger with a fake QR code** has to stand in front of the person,
   because recovery happens in person.
 - **A stranger who replays a verified lookup** of the old wallet within the
-  LNURL server's validity window (ten minutes) can only restart a recovery
-  that is not forwarded yet; that takes over nothing. The public wallet key
-  alone is not enough.
+  LNURL server's validity window (ten minutes) can restart a recovery that is
+  not forwarded yet, or make begin settle a forwarded one after its forward
+  window, as the owner's own begin would; that takes over nothing. The public
+  wallet key alone is not enough.
 - **A recorded remote setup** can leak shares, so both shares never go over
   the same call, and calls are not recorded.
 - **A replayed signature** is refused: the message binds the account, a
