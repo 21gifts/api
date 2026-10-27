@@ -7,6 +7,7 @@ import {
   OCP_PHOTO_TIMEOUT_MS,
   OCP_PLACE_TIMEOUT_MS,
   ocpPhotoSetHash,
+  queueAllShopPhotos,
   queueAllShopPlaces,
   runOcpPhotoOutboxPass,
   runOcpPlaceOutboxPass,
@@ -93,6 +94,7 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
     listCandidates: vi.fn(),
     listDirectory: vi.fn(),
     queueAllPlacePage: vi.fn(() => Promise.resolve([])),
+    queueAllPhotoPage: vi.fn(() => Promise.resolve([])),
     claimPlaces: vi.fn(() => Promise.resolve([CLAIM])),
     claimPhoto: vi.fn(() => Promise.resolve(CLAIM)),
     leaseHasTime: vi.fn(() => Promise.resolve(true)),
@@ -108,9 +110,13 @@ function stubIdentities(row: ShopIdentityRow | null = identity()): Stub {
   };
 }
 
-/** A shop whose place this outbox has already sent, so the photo lane may reserve. */
+/**
+ * A shop whose place this outbox has already sent, so the photo lane may
+ * reserve. The stored hash is set: an empty set with a null hash is cleared
+ * and not sent.
+ */
 function sentShop(): Stub {
-  return stubIdentities(identity({ ocpRevision: 1 }));
+  return stubIdentities(identity({ ocpRevision: 1, ocpPhotosHash: 'stored' }));
 }
 
 type Sent = { url: string; method: string; body: Record<string, unknown>; init: RequestInit };
@@ -566,12 +572,19 @@ describe('runOcpPhotoOutboxPass', () => {
     },
   );
 
-  it('sends an empty list for a shop without photos', async () => {
+  it('sends an empty list for a sent shop whose stored hash is set', async () => {
     const messages = await messagesWith(shopNote());
     const ids = sentShop();
     const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
-    expect(sent[0]?.body['photos']).toEqual([]);
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).toEqual({
+      origin: '21gifts',
+      nostrPubkey: PUBKEY,
+      revision: 7,
+      photos: [],
+    });
+    expect(ids.nextRevision).toHaveBeenCalled();
     expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([]));
   });
 
@@ -604,7 +617,7 @@ describe('runOcpPhotoOutboxPass', () => {
     }
   });
 
-  it('clears without sending for a shop that is not listed or has no identity', async () => {
+  it('clears without sending when the note is not a public shop or the identity is missing', async () => {
     const unlisted = await messagesWith(shopNote({ deletedAt: new Date(0) }));
     const listed = await messagesWith(shopNote());
     for (const [ids, messages] of [
@@ -628,15 +641,83 @@ describe('runOcpPhotoOutboxPass', () => {
     expect(sent).toEqual([]);
   });
 
-  it('releases without raising a revision when the place was never sent', async () => {
+  it('clears an empty set at revision 0 without a request', async () => {
     const messages = await messagesWith(shopNote());
-    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const ids = stubIdentities(identity({ ocpRevision: 0, ocpPhotosHash: 'stored' }));
     const { push, sent } = mapPush(() => new Response('{}'));
     await runOcpPhotoOutboxPass(deps(ids, messages, push));
     expect(sent).toEqual([]);
-    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.clearPhotoWithoutSend).toHaveBeenCalledWith(CLAIM);
+    expect(ids.release).not.toHaveBeenCalled();
     expect(ids.nextRevision).not.toHaveBeenCalled();
     expect(ids.clearPhotoHash).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  it('clears an empty set whose stored hash is null without a request', async () => {
+    const messages = await messagesWith(shopNote());
+    const ids = stubIdentities(identity({ ocpRevision: 1, ocpPhotosHash: null }));
+    const { push, sent } = mapPush(() => new Response('{}'));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toEqual([]);
+    expect(ids.clearPhotoWithoutSend).toHaveBeenCalledWith(CLAIM);
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+  });
+
+  function publicUnlisted(): Promise<InMemoryMessageStore> {
+    return messagesWith(
+      shopNote({
+        hasPhoto: true,
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+      [PNG],
+    );
+  }
+
+  it('sends stills of a public shop that is not listed without a revision', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const { push, sent } = mapPush(() => new Response('{"photos":[],"skipped":[]}', { status: 200 }));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]).toMatchObject({
+      url: 'https://map.test/map/places/photos',
+      method: 'PUT',
+    });
+    expect(sent[0]?.body).toEqual({
+      origin: '21gifts',
+      nostrPubkey: PUBKEY,
+      photos: [{ contentType: 'image/png', data: Buffer.from(PNG.bytes).toString('base64') }],
+    });
+    expect(sent[0]?.body).not.toHaveProperty('revision');
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.clearPhotoHash).toHaveBeenCalledWith(CLAIM);
+    expect(ids.finishPhotos).toHaveBeenCalledWith(CLAIM, ocpPhotoSetHash([PNG]));
+  });
+
+  it('does not raise the revision or finish the photos on 409 while the revision is still 0', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const { push, sent } = mapPush(
+      () => new Response('{"error":"Stale revision"}', { status: 409 }),
+    );
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(sent).toHaveLength(1);
+    expect(sent[0]?.body).not.toHaveProperty('revision');
+    expect(ids.nextRevision).not.toHaveBeenCalled();
+    expect(ids.finishPhotos).not.toHaveBeenCalled();
+    expect(ids.release).toHaveBeenCalledWith('photos', CLAIM);
+    expect(ids.clearPhotoHash).toHaveBeenCalled();
+  });
+
+  it('does not queue a place when a public shop that is not listed answers Place not found', async () => {
+    const messages = await publicUnlisted();
+    const ids = stubIdentities(identity({ ocpRevision: 0 }));
+    const { push } = mapPush(() => new Response('{"error":"Place not found"}', { status: 404 }));
+    await runOcpPhotoOutboxPass(deps(ids, messages, push));
+    expect(ids.missingPhotoPlace).toHaveBeenCalledWith(CLAIM, false);
+    expect(ids.nextRevision).not.toHaveBeenCalled();
     expect(ids.finishPhotos).not.toHaveBeenCalled();
   });
 
@@ -1045,6 +1126,20 @@ describe('a photo pass that read the photos before a place change', () => {
       photos: [{ contentType: 'image/jpeg', data: Buffer.from(JPEG.bytes).toString('base64') }],
     });
     expect((await ctx.store.getByMessageId(ID))?.ocpPhotosPending).toBe(false);
+  });
+});
+
+describe('queueAllShopPhotos', () => {
+  it('walks every page of 200 by message id', async () => {
+    const page = Array.from({ length: 200 }, (_, index) => `id-${String(index).padStart(3, '0')}`);
+    const ids = stubIdentities();
+    ids.queueAllPhotoPage.mockResolvedValueOnce(page).mockResolvedValueOnce(['z']);
+    expect(await queueAllShopPhotos(ids as unknown as ShopIdentityStore)).toBe(201);
+    expect(ids.queueAllPhotoPage.mock.calls).toEqual([
+      [null, 200],
+      ['id-199', 200],
+    ]);
+    expect(ids.queueAllPlacePage).not.toHaveBeenCalled();
   });
 });
 

@@ -329,24 +329,31 @@ async function skippedCount(response: Response): Promise<number> {
  * Claim and send one pending OpenCryptoPay photo set (`PUT /map/places/photos`),
  * least recently claimed first ({@link ShopIdentityStore.claimPhoto}).
  *
- * A shop that is not listed, or whose set hash equals `ocp_photos_hash`, is
- * cleared without a request. A row whose revision is still 0 is released
- * without a request and without raising it: a photo update must not arm a
- * later delete of a place this outbox has never sent. The photos stay
- * pending until the place lane has raised the revision. Otherwise the
- * revision is reserved first, only while the place is not pending and the
- * photo generation is still the claim's (`nextRevision`); otherwise the
- * claim is released without a request and with the stored hash kept, and
- * the photos are sent after the place lane has settled. After the
+ * A missing identity, or a note {@link publicShop} rejects, is cleared
+ * without a request. The listed-shop check is not this gate. A set whose
+ * hash equals `ocp_photos_hash` is cleared the same way. An empty set whose
+ * stored hash is null, or an empty set while `ocpRevision` is still 0, is
+ * cleared without a request: an empty list would delete covers this outbox
+ * did not write. A non-empty set at revision 0 does not call `nextRevision`
+ * and does not change `ocp_revision`. Its body is `origin`, `nostrPubkey`
+ * and `photos` only, with no `revision` key, so a later hide cannot DELETE
+ * a place this outbox never sent. The stored hash is nulled before that
+ * request. When `ocpRevision` is already greater than 0, the revision is
+ * reserved first, only while the place is not pending and the photo
+ * generation is still the claim's (`nextRevision`); otherwise the claim is
+ * released without a request and with the stored hash kept. That path still
+ * sends an empty list when the stored hash was non-null. After the
  * reservation the hash is nulled, then up to 10 photos are sent in note
  * order as base64.
  * Results: 200 stores the hash
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
- * 409 `Stale revision` nulls the hash and releases; 400 or 413 store the
+ * 409 `Stale revision` nulls the hash and releases, and a revision-0 send
+ * does not call `finishPhotos` or raise `ocp_revision`; 400 or 413 store the
  * hash and log `ocp.photos.rejected`; 404 `{"error":"Place not found"}`
  * (openCryptoPay/api#26 does not know the place by key) clears the flag and
- * queues the place when still listed; any other 404 (an OpenCryptoPay API
- * without the photo route, i.e. without openCryptoPay/api#26) logs
+ * queues the place when still listed (`isListedShop`), so a public shop that
+ * is not listed does not queue a place PUT; any other 404 (an OpenCryptoPay
+ * API without the photo route, i.e. without openCryptoPay/api#26) logs
  * `ocp.photos.deferred`, keeps the flag and the claim, so the photos are
  * tried again when the lease ends, and when still listed queues the place
  * with its lease held until then (`deferPhotos`), so the place request that
@@ -368,7 +375,8 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
     return;
   }
   const identity = await identities.getByMessageId(messageId);
-  if (identity === undefined || !isListedShop(await deps.messages.getById(messageId))) {
+  const note = await deps.messages.getById(messageId);
+  if (identity === undefined || publicShop(note) === null) {
     await identities.clearPhotoWithoutSend(claim);
     return;
   }
@@ -378,20 +386,36 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
     await identities.clearPhotoWithoutSend(claim);
     return;
   }
-  if (identity.ocpRevision === 0) {
-    // This outbox has never sent the place. Do not raise the shared
-    // revision: a later hide would then DELETE a map row it did not create.
-    await identities.release('photos', claim);
+  // An empty list deletes covers. Do not send one for a place this outbox
+  // has never written, or when no stored hash says this outbox wrote them.
+  if (photos.length === 0 && (identity.ocpPhotosHash === null || identity.ocpRevision === 0)) {
+    await identities.clearPhotoWithoutSend(claim);
     return;
   }
-  const revision = await identities.nextRevision('photos', claim);
-  if (revision === undefined) {
-    // The place is pending, the photo generation moved on, or the claim was
-    // taken over: send nothing and release (a lost claim is a no-op). The
-    // flag and the stored hash stay, so the photos follow once the place lane
-    // has settled and an unchanged set is still not sent again.
-    await identities.release('photos', claim);
-    return;
+  const body: {
+    origin: '21gifts';
+    nostrPubkey: string;
+    photos: { contentType: ForumPhoto['contentType']; data: string }[];
+    revision?: number;
+  } = {
+    origin: '21gifts',
+    nostrPubkey: identity.nostrPubkey,
+    photos: photos.map((photo) => ({
+      contentType: photo.contentType,
+      data: Buffer.from(photo.bytes).toString('base64'),
+    })),
+  };
+  if (identity.ocpRevision > 0) {
+    const revision = await identities.nextRevision('photos', claim);
+    if (revision === undefined) {
+      // The place is pending, the photo generation moved on, or the claim was
+      // taken over: send nothing and release (a lost claim is a no-op). The
+      // flag and the stored hash stay, so the photos follow once the place lane
+      // has settled and an unchanged set is still not sent again.
+      await identities.release('photos', claim);
+      return;
+    }
+    body.revision = revision;
   }
   await identities.clearPhotoHash(claim);
   if (!(await identities.leaseHasTime('photos', claim, minimumMs))) {
@@ -403,15 +427,7 @@ export async function runOcpPhotoOutboxPass(deps: OcpOutboxDeps): Promise<void> 
       deps.mapPush,
       '/map/places/photos',
       'PUT',
-      {
-        origin: '21gifts',
-        nostrPubkey: identity.nostrPubkey,
-        revision,
-        photos: photos.map((photo) => ({
-          contentType: photo.contentType,
-          data: Buffer.from(photo.bytes).toString('base64'),
-        })),
-      },
+      body,
       OCP_PHOTO_TIMEOUT_MS,
     );
     if (response.status === 200) {
@@ -487,55 +503,104 @@ export async function queueAllShopPlaces(
 }
 
 /**
- * Start the start-up pass and both outbox lanes.
+ * Start-up pass: queue the photo push of every `shop_identity` row with
+ * keyset paging by `message_id` ({@link OCP_STARTUP_PAGE} per page). It
+ * decides nothing; the photo sender does at send time.
+ * {@link startOcpOutboxWorker} runs it with its own cursor and, after a
+ * failed page, retries it from the last queued page until one attempt
+ * succeeds. A failure logs `ocp.photos.failed` and does not change the
+ * place start-up pass.
  *
- * The start-up pass ({@link queueAllShopPlaces}) starts at once. When it
- * fails (a page read throws), it logs `ocp.place.failed` with
- * `pass: 'startup'`, the attempt number, `retryInMs` and the safe error
- * fields, and runs again after `intervalMs`, doubling the delay per failed
- * attempt up to `WORKER_LEASE_MS`, until one attempt succeeds. A retry
- * resumes at the failed page (after the last message id of the last queued
- * page), so the rows of earlier pages are queued once and are not re-sent,
- * given a new revision or have their photos held back again. A failure after
- * `stop` is logged without `retryInMs` and not retried.
+ * @param identities - Shop identity store.
+ * @param after - Message id to resume after (`null` starts at the first
+ *   page).
+ * @param onPage - Called with the last message id of each queued page, so a
+ *   caller can resume after it.
+ * @returns Number of rows queued by this call.
+ * @throws When a page read fails; the rows of earlier pages stay queued.
+ */
+export async function queueAllShopPhotos(
+  identities: ShopIdentityStore,
+  after: string | null = null,
+  onPage?: (last: string) => void,
+): Promise<number> {
+  let cursor = after;
+  let total = 0;
+  for (;;) {
+    const page = await identities.queueAllPhotoPage(cursor, OCP_STARTUP_PAGE);
+    total += page.length;
+    const last = page[page.length - 1];
+    if (last === undefined) return total;
+    onPage?.(last);
+    if (page.length < OCP_STARTUP_PAGE) return total;
+    cursor = last;
+  }
+}
+
+/**
+ * Start both start-up passes and both outbox lanes.
+ *
+ * Each start-up pass ({@link queueAllShopPlaces}, {@link queueAllShopPhotos})
+ * starts at once, with its own cursor. When one fails (a page read throws),
+ * it logs `ocp.place.failed` or `ocp.photos.failed` with `pass: 'startup'`,
+ * the attempt number, `retryInMs` and the safe error fields, and runs again
+ * after `intervalMs`, doubling the delay per failed attempt up to
+ * `WORKER_LEASE_MS`, until that attempt succeeds. A photo start-up failure
+ * does not change the place start-up. A retry resumes at the failed page
+ * (after the last message id of the last queued page), so the rows of earlier
+ * pages are queued once and are not re-sent, given a new revision or have
+ * their photos held back again. A failure after `stop` is logged without
+ * `retryInMs` and not retried.
  *
  * Each lane is serialised: it schedules its next pass `intervalMs` after the
  * previous one settled (also after a failure), so each instance has at most
  * one place pass and one photo upload in flight and a slow pass never stacks
  * database or HTTP work (a place pass settles only after all its claimed rows
- * settled). `stop` clears the pending retry of the start-up pass and both
- * pending lane timers; a pass still in flight then settles without
- * scheduling another.
+ * settled). `stop` clears both pending start-up retries and both pending
+ * lane timers; a pass still in flight then settles without scheduling
+ * another.
  *
  * @param deps - Identities, messages and the map target.
  * @param intervalMs - Delay between passes of a lane and first retry delay
- *   of the start-up pass (default `WORKER_INTERVAL_MS`).
- * @returns Handle whose `stop` ends the start-up retries and both lanes.
+ *   of each start-up pass (default `WORKER_INTERVAL_MS`).
+ * @returns Handle whose `stop` ends both start-up retries and both lanes.
  */
 export function startOcpOutboxWorker(
   deps: OcpOutboxDeps,
   intervalMs: number = WORKER_INTERVAL_MS,
 ): { stop: () => void } {
   let stopped = false;
-  let startupTimer: ReturnType<typeof setTimeout> | undefined;
-  let startupAfter: string | null = null;
-  const startup = (attempt: number): void => {
-    void queueAllShopPlaces(deps.identities, startupAfter, (last) => {
-      startupAfter = last;
-    }).catch((error: unknown) => {
-      const fields = { pass: 'startup', attempt, ...errorLogFields(error) };
-      if (stopped) {
-        logEvent('ocp.place.failed', fields);
-        return;
-      }
-      const retryInMs = Math.min(intervalMs * 2 ** (attempt - 1), WORKER_LEASE_MS);
-      logEvent('ocp.place.failed', { ...fields, retryInMs });
-      startupTimer = setTimeout(() => {
-        startup(attempt + 1);
-      }, retryInMs);
-    });
+  const startupPass = (
+    queue: (
+      identities: ShopIdentityStore,
+      after: string | null,
+      onPage?: (last: string) => void,
+    ) => Promise<number>,
+    failed: 'ocp.place.failed' | 'ocp.photos.failed',
+  ): (() => void) => {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let after: string | null = null;
+    const startup = (attempt: number): void => {
+      void queue(deps.identities, after, (last) => {
+        after = last;
+      }).catch((error: unknown) => {
+        const fields = { pass: 'startup', attempt, ...errorLogFields(error) };
+        if (stopped) {
+          logEvent(failed, fields);
+          return;
+        }
+        const retryInMs = Math.min(intervalMs * 2 ** (attempt - 1), WORKER_LEASE_MS);
+        logEvent(failed, { ...fields, retryInMs });
+        timer = setTimeout(() => {
+          startup(attempt + 1);
+        }, retryInMs);
+      });
+    };
+    startup(1);
+    return () => clearTimeout(timer);
   };
-  startup(1);
+  const stopPlaceStartup = startupPass(queueAllShopPlaces, 'ocp.place.failed');
+  const stopPhotoStartup = startupPass(queueAllShopPhotos, 'ocp.photos.failed');
   const lane = (pass: (deps: OcpOutboxDeps) => Promise<void>, failed: string): (() => void) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const run = (): void => {
@@ -555,7 +620,8 @@ export function startOcpOutboxWorker(
   return {
     stop: () => {
       stopped = true;
-      clearTimeout(startupTimer);
+      stopPlaceStartup();
+      stopPhotoStartup();
       stopPlace();
       stopPhoto();
     },

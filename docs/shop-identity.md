@@ -51,9 +51,11 @@ shop that never had a complete address is not created on the map. A keyed
 shop that is no longer public is deleted from the map only after this
 outbox has sent the place (`ocp_revision` greater than 0). A key that has
 never been sent, including one adopted from an existing OpenCryptoPay
-identity, is not deleted. A photo update does not raise a revision that is
-still 0. The photo claim skips that row, and the photo sender releases it
-without a request, so the photos stay pending until the place lane has sent.
+identity, is not deleted. A photo request does not raise a revision that is
+still 0, and its body has no `revision` key. `claimPhoto` does not skip that
+row. Raising 0 would let a later hide DELETE a place this outbox never
+created. An empty photo set at revision 0, or an empty set whose stored
+hash is null, is cleared without a request.
 
 The shop description is the note text without the `#21GiftsShop` token
 (`shopDescription`). The map rules come from 21gifts/api#478.
@@ -687,16 +689,17 @@ Rules for every claim:
 
 - Every write after a claim, including releasing it, is conditional on the
   token `c`. A worker whose lease was taken over writes nothing.
-- Before each request, the worker raises `ocp_revision` (conditional on
-  `c`) and sends the new value as `revision`. Place and photo requests share
-  this counter, so OpenCryptoPay accepts them only in the order they were
-  sent. The photo sender does not raise it while it is still 0, and
-  `claimPhoto` skips those rows (`ocp_revision > 0`). The set stays pending
-  until the place lane has sent, so a photo update cannot arm a delete of a
-  place this outbox never created.
-- The photo sender raises it only while, in the same `UPDATE`, the place is
-  not pending (`NOT ocp_place_pending`) and `ocp_photos_generation` is still
-  its `g`. The photo claim checks that the place is not pending only when
+- Before each request that carries a `revision`, the worker raises
+  `ocp_revision` (conditional on `c`) and sends the new value as `revision`.
+  Place and photo requests share this counter, so OpenCryptoPay accepts them
+  only in the order they were sent. A photo request whose `ocp_revision` is
+  still 0 does not raise it and its body has no `revision` key. `claimPhoto`
+  does not skip that row. Raising 0 would let a later hide DELETE a place
+  this outbox never created.
+- When the photo revision is already greater than 0, the photo sender raises
+  it only while, in the same `UPDATE`, the place is not pending
+  (`NOT ocp_place_pending`) and `ocp_photos_generation` is still its `g`.
+  The photo claim checks that the place is not pending only when
   it claims; a hide or another place change can come in while the sender
   reads the photos, and the place sender may already have reserved its
   revision for the `DELETE`. Without this check the photo request would
@@ -842,44 +845,60 @@ Rules for every claim:
 
 ### Photo push
 
-- **Queueing.** A successful place `PUT` (above) sets `ocp_photos_pending`
-  and raises `ocp_photos_generation`. Every store write that changes the
-  photos of a listed note does the same: `replacePhotos`
+- **Queueing.** A successful place `PUT` or a created place (`finishPlace`
+  `put` or `created`) sets `ocp_photos_pending` and raises
+  `ocp_photos_generation`. `reject` does not. A new key (`ensureListed`)
+  queues the photos together with the place (`ocp_photos_pending` true,
+  generation 1). Adopting a known secret queues the photos only when the
+  note is a public shop. Every store write that changes the photos of a
+  public shop does the same: `replacePhotos`
   (`PATCH /messages/:id/photos`) and `updatePhoto` (the profile note's
   first photo, `src/routes/me.ts`). The queueing runs in the same
-  transaction as the photo write, only when the note is listed, so a crash
-  cannot lose the change, and the worker never reads the old set under the
-  new generation. Implemented as the row triggers `trg_shop_identity_cover`
-  (photo 0 on `message`) and `trg_shop_identity_extra_photo`
-  (`message_extra_photo`); they check the listed shape the database can see
-  (live, top-level, till account, complete pin columns, shop tag), and the
-  photo sender clears the flag without a request for a note that the text
-  rules of #478 do not list.
+  transaction as the photo write, only when the note is a public shop
+  (live, top-level, till account, shop tag; a pin is not required), so a
+  crash cannot lose the change, and the worker never reads the old set
+  under the new generation. Implemented as the row triggers
+  `trg_shop_identity_cover` (photo 0 on `message`) and
+  `trg_shop_identity_extra_photo` (`message_extra_photo`); they check that
+  public-shop condition, and the photo sender clears the flag without a
+  request for a note that is not a public shop. At boot,
+  `queueAllShopPhotos` queues every identity with its own cursor. A photo
+  start-up failure logs `ocp.photos.failed` with `pass: 'startup'` and does
+  not change the place start-up.
 - **Claiming.** As above, with `ocp_photos_claimed_until` and
-  `ocp_photos_claim`. A row whose place is still pending is skipped, so
-  photos only follow a confirmed place.
+  `ocp_photos_claim`. A row whose place is still pending is skipped.
+  `ocp_revision` may still be 0; `claimPhoto` does not skip that row.
 - **Sending.**
-  - A shop that is not listed any more gets its flag cleared and nothing is
-    sent.
+  - A missing identity, or a note that is not a public shop, gets its flag
+    cleared and nothing is sent. The listed-shop check is not this gate.
   - It computes the SHA-256 over the photo set, read in one statement
     (`MessageStore.getPhotoSet`), so the hash and the request never mix
     photo 0 of one set with the extras of another. If it equals
     `ocp_photos_hash`, it clears the flag and sends nothing.
-  - Otherwise it first reserves the revision (see above). A refused
-    reservation leaves `ocp_photos_hash` as it was, so an unchanged set is
-    not sent again. After the reservation it sets `ocp_photos_hash` to null,
-    conditional only on the token `c`, so an answer that is lost or loses
-    the generation check leaves no hash that could hide a different set on
-    OpenCryptoPay. Then it sends up to 10 photos, in note order (every
-    still the set returns, by stored index; a still with an unrecognized
-    type drops only itself, photo 0 included, so a set with only recognized
-    types gives the same list, and the same `ocpPhotoSetHash`, as the stored
-    order), with
-    `PUT /map/places/photos` as
-    `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
+  - An empty set whose stored hash is null, or an empty set while
+    `ocp_revision` is still 0, is cleared without a request. An empty list
+    would delete covers this outbox did not write.
+  - A non-empty set at revision 0 does not call `nextRevision` and does not
+    change `ocp_revision`. `PUT /map/places/photos` sends
+    `{ origin: "21gifts", nostrPubkey, photos: [{ contentType, data }] }`
+    with no `revision` key. The stored hash is set to null before the
+    request, conditional only on the token `c`, so a lost answer cannot
+    hide a later set.
+  - When `ocp_revision` is already greater than 0, it first reserves the
+    revision (see above), including an empty list when the stored hash is
+    non-null. A refused reservation leaves `ocp_photos_hash` as it was, so
+    an unchanged set is not sent again. After the reservation it sets
+    `ocp_photos_hash` to null, conditional only on the token `c`, so an
+    answer that is lost or loses the generation check leaves no hash that
+    could hide a different set on OpenCryptoPay. Then it sends up to 10
+    photos, in note order (every still the set returns, by stored index; a
+    still with an unrecognized type drops only itself, photo 0 included, so
+    a set with only recognized types gives the same list, and the same
+    `ocpPhotoSetHash`, as the stored order), with `PUT /map/places/photos`
+    as `{ origin: "21gifts", nostrPubkey, revision, photos: [{ contentType, data }] }`,
     `data` being the stored bytes in base64. 21.gifts allows at most 10
     photos of 1 MiB, about 13.3 MiB in base64, under that route's 15 MiB
-    body limit. An empty set is sent as an empty list.
+    body limit.
   - It uses its own 30 s timeout instead of the 5 s place timeout, because
     the body can reach about 13.3 MiB while a place body is a few fields of
     text.
@@ -891,6 +910,8 @@ Rules for every claim:
     as `ocp.photos.skipped` and not retried for this set.
   - 409 `Stale revision`: a newer request for this shop was already
     applied; the worker sets the hash to null and only releases the claim.
+    A send at revision 0 does not call `finishPhotos` and does not raise
+    `ocp_revision`.
   - 400 or 413: store the sent hash, clear the flag (both only while `g`
     still matches) and log `ocp.photos.rejected`. The same set is not sent
     again.

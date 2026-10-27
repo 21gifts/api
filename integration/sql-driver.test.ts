@@ -888,7 +888,7 @@ describe('shop identity on Postgres', () => {
       expect(identity).toMatchObject({
         ocpPlacePending: false,
         ocpPhotosPending: true,
-        ocpPhotosGeneration: 1,
+        ocpPhotosGeneration: 2,
         ocpRevision: 1,
       });
 
@@ -955,9 +955,9 @@ describe('shop identity on Postgres', () => {
       const confirmed = await ctx.shops.claimPlaces(20, 60_000);
       expect(confirmed.map((claim) => claim.messageId).sort()).toEqual([a, b, c]);
       for (const claim of confirmed) await ctx.shops.finishPlace(claim, 'put');
-      // A place this outbox has not sent stays at revision 0, so its photos
-      // are not claimed. The place lane raises the revision, then they are.
-      expect(await ctx.shops.claimPhoto(60_000)).toBeUndefined();
+      // Photos are already pending at revision 0. Claiming one here would
+      // hold its lease and change the order below. The revision is raised
+      // before the photo order is checked.
       for (const claim of confirmed) expect(await ctx.shops.nextRevision('place', claim)).toBe(1);
       const photo = async (): Promise<string | undefined> => {
         await Bun.sleep(5);
