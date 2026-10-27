@@ -147,7 +147,8 @@ The finish accepts it only when the public key returned by `signMessage` is
 the account's verified `spark_pubkey`, the signature verifies for this exact
 message, the challenge is the account's unconsumed `recovery` challenge inside
 `CHALLENGE_TTL_MS`, and the new passkey's attestation verifies with that
-challenge, as the seed passkey finish does. It mints no session.
+challenge and carries the credential id named in the message, as the seed
+passkey finish does for the rest. It mints no session.
 
 ### The commit
 
@@ -247,8 +248,12 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - **The server alone** cannot. It holds no readable share and cannot sign
   with the wallet key.
 - **21.gifts and one person** can, through the manual backup process only.
-- **A stranger** needs a fake QR code shown in person, or a verified lookup
-  of the old wallet. The public wallet key alone is not enough.
+- **A stranger with a fake QR code** has to stand in front of the person,
+  because recovery happens in person.
+- **A stranger who replays a verified lookup** of the old wallet within the
+  LNURL server's validity window (ten minutes) can only restart a recovery
+  that is not forwarded yet; that takes over nothing. The public wallet key
+  alone is not enough.
 - **A recorded remote setup** can leak shares, so both shares never go over
   the same call, and calls are not recorded.
 - **A replayed signature** is refused: the message binds the account, a
@@ -275,8 +280,8 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   original 12 words. One share does not.
 - Setup stops when the words do not open the account's verified wallet, and a
   phone refuses a second share of the same set.
-- No share reaches the api, and the api has no path that uses the 21.gifts
-  share.
+- No person's share reaches the api, and the api has no path that reads,
+  returns or uses the 21.gifts share.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a
   used or expired challenge, or for a `session_refused` account changes
   nothing.
