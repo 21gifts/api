@@ -197,15 +197,20 @@ one key the answer is:
 
 A forward is **in flight** while less than twice `LNURL_SERVER_TIMEOUT_MS`
 (`src/lib/lnurl-server.ts`) has passed since the pending recovery was marked
-forwarded. A lookup sent while a forward is in flight counts as unknown, even
-when its answer arrives later.
+forwarded. For a forwarded pending recovery, a lookup counts only when it was
+sent after its in-flight window ended. A lookup sent earlier, also one sent
+before the forward was marked, counts as unknown, even when its answer arrives
+later.
 
 Begin acts only on the old wallet's lookup it carries. When that answer is
 unknown, begin answers 503 `UNAVAILABLE`, the same answer the forwarded LNURL
 routes give when the LNURL server cannot be used, and changes nothing: it
 drops nothing, consumes nothing and issues no challenge. Only a verified
 lookup proves that the caller holds the old wallet, so a stranger who knows
-the public old key cannot disturb a recovery in progress.
+the public old key cannot disturb a recovery in progress. Without a forwarded
+pending recovery, begin continues only when the old key holds the username.
+When it does not hold it, no transfer can succeed: begin refuses, changes
+nothing, and the account needs an operator.
 
 - **Not forwarded.** It expires after `CHALLENGE_TTL_MS`. A finish replaces it
   only while it is not forwarded, checked in its step; when the account's
@@ -349,7 +354,9 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   single-use challenge, the new passkey and the new wallet key.
 - **A stranger with the public wallet key** cannot disturb a recovery in
   progress: begin acts only on a lookup by the old wallet that the LNURL
-  server verified.
+  server verified. Whoever can read such a lookup in transit can replay it
+  within the LNURL server's validity window (ten minutes) and restart a
+  recovery that is not forwarded yet; that takes over nothing.
 - **The lost phone** loses its sessions and push subscriptions, so it gets no
   more private messages.
 - **A new phone lost during recovery.** When the address already moved to a
@@ -411,9 +418,10 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   stores the pending recovery.
 - Begin changes nothing and issues no challenge without a lookup by the old
   wallet that the LNURL server verified.
-- A forwarded pending recovery commits only when the new key holds the
-  username or the old key does not hold it, and is dropped only when the old
-  key holds it, each by a lookup sent after the in-flight window. An unknown
+- Apart from the commit on the transfer's own 2xx, a forwarded pending
+  recovery commits only when the new key holds the username or the old key
+  does not hold it, and is dropped only when the old key holds it, each by a
+  lookup sent after its in-flight window. An unknown
   answer, and any answer of the transfer itself other than 2xx, changes
   nothing.
 - Begin consumes earlier unconsumed `recovery` challenges, drops a not
