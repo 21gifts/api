@@ -105,25 +105,22 @@ new phone with the 21.gifts app.
    type the old 12 words.
 4. The app puts the 16 bytes back together, or takes the typed words, derives
    the old 12 words, opens the old wallet with them and reads its identity
-   public key. It begins a
-   recovery ceremony with that key, next to the existing register, replace and
-   seed passkey ceremonies, behind the same app build check and login switch.
-   The server finds the account whose verified `spark_pubkey` equals the key
-   and refuses an unknown key, an unverified key and an account with
-   `session_refused`. A key that is the account's previous wallet gets its own
-   answer: the account was already recovered, sign in with the new passkey.
-   It returns the account id and WebAuthn creation options: the relying party,
-   `user.id` the account id, the PRF extension as for a seed passkey (the app
-   adds the `eval.first` salt itself, as it does for the seed passkey), and a
-   challenge stored like every passkey challenge, with a new ceremony type
-   `recovery` and the same `CHALLENGE_TTL_MS` window. When the account already
-   has a pending recovery, begin returns that recovery's credential id and new
-   key instead, and the app resumes with them.
+   public key. It begins a recovery ceremony with that key, next to the
+   existing register, replace and seed passkey ceremonies, behind the same app
+   build check and login switch. The server finds the account whose verified
+   `spark_pubkey` equals the key and refuses an unknown key, an unverified key
+   and an account with `session_refused`. A key that is one of the account's
+   previous wallets gets its own answer: the account was already recovered,
+   sign in with the new passkey. Begin returns the account id and WebAuthn
+   creation options: the relying party, `user.id` the account id, the PRF
+   extension as for a seed passkey (the app adds the `eval.first` salt itself,
+   as it does for the seed passkey), and a challenge stored like every passkey
+   challenge, with a new ceremony type `recovery` and the same
+   `CHALLENGE_TTL_MS` window. Begin says nothing about pending recoveries.
 5. The app creates the new passkey with those options, derives the new 12
    words from it and opens the new wallet. The new passkey is not linked to
-   the account yet. While a pending recovery exists, the app never creates a
-   second passkey for the account: a second one with the same `user.id` would
-   replace the first in the authenticator.
+   the account yet. A later new passkey with the same `user.id` replaces this
+   one in the authenticator, which is harmless while it is not linked.
 6. One button, **Übertragen**, does the rest in this order:
    1. **Account and Lightning address, together.** The old wallet signs the
       recovery message (`signMessage` in the Breez SDK), and the app finishes
@@ -140,6 +137,9 @@ new phone with the 21.gifts app.
 
 The app then signs in with the new passkey through the normal authenticate
 ceremony. Until the commit in step 6.1, nothing on the account changes.
+
+The QR codes use the app's existing `QrCode` and `QrScanner` components, and
+the new 12 words are shown on the existing phrase screen.
 
 ### The recovery message
 
@@ -166,16 +166,32 @@ The recovery finish accepts it only when:
 
 It then consumes the challenge and stores the pending recovery: account id,
 old key, new key and the verified new credential (not linked). It mints no
-session. A pending recovery whose transfer was never forwarded expires after
-`CHALLENGE_TTL_MS`. Once the transfer was forwarded, it stays until it
-commits, because the LNURL server may already have moved the address.
+session. The app keeps the pending recovery's credential id and new key
+while it runs.
+
+### Pending recoveries
+
+An account has at most one pending recovery.
+
+- **Not forwarded yet.** It expires after `CHALLENGE_TTL_MS`. A new finish for
+  the account replaces it.
+- **Forwarded with an unclear outcome** (the forward timed out, the LNURL
+  server answered 5xx, or the commit failed after a 2xx). It stays, because
+  the LNURL server may already have moved the address. A new finish for the
+  account must first settle it: the request carries the old wallet's signed
+  address lookup (`POST /lnurlpay/<old key>/recover`), and the server forwards
+  it. If the old key still holds the username, nothing moved: the old pending
+  recovery is deleted and the new one is stored. If not, the address already
+  sits on the old pending recovery's new key: the server commits that pending
+  recovery and refuses the new finish, and the account belongs to the passkey
+  of the first recovery.
 
 ### The transfer route and the commit
 
 `POST /lnurlpay/:pubkey/transfer` is forwarded like `POST /lnurlpay/:pubkey`
 today, with its own gate:
 
-- a pending recovery exists, not expired, whose new key is the path key,
+- a pending recovery exists whose new key is the path key,
 - the authorization's public key is that recovery's old key and still the
   account's verified `spark_pubkey`,
 - the authorization's username is the account's username.
@@ -187,21 +203,23 @@ When the LNURL server answers 2xx, one transaction commits the recovery:
 - stores the new passkey credential,
 - deletes every other passkey credential, every session and every push
   subscription of the account,
-- keeps the old `spark_pubkey` and `spark_address` as the account's
-  **previous wallet**,
+- adds the old `spark_pubkey` and `spark_address` to the account's
+  **previous wallets**,
 - stores the new key as `spark_pubkey` with its `spark_address`, verified,
   keeping the account's first verification time, so rules that count from it
   (the welcome gift) do not start again,
-- deletes the pending recovery.
+- deletes every pending recovery of the account.
 
-When the LNURL server refuses, nothing changes. The username stays throughout.
-Of two pending recoveries for the same old key, only the first commit can
-succeed: the LNURL server moves a username once.
+When the LNURL server refuses with 4xx, nothing moved: the pending recovery is
+deleted and nothing else changes. The username stays throughout. The LNURL
+server moves a username once, so only one recovery for the same old key can
+commit.
 
-When the outcome is unclear (the forward timed out, or the commit failed after
-a 2xx), the route answers that the recovery is still pending. The LNURL server
-does not accept the same transfer twice, so the app reconciles instead of
-claiming again: the new wallet looks up its own address
+When the outcome is unclear, the route answers like the register route does
+today: 503 `UNAVAILABLE` for an unreachable or timed-out LNURL server, and 409
+`UNCONFIRMED` when the LNURL server accepted but the commit did not land. The
+LNURL server does not accept the same transfer twice, so the app reconciles
+instead of claiming again: the new wallet looks up its own address
 (`POST /lnurlpay/<new key>/recover`, which the forwarded routes also pass for a
 pending recovery's new key). If the LNURL server returns the account's
 username for the new key, the server commits as above. If it returns no
@@ -215,22 +233,30 @@ memory. Each press resumes at the first step not done yet. The app checks step
 refused, after it the account belongs to the new passkey. Step 6.2 is done
 when the old wallet's balance is 0.
 
-- **Step 6.1 did not commit.** The press resumes the pending recovery: it
-  reconciles when the transfer was forwarded, and otherwise starts again at
-  step 4 with the words still in memory and the same new passkey. Once the app
+- **Step 6.1 did not commit.** When the app still holds its pending recovery,
+  the press reconciles it if the transfer was forwarded, and otherwise claims
+  again. When it holds none (the finish failed or the pending recovery
+  expired), the press starts again at step 4 with the words still in memory,
+  and step 5 creates a new passkey that replaces the unlinked one. Once the app
   is closed, the two QR codes are scanned again or the old 12 words are typed
   again.
 - **Step 6.2 failed.** The account belongs to the new passkey. The settings
-  show the previous wallet and a button **Restguthaben übertragen**. It needs
-  the two QR codes or the old 12 words again, opens the old wallet and repeats
-  step 6.2 only. Before that, the balance is read live from the public Spark
-  explorer API by the previous `spark_address`, and shown as unknown when that
-  is not reachable. After it, the app shows the old wallet's own balance.
-  Payments that reach the old wallet later are swept the same way. The old
-  wallet's own address lookup answers 404 after the commit, which the Breez
-  SDK treats as no address; the sweep does not need one.
+  list each previous wallet with a button **Restguthaben übertragen**. It
+  needs the two QR codes or the old 12 words of that wallet again, opens it and
+  repeats step 6.2 only. Before that, the balance is read live from the public
+  Spark explorer API by that wallet's `spark_address`, and shown as unknown
+  when that is not reachable. After it, the app shows the wallet's own
+  balance. Payments that reach an old wallet later are swept the same way. An
+  old wallet's own address lookup answers 404 after the commit, which the
+  Breez SDK treats as no address; the sweep does not need one.
 
-The owner drops the previous wallet in the settings when its balance is 0. An
+The app already has **Move Bitcoin from another wallet** (`MoveFundsSheet`). It
+shows the member's own address for a send made in a wallet app the member
+still runs. A previous wallet has no running app, so **Restguthaben
+übertragen** opens it in the 21.gifts app from the shares or the old words and
+sends from there.
+
+The owner drops a previous wallet in the settings when its balance is 0. An
 old key never moves the account again: step 4 only finds an account by its
 current verified key.
 
@@ -244,17 +270,18 @@ as long as **Restguthaben übertragen** may need them. The app asks the owner
 to set up new shares for the new 12 words, with the same or other people. A
 person's phone keeps the new share next to the old one, told apart by the
 owner's account id and the SLIP-39 identifier. Each person deletes the old
-share by hand when the owner asks, after the previous wallet is dropped.
+share by hand when the owner asks, after that previous wallet is dropped.
 
 ## What the server stores
 
 No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 
 - The new passkey credential, as for any passkey.
-- `spark_pubkey` and `spark_address` of the current wallet, and of the
+- `spark_pubkey` and `spark_address` of the current wallet, and of each
   previous wallet until the owner drops it.
 - The recovery challenge, stored as a passkey challenge of type `recovery`.
-- The pending recovery, until it commits or, if never forwarded, expires.
+- At most one pending recovery per account, until it commits, is refused, is
+  settled by a new finish, or, if never forwarded, expires.
 
 ## Security
 
@@ -323,12 +350,15 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   unchanged.
 - After the commit: exactly one passkey credential, no old session, no push
   subscription, the new wallet key as verified `spark_pubkey` with the first
-  verification time kept, the old key as the previous wallet, the same
+  verification time kept, the old key among the previous wallets, the same
   username and Lightning address.
 - Of two pending recoveries for the same old key, exactly one commits.
-- While a pending recovery exists, no second passkey is created for the
-  account, and a commit lost after the LNURL server's 2xx is completed by
-  reconciling.
+- An account has at most one pending recovery. A 4xx from the LNURL server
+  deletes it, a commit deletes every pending recovery of the account, and a
+  commit lost after the LNURL server's 2xx is completed by reconciling or by
+  the next finish.
+- A second recovery keeps the first previous wallet listed until it is
+  dropped.
 - The old key cannot start a second account transfer.
 - No row and no log contains the 12 words, the 16 bytes, a share or PRF
   output.
