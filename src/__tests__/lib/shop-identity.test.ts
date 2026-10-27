@@ -1661,10 +1661,21 @@ describe('PostgresShopIdentityStore', () => {
     const created = await store.adoptKnownSecret(ID_A, secret(2), KEK);
     expect(created?.ocpPlacePending).toBe(false);
     expect(created?.ocpPlaceGeneration).toBe(0);
-    expect(calls[2]?.text).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, true, 1)');
     expect(created?.ocpPhotosPending).toBe(true);
     expect(created?.ocpPhotosGeneration).toBe(1);
-    expect(calls[2]?.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    const insert = calls[2]!;
+    expect(insert.text).toContain('WITH locked AS');
+    expect(insert.text).toContain('FOR UPDATE');
+    expect(insert.text).toContain('WHERE id = $1');
+    expect(insert.text).toContain('#21giftsshop([^a-z0-9_]|$)');
+    expect(insert.text).toContain('false, 0,');
+    expect(insert.text).toContain('CASE WHEN');
+    expect(insert.text).toContain('THEN true ELSE false END');
+    expect(insert.text).toContain('THEN 1 ELSE 0 END');
+    expect(insert.text).toContain('FROM locked');
+    expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, true, 1)');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, false, 0)');
     expect(calls[2]?.params[1]).toBe(publicKeyHexFromSecret(secret(2)));
     const plain = await decryptNostrSecret(calls[2]?.params[2] as Uint8Array, KEK, `shop:${ID_A}`);
     expect([...plain]).toEqual([...secret(2)]);
@@ -1691,7 +1702,19 @@ describe('PostgresShopIdentityStore', () => {
     expect(created.ocpPlaceGeneration).toBe(0);
     expect(created.ocpPhotosPending).toBe(false);
     expect(created.ocpPhotosGeneration).toBe(0);
-    expect(calls[2]?.text).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, false, 0)');
+    const insert = calls[2]!;
+    expect(insert.text).toContain('WITH locked AS');
+    expect(insert.text).toContain('FOR UPDATE');
+    expect(insert.text).toContain('WHERE id = $1');
+    expect(insert.text).toContain('#21giftsshop([^a-z0-9_]|$)');
+    expect(insert.text).toContain('false, 0,');
+    expect(insert.text).toContain('CASE WHEN');
+    expect(insert.text).toContain('THEN true ELSE false END');
+    expect(insert.text).toContain('THEN 1 ELSE 0 END');
+    expect(insert.text).toContain('FROM locked');
+    expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, true, 1)');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, false, 0)');
   });
 
   it('returns the stored row when the adopted key is already there', async () => {

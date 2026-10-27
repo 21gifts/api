@@ -1574,8 +1574,11 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
    * The same public key is returned unchanged, including its outbox flags.
    * A different key for this note, or this key on another note, throws.
    * The insert does not queue a place push (`ocp_place_pending` stays false,
-   * generation 0). A public shop queues its photos (`ocp_photos_pending`
-   * true, generation 1); any other note leaves the photo flags false and 0.
+   * generation 0, SQL literals). Photo flags come from the note locked in
+   * the same INSERT (`SELECT … FROM message WHERE id = $1 FOR UPDATE`),
+   * using the public-shop condition: pending true and generation 1 when
+   * that locked row is a public shop, otherwise false and 0. They are not
+   * taken from the earlier note snapshot.
    *
    * @param messageId - Shop note id. The note must exist.
    * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
@@ -1612,15 +1615,23 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     if (holder !== undefined) {
       throw new Error('shop nostr pubkey already exists');
     }
-    const queuePhotos = publicShop(note) !== null;
     const rows = await this.#sql.query<IdentitySqlRow>(
-      `INSERT INTO shop_identity (
+      `WITH locked AS (
+         SELECT id, parent_id, deleted_at, shop_account_id, text
+         FROM message
+         WHERE id = $1
+         FOR UPDATE
+       )
+       INSERT INTO shop_identity (
          message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
          nostr_key_custody, nostr_key_created_at, profile_name,
          ocp_place_pending, ocp_place_generation,
          ocp_photos_pending, ocp_photos_generation
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, ${queuePhotos ? 'true' : 'false'}, ${queuePhotos ? '1' : '0'})
+       SELECT $1, $2, $3, $4, $5, $6, $7, false, 0,
+         CASE WHEN ${DIRECTORY_SQL('locked')} THEN true ELSE false END,
+         CASE WHEN ${DIRECTORY_SQL('locked')} THEN 1 ELSE 0 END
+       FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
