@@ -51,8 +51,9 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 - A person's share never reaches the 21.gifts server, sealed or not. The
   server stores nothing about who protects whom.
 - The 21.gifts share is a backup only. The api stores it encrypted and never
-  decrypts, returns or uses it. No release is planned; 21.gifts keeps it only
-  as an option, see [The 21.gifts share](#the-21gifts-share).
+  decrypts or returns it; it reads only whether one is stored, see
+  [Grant payouts](#grant-payouts). No release is planned; 21.gifts keeps it
+  only as an option, see [The 21.gifts share](#the-21gifts-share).
 - Any two holders act at once. There is no waiting period and no cancel
   window. Person 1 and person 2 together can recover the account and move the
   wallet without the owner. The owner is told this before choosing them.
@@ -129,7 +130,8 @@ any other old share.
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
 - **No use by the api.** No route returns the share, nothing in the api
-  decrypts it, and no log contains it.
+  decrypts it, and no log contains it. The api only checks whether one is
+  stored for the current wallet, see [Grant payouts](#grant-payouts).
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.
@@ -142,23 +144,23 @@ UTC day, social recovery is a payout condition.
 - **Set up** means that the api holds a 21.gifts share for the account's
   current verified `spark_pubkey`. A share of a previous wallet does not count,
   so after a recovery the condition is open again until the owner sets up
-  shares for the new words.
-- **Payouts.** The condition joins `eligibleToday` (`src/lib/funding.ts`),
-  which already requires the grant for every payout. Without it the account
-  is not eligible that day, with the same answers as for a missing grant, so
-  the payout worker skips it as it does today. A skipped day is not paid
-  later, as with a missing post.
-- **Prompt.** A member in the grant program without social recovery sees a
-  dialog on `/welcome`, like **Stell dich vor** (`IntroduceYourselfOverlay` in
-  the app). It says that grant payouts need social recovery and opens
+  shares for the new words. The api reads only whether such a share is stored,
+  never its content.
+- **Owner field.** The owner account JSON carries this fact, with no grant or
+  date check. The settings entry shows it, and the dialog and the payouts use
+  it.
+- **Payouts.** From a start date set when this is built, `eligibleToday`
+  (`src/lib/funding.ts`) also requires it. That function already requires the
+  grant for every payout. Without a share the account is not eligible, with
+  the same answers as for a missing grant, so the payout worker skips the day
+  as it does today. Such a day is handled like a day without a grant: it is
+  not paid, unless an operator replays it after the member has set up.
+- **Prompt.** From the release on, a member in the grant program whose owner
+  field is false sees a dialog on `/welcome`, like **Stell dich vor**
+  (`IntroduceYourselfOverlay` in the app). It says that grant payouts need
+  social recovery, names the start date while it lies ahead, and opens
   **Mein Konto absichern**. Closing it hides it until the next visit to
   `/welcome`. When both dialogs apply, **Stell dich vor** comes first.
-- **One check.** The owner account JSON carries whether the condition is met,
-  computed by the api with the same check as the payouts, so the dialog and
-  the payouts never disagree.
-- **Start.** The condition applies to payouts from a date set when this is
-  built, as `FUNDING_REQUIRED_FROM_UTC` did for the grant. The dialog shows
-  from the release on, so members can set up before that date.
 
 ## Recovery
 
@@ -386,7 +388,8 @@ Later, not needed for a first version:
   phone refuses a second share of the same set.
 - No person's share reaches the api. The api stores the 21.gifts share only
   encrypted under its own key, with the account id as additional data, and
-  has no path that decrypts, returns or uses it. `db_change` holds only its
+  has no path that decrypts or returns it or uses its content; it only checks
+  whether one is stored. `db_change` holds only its
   SHA-256, and a previous wallet's share stays until the owner drops that
   wallet.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a
@@ -406,8 +409,9 @@ Later, not needed for a first version:
 - **Social Recovery** is reachable from the settings, and nothing but grant
   payouts needs it.
 - From the start date, no payout goes to a member in the grant program without
-  a 21.gifts share for the account's current verified `spark_pubkey`, and the
-  dialog on `/welcome` shows exactly while that condition is open.
+  a 21.gifts share for the account's current verified `spark_pubkey`. From the
+  release on, such a member sees the dialog on each visit to `/welcome`,
+  unless they closed it during that visit or **Stell dich vor** is shown.
 
 ## Out of scope here
 
