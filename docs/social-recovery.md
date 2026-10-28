@@ -1,6 +1,7 @@
 # Securing the account
 
-Status: **concept only**. Decided 2026-10-27. Not implemented. No HTTP path in
+Status: **concept only**. Decided 2026-10-27, the keeping of the 21.gifts
+share 2026-10-28. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
@@ -43,13 +44,14 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 | ----- | ------------------------ | ------------------------------------- |
 | 1     | Person 1, on their phone | QR code, phone to phone               |
 | 2     | Person 2, on their phone | QR code, phone to phone               |
-| 3     | 21.gifts, as a backup    | Open, see [Open points](#open-points) |
+| 3     | 21.gifts, as a backup    | To the api at setup, stored encrypted |
 
 - Person 1 and person 2 are two different people with two different phones.
 - A person's share never reaches the 21.gifts server, sealed or not. The
   server stores nothing about who protects whom.
-- The 21.gifts share is a backup only. The api never reads, releases or uses
-  it. Using it is a manual 21.gifts process.
+- The 21.gifts share is a backup only. The api stores it encrypted and never
+  decrypts, returns or uses it. Using it is a manual 21.gifts process, see
+  [The 21.gifts share](#the-21gifts-share).
 - Any two holders act at once. There is no waiting period and no cancel
   window. Person 1 and person 2 together can recover the account and move the
   wallet without the owner. The owner is told this before choosing them.
@@ -83,16 +85,49 @@ happen remotely, for example with the QR code shown in a video call.
    never holds two shares of one set. The identifier is a random 15-bit value;
    if a new set happens to draw the identifier of an old set a person still
    holds, that phone refuses it too, and setup starts again with a new split.
-5. Share 3 goes to 21.gifts as described under [Open points](#open-points).
+5. The owner's phone, signed in, sends share 3 to the api, which stores it as
+   described under [The 21.gifts share](#the-21gifts-share).
 
 Remotely, both shares are never shown over the same call or service, and the
 call is not recorded: anyone who captures two shares can recover the account.
 
 Choosing other people later means a new setup with three new shares. A new
 setup does not revoke the old set, because the 12 words stay the same: any two
-old shares still rebuild them. Holders delete an old share by hand in their
-app when the owner asks. The app warns the owner that a removed person's share
-stays usable together with any other old share.
+old shares still rebuild them. The api replaces its stored share of that
+wallet with the new one. Holders delete an old share by hand in their app when the owner asks. The
+app warns the owner that a removed person's share stays usable together with
+any other old share.
+
+## The 21.gifts share
+
+- **Storage.** The api encrypts share 3 in the request that brings it and
+  stores only the ciphertext, under the account and its verified
+  `spark_pubkey` at that time, one per wallet. It uses AES-GCM under its own
+  32-byte key, not `NOSTR_NSEC_KEK`, with the account id as additional data,
+  in the envelope layout of `nostr_nsec_ciphertext` (`encryptNostrSecret` in
+  `src/lib/nostr/keys.ts`). The key comes from the deployment environment as 64
+  lowercase hex characters and is checked at boot like `NOSTR_NSEC_KEK`
+  (`parseNostrKek` in `src/lib/nostr/kek.ts`). 21.gifts also keeps it in its
+  password vault.
+- **Secret column.** The share's column is a secret column like
+  `nostr_nsec_ciphertext`: `db_change` keeps only its SHA-256
+  (`db_change_redact` in `src/lib/db-change.ts`), and `GET /debug/db` redacts
+  it (`DEBUG_DB_SECRET_COLUMNS` in `src/lib/debug-db.ts`). A replaced or
+  deleted share therefore leaves no copy. The change that builds this adds the
+  column to the lists of secret columns in CONTRIBUTING.md and CONCEPT.md.
+- **Previous wallets.** After a recovery, the share of the previous wallet
+  stays until the owner drops that wallet, so it can still help to move a
+  remaining balance.
+- **A leak.** The database alone gives no share. The database together with
+  the environment gives every stored 21.gifts share. This is accepted: one
+  share alone rebuilds nothing.
+- **No use by the api.** No route returns the share, nothing in the api
+  decrypts it, and no log contains it.
+- **Release.** A 21.gifts operator decrypts it by hand, outside the api, with
+  the key from the vault, and gives it to the owner as a QR code in the same
+  format as a person's share. 21.gifts releases no share until it has decided
+  how it confirms that the requester is the owner, see
+  [Open points](#open-points).
 
 ## Recovery
 
@@ -100,8 +135,8 @@ Recovery needs each person to meet the owner **in person**. The owner has a
 new phone with the 21.gifts app.
 
 1. The owner taps **Account über Social Recovery wiederherstellen**.
-2. The new phone scans the QR codes of person 1 and person 2, or the owner
-   types the old 12 words.
+2. The new phone scans two QR codes, of person 1 and person 2 or, after a
+   release, of one person and 21.gifts, or the owner types the old 12 words.
 3. The app rebuilds the old 12 words, opens the old wallet and starts a
    recovery ceremony with the old wallet's identity key and its signed address
    lookup (`POST /lnurlpay/<old key>/recover`), behind the same app build check
@@ -145,10 +180,26 @@ UTF-8, five lines, a newline between the lines, no trailing newline:
 
 The finish accepts it only when the public key returned by `signMessage` is
 the account's verified `spark_pubkey`, the signature verifies for this exact
-message, the challenge is the account's unconsumed `recovery` challenge inside
+message as described under [The signature](#the-signature), the challenge is the account's unconsumed `recovery` challenge inside
 `CHALLENGE_TTL_MS`, and the new passkey's attestation verifies with that
 challenge and carries the credential id named in the message, as the seed
 passkey finish does for the rest. It mints no session.
+
+### The signature
+
+The app calls `signMessage` of the Breez SDK pinned in the app (0.26.0) with
+`compact: true`. It signs with the wallet's identity key, the key behind
+`spark_pubkey`: ECDSA on secp256k1 over one SHA-256 of the message's UTF-8
+bytes, with no prefix, RFC 6979 nonces and a low S. It returns `pubkey` as 66
+lowercase hex characters, the compressed key that `getInfo().identityPubkey`
+also returns, and `signature` as 128 lowercase hex characters, `r` then `s`.
+The server verifies exactly that and refuses a signature with a high S.
+
+The same key signs the wallet's Spark login challenges, so the message starts
+with its own first line, `21gifts-account-recovery-v1`. The SDK refuses to
+sign a message that starts with `breez-lnurl:`, which this message never
+does. The implementation's tests pin one message, key and signature made by
+that SDK version.
 
 ### The commit
 
@@ -210,6 +261,16 @@ keeps these rules:
    no pending recovery remains, begin refuses and the account needs an
    operator.
 
+### The LNURL server
+
+The self-hosted LNURL server in use accepts `POST /lnurlpay/:pubkey/transfer`.
+It checks both signatures and moves the name within the request, in one
+database transaction, with no background work. It sets no time limit of its
+own on the whole request: it waits up to 30 seconds for a pooled database
+connection and without limit for its locks. The settling window therefore holds only if the server drops a request whose
+connection the api closed, and only if the api reaches the server with no
+proxy in between that would keep an aborted forward running.
+
 ### If not everything succeeds
 
 The button can be pressed again while the app still holds the old words; each
@@ -235,8 +296,11 @@ previous wallet and asks each person to delete their old share by hand.
 
 ## What the server stores
 
-No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
+No 12 words, no 16 bytes, no person's share and no PRF output, in no row and
+no log, and the 21.gifts share in no log.
 
+- The 21.gifts share, encrypted, for the current wallet and for each previous
+  wallet until the owner drops it.
 - The new passkey credential, as for any passkey.
 - `spark_pubkey` and `spark_address` of the current wallet, and of each
   previous wallet until the owner drops it.
@@ -252,9 +316,12 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 - **Whoever holds the 12 words** can recover the account, with or without
   shares.
 - **Old shares** stay valid until each holder deletes them.
-- **The server alone** cannot. It holds no readable share and cannot sign
-  with the wallet key.
-- **21.gifts and one person** can, through the manual backup process only.
+- **The server alone** cannot. With its environment it can read the 21.gifts
+  share, one share per wallet, and it cannot sign with the wallet key.
+- **A stolen database** gives no share. A stolen database with the
+  environment gives every 21.gifts share, still one per wallet.
+- **21.gifts and one person** can, through the manual release only, once
+  21.gifts has decided how it confirms the owner.
 - **A stranger with a fake QR code** has to stand in front of the person,
   because recovery happens in person.
 - **A stranger who replays a verified lookup** of the old wallet within the
@@ -272,16 +339,16 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
 
 ## Open points
 
-- **21.gifts share.** How 21.gifts keeps and manually releases its share.
-  Proposal: sealed to a 21.gifts offline key, so the api can never read it.
-- **LNURL server.** That the self-hosted LNURL server accepts
-  `POST /lnurlpay/:pubkey/transfer`, and moves no name later than twice
-  `LNURL_SERVER_TIMEOUT_MS` after the forward.
-- **Signature scheme.** The exact `signMessage` scheme, pinned with a test
-  vector.
-- **Later:** a printed copy of a person's share against cleared browser
-  storage, a confirmation code for remote setup, and NOSTR after v1, where
-  new 12 words would mean a new npub.
+- **Owner check before a release.** How 21.gifts confirms that the requester
+  is the owner before it releases its share. Until this is decided, 21.gifts
+  releases no share. Recovery with the two people or with the 12 words does not
+  need it.
+
+Later, not needed for a first version:
+
+- A printed copy of a person's share against cleared browser storage.
+- A confirmation code for remote setup.
+- NOSTR after v1, where new 12 words would mean a new npub.
 
 ## Acceptance criteria for a later implementation
 
@@ -289,19 +356,25 @@ No 12 words, no 16 bytes, no share and no PRF output, in no row and no log.
   original 12 words. One share does not.
 - Setup stops when the words do not open the account's verified wallet, and a
   phone refuses a second share of the same set.
-- No person's share reaches the api, and the api has no path that reads,
-  returns or uses the 21.gifts share.
+- No person's share reaches the api. The api stores the 21.gifts share only
+  encrypted under its own key, with the account id as additional data, and
+  has no path that decrypts, returns or uses it. `db_change` holds only its
+  SHA-256, and a previous wallet's share stays until the owner drops that
+  wallet.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a
   used or expired challenge, or for a `session_refused` account changes
-  nothing.
+  nothing. The pinned message, key and signature from the SDK verify, and the
+  same signature with a high S does not.
 - Until the LNURL server accepts the address claim, the account is unchanged.
+- A forward that the api aborts while the LNURL server waits for a lock moves
+  no name, tested against the deployed LNURL server build.
 - After the commit: one passkey credential, no old session or push
   subscription, the new key as verified `spark_pubkey`, the old key among the
   previous wallets, the same username and Lightning address.
 - The rules for the implementation hold, and at most one recovery per old key
   commits.
-- No row and no log contains the 12 words, the 16 bytes, a share or PRF
-  output.
+- No row contains the 12 words, the 16 bytes, a person's share, PRF output or
+  a readable 21.gifts share, and no log contains any of them.
 
 ## Out of scope here
 
