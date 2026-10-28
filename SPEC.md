@@ -7909,7 +7909,7 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
-- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required. An owner who continues chooses two people; 21.gifts keeps a backup share. Recovery keeps the account, gives it a new passkey with new 12 words and moves the wallet to it. No path in that document is reserved.
+- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required, except for grant payouts once it is built. An owner who continues chooses two people; 21.gifts keeps a backup share. Recovery keeps the account, gives it a new passkey with new 12 words and moves the wallet to it. No path in that document is reserved.
 - Shop identity ([docs/shop-identity.md](docs/shop-identity.md)). Not a v1 route. A shop's own NOSTR key, its page `/{npub}`, `GET /shops/:npub` and `shopNpub` are not built. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.

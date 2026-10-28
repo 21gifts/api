@@ -1,7 +1,7 @@
 # Securing the account
 
 Status: **concept only**. Decided 2026-10-27, the keeping of the 21.gifts
-share 2026-10-28. Not implemented. No HTTP path in
+share and the coupling to grant payouts 2026-10-28. Not implemented. No HTTP path in
 this document is reserved. A later change that builds this adds its routes to
 `SPEC.md` in that same change. Nothing here changes runtime behaviour.
 
@@ -59,8 +59,10 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 ## Who can use it
 
 Securing the account is optional. Sign-up, login and every other use work
-without it. Recovery needs a verified wallet (`spark_pubkey_verified_at` is
-set), because it is proven against that wallet key.
+without it, except the payouts of the grant program, see
+[Grant payouts](#grant-payouts). Recovery needs a verified wallet
+(`spark_pubkey_verified_at` is set), because it is proven against that wallet
+key.
 
 Recovery checks the old 12 words, not the shares. It also works with 12 words
 the owner wrote down, and for an account that never set up shares. Whoever
@@ -69,8 +71,11 @@ The app says so wherever it shows the 12 words.
 
 ## Setting it up
 
-The owner opens **Mein Konto absichern** and chooses two people. Setup may
-happen remotely, for example with the QR code shown in a video call.
+The owner finds **Social Recovery** in the settings, in the Wallet section
+below the recovery phrase (`#recovery` in `src/components/SettingsScreen.tsx`
+in the app). The entry shows whether social recovery is set up for the current
+wallet, and opens **Mein Konto absichern**, where the owner chooses two people.
+Setup may happen remotely, for example with the QR code shown in a video call.
 
 1. The owner's phone derives the 12 words as today and opens the wallet with
    them. If its identity public key is not the account's verified
@@ -85,8 +90,10 @@ happen remotely, for example with the QR code shown in a video call.
    never holds two shares of one set. The identifier is a random 15-bit value;
    if a new set happens to draw the identifier of an old set a person still
    holds, that phone refuses it too, and setup starts again with a new split.
-5. The owner's phone, signed in, sends share 3 to the api, which stores it as
-   described under [The 21.gifts share](#the-21gifts-share).
+5. Last, once both people hold their share, the owner's phone, signed in,
+   sends share 3 to the api, which stores it as described under
+   [The 21.gifts share](#the-21gifts-share). The stored share for the current
+   wallet is what marks social recovery as set up.
 
 Remotely, both shares are never shown over the same call or service, and the
 call is not recorded: anyone who captures two shares can recover the account.
@@ -125,6 +132,32 @@ any other old share.
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.
+
+## Grant payouts
+
+For a member in the grant program, an admitted grant or a trial on today's
+UTC day, social recovery is a payout condition.
+
+- **Set up** means that the api holds a 21.gifts share for the account's
+  current verified `spark_pubkey`. A share of a previous wallet does not count,
+  so after a recovery the condition is open again until the owner sets up
+  shares for the new words.
+- **Payouts.** The condition joins `eligibleToday` (`src/lib/funding.ts`),
+  which already requires the grant for every payout. Without it the account
+  is not eligible that day, with the same answers as for a missing grant, so
+  the payout worker skips it as it does today. A skipped day is not paid
+  later, as with a missing post.
+- **Prompt.** A member in the grant program without social recovery sees a
+  dialog on `/welcome`, like **Stell dich vor** (`IntroduceYourselfOverlay` in
+  the app). It says that grant payouts need social recovery and opens
+  **Mein Konto absichern**. Closing it hides it until the next visit to
+  `/welcome`. When both dialogs apply, **Stell dich vor** comes first.
+- **One check.** The owner account JSON carries whether the condition is met,
+  computed by the api with the same check as the payouts, so the dialog and
+  the payouts never disagree.
+- **Start.** The condition applies to payouts from a date set when this is
+  built, as `FUNDING_REQUIRED_FROM_UTC` did for the grant. The dialog shows
+  from the release on, so members can set up before that date.
 
 ## Recovery
 
@@ -287,9 +320,11 @@ wallet once its balance is 0.
 
 The app shows the new 12 words and says that words written down earlier now
 open only the previous wallet. It asks the owner to set up new shares for the
-new words. The old shares stay on the people's phones, told apart by the
-owner's account id and the SLIP-39 identifier, until the owner drops the
-previous wallet and asks each person to delete their old share by hand.
+new words. For a member in the grant program, payouts wait for that, see
+[Grant payouts](#grant-payouts). The old shares stay on the people's phones,
+told apart by the owner's account id and the SLIP-39 identifier, until the
+owner drops the previous wallet and asks each person to delete their old share
+by hand.
 
 ## What the server stores
 
@@ -367,11 +402,17 @@ Later, not needed for a first version:
   commits.
 - No row contains the 12 words, the 16 bytes, a person's share, PRF output or
   a readable 21.gifts share, and no log contains any of them.
+- **Social Recovery** is reachable from the settings, and nothing but grant
+  payouts needs it.
+- From the start date, no payout goes to a member in the grant program without
+  a 21.gifts share for the account's current verified `spark_pubkey`, and the
+  dialog on `/welcome` shows exactly while that condition is open.
 
 ## Out of scope here
 
 - Any route, table, screen or migration.
 - Splitting the passkey private key.
 - On-chain multisig. This is Shamir secret sharing of the seed.
-- Requiring **Mein Konto absichern** for sign-up, login or any other use.
+- Requiring **Mein Konto absichern** for sign-up, login or any use other than
+  grant payouts.
 - Moving funds of an external Lightning wallet.
