@@ -147,8 +147,9 @@ UTC day, social recovery is a payout condition.
   shares for the new words. The api reads only whether such a share is stored,
   never its content.
 - **Owner field.** The owner account JSON carries this fact, with no grant or
-  date check. The settings entry shows it, and the dialog and the payouts use
-  it.
+  date check, and the start date from the same constant that `eligibleToday`
+  reads, so the app keeps no date of its own. The settings entry shows the
+  fact, and the dialog and the payouts use it.
 - **Payouts.** From a start date set when this is built, `eligibleToday`
   (`src/lib/funding.ts`) also requires it. That function already requires the
   grant for every payout. Without a share the account is not eligible, with
