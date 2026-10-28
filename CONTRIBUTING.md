@@ -486,7 +486,7 @@ LNURL-pay;
 `satsToUsdCents`, `usdCentsToFiatCents`, `parseUsdPerBtc`, and `utcDayFromPaidAt`, which need a non-empty gift list;
 `PostgresShopIdentityStore` and `migrateShopIdentitySchema`, which need `DATABASE_URL`;
 `signEventForShop`, which only the Nostr worker calls (it needs `DATABASE_URL`, `NOSTR_NSEC_KEK`, and a publisher);
-`shopOcpPlaceInput`, `runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`)),
+`shopOcpPlaceInput`, `runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, `queueAllShopPhotos`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`)),
 that test still exists and asserts the default-boot outcome that proves it is
 not invoked (verification `503`, spend invoices unconfigured `503`, a
 healthy process with `DATABASE_URL` blank, or a listed shop served while its outbox stays unsent). Playwright `webServer.env` pins

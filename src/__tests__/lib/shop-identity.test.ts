@@ -108,6 +108,8 @@ describe('adoptKnownSecret', () => {
       profileName: 'Coffee Lab',
       ocpPlacePending: false,
       ocpPlaceGeneration: 0,
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
       ocpRevision: 0,
     });
     expect(first.nostrKeyCreatedAt.getTime()).toBe(clock.now);
@@ -129,6 +131,8 @@ describe('adoptKnownSecret', () => {
     const row = await store.adoptKnownSecret(ID_A, secret(4), KEK);
     expect(row.profileName).toBe('Coffee Lab');
     expect(row.ocpPlacePending).toBe(false);
+    expect(row.ocpPhotosPending).toBe(false);
+    expect(row.ocpPhotosGeneration).toBe(0);
   });
 
   it('uses Shop when the note has no public name and no label', async () => {
@@ -297,6 +301,12 @@ describe('migrateShopIdentitySchema', () => {
       expect(replace).toBeLessThan(drop);
       expect(drop).toBeLessThan(create);
     }
+    const cover = steps[1] as string;
+    expect(cover).toContain("NEW.text ~* '#21giftsshop([^a-z0-9_]|$)'");
+    expect(cover).not.toContain('NEW.place_lat');
+    const extra = steps[2] as string;
+    expect(extra).toContain("m.text ~* '#21giftsshop([^a-z0-9_]|$)'");
+    expect(extra).not.toContain('m.place_lat');
     expect(
       SHOP_IDENTITY_SCHEMA_SQL.filter((s) => s.includes('CREATE OR REPLACE FUNCTION')),
     ).toHaveLength(3);
@@ -315,7 +325,8 @@ describe('InMemoryShopIdentityStore key creation', () => {
       profileName: 'Coffee Lab',
       ocpPlacePending: true,
       ocpPlaceGeneration: 1,
-      ocpPhotosPending: false,
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
       ocpRevision: 0,
     });
     expect(first?.nostrKeyCreatedAt.getTime()).toBe(clock.now);
@@ -842,7 +853,7 @@ describe('InMemoryShopIdentityStore listRound', () => {
 });
 
 describe('InMemoryShopIdentityStore queueing', () => {
-  it('queues a place change of any note with a key and a photo change only while listed', async () => {
+  it('queues a place change of any note with a key and a photo change only while public', async () => {
     const { messages, store } = setup();
     await store.ensureListed(ID_A, KEK, keygenFrom(2));
     const claim = (await store.claimPlaces(20, 60_000))[0]!;
@@ -851,19 +862,101 @@ describe('InMemoryShopIdentityStore queueing', () => {
     expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosPending: true });
     const photoGen = row.ocpPhotosGeneration;
 
+    expect(photoGen).toBe(2);
+
     await messages.updateText(ID_A, `${TEXT} More beans.`);
     row = (await store.getByMessageId(ID_A))!;
-    expect(row).toMatchObject({ ocpPlacePending: true, ocpPlaceGeneration: 2 });
+    expect(row).toMatchObject({
+      ocpPlacePending: true,
+      ocpPlaceGeneration: 2,
+      ocpPhotosGeneration: photoGen + 1,
+      ocpRevision: 0,
+    });
 
     await messages.replacePhotos(ID_A, [PNG, JPEG]);
     row = (await store.getByMessageId(ID_A))!;
-    expect(row.ocpPhotosGeneration).toBe(photoGen + 1);
+    expect(row.ocpPhotosGeneration).toBe(photoGen + 2);
 
     await messages.markDeleted(ID_A, new Date(0), 'staff');
     await messages.replacePhotos(ID_A, [JPEG]);
     row = (await store.getByMessageId(ID_A))!;
     expect(row.ocpPlaceGeneration).toBe(3);
-    expect(row.ocpPhotosGeneration).toBe(photoGen + 1);
+    expect(row.ocpPhotosGeneration).toBe(photoGen + 2);
+  });
+
+  it('queues photos once when an adopted note later becomes a public shop', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, TEXT);
+    await messages.setShopAccount(ID_A, { id: 'till', username: 'coffee', name: 'Coffee' });
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
+      ocpPlacePending: true,
+      ocpRevision: 0,
+    });
+    expect((await messages.getById(ID_A))?.place?.address).toBeNull();
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(1);
+  });
+
+  it('queues a place change of a note that stays private and leaves its photos', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        shopAccount: null,
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, 'Still no shop tag, only a longer note about coffee.');
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPlacePending: true,
+      ocpPhotosPending: false,
+      ocpPhotosGeneration: 0,
+      ocpRevision: 0,
+    });
+    expect((await messages.getById(ID_A))?.place?.address).toBeNull();
+  });
+
+  it('queues photos once when a note becomes public and its photos change together', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        text: 'No shop tag in this long enough note.',
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.adoptKnownSecret(ID_A, secret(4), KEK);
+    await messages.updateText(ID_A, TEXT);
+    await messages.replacePhotos(ID_A, [PNG]);
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row).toMatchObject({
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
+      ocpRevision: 0,
+    });
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(1);
+  });
+
+  it('queues a photo change of a public shop that is not listed', async () => {
+    const { messages, store } = setup([
+      shopRow(ID_A, {
+        place: { lat: 47.3, lng: 8.5, label: 'Coffee Lab', address: null },
+      }),
+    ]);
+    await store.ensureListed(ID_A, KEK, keygenFrom(2));
+    const before = (await store.getByMessageId(ID_A))!.ocpPhotosGeneration;
+    await messages.replacePhotos(ID_A, [PNG]);
+    const row = (await store.getByMessageId(ID_A))!;
+    expect(row.ocpPhotosPending).toBe(true);
+    expect(row.ocpPhotosGeneration).toBe(before + 1);
   });
 
   it('treats a vanished note as a place change', async () => {
@@ -891,6 +984,9 @@ describe('InMemoryShopIdentityStore queueing', () => {
     expect(await store.queueAllPlacePage(null, 2)).toEqual([ID_A, ID_B]);
     expect(await store.queueAllPlacePage(ID_B, 2)).toEqual([ID_C]);
     expect((await store.getByMessageId(ID_A))?.ocpPlaceGeneration).toBe(2);
+    expect(await store.queueAllPhotoPage(null, 2)).toEqual([ID_A, ID_B]);
+    expect(await store.queueAllPhotoPage(ID_B, 2)).toEqual([ID_C]);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(2);
   });
 });
 
@@ -1134,7 +1230,7 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPlacePending: false,
       ocpPlaceClaimedUntil: new Date(clock.now),
       ocpPhotosPending: true,
-      ocpPhotosGeneration: 1,
+      ocpPhotosGeneration: 2,
     });
 
     await messages.updateText(ID_A, `${TEXT} Change one.`);
@@ -1146,7 +1242,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     expect(row).toMatchObject({
       ocpPlacePending: true,
       ocpPlaceClaimedUntil: new Date(clock.now),
-      ocpPhotosGeneration: 1,
+      ocpPhotosGeneration: 4,
     });
 
     const third = (await store.claimPlaces(1, 60_000))[0]!;
@@ -1157,17 +1253,17 @@ describe('InMemoryShopIdentityStore claims', () => {
       ocpPlacePending: true,
       ocpPhotosHash: null,
       ocpPhotosPending: true,
-      ocpPhotosGeneration: 2,
+      ocpPhotosGeneration: 6,
     });
 
     const fourth = (await store.claimPlaces(1, 60_000))[0]!;
     await store.finishPlace(fourth, 'created');
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(3);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(7);
 
     await messages.updateText(ID_A, `${TEXT} Change four.`);
     await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'delete');
     row = (await store.getByMessageId(ID_A))!;
-    expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosGeneration: 3 });
+    expect(row).toMatchObject({ ocpPlacePending: false, ocpPhotosGeneration: 8 });
 
     await messages.updateText(ID_A, `${TEXT} Change five.`);
     await store.finishPlace((await store.claimPlaces(1, 60_000))[0]!, 'reject');
@@ -1177,19 +1273,20 @@ describe('InMemoryShopIdentityStore claims', () => {
   it('resets the photo outbox before a delete under the place token', async () => {
     const { store, claim } = await claimed();
     await store.resetPhotosForDelete({ ...claim, claim: 9 });
-    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(0);
+    expect((await store.getByMessageId(ID_A))?.ocpPhotosGeneration).toBe(1);
     await store.resetPhotosForDelete(claim);
     expect(await store.getByMessageId(ID_A)).toMatchObject({
       ocpPhotosHash: null,
       ocpPhotosPending: false,
-      ocpPhotosGeneration: 1,
+      ocpPhotosGeneration: 2,
     });
   });
 
-  it('does not claim photos while the place was never sent', async () => {
+  it('claims photos at revision 0 once the place is not pending', async () => {
     const { store, claim } = await claimed();
-    await store.finishPlace(claim, 'put');
     expect(await store.claimPhoto(60_000)).toBeUndefined();
+    await store.finishPlace(claim, 'put');
+    expect(await store.claimPhoto(60_000)).toEqual({ messageId: ID_A, generation: 2, claim: 1 });
     expect((await store.getByMessageId(ID_A))?.ocpRevision).toBe(0);
     expect((await store.getByMessageId(ID_A))?.ocpPhotosPending).toBe(true);
   });
@@ -1200,7 +1297,7 @@ describe('InMemoryShopIdentityStore claims', () => {
     await store.nextRevision('place', claim);
     await store.finishPlace(claim, 'put');
     const photo = await store.claimPhoto(60_000);
-    expect(photo).toEqual({ messageId: ID_A, generation: 1, claim: 1 });
+    expect(photo).toEqual({ messageId: ID_A, generation: 2, claim: 1 });
     expect(await store.leaseHasTime('photos', photo!, 60_000)).toBe(true);
     expect(await store.leaseHasTime('photos', photo!, 60_001)).toBe(false);
     expect(await store.claimPhoto(60_000)).toBeUndefined();
@@ -1551,18 +1648,73 @@ describe('PostgresShopIdentityStore', () => {
     const { sql, calls } = fakeSql([
       [],
       [],
-      [sqlIdentity({ ocp_place_pending: false, ocp_place_generation: 0 })],
+      [
+        sqlIdentity({
+          ocp_place_pending: false,
+          ocp_place_generation: 0,
+          ocp_photos_pending: true,
+          ocp_photos_generation: 1,
+        }),
+      ],
     ]);
     const store = new PostgresShopIdentityStore(sql, messages);
     const created = await store.adoptKnownSecret(ID_A, secret(2), KEK);
     expect(created?.ocpPlacePending).toBe(false);
     expect(created?.ocpPlaceGeneration).toBe(0);
-    expect(calls[2]?.text).toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)');
-    expect(calls[2]?.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(created?.ocpPhotosPending).toBe(true);
+    expect(created?.ocpPhotosGeneration).toBe(1);
+    const insert = calls[2]!;
+    expect(insert.text).toContain('WITH locked AS');
+    expect(insert.text).toContain('FOR UPDATE');
+    expect(insert.text).toContain('WHERE id = $1');
+    expect(insert.text).toContain('#21giftsshop([^a-z0-9_]|$)');
+    expect(insert.text).toContain('false, 0,');
+    expect(insert.text).toContain('CASE WHEN');
+    expect(insert.text).toContain('THEN true ELSE false END');
+    expect(insert.text).toContain('THEN 1 ELSE 0 END');
+    expect(insert.text).toContain('FROM locked');
+    expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, true, 1)');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, false, 0)');
     expect(calls[2]?.params[1]).toBe(publicKeyHexFromSecret(secret(2)));
     const plain = await decryptNostrSecret(calls[2]?.params[2] as Uint8Array, KEK, `shop:${ID_A}`);
     expect([...plain]).toEqual([...secret(2)]);
     expect(calls[2]?.params[6]).toBe('Coffee Lab');
+  });
+
+  it('inserts an adopted secret of a note that is not a public shop without queueing photos', async () => {
+    const { sql, calls } = fakeSql([
+      [],
+      [],
+      [
+        sqlIdentity({
+          message_id: ID_B,
+          ocp_place_pending: false,
+          ocp_place_generation: 0,
+          ocp_photos_pending: false,
+          ocp_photos_generation: 0,
+        }),
+      ],
+    ]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    const created = await store.adoptKnownSecret(ID_B, secret(2), KEK);
+    expect(created.ocpPlacePending).toBe(false);
+    expect(created.ocpPlaceGeneration).toBe(0);
+    expect(created.ocpPhotosPending).toBe(false);
+    expect(created.ocpPhotosGeneration).toBe(0);
+    const insert = calls[2]!;
+    expect(insert.text).toContain('WITH locked AS');
+    expect(insert.text).toContain('FOR UPDATE');
+    expect(insert.text).toContain('WHERE id = $1');
+    expect(insert.text).toContain('#21giftsshop([^a-z0-9_]|$)');
+    expect(insert.text).toContain('false, 0,');
+    expect(insert.text).toContain('CASE WHEN');
+    expect(insert.text).toContain('THEN true ELSE false END');
+    expect(insert.text).toContain('THEN 1 ELSE 0 END');
+    expect(insert.text).toContain('FROM locked');
+    expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, true, 1)');
+    expect(insert.text).not.toContain('VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0, false, 0)');
   });
 
   it('returns the stored row when the adopted key is already there', async () => {
@@ -1633,8 +1785,9 @@ describe('PostgresShopIdentityStore', () => {
     const insert = calls[1]!;
     expect(insert.text).toContain('FOR UPDATE');
     expect(insert.text).toContain('ON CONFLICT (message_id) DO NOTHING');
-    expect(insert.text).toContain('true, 1 FROM locked');
-    expect(insert.text).toContain('SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked');
+    expect(insert.text).toContain(
+      'SELECT $1, $11, $12, $13, $14, $15, $16, true, 1, true, 1 FROM locked',
+    );
     expect(insert.params[0]).toBe(ID_A);
     expect(insert.params.slice(1, 10)).toEqual(SNAPSHOT);
     expect(insert.params[10]).toBe(publicKeyHexFromSecret(secret(2)));
@@ -1909,6 +2062,19 @@ describe('PostgresShopIdentityStore', () => {
     expect(calls[1]?.text).not.toContain('IS NULL');
   });
 
+  it('queues a photo page of identities by message id', async () => {
+    const { sql, calls } = fakeSql([[{ message_id: ID_B }, { message_id: ID_A }], []]);
+    const store = new PostgresShopIdentityStore(sql, messages);
+    expect(await store.queueAllPhotoPage(null, 200)).toEqual([ID_A, ID_B]);
+    expect(calls[0]?.params).toEqual([200]);
+    expect(calls[0]?.text).toContain('ocp_photos_pending = true');
+    expect(calls[0]?.text).toContain('ocp_photos_generation = s.ocp_photos_generation + 1');
+    expect(calls[0]?.text).not.toContain('WHERE message_id >');
+    expect(await store.queueAllPhotoPage(ID_B, 200)).toEqual([]);
+    expect(calls[1]?.params).toEqual([200, ID_B]);
+    expect(calls[1]?.text).toContain('WHERE message_id > $2::uuid ORDER BY message_id LIMIT $1');
+  });
+
   it('claims places and photos with the database clock', async () => {
     const { sql, calls } = fakeSql([
       [{ message_id: ID_A, ocp_place_generation: 2, ocp_place_claim: '4' }],
@@ -1926,8 +2092,9 @@ describe('PostgresShopIdentityStore', () => {
     );
     expect(calls[0]?.params).toEqual([20, 60_000]);
     expect(await store.claimPhoto(60_000)).toEqual({ messageId: ID_A, generation: 3, claim: 5 });
+    expect(calls[1]?.text).toContain('ocp_photos_pending');
     expect(calls[1]?.text).toContain('NOT ocp_place_pending');
-    expect(calls[1]?.text).toContain('ocp_revision > 0');
+    expect(calls[1]?.text).not.toContain('ocp_revision > 0');
     expect(calls[1]?.text).toContain(
       'ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id',
     );
