@@ -1,9 +1,10 @@
 # Securing the account
 
 Status: **concept only**. Decided 2026-10-27, the keeping of the 21.gifts
-share and the coupling to grant payouts 2026-10-28. Not implemented. No HTTP path in
-this document is reserved. A later change that builds this adds its routes to
-`SPEC.md` in that same change. Nothing here changes runtime behaviour.
+share and the coupling to grant payouts 2026-10-28. Not implemented. No HTTP
+path in this document is reserved. A later change that builds this adds its
+routes to `SPEC.md` in that same change. Nothing here changes runtime
+behaviour.
 
 This replaces the design of 2026-09-29 and 2026-09-30 (two required people, a
 48-hour wait, a server-side bind key, a seed wrap, a moderator suggested as
