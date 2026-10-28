@@ -50,8 +50,8 @@ shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 - A person's share never reaches the 21.gifts server, sealed or not. The
   server stores nothing about who protects whom.
 - The 21.gifts share is a backup only. The api stores it encrypted and never
-  decrypts, returns or uses it. Using it is a manual 21.gifts process, see
-  [The 21.gifts share](#the-21gifts-share).
+  decrypts, returns or uses it. No release is planned; 21.gifts keeps it only
+  as an option, see [The 21.gifts share](#the-21gifts-share).
 - Any two holders act at once. There is no waiting period and no cancel
   window. Person 1 and person 2 together can recover the account and move the
   wallet without the owner. The owner is told this before choosing them.
@@ -116,18 +116,15 @@ any other old share.
   deleted share therefore leaves no copy. The change that builds this adds the
   column to the lists of secret columns in CONTRIBUTING.md and CONCEPT.md.
 - **Previous wallets.** After a recovery, the share of the previous wallet
-  stays until the owner drops that wallet, so it can still help to move a
-  remaining balance.
+  stays until the owner drops that wallet.
 - **A leak.** The database alone gives no share. The database together with
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
 - **No use by the api.** No route returns the share, nothing in the api
   decrypts it, and no log contains it.
-- **Release.** A 21.gifts operator decrypts it by hand, outside the api, with
-  the key from the vault, and gives it to the owner as a QR code in the same
-  format as a person's share. 21.gifts releases no share until it has decided
-  how it confirms that the requester is the owner, see
-  [Open points](#open-points).
+- **No planned release.** 21.gifts plans no release of its share and keeps it
+  only as an option. Using it would be a manual process outside the api, with
+  the key from the vault.
 
 ## Recovery
 
@@ -135,8 +132,8 @@ Recovery needs each person to meet the owner **in person**. The owner has a
 new phone with the 21.gifts app.
 
 1. The owner taps **Account über Social Recovery wiederherstellen**.
-2. The new phone scans two QR codes, of person 1 and person 2 or, after a
-   release, of one person and 21.gifts, or the owner types the old 12 words.
+2. The new phone scans the QR codes of person 1 and person 2, or the owner
+   types the old 12 words.
 3. The app rebuilds the old 12 words, opens the old wallet and starts a
    recovery ceremony with the old wallet's identity key and its signed address
    lookup (`POST /lnurlpay/<old key>/recover`), behind the same app build check
@@ -320,8 +317,8 @@ no log, and the 21.gifts share in no log.
   share, one share per wallet, and it cannot sign with the wallet key.
 - **A stolen database** gives no share. A stolen database with the
   environment gives every 21.gifts share, still one per wallet.
-- **21.gifts and one person** can, through the manual release only, once
-  21.gifts has decided how it confirms the owner.
+- **21.gifts and one person** could rebuild the words, by hand and outside
+  the api. No release is planned.
 - **A stranger with a fake QR code** has to stand in front of the person,
   because recovery happens in person.
 - **A stranger who replays a verified lookup** of the old wallet within the
@@ -338,11 +335,6 @@ no log, and the 21.gifts share in no log.
   can make the account unrecoverable.
 
 ## Open points
-
-- **Owner check before a release.** How 21.gifts confirms that the requester
-  is the owner before it releases its share. Until this is decided, 21.gifts
-  releases no share. Recovery with the two people or with the 12 words does not
-  need it.
 
 Later, not needed for a first version:
 
