@@ -159,25 +159,25 @@ The shop description is the note text without the `#21GiftsShop` token
 New table `shop_identity`. The key columns have the same names as on
 `account`:
 
-| Column                     | Type                   | Rule                                                                                                                      |
-| -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------- |
-| `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                                                                                                 |
-| `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                                                                                          |
-| `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                                                                                            |
-| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                                                                                  |
-| `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                                                                                |
-| `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                                                                             |
-| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is public (1)                                                                      |
-| `ocp_photos_hash`          | `text NULL`            | SHA-256 of the photo set last answered by S5                                                                              |
-| `ocp_photos_pending`       | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)                                                                                 |
-| `ocp_photos_generation`    | `integer NOT NULL`     | Default `0`; raised once when a public shop's photos or place fields change (S5)                                          |
-| `ocp_photos_claimed_until` | `timestamptz NULL`     | Photo push claimed until then (S5)                                                                                        |
-| `ocp_photos_claim`         | `integer NOT NULL`     | Default `0`; raised by every photo claim (S5)                                                                             |
-| `ocp_place_pending`        | `boolean NOT NULL`     | Default `false`; a place push is due (S5)                                                                                 |
-| `ocp_place_generation`     | `integer NOT NULL`     | Default `0`; raised by every place change (S5)                                                                            |
-| `ocp_place_claimed_until`  | `timestamptz NULL`     | Place push claimed until then (S5)                                                                                        |
-| `ocp_place_claim`          | `integer NOT NULL`     | Default `0`; raised by every place claim (S5)                                                                             |
-| `ocp_revision`             | `bigint NOT NULL`      | Default `0`; raised only by a request that carries a revision; a photo request while it is still 0 does not raise it (S5) |
+| Column                     | Type                   | Rule                                                                                                                           |
+| -------------------------- | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| `message_id`               | `uuid PRIMARY KEY`     | `REFERENCES message (id)`                                                                                                      |
+| `nostr_pubkey`             | `text NOT NULL UNIQUE` | 64 lowercase hex                                                                                                               |
+| `nostr_nsec_ciphertext`    | `bytea NOT NULL`       | Envelope below                                                                                                                 |
+| `nostr_kek_id`             | `integer NOT NULL`     | Only `1`                                                                                                                       |
+| `nostr_key_custody`        | `text NOT NULL`        | `CHECK` `custodial` or `user`; `custodial`                                                                                     |
+| `nostr_key_created_at`     | `timestamptz NOT NULL` | Set on insert                                                                                                                  |
+| `profile_name`             | `text NOT NULL`        | Shop name, rewritten whenever the shop is public (1)                                                                           |
+| `ocp_photos_hash`          | `text NULL`            | SHA-256 of the photo set last answered by S5                                                                                   |
+| `ocp_photos_pending`       | `boolean NOT NULL`     | Default `false`; a photo push is due (S5)                                                                                      |
+| `ocp_photos_generation`    | `integer NOT NULL`     | Default `0`; raised by each matching photo or place queue trigger, and once per changed fingerprint by the in-memory sync (S5) |
+| `ocp_photos_claimed_until` | `timestamptz NULL`     | Photo push claimed until then (S5)                                                                                             |
+| `ocp_photos_claim`         | `integer NOT NULL`     | Default `0`; raised by every photo claim (S5)                                                                                  |
+| `ocp_place_pending`        | `boolean NOT NULL`     | Default `false`; a place push is due (S5)                                                                                      |
+| `ocp_place_generation`     | `integer NOT NULL`     | Default `0`; raised by every place change (S5)                                                                                 |
+| `ocp_place_claimed_until`  | `timestamptz NULL`     | Place push claimed until then (S5)                                                                                             |
+| `ocp_place_claim`          | `integer NOT NULL`     | Default `0`; raised by every place claim (S5)                                                                                  |
+| `ocp_revision`             | `bigint NOT NULL`      | Default `0`; raised only by a request that carries a revision; a photo request while it is still 0 does not raise it (S5)      |
 
 (1) Written on insert, by every write path that calls `ensureListed` while
 the note is public, and by the worker before it publishes a public shop's
