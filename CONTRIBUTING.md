@@ -123,7 +123,7 @@ api/
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap/conversation payloads
 │   │   ├── push-store.ts     # PushStore port, memory + Postgres, PUSH_SCHEMA_SQL
 │   │   ├── push-sender.ts    # PushSender port, UnconfiguredPushSender, WebPushSender
-│   │   ├── push-worker.ts    # enqueue + outbox tick
+│   │   ├── push-worker.ts    # enqueue + outbox tick + session check + subscription/outbox sweep
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)

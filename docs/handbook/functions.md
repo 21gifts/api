@@ -771,7 +771,7 @@
 
 - **Purpose:** Member Web Push HTTP: public VAPID key plus subscription upsert/delete for the signed-in account.
 - **Inputs:** `PushRouteDeps` (`authStore`, `pushStore`, `now`, optional `vapidPublicKey`).
-- **Returns / side effects:** Hono app with full path literals `/push/vapid-public` and `/me/push-subscriptions`. Session 401 before unconfigured 503.
+- **Returns / side effects:** Hono app with full path literals `/push/vapid-public` and `/me/push-subscriptions`. Session 401 before unconfigured 503. `POST /me/push-subscriptions` stores the bearer token of the request as the subscription's `sessionToken`; a re-POST from another session rebinds the endpoint to it. The push worker sends only while that session resolves for the account and deletes the subscription once it does not.
 - **Used by:** `createApp` mounted at `/`.
 
 ## Function: debugPushRoutes
