@@ -129,7 +129,7 @@ any other old share.
 - **A leak.** The database alone gives no share. The database together with
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
-- **No use by the api.** No route returns the share, nothing in the api
+- **No use of its content.** No route returns the share, nothing in the api
   decrypts it, and no log contains it. The api only checks whether one is
   stored for the current wallet, see [Grant payouts](#grant-payouts).
 - **No planned release.** 21.gifts plans no release of its share and keeps it
@@ -152,9 +152,12 @@ UTC day, social recovery is a payout condition.
 - **Payouts.** From a start date set when this is built, `eligibleToday`
   (`src/lib/funding.ts`) also requires it. That function already requires the
   grant for every payout. Without a share the account is not eligible, with
-  the same answers as for a missing grant, so the payout worker skips the day
-  as it does today. Such a day is handled like a day without a grant: it is
-  not paid, unless an operator replays it after the member has set up.
+  the same answers as for a missing grant, so the payout worker skips the
+  trigger as it does today. Storing the share pings that UTC day's newest
+  media post, as `pingTodayMedia` (`src/routes/funding.ts`) does when staff
+  admit a grant, and later triggers that day pay as usual. A day that ends
+  without a share is not paid, except by an operator replay, which checks
+  eligibility when it runs.
 - **Prompt.** From the release on, a member in the grant program whose owner
   field is false sees a dialog on `/welcome`, like **Stell dich vor**
   (`IntroduceYourselfOverlay` in the app). It says that grant payouts need
