@@ -57,9 +57,9 @@ BEGIN
 END;
 $shop_identity$;
 
--- Live top-level till notes that have a latitude. The directory and the key
--- backfill do not use this index: their query does not require place_lat.
--- Photo triggers still require the full listed shape in their WHEN clause.
+-- Live top-level till notes that have a latitude. The directory, the key
+-- backfill and the photo triggers do not use this index: a pin is not
+-- required for a public shop to be queued.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
@@ -90,7 +90,8 @@ $shop_identity$;
 -- Place outbox: every write that changes the text, pin, till account or
 -- deleted_at of a note queues its row, in the writing transaction. A key that
 -- a concurrent insert committed is seen because each PL/pgSQL statement takes
--- a fresh snapshot after the message row is locked.
+-- a fresh snapshot after the message row is locked. A public shop also queues
+-- its photos.
 -- Each trigger function is replaced and its trigger dropped and recreated in
 -- one step that first takes ACCESS EXCLUSIVE on its table, the lock DROP
 -- TRIGGER needs, so no writer ever sees the table without the trigger and
@@ -104,6 +105,12 @@ BEGIN
     UPDATE shop_identity SET ocp_place_pending = true,
       ocp_place_generation = ocp_place_generation + 1
     WHERE message_id = NEW.id;
+    IF NEW.parent_id IS NULL AND NEW.deleted_at IS NULL AND NEW.shop_account_id IS NOT NULL
+       AND NEW.text ~* '#21giftsshop([^a-z0-9_]|$)' THEN
+      UPDATE shop_identity SET ocp_photos_pending = true,
+        ocp_photos_generation = ocp_photos_generation + 1
+      WHERE message_id = NEW.id;
+    END IF;
     RETURN NEW;
   END
   $$ LANGUAGE plpgsql;
@@ -128,10 +135,10 @@ END;
 $shop_identity$;
 
 -- Photo outbox: a change of photo 0 (message.photo) or of an extra still
--- (message_extra_photo, idx 1-9) queues the row while the note has the listed shape
--- (live, top-level, till account, complete pin columns, shop tag). The text
--- rules of #478 are checked by the photo sender, which clears the flag
--- without a request for a note that is not listed.
+-- (message_extra_photo, idx 1-9) queues the row while the note is a public
+-- shop (live, top-level, till account, shop tag). A pin is not required.
+-- The photo sender clears the flag without a request for a note that is
+-- not a public shop.
 DO $shop_identity$
 BEGIN
   PERFORM pg_advisory_xact_lock(21499001);
@@ -139,10 +146,7 @@ BEGIN
   CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
   BEGIN
     IF NEW.parent_id IS NULL AND NEW.deleted_at IS NULL AND NEW.shop_account_id IS NOT NULL
-       AND NEW.place_lat IS NOT NULL AND NEW.place_lng IS NOT NULL AND NEW.place_label IS NOT NULL
-       AND NEW.place_street IS NOT NULL AND NEW.place_house_number IS NOT NULL
-       AND NEW.place_postal_code IS NOT NULL AND NEW.place_city IS NOT NULL
-       AND NEW.place_country IS NOT NULL AND NEW.text ~* '#21giftsshop([^a-z0-9_]|$)' THEN
+       AND NEW.text ~* '#21giftsshop([^a-z0-9_]|$)' THEN
       UPDATE shop_identity SET ocp_photos_pending = true,
         ocp_photos_generation = ocp_photos_generation + 1
       WHERE message_id = NEW.id;
@@ -178,10 +182,7 @@ BEGIN
     WHERE message_id = target AND EXISTS (
       SELECT 1 FROM message m WHERE m.id = target
         AND m.parent_id IS NULL AND m.deleted_at IS NULL AND m.shop_account_id IS NOT NULL
-        AND m.place_lat IS NOT NULL AND m.place_lng IS NOT NULL AND m.place_label IS NOT NULL
-        AND m.place_street IS NOT NULL AND m.place_house_number IS NOT NULL
-        AND m.place_postal_code IS NOT NULL AND m.place_city IS NOT NULL
-        AND m.place_country IS NOT NULL AND m.text ~* '#21giftsshop([^a-z0-9_]|$)'
+        AND m.text ~* '#21giftsshop([^a-z0-9_]|$)'
     );
     IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
     RETURN NEW;

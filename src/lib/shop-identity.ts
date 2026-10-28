@@ -29,7 +29,6 @@ import {
   type NostrKeygen,
 } from '@/lib/nostr/keys';
 import {
-  isListedShop,
   publicShop,
   shopListingFingerprint,
   type PublicShop,
@@ -155,7 +154,8 @@ export interface ShopIdentityStore {
    * Create the key of a public shop once, or return the existing one.
    *
    * A public shop is live, top-level, tagged `#21GiftsShop`, and has a till
-   * account. A pin is optional. A new key queues the place push. An existing
+   * account. A pin is optional. A new key queues the place push and the photo
+   * push. An existing
    * key gets its `profile_name` rewritten while the note is still a public
    * shop and still matches the snapshot this call read (the rule of
    * {@link renameIfListed}), so a call with an older snapshot than a stored
@@ -178,7 +178,8 @@ export interface ShopIdentityStore {
    *
    * The same public key is returned unchanged. A different key for this
    * note, or this key on another note, throws. The insert does not queue
-   * a place push.
+   * a place push. When the note is a public shop it queues the photo push;
+   * otherwise the photo flags stay clear.
    *
    * @param messageId - Shop note id. The note must exist.
    * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
@@ -284,6 +285,14 @@ export interface ShopIdentityStore {
    */
   queueAllPlacePage(afterMessageId: string | null, limit: number): Promise<string[]>;
   /**
+   * Queue the photo push of one page of identities.
+   *
+   * @param afterMessageId - Last id of the previous page, or `null`.
+   * @param limit - Page size.
+   * @returns The queued note ids, by `message_id`.
+   */
+  queueAllPhotoPage(afterMessageId: string | null, limit: number): Promise<string[]>;
+  /**
    * Claim pending places (lease by the database clock), least recently
    * claimed first: `ocp_place_claimed_until` null (never claimed) first, then
    * by the stored end of the last claim, then by `message_id`. Every claim
@@ -299,15 +308,14 @@ export interface ShopIdentityStore {
    */
   claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]>;
   /**
-   * Claim one pending photo set whose place is not pending and whose
-   * revision is already greater than 0, least recently claimed first
-   * (`ocp_photos_claimed_until` null, never claimed, first, then by the
-   * stored end of the last claim: the lease end of a failed send, the time
-   * of every other end of a claim; then by `message_id`), so a set that
-   * keeps failing, keeps being released or keeps changing never holds the
-   * place of later shops. A row at revision 0 has never been sent. Leaving
-   * it unclaimed keeps a photo update from raising that revision and later
-   * arming a delete of a place this outbox did not create.
+   * Claim one pending photo set whose place is not pending, least recently
+   * claimed first (`ocp_photos_claimed_until` null, never claimed, first,
+   * then by the stored end of the last claim: the lease end of a failed
+   * send, the time of every other end of a claim; then by `message_id`), so
+   * a set that keeps failing, keeps being released or keeps changing never
+   * holds the place of later shops. `ocp_revision` is not required. A public
+   * shop whose place this outbox has never sent is still claimed; the photo
+   * sender does not raise a revision that is still 0.
    *
    * @param leaseMs - Lease length.
    * @returns The claim, or `undefined` when nothing is due.
@@ -413,20 +421,9 @@ export interface ShopIdentityStore {
 }
 
 /**
- * SQL condition of a map-complete shop that the database can check on a
- * `message` row named `m`. Photo queueing uses it. The public directory uses
- * {@link DIRECTORY_SQL}, which does not require a pin.
- */
-const LISTED_SHAPE_SQL = (m: string): string =>
-  `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
-   AND ${m}.place_lat IS NOT NULL AND ${m}.place_lng IS NOT NULL AND ${m}.place_label IS NOT NULL
-   AND ${m}.place_street IS NOT NULL AND ${m}.place_house_number IS NOT NULL
-   AND ${m}.place_postal_code IS NOT NULL AND ${m}.place_city IS NOT NULL
-   AND ${m}.place_country IS NOT NULL AND ${m}.text ~* '#21giftsshop([^a-z0-9_]|$)'`;
-
-/**
  * SQL condition of a public shop: live, top-level, a till account, and the
- * shop tag. A pin is not required. Used by the key backfill and `GET /shops`.
+ * shop tag. A pin is not required. Used by the key backfill, `GET /shops`,
+ * and the photo queue triggers.
  */
 const DIRECTORY_SQL = (m: string): string =>
   `${m}.parent_id IS NULL AND ${m}.deleted_at IS NULL AND ${m}.shop_account_id IS NOT NULL
@@ -522,6 +519,11 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      UPDATE shop_identity SET ocp_place_pending = true,
        ocp_place_generation = ocp_place_generation + 1
      WHERE message_id = NEW.id;
+     IF ${DIRECTORY_SQL('NEW')} THEN
+       UPDATE shop_identity SET ocp_photos_pending = true,
+         ocp_photos_generation = ocp_photos_generation + 1
+       WHERE message_id = NEW.id;
+     END IF;
      RETURN NEW;
    END
    $$ LANGUAGE plpgsql`,
@@ -547,7 +549,7 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
     'message',
     `CREATE OR REPLACE FUNCTION queue_shop_identity_cover() RETURNS trigger AS $$
    BEGIN
-     IF ${LISTED_SHAPE_SQL('NEW')} THEN
+     IF ${DIRECTORY_SQL('NEW')} THEN
        UPDATE shop_identity SET ocp_photos_pending = true,
          ocp_photos_generation = ocp_photos_generation + 1
        WHERE message_id = NEW.id;
@@ -577,7 +579,7 @@ export const SHOP_IDENTITY_SCHEMA_SQL: readonly string[] = [
      UPDATE shop_identity SET ocp_photos_pending = true,
        ocp_photos_generation = ocp_photos_generation + 1
      WHERE message_id = target AND EXISTS (
-       SELECT 1 FROM message m WHERE m.id = target AND ${LISTED_SHAPE_SQL('m')}
+       SELECT 1 FROM message m WHERE m.id = target AND ${DIRECTORY_SQL('m')}
      );
      IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
      RETURN NEW;
@@ -873,8 +875,8 @@ async function freshIdentity(
       nostrKeyCreatedAt: createdAt,
       profileName,
       ocpPhotosHash: null,
-      ocpPhotosPending: false,
-      ocpPhotosGeneration: 0,
+      ocpPhotosPending: true,
+      ocpPhotosGeneration: 1,
       ocpPhotosClaimedUntil: null,
       ocpPhotosClaim: 0,
       ocpPlacePending: true,
@@ -919,7 +921,11 @@ async function photoFingerprint(messages: MessageStore, messageId: string): Prom
  * adapter has no transactions, so before every call that syncs it compares each
  * identity's note (text, pin, till account, `deletedAt`) and photo set with
  * the last fingerprint it saw and queues a change the same way the triggers
- * do: a place change always, a photo change only while the note is listed.
+ * do: a place change always queues the place; when the note is a public shop
+ * the same sync queues the photos once; a photo-fingerprint change queues
+ * photos only while the note is a public shop; when both fingerprints change
+ * in one sync the photo generation rises by 1, not by 2.
+ * Neither this sync nor the place trigger raises `ocp_revision`.
  * The photo fingerprint of an {@link InMemoryMessageStore} is its
  * `photoRevision`, so a sync reads no photo bytes; another message store is
  * hashed from one `getPhotoSet` read per shop.
@@ -933,7 +939,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
 
   /**
    * @param messages - Forum store. Keys follow `publicShop`. Photo
-   *   queueing follows `isListedShop`.
+   *   queueing follows `publicShop`.
    * @param now - Lease clock in epoch ms (default `Date.now`).
    */
   constructor(messages: MessageStore, now: () => number = Date.now) {
@@ -946,18 +952,18 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       const note = await this.#messages.getById(row.messageId);
       const seen = this.#seen.get(row.messageId) as { place: string; photos: string };
       const place = shopListingFingerprint(note);
-      if (place !== seen.place) {
+      const placeChanged = place !== seen.place;
+      if (placeChanged) {
         seen.place = place;
         row.ocpPlacePending = true;
         row.ocpPlaceGeneration += 1;
       }
       const photos = await photoFingerprint(this.#messages, row.messageId);
-      if (photos !== seen.photos) {
-        seen.photos = photos;
-        if (isListedShop(note)) {
-          row.ocpPhotosPending = true;
-          row.ocpPhotosGeneration += 1;
-        }
+      const photosChanged = photos !== seen.photos;
+      if (photosChanged) seen.photos = photos;
+      if (publicShop(note) !== null && (placeChanged || photosChanged)) {
+        row.ocpPhotosPending = true;
+        row.ocpPhotosGeneration += 1;
       }
     }
   }
@@ -1010,7 +1016,7 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
    *
    * The same public key is returned unchanged, including its outbox flags.
    * A different key for this note, or this key on another note, throws.
-   * The insert does not queue a place push.
+   * The insert does not queue a place push. A public shop queues its photos.
    *
    * @param messageId - Shop note id. The note must exist.
    * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
@@ -1036,6 +1042,10 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       adoptedProfileName(note),
       new Date(this.#now()),
     );
+    if (publicShop(note) !== null) {
+      created.ocpPhotosPending = true;
+      created.ocpPhotosGeneration = 1;
+    }
     await this.#sync();
     const existing = this.#rows.get(messageId);
     if (existing !== undefined) {
@@ -1176,6 +1186,18 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
     return rows.map((row) => row.messageId);
   }
 
+  async queueAllPhotoPage(afterMessageId: string | null, limit: number): Promise<string[]> {
+    await this.#sync();
+    const rows = this.#byMessageId()
+      .filter((row) => afterMessageId === null || row.messageId > afterMessageId)
+      .slice(0, limit);
+    for (const row of rows) {
+      row.ocpPhotosPending = true;
+      row.ocpPhotosGeneration += 1;
+    }
+    return rows.map((row) => row.messageId);
+  }
+
   async claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]> {
     await this.#sync();
     const nowMs = this.#now();
@@ -1201,7 +1223,6 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
       (item) =>
         item.ocpPhotosPending &&
         !item.ocpPlacePending &&
-        item.ocpRevision > 0 &&
         leaseFree(item.ocpPhotosClaimedUntil, nowMs),
     );
     if (row === undefined) return undefined;
@@ -1492,7 +1513,7 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
   /**
    * @param sql - Shared SQL client.
    * @param messages - Forum store. Keys follow `publicShop` in code.
-   *   Photo queueing follows `isListedShop`.
+   *   Photo queueing follows `publicShop`.
    */
   constructor(sql: SqlClient, messages: MessageStore) {
     this.#sql = sql;
@@ -1526,9 +1547,10 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
        INSERT INTO shop_identity (
          message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
          nostr_key_custody, nostr_key_created_at, profile_name,
-         ocp_place_pending, ocp_place_generation
+         ocp_place_pending, ocp_place_generation,
+         ocp_photos_pending, ocp_photos_generation
        )
-       SELECT $1, $11, $12, $13, $14, $15, $16, true, 1 FROM locked
+       SELECT $1, $11, $12, $13, $14, $15, $16, true, 1, true, 1 FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
@@ -1551,7 +1573,12 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
    *
    * The same public key is returned unchanged, including its outbox flags.
    * A different key for this note, or this key on another note, throws.
-   * The insert does not queue a place push (`ocp_place_pending` stays false).
+   * The insert does not queue a place push (`ocp_place_pending` stays false,
+   * generation 0, SQL literals). Photo flags come from the note locked in
+   * the same INSERT (`SELECT … FROM message WHERE id = $1 FOR UPDATE`),
+   * using the public-shop condition: pending true and generation 1 when
+   * that locked row is a public shop, otherwise false and 0. They are not
+   * taken from the earlier note snapshot.
    *
    * @param messageId - Shop note id. The note must exist.
    * @param secret - 32-byte secp256k1 secret. Not retained and not zeroized.
@@ -1589,12 +1616,22 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       throw new Error('shop nostr pubkey already exists');
     }
     const rows = await this.#sql.query<IdentitySqlRow>(
-      `INSERT INTO shop_identity (
+      `WITH locked AS (
+         SELECT id, parent_id, deleted_at, shop_account_id, text
+         FROM message
+         WHERE id = $1
+         FOR UPDATE
+       )
+       INSERT INTO shop_identity (
          message_id, nostr_pubkey, nostr_nsec_ciphertext, nostr_kek_id,
          nostr_key_custody, nostr_key_created_at, profile_name,
-         ocp_place_pending, ocp_place_generation
+         ocp_place_pending, ocp_place_generation,
+         ocp_photos_pending, ocp_photos_generation
        )
-       VALUES ($1, $2, $3, $4, $5, $6, $7, false, 0)
+       SELECT $1, $2, $3, $4, $5, $6, $7, false, 0,
+         CASE WHEN ${DIRECTORY_SQL('locked')} THEN true ELSE false END,
+         CASE WHEN ${DIRECTORY_SQL('locked')} THEN 1 ELSE 0 END
+       FROM locked
        ON CONFLICT (message_id) DO NOTHING
        RETURNING ${IDENTITY_COLUMNS}`,
       [
@@ -1866,6 +1903,24 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
     return rows.map((row) => row.message_id).sort();
   }
 
+  async queueAllPhotoPage(afterMessageId: string | null, limit: number): Promise<string[]> {
+    // Two statements, so the cursor is always an index condition on the
+    // primary key, also under a cached generic plan.
+    const page =
+      afterMessageId === null
+        ? 'SELECT message_id FROM shop_identity ORDER BY message_id LIMIT $1'
+        : 'SELECT message_id FROM shop_identity WHERE message_id > $2::uuid ORDER BY message_id LIMIT $1';
+    const rows = await this.#sql.query<{ message_id: string }>(
+      `WITH page AS (${page})
+       UPDATE shop_identity s SET ocp_photos_pending = true,
+         ocp_photos_generation = s.ocp_photos_generation + 1
+       FROM page WHERE s.message_id = page.message_id
+       RETURNING s.message_id`,
+      afterMessageId === null ? [limit] : [limit, afterMessageId],
+    );
+    return rows.map((row) => row.message_id).sort();
+  }
+
   async claimPlaces(limit: number, leaseMs: number): Promise<ShopOcpClaim[]> {
     const rows = await this.#sql.query<{
       message_id: string;
@@ -1903,7 +1958,6 @@ export class PostgresShopIdentityStore implements ShopIdentityStore {
       `WITH picked AS (
          SELECT message_id FROM shop_identity
          WHERE ocp_photos_pending AND NOT ocp_place_pending
-           AND ocp_revision > 0
            AND (ocp_photos_claimed_until IS NULL OR ocp_photos_claimed_until <= now())
          ORDER BY ocp_photos_claimed_until ASC NULLS FIRST, message_id
          LIMIT 1
