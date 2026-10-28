@@ -146,19 +146,20 @@ UTC day, social recovery is a payout condition.
   so after a recovery the condition is open again until the owner sets up
   shares for the new words. The api reads only whether such a share is stored,
   never its content.
-- **Owner field.** The owner account JSON carries this fact, with no grant or
-  date check, and the start date from the same constant that `eligibleToday`
-  reads, so the app keeps no date of its own. The settings entry shows the
-  fact, and the dialog and the payouts use it.
-- **Payouts.** From a start date set when this is built, `eligibleToday`
-  (`src/lib/funding.ts`) also requires it. That function already requires the
-  grant for every payout. Without a share the account is not eligible, with
-  the same answers as for a missing grant, so the payout worker skips the
-  trigger as it does today. Storing the share pings that UTC day's newest
-  media post, as `pingTodayMedia` (`src/routes/funding.ts`) does when staff
-  admit a grant, and later triggers that day pay as usual. A day that ends
-  without a share is not paid, except by an operator replay, which checks
+- **Payouts.** From a start date of its own, set when this is built,
+  `eligibleToday` (`src/lib/funding.ts`) also requires it.
+  `FUNDING_REQUIRED_FROM_UTC` stays the grant's date. That function already
+  requires the grant for every payout. Without a share the account is not
+  eligible, with the same answers as for a missing grant, so the payout worker
+  skips the trigger as it does today. Storing the share pings that UTC day's
+  newest media post, as `pingTodayMedia` (`src/routes/funding.ts`) does when
+  staff admit a grant, and later triggers that day pay as usual. A day that
+  ends without a share is not paid, except by an operator replay, which checks
   eligibility when it runs.
+- **Owner field.** The owner account JSON carries whether social recovery is
+  set up, with no grant or date check, and that start date, so the app keeps
+  no date of its own. The settings entry shows the fact, and the dialog and
+  the payouts use it.
 - **Prompt.** From the release on, a member in the grant program whose owner
   field is false sees a dialog on `/welcome`, like **Stell dich vor**
   (`IntroduceYourselfOverlay` in the app). It says that grant payouts need
