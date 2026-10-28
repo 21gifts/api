@@ -357,8 +357,11 @@ async function skippedCount(response: Response): Promise<number> {
  * (generation-checked) and logs `ocp.photos.skipped` for skipped photos;
  * 409 `Stale revision` nulls the hash when the set is non-empty, leaves the
  * stored hash when the set is empty, and releases, and a revision-0 send
- * does not call `finishPhotos` or raise `ocp_revision`; 400 or 413 store the
- * hash and log `ocp.photos.rejected`; 404 `{"error":"Place not found"}`
+ * does not call `finishPhotos` or raise `ocp_revision`; 400 or 413 on a
+ * non-empty set store the hash, clear the flag and log `ocp.photos.rejected`;
+ * an empty set logs `ocp.photos.failed`, keeps the stored hash and the flag,
+ * does not release the claim, and sends the empty list when the lease ends;
+ * 404 `{"error":"Place not found"}`
  * (openCryptoPay/api#26 does not know the place by key) clears the flag and
  * queues the place when still listed (`isListedShop`), so a public shop that
  * is not listed does not queue a place PUT; any other 404 (an OpenCryptoPay
