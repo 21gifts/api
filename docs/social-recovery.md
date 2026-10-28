@@ -93,27 +93,41 @@ call is not recorded: anyone who captures two shares can recover the account.
 
 Choosing other people later means a new setup with three new shares. A new
 setup does not revoke the old set, because the 12 words stay the same: any two
-old shares still rebuild them. The api replaces its stored share with the new
-one. Holders delete an old share by hand in their app when the owner asks. The
+old shares still rebuild them. The api replaces its stored share of that
+wallet with the new one. Holders delete an old share by hand in their app when the owner asks. The
 app warns the owner that a removed person's share stays usable together with
 any other old share.
 
 ## The 21.gifts share
 
 - **Storage.** The api encrypts share 3 in the request that brings it and
-  stores only the ciphertext, one per account. It uses AES-GCM under its own
-  32-byte key from the deployment environment, not `NOSTR_NSEC_KEK`, with the
-  account id as additional data, in the envelope layout of
-  `nostr_nsec_ciphertext` (`encryptNostrSecret` in `src/lib/nostr/keys.ts`).
-  21.gifts also keeps that key in its password vault.
+  stores only the ciphertext, under the account and its verified
+  `spark_pubkey` at that time, one per wallet. It uses AES-GCM under its own
+  32-byte key, not `NOSTR_NSEC_KEK`, with the account id as additional data,
+  in the envelope layout of `nostr_nsec_ciphertext` (`encryptNostrSecret` in
+  `src/lib/nostr/keys.ts`). The key comes from the deployment environment as 64
+  lowercase hex characters and is checked at boot like `NOSTR_NSEC_KEK`
+  (`parseNostrKek` in `src/lib/nostr/kek.ts`). 21.gifts also keeps it in its
+  password vault.
+- **Secret column.** The share's column is a secret column like
+  `nostr_nsec_ciphertext`: `db_change` keeps only its SHA-256
+  (`db_change_redact` in `src/lib/db-change.ts`), and `GET /debug/db` redacts
+  it (`DEBUG_DB_SECRET_COLUMNS` in `src/lib/debug-db.ts`). A replaced or
+  deleted share therefore leaves no copy. The change that builds this adds the
+  column to the lists of secret columns in CONTRIBUTING.md and CONCEPT.md.
+- **Previous wallets.** After a recovery, the share of the previous wallet
+  stays until the owner drops that wallet, so it can still help to move a
+  remaining balance.
 - **A leak.** The database alone gives no share. The database together with
-  the environment gives the 21.gifts share of every account. This is
-  accepted: one share alone rebuilds nothing.
+  the environment gives every stored 21.gifts share. This is accepted: one
+  share alone rebuilds nothing.
 - **No use by the api.** No route returns the share, nothing in the api
   decrypts it, and no log contains it.
 - **Release.** A 21.gifts operator decrypts it by hand, outside the api, with
   the key from the vault, and gives it to the owner as a QR code in the same
-  format as a person's share.
+  format as a person's share. 21.gifts releases no share until it has decided
+  how it confirms that the requester is the owner, see
+  [Open points](#open-points).
 
 ## Recovery
 
@@ -252,8 +266,8 @@ keeps these rules:
 The self-hosted LNURL server in use accepts `POST /lnurlpay/:pubkey/transfer`.
 It checks both signatures and moves the name within the request, in one
 database transaction, with no background work. It sets no time limit of its
-own: a move can wait for a database connection and for its locks. The
-settling window therefore holds only if the server drops a request whose
+own on the whole request: it waits up to 30 seconds for a pooled database
+connection and without limit for its locks. The settling window therefore holds only if the server drops a request whose
 connection the api closed, and only if the api reaches the server with no
 proxy in between that would keep an aborted forward running.
 
@@ -285,7 +299,8 @@ previous wallet and asks each person to delete their old share by hand.
 No 12 words, no 16 bytes, no person's share and no PRF output, in no row and
 no log, and the 21.gifts share in no log.
 
-- The 21.gifts share, encrypted, one per account.
+- The 21.gifts share, encrypted, for the current wallet and for each previous
+  wallet until the owner drops it.
 - The new passkey credential, as for any passkey.
 - `spark_pubkey` and `spark_address` of the current wallet, and of each
   previous wallet until the owner drops it.
@@ -302,10 +317,11 @@ no log, and the 21.gifts share in no log.
   shares.
 - **Old shares** stay valid until each holder deletes them.
 - **The server alone** cannot. With its environment it can read the 21.gifts
-  share, one share per account, and it cannot sign with the wallet key.
+  share, one share per wallet, and it cannot sign with the wallet key.
 - **A stolen database** gives no share. A stolen database with the
-  environment gives every account's 21.gifts share, still one per account.
-- **21.gifts and one person** can, through the manual backup process only.
+  environment gives every 21.gifts share, still one per wallet.
+- **21.gifts and one person** can, through the manual release only, once
+  21.gifts has decided how it confirms the owner.
 - **A stranger with a fake QR code** has to stand in front of the person,
   because recovery happens in person.
 - **A stranger who replays a verified lookup** of the old wallet within the
@@ -323,10 +339,13 @@ no log, and the 21.gifts share in no log.
 
 ## Open points
 
+- **Owner check before a release.** How 21.gifts confirms that the requester
+  is the owner before it releases its share. Until this is decided, 21.gifts
+  releases no share. Recovery with the two people or with the 12 words does not
+  need it.
+
 Later, not needed for a first version:
 
-- How 21.gifts confirms that the requester is the owner before it releases
-  its share.
 - A printed copy of a person's share against cleared browser storage.
 - A confirmation code for remote setup.
 - NOSTR after v1, where new 12 words would mean a new npub.
@@ -339,7 +358,9 @@ Later, not needed for a first version:
   phone refuses a second share of the same set.
 - No person's share reaches the api. The api stores the 21.gifts share only
   encrypted under its own key, with the account id as additional data, and
-  has no path that decrypts, returns or uses it.
+  has no path that decrypts, returns or uses it. `db_change` holds only its
+  SHA-256, and a previous wallet's share stays until the owner drops that
+  wallet.
 - Recovery without a valid signature by the verified `spark_pubkey`, with a
   used or expired challenge, or for a `session_refused` account changes
   nothing. The pinned message, key and signature from the SDK verify, and the
