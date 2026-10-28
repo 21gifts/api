@@ -253,9 +253,9 @@ The self-hosted LNURL server in use accepts `POST /lnurlpay/:pubkey/transfer`.
 It checks both signatures and moves the name within the request, in one
 database transaction, with no background work. It sets no time limit of its
 own: a move can wait for a database connection and for its locks. The
-settling window therefore holds only because the server drops a request whose
-connection the api closed, and the api reaches the server with no proxy in
-between that would keep an aborted forward running.
+settling window therefore holds only if the server drops a request whose
+connection the api closed, and only if the api reaches the server with no
+proxy in between that would keep an aborted forward running.
 
 ### If not everything succeeds
 
