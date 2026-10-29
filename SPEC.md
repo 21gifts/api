@@ -2305,10 +2305,10 @@ Success → **Response** `200`:
 - `next` is the next repayment day after the due days: `dueOn` (`YYYY-MM-DD` UTC), its sats, and its amount; null when no later day remains.
 - `*Amount` and `amount` are two-decimal strings in the loan's currency for a fiat loan, else `null`. For a fiat loan every sat figure that is not yet paid (`totalSats`, `payableSats`, `waitingSats`, `next.sats`) is priced at the rate `POST /messages/:id/repayment` would use now, read once per request for every loan, and is `null` without a rate.
 - `sundayRest` is true when the device `Time-Zone` names a zone that is in Sunday: the existing rule, under which repayments are refused today.
-- `lenderWaiting` is the caller's side as a lender. While the caller cannot receive (no verified wallet), `shares` counts the due, unpaid shares owed to the caller on every live funded loan the caller gave to through an in-app invoice, `loans` the loans they belong to, and `sats` their sum in sats (a fiat share priced like `waitingSats`; `null` when one has no rate). All zero when the caller can receive.
+- `lenderWaiting` is the caller's side as a lender. While the caller cannot receive (no verified wallet), `shares` counts the due, unpaid shares owed to the caller on every live funded loan the caller gave to (found through the caller's in-app invoices, counted only when the caller is one of its givers), `loans` the loans they belong to, and `sats` their sum in sats (a fiat share priced like `waitingSats`; `null` when one has no rate). All zero when the caller can receive.
 
 Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
-A loan whose debt cannot be computed (one of the caller's, or one the caller gave to) → **503** `{ "error": "Ask amount is unavailable" }`.
+A loan whose debt cannot be computed (one of the caller's, or one the caller gave to), or a rate that cannot be read → **503** `{ "error": "Ask amount is unavailable" }`.
 Store failure → **503** `{ "error": "Messages are unavailable" }` (logs `me.loans.failed`).
 
 ### `POST /me/wallet-backup-seen`

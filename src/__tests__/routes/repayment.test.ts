@@ -2057,6 +2057,63 @@ describe('repayment from the in-app wallet', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
   });
+
+  it('leaves out a loan the lender only tried to give to', async () => {
+    const { app, messages, auth } = await loanSetup({ termDays: 4 });
+    await auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
+    await messages.create({
+      id: SECOND_CREDIT,
+      accountId: AUTHOR,
+      name: 'Ada',
+      text: 'other loan',
+      createdAt: new Date(Date.UTC(2027, 1, 22)),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalSats: 1000,
+      goalRepayable: true,
+      goalTermDays: 4,
+      goalFundedAt: new Date(Date.UTC(2027, 1, 27, 12)),
+      goalCurrency: 'USD',
+      goalAmount: null,
+    });
+    await messages.recordInvoiceAttempt(lenderInvoice('inv-credit', CREDIT, NO_WALLET));
+    await messages.recordInvoiceAttempt({
+      ...lenderInvoice('inv-tried', SECOND_CREDIT, NO_WALLET),
+      result: 'unreachable',
+    });
+    const res = await app.request('/me/loans', {
+      headers: { authorization: `Bearer ${NO_WALLET}` },
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as Record<string, unknown>)['lenderWaiting']).toEqual({
+      shares: 2,
+      loans: 1,
+      sats: 250,
+    });
+  });
+
+  it('answers 503 Ask amount is unavailable when the rate cannot be read', async () => {
+    const rates = (): Promise<GoalRateDay | null> => Promise.reject(new Error('rate down'));
+    for (const fundedAt of [undefined, null]) {
+      const failing = await loanSetup({
+        goalCurrency: 'USD',
+        rates,
+        termDays: 4,
+        ...(fundedAt === null ? { fundedAt } : {}),
+      });
+      const res = await loans(failing.app);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+    }
+    const lent = await loanSetup({ goalCurrency: 'USD', rates, termDays: 4 });
+    await lent.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
+    await lent.messages.recordInvoiceAttempt(lenderInvoice('inv-fiat', CREDIT, NO_WALLET));
+    const res = await lent.app.request('/me/loans', {
+      headers: { authorization: `Bearer ${NO_WALLET}` },
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
+  });
 });
 
 describe('DELETE /messages/:id on a credit', () => {

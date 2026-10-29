@@ -863,13 +863,17 @@ async function loanRow(
     }
     // Sats with no account are not repaid, as in the schedule.
     const named = owed.filter((payer) => payer.accountId !== '');
+    // The rate is read only when there is a debt to price. A failing loader is the same 503 as a missing rate.
+    const price = named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => null);
+    if (price === null) {
+      return 'unavailable';
+    }
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      // The rate is read only when there is a debt to price.
-      totalSats: named.length === 0 ? 0 : pricedSum(await sharePricer(deps, row), named),
+      totalSats: price === undefined ? 0 : pricedSum(price, named),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
@@ -895,8 +899,11 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the rate only now: a repaid loan is left out without it.
-  const price = await sharePricer(deps, row);
+  // Read the rate only now: a repaid loan is left out without it. A failing loader is the same 503 as a missing rate.
+  const price = await sharePricer(deps, row).catch(() => null);
+  if (price === null) {
+    return 'unavailable';
+  }
   const repaidSats = plan.paid.reduce((sum, item) => sum + item.dueSats, 0);
   const openSats = pricedSum(price, open);
   const payable = plan.due.filter((share) => share.canReceive);
@@ -943,7 +950,8 @@ async function loanRow(
 
 /**
  * Due, unpaid shares owed to a caller who cannot receive, over every live
- * funded loan the caller gave to through an in-app invoice.
+ * funded loan the caller gave to: found through the caller's in-app invoices,
+ * kept only when the caller is one of its payers.
  *
  * @param deps - Store, auth, rate loader, and the optional LNURL server.
  * @param account - The caller.
@@ -978,6 +986,10 @@ async function lenderWaiting(
     ) {
       continue;
     }
+    const payers = await deps.store.listCreditPayers(id);
+    if (!payers.some((payer) => payer.accountId === account.id)) {
+      continue;
+    }
     const plan = await duePlan(deps, row, nowMs);
     if (plan === 'unavailable') {
       return 'unavailable';
@@ -986,8 +998,12 @@ async function lenderWaiting(
     if (mine.length === 0) {
       continue;
     }
+    const price = await sharePricer(deps, row).catch(() => null);
+    if (price === null) {
+      return 'unavailable';
+    }
     shares += mine.length;
-    loanSats.push(pricedSum(await sharePricer(deps, row), mine));
+    loanSats.push(pricedSum(price, mine));
   }
   return {
     shares,
