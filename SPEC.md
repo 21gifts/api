@@ -3038,7 +3038,8 @@ name-copy is not a bio, including after a display-name rename when the note
 text still equals the stored profile-note `name` (Ada→Grace with text `Ada`
 stays `null`)). `aboutMeHasPhoto` is true when the live profile note has a
 stored photo; bytes are `GET /view/:viewKey/about/photo`. Store throw on the
-profile-note read → **503** `{ "error": "Messages are unavailable" }`
+profile-note read, the post, reply, shop, or credit count, the funding lookup,
+or the reviewer account lookup → **503** `{ "error": "Messages are unavailable" }`
 (`view.get.failed`). `profileMessage` is the same public note as
 `GET /members/:accountId`, or `null`. `hearted` on that note is false.
 The moderator `trust` object is not included.

@@ -2773,7 +2773,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 - **Purpose:** One loader for a member's public post, shop, credit, or reply list. `GET /members/:accountId/posts|shops|credits|replies` and `GET /view/:viewKey/posts|shops|credits|replies` both call it. Drops a `hasVideo` row whose file is missing or empty (`messages.video.dropped`), except a credit note with sats, which is read again and kept while live. A reply that cannot serialize is skipped. Shops look up the row author; an external author has no role.
 - **Inputs:** `kind` (`posts` | `shops` | `credits` | `replies`), `account`, `messageStore`, `authStore`, optional `lnurlServer`, `viewerAccountId` (`string` or `null`).
-- **Returns / side effects:** `HeartedPublicMessage[]` in list order. May delete a missing video file. No other writes.
+- **Returns / side effects:** `HeartedPublicMessage[]` in list order. When a listed note's video file is missing or empty, deletes that note with `deleteById` (the note, its direct replies, invoice attempts, zap receipts, photos, and on-disk videos). For posts, shops, and credits, each direct reply of a listed note whose own video file is missing or empty is deleted the same way, even when the listed note's video is present. Both happen from the member lists and the view-key lists alike. No other writes.
 - **Used by:** `membersRoutes`, `viewRoutes`.
 
 ## Function: loadMemberProfileNote
