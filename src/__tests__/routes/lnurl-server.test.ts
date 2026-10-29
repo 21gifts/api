@@ -1140,7 +1140,7 @@ describe('lnurlServerRoutes', () => {
       ).toHaveLength(3);
     });
 
-    it('answers 503 when the store throws', async () => {
+    it('answers 503 when the store throws at admission and contacts no upstream', async () => {
       const store = await pendingStore();
       vi.spyOn(store, 'markRecoveryForwarded').mockRejectedValue(new Error('db'));
       const { fetchImpl, calls } = scriptedLnurlFetch({
@@ -1152,6 +1152,26 @@ describe('lnurlServerRoutes', () => {
       expect(events('lnurl_server.failed')).toEqual([
         expect.objectContaining({ route: 'transfer' }),
       ]);
+      expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBeNull();
+    });
+
+    it('answers 503 when the commit throws and keeps the pending recovery forwarded', async () => {
+      const store = await pendingStore();
+      vi.spyOn(store, 'commitRecovery').mockRejectedValue(new Error('db'));
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const res = await transfer(mount(store, fetchImpl), signedBody());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+      expect(calls).toHaveLength(1);
+      expect(events('lnurl_server.failed')).toEqual([
+        expect.objectContaining({ route: 'transfer' }),
+      ]);
+      expect(events('account.recovery.committed')).toEqual([]);
+      expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBe(NOW);
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+      expect(await store.listPreviousWallets(PINNED.accountId)).toEqual([]);
     });
 
     it('answers 413 for a body over the limit', async () => {
