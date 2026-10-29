@@ -337,6 +337,21 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /debug/push-broadcast
+
+- **Purpose:** Operator Web Push broadcast. Body `{ title, body, link?, usernames?, dryRun? }`. Without `usernames` it targets every account with a push subscription; with `usernames` (1-200) it targets those accounts. Accounts whose notification level is `none` are counted as `optedOut` and listed accounts without a subscription as `noSubscription`; neither is queued. Each recipient gets one push outbox row, delivered by the push worker with the usual batch, lease, and retry rules. Returns 202 `{ id, targeted, queued, optedOut, noSubscription }`; `link` defaults to `/welcome`.
+- **Dry run:** `dryRun: true` returns 200 `{ dryRun: true, recipients }` and queues nothing; it works without VAPID.
+- **Validation:** strict keys; `title` 1-64 and `body` 1-240 characters after trim, no control characters except a newline in `body`; `link` up to 200 characters, one leading `/`, not `//`, no backslash or whitespace; usernames must have the username shape.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 `Expected a JSON body …`; 400 `{ error: 'Unknown usernames', usernames }` (nothing queued); 503 Push is not configured (send without VAPID).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
+## Endpoint: GET /debug/push-broadcast/:id
+
+- **Purpose:** Operator delivery report of one broadcast. Returns `{ id, queued, pending, delivered, dropped, failed }` from the push outbox rows that carry the broadcast id.
+- **Counts:** `pending` is not finished yet (first try or retry); `delivered` is sent to at least one subscription; `dropped` is sent to none (the subscription was removed or gone before the send); `failed` gave up after the retry limit.
+- **Errors:** 503 Debug is not configured; 401 Unauthorized; 404 Not found for an id that is not a UUID or that no row carries (also a broadcast that queued nothing).
+- **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
+
 ## Endpoint: GET /debug/logins
 
 - **Purpose:** Operator read of the login switch. Returns `{ open, source, defaultOpen, allowlist }`: `source` is `stored` once `PUT /debug/logins` ran and `default` before that (then `open` equals `defaultOpen` from `LOGINS_OPEN_DEFAULT`); `allowlist` is `[{ accountId, createdAt }]`, oldest first, `createdAt` ISO.

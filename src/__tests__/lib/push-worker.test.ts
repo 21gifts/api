@@ -20,6 +20,7 @@ import {
   PUSH_WORKER_BATCH,
   PUSH_WORKER_INTERVAL_MS,
   PUSH_WORKER_LEASE_MS,
+  enqueueBroadcastPush,
   enqueueDebugPush,
   enqueueForumPushes,
   enqueueReplyPush,
@@ -219,6 +220,60 @@ describe('enqueueDebugPush', () => {
       type: 'zap',
       tag: 'debug',
       title: 'Test notification',
+    });
+  });
+});
+
+describe('enqueueBroadcastPush', () => {
+  const MESSAGE = {
+    broadcastId: '0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f',
+    title: 'Update',
+    body: 'Please log in again.',
+    url: '/welcome',
+  };
+
+  it('enqueues one row per distinct account with the broadcast id and payload', async () => {
+    const store = new InMemoryPushStore();
+    expect(await enqueueBroadcastPush(store, ['author', 'other', 'author'], MESSAGE, 5)).toBe(2);
+    const claimed = await store.claimPending(10, 5, 1000);
+    expect(claimed.map((row) => row.accountId)).toEqual(
+      expect.arrayContaining(['author', 'other']),
+    );
+    expect(claimed).toHaveLength(2);
+    for (const row of claimed) {
+      expect(row).toMatchObject({ type: 'zap', messageId: MESSAGE.broadcastId, status: 'pending' });
+      expect(row.createdAt.getTime()).toBe(5);
+      expect(JSON.parse(row.payload)).toEqual({
+        type: 'zap',
+        title: 'Update',
+        body: 'Please log in again.',
+        url: '/welcome',
+        tag: `broadcast:${MESSAGE.broadcastId}`,
+      });
+    }
+  });
+
+  it('returns 0 and enqueues nothing for no accounts', async () => {
+    const store = new InMemoryPushStore();
+    expect(await enqueueBroadcastPush(store, [], MESSAGE, 5)).toBe(0);
+    expect(await store.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('is delivered by the worker tick and counted by outcome', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription(SUB_B);
+    await enqueueBroadcastPush(store, ['author', 'other', 'third'], MESSAGE, 5);
+    const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail', status: 500 }]);
+    const auth = await authWithSessions(['author', 'other']);
+    await runPushWorkerTick({ store, sender, now: () => 10, authStore: auth });
+    expect(sender.calls).toHaveLength(2);
+    expect(await store.countOutboxByMessageId(MESSAGE.broadcastId)).toEqual({
+      queued: 3,
+      pending: 1,
+      delivered: 1,
+      dropped: 1,
+      failed: 0,
     });
   });
 });

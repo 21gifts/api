@@ -219,6 +219,65 @@ export async function enqueueDebugPush(
   return 1;
 }
 
+/** Operator broadcast text and in-app path of {@link enqueueBroadcastPush}. */
+export interface BroadcastPushMessage {
+  /** Broadcast id: outbox `messageId` of every row and the payload tag. */
+  broadcastId: string;
+  /** Notification title. */
+  title: string;
+  /** Notification body. */
+  body: string;
+  /** Same-site path to open. */
+  url: string;
+}
+
+/**
+ * Enqueue one operator broadcast row per account. Each row carries the
+ * broadcast id as outbox `messageId`, so {@link PushStore.countOutboxByMessageId}
+ * reports its delivery. The payload uses the debug ping's `zap` type.
+ *
+ * @param store - Push store.
+ * @param accountIds - Recipient account ids (each enqueued once).
+ * @param message - Broadcast id, title, body, and path.
+ * @param nowMs - Enqueue clock.
+ * @returns Number of rows enqueued.
+ * @throws If `enqueue` rejects.
+ */
+export async function enqueueBroadcastPush(
+  store: PushStore,
+  accountIds: readonly string[],
+  message: BroadcastPushMessage,
+  nowMs: number,
+): Promise<number> {
+  const payload: PushPayload = {
+    type: 'zap',
+    title: message.title,
+    body: message.body,
+    url: message.url,
+    tag: `broadcast:${message.broadcastId}`,
+  };
+  const text = JSON.stringify(payload);
+  const createdAt = new Date(nowMs);
+  const unique = [...new Set(accountIds)];
+  for (const accountId of unique) {
+    await store.enqueue({
+      id: crypto.randomUUID(),
+      accountId,
+      type: 'zap',
+      messageId: message.broadcastId,
+      payload: text,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      finishedAt: null,
+      createdAt,
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+  }
+  return unique.length;
+}
+
 /** Collaborators for one push worker tick. */
 export interface PushWorkerDeps {
   /** Shared push store (same instance as HTTP). */

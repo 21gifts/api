@@ -60,6 +60,7 @@ api/
 │   │   ├── debug-push.ts     # POST /debug/push-ping (operator DEBUG_TOKEN)
 │   │   ├── debug-shop-keys.ts # POST /debug/shop-keys (operator DEBUG_TOKEN; stores an existing shop secret)
 │   │   ├── debug-shop-notes.ts # POST /debug/shop-notes (operator DEBUG_TOKEN; stores a shop note that has no pin)
+│   │   ├── debug-push-broadcast.ts # POST /debug/push-broadcast; GET /debug/push-broadcast/:id (operator DEBUG_TOKEN; push outbox)
 │   │   ├── debug-trust.ts    # GET/POST/DELETE /debug/trust-edges (operator DEBUG_TOKEN; no role change)
 │   │   ├── debug-catalog.ts  # GET /debug/dump, GET /debug/dump/:table (operator DEBUG_TOKEN)
 │   │   ├── debug-shop-proofs.ts # POST /debug/shop-proofs/:id/retry (operator DEBUG_TOKEN; when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve)
@@ -418,6 +419,7 @@ api/
 │           ├── wallet-report.test.ts
 │           ├── member-events.test.ts
 │           ├── debug-push.test.ts
+│           ├── debug-push-broadcast.test.ts
 │           ├── debug-trust.test.ts
 │           ├── debug-catalog.test.ts
 │           ├── debug-shop-proofs.test.ts
@@ -600,6 +602,8 @@ the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlS
 `verifiedExternalZapRequest`, `externalDisplayName`, `resolveExternalProfileName`,
 `resolveExternalProfileFields`, `ExternalIngestLimiter`, and
 `notifyExternalForumReply`, which have no direct default-boot HTTP trigger;
+`enqueueBroadcastPush`, which runs only for a broadcast send, and a send needs VAPID, which the
+default boot leaves blank (its test asserts the 503 `Push is not configured`);
 `isPublicIp`, which needs a relay target host that resolves (outbound DNS), so its test
 asserts the 502 for a host that does not resolve;
 `InMemoryInvoiceStore`, `requestGiftInvoice`, `decodeBolt11`, `newInvoiceId`,

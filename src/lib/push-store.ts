@@ -35,7 +35,10 @@ export interface PushOutboxRow {
   accountId: string;
   /** Notification kind. */
   type: 'forum' | 'zap' | 'conversation' | 'dismiss';
-  /** Forum or conversation message id when applicable; null for debug pings and dismiss rows. */
+  /**
+   * Forum or conversation message id when applicable; the broadcast id for an
+   * operator broadcast; null for debug pings and dismiss rows.
+   */
   messageId: string | null;
   /** JSON string payload. */
   payload: string;
@@ -170,6 +173,28 @@ export interface PushStore {
    * @param endpoints - Endpoint URLs that received the payload.
    */
   recordDelivered(id: string, endpoints: readonly string[]): Promise<void>;
+
+  /**
+   * Count the outbox rows of one `messageId` by delivery outcome.
+   *
+   * @param messageId - Outbox `messageId` (an operator broadcast id).
+   * @returns Row counts; all zero when no row has this id.
+   */
+  countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts>;
+}
+
+/** Outbox rows of one `messageId` by delivery outcome. */
+export interface PushOutboxCounts {
+  /** Every row with this id. */
+  queued: number;
+  /** Rows the worker has not finished yet (first try or retry). */
+  pending: number;
+  /** Sent rows that reached at least one subscription. */
+  delivered: number;
+  /** Sent rows that reached no subscription (removed or gone before the send). */
+  dropped: number;
+  /** Rows that failed for good after the retry limit. */
+  failed: number;
 }
 
 /** Idempotent DDL for push tables (matches `docs/schema/push.sql`). */
@@ -544,6 +569,32 @@ export class InMemoryPushStore implements PushStore {
     row.deliveredEndpoints = unionDeliveredEndpoints(row.deliveredEndpoints, endpoints);
     return Promise.resolve();
   }
+
+  /**
+   * Count in-memory outbox rows of one `messageId` by delivery outcome.
+   *
+   * @param messageId - Outbox `messageId`.
+   * @returns Row counts.
+   */
+  countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts> {
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    for (const row of this.#outbox) {
+      if (row.messageId !== messageId) {
+        continue;
+      }
+      counts.queued += 1;
+      if (row.status === 'pending') {
+        counts.pending += 1;
+      } else if (row.status === 'failed') {
+        counts.failed += 1;
+      } else if (row.deliveredEndpoints.length > 0) {
+        counts.delivered += 1;
+      } else {
+        counts.dropped += 1;
+      }
+    }
+    return Promise.resolve(counts);
+  }
 }
 
 /** Row shape selected from `push_subscription`. */
@@ -872,5 +923,35 @@ export class PostgresPushStore implements PushStore {
       JSON.stringify(next),
       id,
     ]);
+  }
+
+  /**
+   * Count outbox rows of one `messageId` by status; a sent row counts as
+   * delivered when its `delivered_endpoints` list is not empty.
+   *
+   * @param messageId - Outbox `messageId` (UUID).
+   * @returns Row counts.
+   */
+  async countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts> {
+    const rows = await this.#sql.query<{ status: string; n: number; reached: number }>(
+      `SELECT status, count(*)::int AS n,
+         count(*) FILTER (WHERE delivered_endpoints <> '[]')::int AS reached
+       FROM push_outbox WHERE message_id = $1
+       GROUP BY status`,
+      [messageId],
+    );
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    for (const row of rows) {
+      counts.queued += row.n;
+      if (row.status === 'pending') {
+        counts.pending += row.n;
+      } else if (row.status === 'failed') {
+        counts.failed += row.n;
+      } else {
+        counts.delivered += row.reached;
+        counts.dropped += row.n - row.reached;
+      }
+    }
+    return counts;
   }
 }

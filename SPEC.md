@@ -283,6 +283,8 @@ Public base URLs used in examples:
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/debug/shop-keys`                                   | Bearer `DEBUG_TOKEN`                         | Store the existing OpenCryptoPay private key of one named shop note. Body `{ messageId, secret }`. Returns `{ messageId, npub }`. Does not log or return the secret. The same key again is success. A different stored key is 409.                                                                                                                                                                                                                                                                                                                                                                             |
 | POST   | `/debug/shop-notes`                                  | Bearer `DEBUG_TOKEN`                         | Store one live top-level shop note that has a till account and no pin. Body `{ text, shopUsername, authorId }`. The pin is not accepted. Returns `{ id, shopNpub }`. `POST /messages` still refuses a shop without a pin.                                                                                                                                                                                                                                                                                                                                                                                      |
+| POST   | `/debug/push-broadcast`                              | Bearer `DEBUG_TOKEN`                         | `{ title, body, link?, usernames?, dryRun? }` → 202 `{ id, targeted, queued, optedOut, noSubscription }` (dry run 200 `{ dryRun: true, recipients }`); queued on the push outbox                                                                                                                                                                                                                                                                                                                                                                                                                               |
+| GET    | `/debug/push-broadcast/:id`                          | Bearer `DEBUG_TOKEN`                         | Delivery counts of one broadcast `{ id, queued, pending, delivered, dropped, failed }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Login switch `{ open, source, defaultOpen, allowlist }`; `source` is `stored` or `default` (`LOGINS_OPEN_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | PUT    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Body `{ open }`. Stored value wins over `LOGINS_OPEN_DEFAULT`. Existing sessions are not touched                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -5624,6 +5626,86 @@ Success → **Response** `200`:
 ```
 
 `enqueued` is `0` when the account has no subscription.
+
+### `POST /debug/push-broadcast`
+
+Operator Web Push broadcast. Authenticated with `Authorization: Bearer`
+matching `DEBUG_TOKEN` (not an end-user session). JSON body (no other keys):
+
+```json
+{
+  "title": "Update",
+  "body": "Please log in again.",
+  "link": "/welcome",
+  "usernames": ["alpha", "bravo"],
+  "dryRun": false
+}
+```
+
+- `title`: 1-64 characters after trim, no control characters.
+- `body`: 1-240 characters after trim, no control characters except a newline.
+- `link` (optional, default `/welcome`): a same-site path of at most 200
+  characters: one leading `/`, not `//`, no backslash or whitespace.
+- `usernames` (optional): 1-200 usernames. Without it the broadcast targets
+  every account with a push subscription.
+- `dryRun` (optional): `true` counts the recipients and queues nothing.
+
+Accounts whose notification level is `none` are not queued (`optedOut`).
+Listed accounts without a push subscription are not queued
+(`noSubscription`). Each recipient gets one `push_outbox` row whose
+`message_id` is the broadcast id; the push worker delivers it with the same
+batch, lease, and retry rules as every other notification. The payload is
+`{ "type": "zap", "title", "body", "url": link, "tag": "broadcast:<id>" }`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Invalid body → **400** `{ "error": "Expected a JSON body with \"title\" …" }`.
+A listed username without an account → **400**
+`{ "error": "Unknown usernames", "usernames": ["…"] }`; nothing is queued.
+VAPID not configured and not a dry run → **503** `{ "error": "Push is not configured" }`.
+
+Dry run → **Response** `200`:
+
+```json
+{ "dryRun": true, "recipients": 2 }
+```
+
+Send → **Response** `202`:
+
+```json
+{
+  "id": "0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f",
+  "targeted": 3,
+  "queued": 2,
+  "optedOut": 1,
+  "noSubscription": 0
+}
+```
+
+### `GET /debug/push-broadcast/:id`
+
+Operator delivery report of one broadcast, read from its `push_outbox` rows.
+Same auth errors as `POST /debug/push-broadcast`. An id that is not a UUID,
+or that no row carries (also a broadcast that queued nothing) → **404**
+`{ "error": "Not found" }`.
+
+**Response** `200`:
+
+```json
+{
+  "id": "0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f",
+  "queued": 2,
+  "pending": 0,
+  "delivered": 1,
+  "dropped": 0,
+  "failed": 1
+}
+```
+
+`pending` rows are not finished yet (first try or retry). `delivered` rows
+reached at least one subscription. `dropped` rows were sent to none because
+the subscription was removed or gone before the send. `failed` rows gave up
+after the retry limit (8 attempts).
 
 ### `POST /debug/passkey-renew/reopen`
 

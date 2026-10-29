@@ -759,3 +759,55 @@ describe('PostgresPushStore', () => {
     ]);
   });
 });
+
+describe('countOutboxByMessageId', () => {
+  it('counts in-memory rows of one messageId by outcome', async () => {
+    const store = new InMemoryPushStore();
+    expect(await store.countOutboxByMessageId('b')).toEqual({
+      queued: 0,
+      pending: 0,
+      delivered: 0,
+      dropped: 0,
+      failed: 0,
+    });
+    await store.enqueue(pending({ id: '1', accountId: 'a', messageId: 'b' }));
+    await store.enqueue(
+      pending({
+        id: '2',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'sent',
+        deliveredEndpoints: ['x'],
+      }),
+    );
+    await store.enqueue(pending({ id: '3', accountId: 'a', messageId: 'b', status: 'sent' }));
+    await store.enqueue(pending({ id: '4', accountId: 'a', messageId: 'b', status: 'failed' }));
+    await store.enqueue(pending({ id: '5', accountId: 'a', messageId: 'other' }));
+    expect(await store.countOutboxByMessageId('b')).toEqual({
+      queued: 4,
+      pending: 1,
+      delivered: 1,
+      dropped: 1,
+      failed: 1,
+    });
+  });
+
+  it('groups Postgres rows by status and splits sent rows by delivered endpoints', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      { status: 'pending', n: 2, reached: 0 },
+      { status: 'sent', n: 5, reached: 3 },
+      { status: 'failed', n: 1, reached: 1 },
+    ];
+    expect(await store.countOutboxByMessageId('b')).toEqual({
+      queued: 8,
+      pending: 2,
+      delivered: 3,
+      dropped: 2,
+      failed: 1,
+    });
+    expect(sql.queries.at(-1)?.text).toMatch(/WHERE message_id = \$1/);
+    expect(sql.queries.at(-1)?.params).toEqual(['b']);
+  });
+});

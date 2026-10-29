@@ -151,6 +151,7 @@ function extractEndpoints() {
     'debug-messages.ts': '/debug/messages',
     'debug-payments.ts': '/debug',
     'debug-push.ts': '/debug/push-ping',
+    'debug-push-broadcast.ts': '/debug/push-broadcast',
     'debug-passkey-renew.ts': '/debug/passkey-renew',
     'debug-shop-keys.ts': '/debug/shop-keys',
     'debug-shop-notes.ts': '/debug/shop-notes',

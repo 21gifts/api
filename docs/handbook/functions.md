@@ -816,7 +816,7 @@
 ## Function: InMemoryPushStore
 
 - **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
-- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row; `countOutboxByMessageId` counts the rows of one `messageId` as queued, pending, delivered (sent with at least one delivered endpoint), dropped (sent with none), and failed). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Recovery commit:** `removeAccountSubscriptions(accountId)` deletes every subscription of one account synchronously and returns how many it removed; `InMemoryAuthStore.commitRecovery` calls it through `usePushStore`.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
@@ -883,6 +883,13 @@
 - **Inputs:** `PushStore`, `accountId`, `nowMs`. Uses a fixed zap-typed debug payload (`tag: 'debug'`).
 - **Returns / side effects:** `0` or `1` (rows enqueued). Does not deliver; the push worker drains the outbox.
 - **Used by:** `debugPushRoutes` (`POST /debug/push-ping`).
+
+## Function: enqueueBroadcastPush
+
+- **Purpose:** Enqueue one operator broadcast row per distinct account on the push outbox, so the push worker delivers it with the same batch, lease, and retry rules as every other notification.
+- **Inputs:** `PushStore`, recipient `accountIds` (duplicates enqueued once), `BroadcastPushMessage` (`broadcastId`, `title`, `body`, `url`), `nowMs`. Payload `{ type: 'zap', title, body, url, tag: 'broadcast:<broadcastId>' }` (the debug ping's type).
+- **Returns / side effects:** Number of rows enqueued. Each row has outbox type `zap` and `messageId` = `broadcastId`, which `countOutboxByMessageId` reads back. Does not deliver.
+- **Used by:** `debugPushBroadcastRoutes` (`POST /debug/push-broadcast`).
 
 ## Function: runPushWorkerTick
 
@@ -973,6 +980,13 @@
 - **Purpose:** Operator debug ping that enqueues a test Web Push for one account via `DEBUG_TOKEN` (not an end-user session). Body `{ accountId }`. Returns `{ enqueued }` (`0` or `1`).
 - **Inputs:** `DebugPushRouteDeps` (`authStore`, `pushStore`, `now`, `debugToken`, `vapidPublicKey`).
 - **Returns / side effects:** Hono app `POST /` mounted at `/debug/push-ping`. Debug 503/401 before JSON; then unconfigured 503; unknown account 404. Calls `enqueueDebugPush`.
+- **Used by:** `createApp`.
+
+## Function: debugPushBroadcastRoutes
+
+- **Purpose:** Operator Web Push broadcast via `DEBUG_TOKEN` (not an end-user session): `POST /` queues a title, body, and same-site link for every account with a push subscription or for listed usernames; `GET /:id` reports the delivery counts.
+- **Inputs:** `DebugPushBroadcastRouteDeps` (`authStore`, `pushStore`, `now`, `debugToken`, `vapidPublicKey`). Body `{ title, body, link?, usernames?, dryRun? }` (strict keys; title 1-64 and body 1-240 characters after trim, no control characters except a newline in the body; link up to 200 characters, one leading `/`, no `//`, backslash, or whitespace; 1-200 usernames).
+- **Returns / side effects:** Hono app mounted at `/debug/push-broadcast`. Debug 503/401 before JSON. Accounts with notification level `none` and listed accounts without a subscription are counted, not queued. A dry run answers `{ dryRun: true, recipients }` and writes nothing; a send needs VAPID (else 503), calls `enqueueBroadcastPush`, logs `debug.push.broadcast`, and answers 202 `{ id, targeted, queued, optedOut, noSubscription }`. `GET /:id` answers `countOutboxByMessageId` or 404.
 - **Used by:** `createApp`.
 
 ## Function: resolveLoginsOpenDefault

@@ -57,6 +57,7 @@ import { walletHeartRoutes } from '@/routes/wallet-hearts';
 import { memberEventRoutes } from '@/routes/member-events';
 import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
+import { debugPushBroadcastRoutes } from '@/routes/debug-push-broadcast';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugShopKeyRoutes } from '@/routes/debug-shop-keys';
 import { debugShopNoteRoutes } from '@/routes/debug-shop-notes';
@@ -883,6 +884,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route(
     '/debug/push-ping',
     debugPushRoutes({
+      authStore: store,
+      pushStore,
+      now,
+      debugToken,
+      vapidPublicKey,
+    }),
+  );
+  app.route(
+    '/debug/push-broadcast',
+    debugPushBroadcastRoutes({
       authStore: store,
       pushStore,
       now,
