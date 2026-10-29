@@ -5,8 +5,12 @@ import {
   LNURL_BODY_LIMIT_BYTES,
   LNURL_PAY_REQUEST_TIMEOUT_MS,
   LNURL_SERVER_TIMEOUT_MS,
+  LNURL_SIGNED_MESSAGE_VALIDITY_SECS,
+  LNURL_UNAVAILABLE_ERROR,
   callLnurlServer,
+  readLookupAnswer,
   walletPayRequest,
+  type LnurlServerResult,
 } from '@/lib/lnurl-server';
 
 const CONFIG: LnurlServerConfig = {
@@ -23,6 +27,53 @@ describe('LNURL server constants', () => {
     expect(LNURL_PAY_REQUEST_TIMEOUT_MS).toBe(5_000);
     expect(LNURL_SERVER_TIMEOUT_MS).toBe(15_000);
     expect(LNURL_BODY_LIMIT_BYTES).toBe(1024 * 1024);
+  });
+
+  it('exports the 503 text and the signed-message window', () => {
+    expect(LNURL_UNAVAILABLE_ERROR).toBe('Lightning address service is unavailable');
+    expect(LNURL_SIGNED_MESSAGE_VALIDITY_SECS).toBe(600);
+  });
+});
+
+describe('readLookupAnswer', () => {
+  function upstream(status: number, body: string): LnurlServerResult {
+    return { ok: true, status, body, headers: {} };
+  }
+
+  it('reads a held name from a 200 object, normalized', () => {
+    expect(
+      readLookupAnswer(
+        upstream(200, '{"lnurl":"x","lightning_address":"ada@example.test","username":" Ada "}'),
+      ),
+    ).toEqual({ kind: 'holds', username: 'ada' });
+  });
+
+  it('reads the verified 404 "user not found"', () => {
+    expect(readLookupAnswer(upstream(404, '"user not found"'))).toEqual({ kind: 'not_found' });
+  });
+
+  it('treats every other answer as unverified', () => {
+    const unverified = { kind: 'unverified' };
+    expect(readLookupAnswer({ ok: false, reason: 'unreachable' })).toEqual(unverified);
+    expect(readLookupAnswer({ ok: false, reason: 'segment' })).toEqual(unverified);
+    expect(readLookupAnswer(upstream(404, ''))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(404, '""'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(404, 'user not found'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(404, '"source pubkey does not own this username"'))).toEqual(
+      unverified,
+    );
+    expect(readLookupAnswer(upstream(400, '"invalid signature for domain \'x\'"'))).toEqual(
+      unverified,
+    );
+    expect(readLookupAnswer(upstream(500, '"internal server error"'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, 'not json'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, '{"lnurl":"x"}'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, '{"username":7}'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, '{"username":"no spaces allowed"}'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, '["ada"]'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, 'null'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(200, '"ada"'))).toEqual(unverified);
+    expect(readLookupAnswer(upstream(201, '{"username":"ada"}'))).toEqual(unverified);
   });
 });
 

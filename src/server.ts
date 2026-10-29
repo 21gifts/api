@@ -761,6 +761,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       loginGate,
       requiredAppBuild,
+      fetchImpl,
       ...receivingDeps,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),

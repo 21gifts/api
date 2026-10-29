@@ -4,11 +4,25 @@ import type {
   PublicKeyCredentialRequestOptionsJSON,
 } from '@simplewebauthn/server';
 
+/** Credential id the `{ test: 'recovery' }` attestation verifies to. */
+export const RECOVERY_CREDENTIAL_ID = 'bmV3LXJlY292ZXJ5LXBhc3NrZXktMQ';
+
 /**
  * Test double for {@link PasskeyCeremony}. Accepts sentinel JSON instead of
  * real WebAuthn attestations so HTTP and domain tests stay deterministic.
  */
 export class FakePasskeyCeremony implements PasskeyCeremony {
+  /** Creation challenge handed out by {@link generateRegistrationOptions}. */
+  readonly #challenge: string;
+
+  /**
+   * @param options - `challenge` overrides the creation challenge
+   *   (default `test-challenge`), for tests that sign over it.
+   */
+  constructor(options: { challenge?: string } = {}) {
+    this.#challenge = options.challenge ?? 'test-challenge';
+  }
+
   /**
    * Return a fixed creation challenge for tests.
    *
@@ -26,9 +40,9 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
     excludeCredentials?: Array<{ id: string; type: 'public-key' }>;
   }): Promise<{ challenge: string; options: PublicKeyCredentialCreationOptionsJSON }> {
     return {
-      challenge: 'test-challenge',
+      challenge: this.#challenge,
       options: {
-        challenge: 'test-challenge',
+        challenge: this.#challenge,
         rp: { id: input.rpID, name: input.rpName },
         user: {
           id: new TextDecoder().decode(input.userID),
@@ -45,10 +59,12 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
 
   /**
    * Succeeds when `response` is `{ test: 'ok' }` (extra keys allowed) with
-   * `cred-1`, or `{ test: 'replace' }` with `cred-2`.
+   * `cred-1`, `{ test: 'replace' }` with `cred-2`, or `{ test: 'recovery' }`
+   * with {@link RECOVERY_CREDENTIAL_ID} (the credential id of the pinned
+   * recovery vector).
    *
    * @param input - Attestation payload from the finish body.
-   * @returns Fixed credential `cred-1` or `cred-2`, or `{ ok: false }`.
+   * @returns A fixed credential, or `{ ok: false }`.
    */
   async verifyRegistration(input: {
     response: unknown;
@@ -72,6 +88,14 @@ export class FakePasskeyCeremony implements PasskeyCeremony {
         ok: true,
         credentialId: 'cred-2',
         publicKey: new Uint8Array([4, 5, 6]),
+        signCount: 0,
+      };
+    }
+    if (isSentinel(input.response, 'recovery')) {
+      return {
+        ok: true,
+        credentialId: RECOVERY_CREDENTIAL_ID,
+        publicKey: Uint8Array.of(4, 5, 6),
         signCount: 0,
       };
     }

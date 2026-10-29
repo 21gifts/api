@@ -10,6 +10,13 @@ import {
   LOGINS_CLOSED_ERROR,
 } from '@/lib/login-gate';
 import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
+import {
+  PINNED,
+  lookupHolds,
+  scriptedLnurlFetch,
+  seedPinnedAccount,
+} from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const ORIGIN = 'http://localhost:3000';
 const DEBUG = 'gate-debug-token';
@@ -34,11 +41,32 @@ function harness(env: Record<string, string> = {}): Harness {
     now: () => 1_000_000,
     allowedOrigins: [ORIGIN],
     webAuthnRpId: 'localhost',
-    passkeyCeremony: new FakePasskeyCeremony(),
+    passkeyCeremony: new FakePasskeyCeremony({ challenge: PINNED.challenge }),
     debugToken: DEBUG,
     env,
+    fetchImpl: scriptedLnurlFetch({ recover: () => lookupHolds('ada') }).fetchImpl,
   });
   return { app, store, gateStore };
+}
+
+/** Env that mounts the LNURL server, as social recovery needs. */
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
+
+const RECOVERY_BEGIN = {
+  sparkPubkey: PINNED.oldSparkPubkey,
+  lookup: { signature: 'ab'.repeat(36), timestamp: 1_700_000_000 },
+};
+
+function recoveryFinishBody(challengeId: string): unknown {
+  return {
+    challengeId,
+    credential: { test: 'recovery' },
+    newSparkPubkey: PINNED.newSparkPubkey,
+    signature: { pubkey: PINNED.oldSparkPubkey, signature: PINNED.signature },
+  };
 }
 
 function post(app: Hono, path: string, body?: unknown, build?: string): Promise<Response> {
@@ -329,10 +357,54 @@ describe('login gate via createApp', () => {
       );
     });
 
+    it('refuses recovery begin and finish without the required build', async () => {
+      const { app } = harness({ ...LNURL_ENV, APP_BUILD_REQUIRED: 'sha-1' });
+      for (const path of ['/auth/passkey/recovery/begin', '/auth/passkey/recovery/finish']) {
+        const missing = await post(app, path);
+        expect(missing.status).toBe(403);
+        expect(await missing.json()).toEqual(APP_OUTDATED);
+        const other = await post(app, path, undefined, 'sha-0');
+        expect(other.status).toBe(403);
+      }
+      expect((await post(app, '/auth/passkey/recovery/finish', undefined, 'sha-1')).status).toBe(
+        400,
+      );
+    });
+
     it('does not check the build on the seed routes', async () => {
       const { app } = harness({ APP_BUILD_REQUIRED: 'sha-1' });
       const res = await post(app, '/auth/passkey/seed/begin');
       expect(res.status).toBe(401);
+    });
+  });
+
+  describe('social recovery', () => {
+    it('refuses recovery begin and finish while logins are closed', async () => {
+      const { app, store } = harness(LNURL_ENV);
+      await seedPinnedAccount(store);
+      const begin = await post(app, '/auth/passkey/recovery/begin', RECOVERY_BEGIN);
+      expect(begin.status).toBe(200);
+      const { challengeId } = (await begin.json()) as { challengeId: string };
+      await setLogins(app, false);
+      const closedBegin = await post(app, '/auth/passkey/recovery/begin', RECOVERY_BEGIN);
+      expect(closedBegin.status).toBe(503);
+      expect(await closedBegin.json()).toEqual(LOGINS_CLOSED);
+      const closedFinish = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        recoveryFinishBody(challengeId),
+      );
+      expect(closedFinish.status).toBe(503);
+      expect(await closedFinish.json()).toEqual(LOGINS_CLOSED);
+      expect(await store.getPendingRecovery(PINNED.accountId, 1_000_000)).toBeUndefined();
+      await allow(app, PINNED.accountId);
+      const allowed = await post(
+        app,
+        '/auth/passkey/recovery/finish',
+        recoveryFinishBody(challengeId),
+      );
+      expect(allowed.status).toBe(200);
+      expect(await allowed.json()).toEqual({ status: 'pending' });
     });
   });
 

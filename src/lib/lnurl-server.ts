@@ -3,11 +3,13 @@
  *
  * Builds the upstream URL, forwards a fixed header allow-list, and never
  * logs a URL, query string, header value, or body. Used by the forwarded
- * LNURL routes and the wallet-backed `/.well-known/lnurlp/:username` branch.
+ * LNURL routes, the wallet-backed `/.well-known/lnurlp/:username` branch,
+ * and the social recovery lookup.
  */
 
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { normalizeUsername } from '@/lib/username';
 
 /** Abort the pay-request fetch after this many milliseconds. */
 export const LNURL_PAY_REQUEST_TIMEOUT_MS = 5_000;
@@ -15,6 +17,13 @@ export const LNURL_PAY_REQUEST_TIMEOUT_MS = 5_000;
 export const LNURL_SERVER_TIMEOUT_MS = 15_000;
 /** Largest request body the forwarded routes accept, in bytes. */
 export const LNURL_BODY_LIMIT_BYTES = 1024 * 1024;
+/** Error text of every 503 when the LNURL server cannot answer. */
+export const LNURL_UNAVAILABLE_ERROR = 'Lightning address service is unavailable';
+/**
+ * How far a signed LNURL server message's `timestamp` (seconds) may sit from
+ * the clock, in either direction (Breez SDK `signed_message::VALIDITY_SECS`).
+ */
+export const LNURL_SIGNED_MESSAGE_VALIDITY_SECS = 600;
 
 /** Path segment characters that may be forwarded without encoding. */
 const SEGMENT_RE = /^[A-Za-z0-9._~-]+$/;
@@ -121,6 +130,47 @@ export async function callLnurlServer(
   }
 
   return { ok: true, status: response.status, body, headers: outHeaders };
+}
+
+/**
+ * What a signed lookup (`POST lnurlpay/<key>/recover`) proved: `holds` when the
+ * key holds `username` on this domain, `not_found` when the LNURL server
+ * verified the signature and the key holds no name, `unverified` otherwise.
+ */
+export type LookupAnswer =
+  { kind: 'holds'; username: string } | { kind: 'not_found' } | { kind: 'unverified' };
+
+/**
+ * Read the LNURL server's answer to a signed lookup.
+ *
+ * Only two answers come after a verified signature: 200 with the JSON object
+ * of the held name, and 404 with the JSON string `"user not found"`. Every
+ * other outcome (unreachable, a 404 with another body such as the empty body
+ * of an unserved domain, 400 for a bad or stale signature, 5xx, bad JSON)
+ * proves nothing.
+ *
+ * @param result - Outcome of {@link callLnurlServer} for the lookup.
+ * @returns `holds` with the normalized username, `not_found`, or `unverified`.
+ */
+export function readLookupAnswer(result: LnurlServerResult): LookupAnswer {
+  if (!result.ok) {
+    return { kind: 'unverified' };
+  }
+  let body: unknown;
+  try {
+    body = JSON.parse(result.body);
+  } catch {
+    return { kind: 'unverified' };
+  }
+  if (result.status === 404) {
+    return body === 'user not found' ? { kind: 'not_found' } : { kind: 'unverified' };
+  }
+  if (result.status !== 200 || body === null || typeof body !== 'object' || Array.isArray(body)) {
+    return { kind: 'unverified' };
+  }
+  const raw = (body as { username?: unknown }).username;
+  const username = typeof raw === 'string' ? normalizeUsername(raw) : null;
+  return username === null ? { kind: 'unverified' } : { kind: 'holds', username };
 }
 
 /**

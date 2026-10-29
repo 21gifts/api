@@ -5,18 +5,24 @@ import { z } from 'zod';
 import { resolveWebAuthnConfig, type LnurlServerConfig } from '@/lib/config';
 import {
   finishPasskeyAuthentication,
+  finishPasskeyRecovery,
   finishPasskeyRegistration,
   finishPasskeySeed,
+  RECOVERY_PENDING_ERROR,
   startPasskeyAuthentication,
   startPasskeyClaim,
+  startPasskeyRecovery,
   startPasskeyRegistration,
   startPasskeySeed,
+  type RecoveryBeginResult,
+  type RecoveryFinishResult,
   type SessionAdmit,
 } from '@/lib/auth/passkey';
 import { serializeOwnerAccountWithPosts } from '@/lib/auth/account-json';
 import { resolveSession } from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { IpRateLimiter } from '@/lib/ip-rate-limit';
 import type { AuthStore } from '@/lib/auth/store';
 import type { PasskeyCeremony } from '@/lib/auth/webauthn';
 import {
@@ -28,9 +34,13 @@ import {
   LOGINS_CLOSED_ERROR,
   type LoginGate,
 } from '@/lib/login-gate';
-import { logEvent, type LogFields } from '@/lib/log';
+import { errorLogFields, logEvent, type LogFields } from '@/lib/log';
+import type { FetchFn } from '@/lib/lnurlp';
+import { LNURL_UNAVAILABLE_ERROR } from '@/lib/lnurl-server';
 import type { MessageStore } from '@/lib/message-store';
 import type { NostrKeygen } from '@/lib/nostr/keys';
+import { readClientRequestMeta } from '@/lib/request-meta';
+import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername } from '@/lib/username';
 import { bearerToken } from '@/routes/me';
 
@@ -62,17 +72,22 @@ export interface AuthRouteDeps {
    * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
-  /** LNURL server config for the receiving address in owner JSON; omitted → off. */
+  /**
+   * LNURL server config for the receiving address in owner JSON and for the
+   * social recovery lookup; omitted → off (recovery begin answers 503).
+   */
   lnurlServer?: LnurlServerConfig;
+  /** Injected `fetch` for the LNURL server (default `globalThis.fetch`). */
+  fetchImpl?: FetchFn;
   /**
    * Operator login switch. Omitted → every session-creating request passes.
-   * Checked by register begin (new and claim), register finish, and
-   * authenticate finish before anything is written.
+   * Checked by register begin (new and claim), register finish, authenticate
+   * finish, and recovery begin and finish before anything is written.
    */
   loginGate?: LoginGate;
   /**
    * Required app build (`APP_BUILD_REQUIRED`). `null` or omitted → no build
-   * check. Checked first on register and authenticate begin and finish.
+   * check. Checked first on register, authenticate, and recovery begin and finish.
    */
   requiredAppBuild?: string | null;
 }
@@ -82,6 +97,29 @@ const passkeyFinishBody = z.object({
   challengeId: z.string(),
   credential: z.unknown(),
 });
+
+/** Body schema for social recovery begin. */
+const recoveryBeginBody = z
+  .object({
+    sparkPubkey: z.string(),
+    lookup: z
+      .object({
+        signature: z.string().regex(/^[0-9a-f]{16,144}$/),
+        timestamp: z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),
+      })
+      .strict(),
+  })
+  .strict();
+
+/** Body schema for social recovery finish; `credential` must be present (checked separately). */
+const recoveryFinishBody = z
+  .object({
+    challengeId: z.string(),
+    credential: z.unknown(),
+    newSparkPubkey: z.string(),
+    signature: z.object({ pubkey: z.string(), signature: z.string() }).strict(),
+  })
+  .strict();
 
 /** Real ceremony ids are 64 lowercase hex characters. Anything else is not logged. */
 const LOGGED_CHALLENGE_ID = /^[0-9a-f]{64}$/;
@@ -100,6 +138,38 @@ const PASSKEY_FINISH_BODY_ERROR = 'Expected a JSON body with challengeId and cre
 const PASSKEY_FINISH_JSON_ERROR = 'Finish body is not valid JSON';
 const PASSKEY_BEGIN_JSON_ERROR = 'Begin body is not valid JSON';
 const SERVER_AUTH_UNCONFIGURED = 'Server auth is not configured';
+const RECOVERY_BEGIN_BODY_ERROR = 'Expected a JSON body with sparkPubkey and lookup';
+const RECOVERY_FINISH_BODY_ERROR =
+  'Expected a JSON body with challengeId, credential, newSparkPubkey and signature';
+const TOO_MANY_REQUESTS = 'Too many requests';
+
+/** HTTP answer of each refused recovery begin. */
+const RECOVERY_BEGIN_REFUSALS: Record<
+  Extract<RecoveryBeginResult, { ok: false }>['reason'],
+  { status: 403 | 404 | 409 | 503; body: { error: string; code?: string } }
+> = {
+  not_found: { status: 404, body: { error: 'Not found' } },
+  done: {
+    status: 409,
+    body: {
+      error: 'This account was already recovered. Sign in with the new passkey.',
+      code: 'recovery_done',
+    },
+  },
+  operator: {
+    status: 409,
+    body: { error: 'This account needs an operator to recover it', code: 'recovery_operator' },
+  },
+  wrong_account: { status: 403, body: { error: WRONG_ACCOUNT_ERROR } },
+  logins_closed: { status: 503, body: { error: LOGINS_CLOSED_ERROR, code: LOGINS_CLOSED_CODE } },
+  unavailable: { status: 503, body: { error: LNURL_UNAVAILABLE_ERROR } },
+};
+
+/** Recovery finish errors that answer 409; every other refusal is 400 unless mapped first. */
+const RECOVERY_FINISH_CONFLICTS: readonly string[] = [
+  'A recovery is already pending',
+  'Wallet key is already in use',
+];
 
 /**
  * Challenge id from an untrusted finish body. Missing, non-object, and
@@ -202,6 +272,58 @@ async function readPasskeyFinish(req: {
 }
 
 /**
+ * Recovery finish body with both wallet keys normalized, or a 400 reason.
+ * Invalid JSON stays distinct from a parsed body of the wrong shape.
+ */
+async function readRecoveryFinish(req: { text: () => Promise<string> }): Promise<
+  | {
+      ok: true;
+      challengeId: string;
+      credential: unknown;
+      newSparkPubkey: string;
+      signature: { pubkey: string; signature: string };
+    }
+  | { ok: false; error: string; body?: unknown; extra: LogFields }
+> {
+  const read = await readJsonBody(req);
+  if (read.json === 'absent') {
+    return {
+      ok: false,
+      error: RECOVERY_FINISH_BODY_ERROR,
+      body: null,
+      extra: { bodyBytes: read.bodyBytes, json: 'absent' },
+    };
+  }
+  if (read.json === 'invalid') {
+    return {
+      ok: false,
+      error: PASSKEY_FINISH_JSON_ERROR,
+      extra: { bodyBytes: read.bodyBytes, json: 'invalid' },
+    };
+  }
+  const parsed = recoveryFinishBody.safeParse(read.value);
+  // z.unknown() accepts a missing key, so `credential` is checked through the shape.
+  const shape = parsedBodyFields(read.value, read.bodyBytes);
+  const newSparkPubkey = parsed.success ? normalizeSparkPubkey(parsed.data.newSparkPubkey) : null;
+  const pubkey = parsed.success ? normalizeSparkPubkey(parsed.data.signature.pubkey) : null;
+  if (
+    !parsed.success ||
+    shape['hasCredential'] !== true ||
+    newSparkPubkey === null ||
+    pubkey === null
+  ) {
+    return { ok: false, error: RECOVERY_FINISH_BODY_ERROR, body: read.value, extra: shape };
+  }
+  return {
+    ok: true,
+    challengeId: parsed.data.challengeId,
+    credential: parsed.data.credential,
+    newSparkPubkey,
+    signature: { pubkey, signature: parsed.data.signature.signature },
+  };
+}
+
+/**
  * One diagnostic row for a passkey stop. A challenge id is kept only when
  * it is 64 lowercase hex. No credential, token, or raw body.
  */
@@ -210,6 +332,7 @@ function logPasskeyStop(
     | 'auth.passkey.login.fail'
     | 'auth.passkey.register.fail'
     | 'auth.passkey.seed.fail'
+    | 'auth.passkey.recovery.fail'
     | 'auth.passkey.replace.refused',
   error: string,
   body?: unknown,
@@ -278,16 +401,22 @@ function loginsClosed(c: Context): Response {
 /**
  * Build the `/auth` route group.
  *
- * @param deps - Shared store, message store, clock, and passkey collaborators.
- * @returns A Hono app exposing passkey register, authenticate, replace, and seed routes.
+ * @param deps - Shared store, message store, clock, passkey collaborators, and
+ *   the LNURL server config and `fetch` of the social recovery lookup.
+ * @returns A Hono app exposing passkey register, authenticate, replace, seed,
+ *   and social recovery routes.
  */
 export function authRoutes(deps: AuthRouteDeps): Hono {
   const buildCheck = requireAppBuild(deps);
+  const recoveryBeginLimiter = new IpRateLimiter(30);
+  const recoveryFinishLimiter = new IpRateLimiter(30);
   return new Hono()
     .use('/passkey/register/begin', buildCheck)
     .use('/passkey/register/finish', buildCheck)
     .use('/passkey/authenticate/begin', buildCheck)
     .use('/passkey/authenticate/finish', buildCheck)
+    .use('/passkey/recovery/begin', buildCheck)
+    .use('/passkey/recovery/finish', buildCheck)
     .post('/passkey/register/begin', async (c) => {
       const config = webAuthnConfig(deps);
       if (config === null) {
@@ -467,6 +596,9 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         if (result.error === LOGINS_CLOSED_ERROR) {
           return loginsClosed(c);
         }
+        if (result.error === RECOVERY_PENDING_ERROR) {
+          return c.json({ error: RECOVERY_PENDING_ERROR, code: 'recovery_pending' }, 409);
+        }
         const status = result.error === WRONG_ACCOUNT_ERROR ? 403 : 400;
         return c.json({ error: result.error }, status);
       }
@@ -487,6 +619,191 @@ export function authRoutes(deps: AuthRouteDeps): Hono {
         },
         200,
       );
+    })
+    .post('/passkey/recovery/begin', async (c) => {
+      const stage = { stage: 'begin' };
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          SERVER_AUTH_UNCONFIGURED,
+          undefined,
+          undefined,
+          stage,
+        );
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
+      }
+      const lnurlServer = deps.lnurlServer;
+      if (lnurlServer === undefined) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          LNURL_UNAVAILABLE_ERROR,
+          undefined,
+          undefined,
+          stage,
+        );
+        return c.json({ error: LNURL_UNAVAILABLE_ERROR }, 503);
+      }
+      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      if (!recoveryBeginLimiter.allow(clientIp, deps.now())) {
+        return c.json({ error: TOO_MANY_REQUESTS }, 429);
+      }
+      const read = await readJsonBody(c.req);
+      if (read.json === 'invalid') {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          PASSKEY_BEGIN_JSON_ERROR,
+          undefined,
+          undefined,
+          {
+            ...stage,
+            bodyBytes: read.bodyBytes,
+            json: 'invalid',
+          },
+        );
+        return c.json({ error: PASSKEY_BEGIN_JSON_ERROR }, 400);
+      }
+      const parsed = read.json === 'parsed' ? recoveryBeginBody.safeParse(read.value) : null;
+      const sparkPubkey =
+        parsed?.success === true ? normalizeSparkPubkey(parsed.data.sparkPubkey) : null;
+      if (parsed?.success !== true || sparkPubkey === null) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          RECOVERY_BEGIN_BODY_ERROR,
+          undefined,
+          undefined,
+          {
+            ...stage,
+            bodyBytes: read.bodyBytes,
+            json: read.json,
+          },
+        );
+        return c.json({ error: RECOVERY_BEGIN_BODY_ERROR }, 400);
+      }
+      const admit = sessionAdmit(deps);
+      let result: RecoveryBeginResult;
+      try {
+        result = await startPasskeyRecovery(
+          {
+            store: deps.store,
+            ceremony: deps.passkeyCeremony,
+            config,
+            lnurlServer,
+            fetchImpl: deps.fetchImpl ?? globalThis.fetch,
+            now: deps.now,
+            ...(admit === undefined ? {} : { admit }),
+          },
+          { sparkPubkey, lookup: parsed.data.lookup },
+        );
+      } catch (error) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          LNURL_UNAVAILABLE_ERROR,
+          undefined,
+          undefined,
+          {
+            ...stage,
+            ...errorLogFields(error),
+          },
+        );
+        return c.json({ error: LNURL_UNAVAILABLE_ERROR }, 503);
+      }
+      if (!result.ok) {
+        // startPasskeyRecovery logs `operator` itself, with the account id.
+        if (result.reason !== 'operator') {
+          logPasskeyStop('auth.passkey.recovery.fail', result.reason, undefined, undefined, stage);
+        }
+        const refusal = RECOVERY_BEGIN_REFUSALS[result.reason];
+        return c.json(refusal.body, refusal.status);
+      }
+      return c.json(
+        {
+          challengeId: result.challengeId,
+          options: result.options,
+          accountId: result.accountId,
+          username: result.username,
+        },
+        200,
+      );
+    })
+    .post('/passkey/recovery/finish', async (c) => {
+      const stage = { stage: 'finish' };
+      const config = webAuthnConfig(deps);
+      if (config === null) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          SERVER_AUTH_UNCONFIGURED,
+          undefined,
+          undefined,
+          stage,
+        );
+        return c.json({ error: SERVER_AUTH_UNCONFIGURED }, 500);
+      }
+      const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+      if (!recoveryFinishLimiter.allow(clientIp, deps.now())) {
+        return c.json({ error: TOO_MANY_REQUESTS }, 429);
+      }
+      const read = await readRecoveryFinish(c.req);
+      if (!read.ok) {
+        logPasskeyStop('auth.passkey.recovery.fail', read.error, read.body, undefined, {
+          ...stage,
+          ...read.extra,
+        });
+        return c.json({ error: read.error }, 400);
+      }
+      const challengeBody = { challengeId: read.challengeId };
+      const admit = sessionAdmit(deps);
+      let result: RecoveryFinishResult;
+      try {
+        result = await finishPasskeyRecovery(
+          {
+            store: deps.store,
+            ceremony: deps.passkeyCeremony,
+            config,
+            now: deps.now,
+            ...(admit === undefined ? {} : { admit }),
+          },
+          {
+            origin: c.req.header('origin'),
+            challengeId: read.challengeId,
+            credential: read.credential,
+            newSparkPubkey: read.newSparkPubkey,
+            signature: read.signature,
+          },
+        );
+      } catch (error) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          LNURL_UNAVAILABLE_ERROR,
+          challengeBody,
+          undefined,
+          {
+            ...stage,
+            ...errorLogFields(error),
+          },
+        );
+        return c.json({ error: LNURL_UNAVAILABLE_ERROR }, 503);
+      }
+      if (!result.ok) {
+        logPasskeyStop(
+          'auth.passkey.recovery.fail',
+          result.error,
+          challengeBody,
+          result.accountId,
+          stage,
+        );
+        if (result.error === LOGINS_CLOSED_ERROR) {
+          return loginsClosed(c);
+        }
+        const status =
+          result.error === WRONG_ACCOUNT_ERROR
+            ? 403
+            : RECOVERY_FINISH_CONFLICTS.includes(result.error)
+              ? 409
+              : 400;
+        return c.json({ error: result.error }, status);
+      }
+      return c.json({ status: 'pending' }, 200);
     })
     .post('/passkey/replace/begin', async (c) => {
       const config = webAuthnConfig(deps);

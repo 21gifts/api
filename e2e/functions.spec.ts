@@ -484,6 +484,69 @@ test('Function: walletPayRequest — GET /.well-known/lnurlp/:username is 404 an
   expect(wellKnown.status()).toBe(404);
 });
 
+// The address transfer route exists only with the LNURL server (LNURL_SERVER_URL blank here).
+test('Function: lnurlTransferFromMessage — POST /lnurlpay/:pubkey/transfer is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/transfer');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: lnurlTransferToMessage — POST /lnurlpay/:pubkey/transfer is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/transfer');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: verifyLnurlDerSignature — POST /lnurlpay/:pubkey/transfer is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/transfer');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+// Settling runs on the recover forward, which exists only with the LNURL server.
+test('Function: readLookupAnswer — POST /lnurlpay/:pubkey/recover is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/recover');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: settleAfterLookup — POST /lnurlpay/:pubkey/recover is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/recover');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: settleDecision — POST /lnurlpay/:pubkey/recover is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/lnurlpay/:pubkey/recover');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('Function: forwardRecoveryLookup — POST recovery begin is 503 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/recovery/begin', {
+    data: {
+      sparkPubkey: `02${'a'.repeat(64)}`,
+      lookup: { signature: 'ab'.repeat(36), timestamp: 1 },
+    },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+});
+
 test('Function: lnurlServerRoutes — GET /verify/:paymentHash is 404 when LNURL server is off', async ({
   request,
 }) => {
@@ -1861,6 +1924,51 @@ test('Function: finishPasskeySeed — POST seed finish without Bearer is 401', a
 }) => {
   const res = await request.post('/auth/passkey/seed/finish');
   expect(res.status()).toBe(401);
+});
+
+test('Function: startPasskeyRecovery — POST recovery begin is 503 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/recovery/begin');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+});
+
+test('Function: finishPasskeyRecovery — POST recovery finish without Origin is 400', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/recovery/finish', {
+    data: {
+      challengeId: 'a'.repeat(64),
+      credential: { id: 'cred-e2e' },
+      newSparkPubkey: `03${'b'.repeat(64)}`,
+      signature: { pubkey: `02${'a'.repeat(64)}`, signature: 'c'.repeat(128) },
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid origin' });
+});
+
+// A recovery message is built and verified only for a recovery challenge, which only
+// recovery begin issues, and begin needs the LNURL server (LNURL_SERVER_URL blank here).
+test('Function: recoveryMessage — POST recovery finish without body is 400', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/recovery/finish');
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: 'Expected a JSON body with challengeId, credential, newSparkPubkey and signature',
+  });
+});
+
+test('Function: verifyRecoverySignature — POST recovery finish without body is 400', async ({
+  request,
+}) => {
+  const res = await request.post('/auth/passkey/recovery/finish');
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: 'Expected a JSON body with challengeId, credential, newSparkPubkey and signature',
+  });
 });
 
 test('Function: addSeedPasskeyCredential — POST seed begin without Bearer is 401', async ({
