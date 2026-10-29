@@ -587,6 +587,7 @@ describe('createApp', () => {
         p256dh: 'p',
         auth: 'a',
         createdAt: new Date(1),
+        sessionToken: null,
       });
       const newKey = `03${'2'.repeat(64)}`;
       const now = Date.now();

@@ -1367,6 +1367,7 @@ describe('PostgresAuthStore social recovery', () => {
         p256dh: 'p',
         auth: 'a',
         createdAt: new Date(),
+        sessionToken: null,
       });
       const now = Date.now();
 

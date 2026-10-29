@@ -92,6 +92,7 @@ describe('social recovery end to end via createApp', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(T0),
+      sessionToken: null,
     });
     return { app, store, push, calls };
   }

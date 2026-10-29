@@ -3137,6 +3137,7 @@ describe('InMemoryAuthStore social recovery', () => {
         p256dh: 'p',
         auth: 'a',
         createdAt: new Date(NOW),
+        sessionToken: null,
       });
       await push.upsertSubscription(sub('https://push.example/1', 'acc'));
       await push.upsertSubscription(sub('https://push.example/2', 'acc'));

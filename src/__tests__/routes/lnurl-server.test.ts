@@ -903,6 +903,7 @@ describe('lnurlServerRoutes', () => {
         p256dh: 'p',
         auth: 'a',
         createdAt: new Date(NOW),
+        sessionToken: null,
       });
       await store.createSession({
         token: 'd'.repeat(64),
