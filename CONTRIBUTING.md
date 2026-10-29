@@ -121,7 +121,7 @@ api/
 │   │   ├── shop-identity.ts  # Per-shop Nostr keys and the durable OpenCryptoPay outbox stores
 │   │   ├── nip05.ts          # NIP-05 slugs, nostr.json names, kind:0 identifier
 │   │   ├── about-me.ts       # Profile-note text → About me (name-copy is not a bio)
-│   │   ├── account-activity.ts # Donation given/received: forum zaps, daily and welcome gifts; loans and moderator stipends omitted
+│   │   ├── account-activity.ts # Donation given/received stay donation-only; same module also returns outstanding loan balances
 │   │   ├── message-store.ts  # MessageStore port, InMemoryMessageStore, PostgresMessageStore
 │   │   ├── translation-store.ts # message_translation + conversation_message_translation cache (InMemory + Postgres)
 │   │   ├── translate-config.ts # TRANSLATE_URL / TRANSLATE_API_KEY (optional; boot still)
