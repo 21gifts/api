@@ -103,13 +103,17 @@ function inWindow(atMs: number, fromMs: number, toMs: number): boolean {
   return atMs >= fromMs && atMs < toMs;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/** Live top-level notes in `[fromMs, toMs)`, paging the feed back from `toMs`. */
 async function windowPosts(
   messages: MessageStore,
   fromMs: number,
   toMs: number,
 ): Promise<MessageListRow[]> {
   const rows: MessageListRow[] = [];
-  let cursor: { k: 't'; c: Date; i: string } | null = null;
+  // The nil UUID sorts before every id, so the first page starts strictly before `toMs`.
+  let cursor = { k: 't' as const, c: new Date(toMs), i: '00000000-0000-0000-0000-000000000000' };
   for (;;) {
     const page = await messages.listFeed({
       limit: MESSAGE_LIST_LIMIT,
@@ -291,6 +295,16 @@ export async function replayPayoutWindow(
   const legacy = (await deps.auth.listLegacyPayoutHandles?.()) ?? new Map<string, string>();
   const accounts = new Map<string, Account | undefined>();
   const booked = new Set<string>();
+  const postsByDay = new Map<string, MessageListRow[]>();
+  const dayPosts = async (day: string): Promise<MessageListRow[]> => {
+    let rows = postsByDay.get(day);
+    if (rows === undefined) {
+      const dayStartMs = Date.parse(`${day}T00:00:00.000Z`);
+      rows = await windowPosts(deps.messages, dayStartMs, dayStartMs + DAY_MS);
+      postsByDay.set(day, rows);
+    }
+    return rows;
+  };
   const events: ReplayEvent[] = [];
 
   for (const trigger of triggers) {
@@ -367,9 +381,8 @@ export async function replayPayoutWindow(
       skip('not_eligible', ineligible);
       continue;
     }
-    const posts = (await deps.messages.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT)).filter(
-      (row) =>
-        row.id !== (account.profileMessageId ?? null) && utcDayKey(row.createdAt.getTime()) === day,
+    const posts = (await dayPosts(day)).filter(
+      (row) => row.accountId === account.id && row.id !== (account.profileMessageId ?? null),
     );
     if (payout === 'moderator' && !isModeratorGroupMember(account)) {
       skip('not_eligible', 'not_moderator');

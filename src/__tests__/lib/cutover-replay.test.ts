@@ -550,7 +550,8 @@ describe('replayPayoutWindow', () => {
     const base = Date.parse('2026-10-29T23:00:00.000Z');
     for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
       const at = new Date(base + i * 1000).toISOString();
-      await h.post(id(1000 + i), ADA, at, false);
+      // Only the oldest post has media, so it is reachable only on the second feed page.
+      await h.post(id(1000 + i), ADA, at, i === 0);
       await h.conversations.appendMessage({
         id: `g-${i}`,
         conversationId: group.id,
@@ -562,13 +563,38 @@ describe('replayPayoutWindow', () => {
         ...unsignedConversationDefaults(),
       });
     }
-    await h.post(id(1), ADA, '2026-10-29T23:59:00.000Z');
 
     const result = await h.run(true);
     expect(result.events.filter((e) => e.payout === 'moderator')).toHaveLength(
       MESSAGE_LIST_LIMIT + 1,
     );
-    expect(result.events.filter((e) => e.trigger === 'post')).toHaveLength(1);
+    expect(result.events.filter((e) => e.trigger === 'post').map((e) => e.eventId)).toEqual([
+      id(1000),
+    ]);
+  });
+
+  it('finds the media post of an /admit day behind more than a page of newer notes', async () => {
+    const h = await harness({
+      grants: [
+        {
+          ...admitted(ADA),
+          decidedAt: Date.parse('2026-10-29T23:50:00.000Z'),
+          admittedAt: Date.parse('2026-10-29T23:50:00.000Z'),
+        },
+      ],
+    });
+    h.deps.now = () => Date.parse('2026-10-30T06:00:00.000Z');
+    await h.member(ADA, 'ada', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T09:00:00.000Z');
+    const base = Date.parse('2026-10-30T02:00:00.000Z');
+    for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
+      await h.post(id(2000 + i), ADA, new Date(base + i * 1000).toISOString(), false);
+    }
+
+    const result = await h.run(true);
+    expect(result.events).toEqual([
+      expect.objectContaining({ trigger: 'admit', messageId: id(1), status: 'would_pay' }),
+    ]);
   });
 
   it('stops paging once a full page ends before the window', async () => {
