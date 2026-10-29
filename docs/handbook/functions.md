@@ -1248,7 +1248,7 @@
 - **Purpose:** The accounts the welcome sweep would ping now: role `verified`, a receiving address (verified wallet with the LNURL server on), a live top-level photo or video including About me, and not `accountWelcomed`. Reads the accounts, the gift ledger, and the platform account once per call.
 - **Inputs:** `{ auth, messages, gifts?, lnurlServer? }`.
 - **Returns / side effects:** `Promise<WelcomeSweepCandidate[]>` (`{ accountId, username, address, messageId }`, in account order). Pings nobody and writes nothing. Any read failure rejects, so a dry-run never under-reports silently.
-- **Used by:** `syncWelcomePing` (sweep) and `GET /debug/welcome-sweep` (operator dry-run).
+- **Used by:** `GET /debug/welcome-sweep` (operator dry-run). The sweep in `syncWelcomePing` applies the same selection itself, one account at a time, so it can skip a failing account and stop when the switch is turned off.
 
 ## Function: resolveSpendPing
 
