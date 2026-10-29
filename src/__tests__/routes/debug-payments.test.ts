@@ -12,6 +12,8 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryTrustStore } from '@/lib/trust-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
@@ -59,7 +61,9 @@ function mount(
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
-      ...(extra.giftStore === undefined ? {} : { giftStore: extra.giftStore }),
+      conversationStore: new InMemoryConversationStore(),
+      trustStore: new InMemoryTrustStore(),
+      giftStore: extra.giftStore ?? new InMemoryGiftStore(),
       lnurlServer: LNURL_SERVER,
     }),
   );
@@ -473,6 +477,9 @@ describe('debugPaymentsRoutes', () => {
         debugToken: 'secret',
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
+        conversationStore: new InMemoryConversationStore(),
+        trustStore: new InMemoryTrustStore(),
+        giftStore: new InMemoryGiftStore(),
       }),
     );
     const settled = await app.request('/debug/invoices/settle', {
@@ -1575,7 +1582,7 @@ describe('debugPaymentsRoutes', () => {
       expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
     });
 
-    it('replays with empty default stores and no LNURL server', async () => {
+    it('replays without a funding store or LNURL server', async () => {
       const app = new Hono().route(
         '/debug',
         debugPaymentsRoutes({
@@ -1584,6 +1591,9 @@ describe('debugPaymentsRoutes', () => {
           now: WINDOW_NOW,
           debugToken: 'secret',
           spendPing: spendPingMock(),
+          conversationStore: new InMemoryConversationStore(),
+          trustStore: new InMemoryTrustStore(),
+          giftStore: new InMemoryGiftStore(),
         }),
       );
       const res = await post(app, WINDOW);

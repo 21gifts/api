@@ -2,7 +2,7 @@ import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseClientInstant } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
-import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
+import type { ConversationStore } from '@/lib/conversation-store';
 import { replayPayoutWindow } from '@/lib/cutover-replay';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
@@ -14,9 +14,9 @@ import { receivingAddress } from '@/lib/receiving-address';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
-import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
+import type { GiftStore } from '@/lib/gift-store';
 import type { SpendPing } from '@/lib/spend-ping';
-import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
+import type { TrustStore } from '@/lib/trust-store';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -44,12 +44,12 @@ export interface DebugPaymentsRouteDeps {
   fundingStore?: FundingStore;
   /** LNURL server config for the spend ping's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
-  /** Moderator group messages for the window replay; omitted → empty. */
-  conversationStore?: ConversationStore;
-  /** Verifications (welcome triggers) for the window replay; omitted → empty. */
-  trustStore?: TrustStore;
-  /** Gift ledger for the window replay's already-paid check; omitted → empty. */
-  giftStore?: Pick<GiftStore, 'listOutbound'>;
+  /** Moderator group messages for the window replay. */
+  conversationStore: ConversationStore;
+  /** Verifications (welcome triggers) for the window replay. */
+  trustStore: TrustStore;
+  /** Gift ledger for the window replay's already-paid check. */
+  giftStore: Pick<GiftStore, 'listOutbound'>;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
@@ -152,9 +152,8 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
  *   compose (same `eligibleToday` gate as `POST /messages`) and used by
- *   `POST /spend-ping`; optional `conversationStore`, `trustStore`, and
- *   `giftStore` for the window replay (each omitted → an empty in-memory
- *   store). Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared
+ *   `POST /spend-ping`; `conversationStore`, `trustStore`, and `giftStore`
+ *   for the window replay. Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared
  *   post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
  *   successful settle resumed), zap-ingest list, and `POST /spend-ping`: with
@@ -278,10 +277,10 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
             {
               auth: deps.auth,
               messages: deps.store,
-              conversations: deps.conversationStore ?? new InMemoryConversationStore(),
+              conversations: deps.conversationStore,
               funding: deps.fundingStore ?? new InMemoryFundingStore(),
-              trust: deps.trustStore ?? new InMemoryTrustStore(),
-              gifts: deps.giftStore ?? new InMemoryGiftStore(),
+              trust: deps.trustStore,
+              gifts: deps.giftStore,
               spendPing: deps.spendPing,
               pingOnDay: pingOnDay.bind(deps.spendPing),
               ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
