@@ -10,7 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waits at most until 8 s after its fetch arrived; the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
+**Status**: living document. Last revised 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waits at most until 8 s after its fetch arrived; the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
 
 ---
 
@@ -157,6 +157,7 @@ Public base URLs used in examples:
 | GET    | `/members/:accountId/credits`                        | Bearer                                       | Live member credit notes (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/members/:accountId/replies`                        | Bearer                                       | Live member replies (latest 200)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/mentions`                                          | Bearer                                       | Suggestions for `@` (`q` empty = first 20 alphabetical). A token matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` is whole-string only. Does not store `@` marks                                                                                                                                                                                                                                                                                                                                                 |
+| GET    | `/accounts/by-username/:username`                    | Bearer                                       | Exact account `{ id, username, name }`. `username` is the stored string. `name` is the stored display name, including null                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | GET    | `/trust-chain`                                       | Bearer                                       | Founder seeds (empty edges); `?around=<id>` one hop of stored public edges                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/trust/verify`                                      | Bearer (moderator+)                          | Staff: confirm a person in real life (`verified`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/trust/propose-moderator`                           | Bearer (moderator+)                          | Staff: propose a verified member as moderator                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -198,6 +199,8 @@ Public base URLs used in examples:
 | GET    | `/messages`                                          | none for active / Bearer                     | Public active window with no header; otherwise Bearer. List top-level notes (+ visible `replyCount`); 409 if rules missing; name-copy notes without photo, extra stills, or video are omitted; About me text stays                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/messages/compose-target`                           | Bearer                                       | Platform profile note `{ messageId, sats, firstPostFree }` for a 1-sat compose fee to 21.gifts                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 |
 | GET    | `/messages/places`                                   | Bearer                                       | Live top-level forum pins; 409 if rules missing                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| GET    | `/shops`                                             | Public                                       | Public. shops of { npub, name, place }, optional nextCursor, limit default 20 max 100, 400 Invalid limit / Invalid cursor, 503 Shops are unavailable.                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/shops/:npub`                                       | Public                                       | Public shop by npub; known hex redirects; a shop that is no longer public is 410                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/messages`                                          | Bearer                                       | Post text/photo; 409 if rules/name/username/verified wallet missing; 403 text-only below verified, except the free first post and a reply on the own note                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/messages/hidden`                                   | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff log of soft-hidden notes (session or DEBUG_*_TOKEN)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/messages/:id`                                      | none / Bearer (moderator+)                   | Live public JSON; staff hidden GET includes `deletedAt`/`deletedBy`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
@@ -208,8 +211,8 @@ Public base URLs used in examples:
 | GET    | `/messages/:id/photo`                                | none / Bearer (moderator+)                   | Live photo bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | GET    | `/messages/:id/video.*`                              | none / Bearer (moderator+)                   | Live video bytes; staff hidden bytes `Cache-Control: private, no-store`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | DELETE | `/messages/:id`                                      | Bearer (moderator+)                          | Soft-hide note + direct replies; retract in-app notifications; external target also blocks that pubkey                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| PATCH  | `/messages/:id/place`                                | Bearer (moderator+)                          | Set, replace, or clear the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)                          | Set, replace, or clear the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| PATCH  | `/messages/:id/place`                                | Bearer (moderator+)                          | Set or replace the map pin on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| PATCH  | `/messages/:id/shop-account`                         | Bearer (moderator+)                          | Set or replace the 21.gifts account on a live top-level shop note                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | PATCH  | `/messages/:id/text`                                 | Bearer (moderator+)                          | Replace the text of a live top-level shop note; the shop tag stays                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | PATCH  | `/messages/:id/photos`                               | Bearer (moderator+)                          | Replace the stills of a live top-level shop note; a video stays; no edit history                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/messages/:id/edits`                                | Bearer (moderator+) or `DEBUG_*_TOKEN`       | Staff edit history of a shop note, newest first                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
@@ -270,6 +273,8 @@ Public base URLs used in examples:
 | POST   | `/me/wallet/report`                                  | Bearer                                       | `{ balanceSats, syncedAt, payments }` → `{ acknowledgedIds }`; balance snapshot plus idempotent payment upsert with a server-side category; 60/account/min; 1 MiB                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/me/events`                                         | Bearer                                       | `{ events: [{ name, at, path, props }] }` (at most 50) → `{ accepted, dropped }`; allow-listed interaction log; 30/account/min; 64 KiB                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/push-ping`                                   | Bearer `DEBUG_TOKEN`                         | Enqueue a test push for one account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
+| POST   | `/debug/shop-keys`                                   | Bearer `DEBUG_TOKEN`                         | Store the existing OpenCryptoPay private key of one named shop note. Body `{ messageId, secret }`. Returns `{ messageId, npub }`. Does not log or return the secret. The same key again is success. A different stored key is 409.                                                                                                                                                                                                                                                                                                                                                                             |
+| POST   | `/debug/shop-notes`                                  | Bearer `DEBUG_TOKEN`                         | Store one live top-level shop note that has a till account and no pin. Body `{ text, shopUsername, authorId }`. The pin is not accepted. Returns `{ id, shopNpub }`. `POST /messages` still refuses a shop without a pin.                                                                                                                                                                                                                                                                                                                                                                                      |
 | POST   | `/debug/passkey-renew/reopen`                        | Bearer `DEBUG_TOKEN`                         | Delete one account's failed passkey-renew rows so the blocking dialog opens again. Refuses when a seed is already stored.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Login switch `{ open, source, defaultOpen, allowlist }`; `source` is `stored` or `default` (`LOGINS_OPEN_DEFAULT`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | PUT    | `/debug/logins`                                      | Bearer `DEBUG_TOKEN`                         | Body `{ open }`. Stored value wins over `LOGINS_OPEN_DEFAULT`. Existing sessions are not touched                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -2501,6 +2506,25 @@ At most 20 rows, ordered by `lower(trim(username))` then `id`. Blank
 usernames are skipped. `name` is the trimmed display name, or the stored
 username when that name is blank. Does not store `@username` marks.
 
+### `GET /accounts/by-username/:username`
+
+Exact account lookup. Bearer session with `forum.read`.
+Missing or invalid Bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+`forum.read` not yet allowed → **Response** `409` `{ "error": "missing_requirements", "missing": [...] }`.
+
+`:username` is trimmed and lowercased. It must match `^[a-z0-9][a-z0-9._-]{0,31}$`
+and must not be `_`. Anything else → **Response** `400` `{ "error": "Username is not valid" }`.
+
+**Response** `200`:
+
+```json
+{ "id": "…", "username": "Ada", "name": "Ada Lovelace" }
+```
+
+`username` is the stored string. `name` is the stored display name, including
+`null`. No other fields. No row, or a stored username that is not a non-empty
+string → **Response** `404` `{ "error": "No account with that username" }`.
+
 ### `GET /trust-chain`
 
 Stored trust graph. Bearer session required (any role, including basis).
@@ -2991,6 +3015,98 @@ not create a BOLT11 invoice. A store throw → **503**
 `{ "error": "Shop activity is unavailable" }` and log
 `shops.activity.failed` with no account, note, or charge ids.
 
+### `GET /shops`
+
+Public directory of public shops
+([docs/shop-identity.md](docs/shop-identity.md) S3). A row is returned when
+`publicShop` accepts the note and `shop_identity` already holds a key
+for that note. Identities that are no longer public are omitted. Newest
+note first (`createdAt` descending, then `id` descending). No session; a
+bearer is ignored. `place` is null when the note has no coordinates.
+`address` is null unless street, house number, postal code, city and
+country are all non-blank. `name` is the pin label when that label is
+non-blank, otherwise the first non-blank description line (at most 80
+characters), otherwise `Shop`.
+
+### `GET /shops/:npub`
+
+Public lookup of a shop by its NOSTR identity
+([docs/shop-identity.md](docs/shop-identity.md) S3). No session; a missing
+or invalid bearer gets the same answer. Registered after `/shops/activity`,
+so `activity` keeps its own handler. The route takes any single path segment
+and validates it inside the handler.
+
+| Request                                  | Response                                                                                                |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| npub of a public shop                    | **200** `{ "shop": Shop }`                                                                              |
+| 64 lowercase hex of a known shop pubkey  | **301** to `/shops/{npub}` (relative `Location`)                                                        |
+| npub of a known shop that is not public  | **410** `{ "error": "Shop is no longer listed", "npub": "npub1…" }`                                     |
+| anything else, including an unknown npub | **404** `{ "error": "Not found" }`                                                                      |
+| store failure                            | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed`                               |
+| NIP-05 entry still stale after a re-read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "nip05_stale"`  |
+| note still changing after the photo read | **503** `{ "error": "Shops are unavailable" }`, log `shops.detail.failed` with `reason: "note_changed"` |
+
+`Cache-Control: public, max-age=60` on 200, 301, 404 and 410;
+`Cache-Control: no-store` on 503. The 410 body carries no name.
+
+`Shop` is
+`{ "npub", "messageId", "name", "description", "place": { "lat", "lng", "label", "address": { "street", "houseNumber", "postalCode", "city", "country" } } | null, "photos": [{ "url", "width", "height" }], "payUsername", "nip05", "createdAt" }`.
+`name` is the public shop name, `description` the note text without the
+`#21GiftsShop` token. `place` is null when the note has no finite
+coordinates. When `place` is present, `lat` and `lng` are as in
+`GET /messages/places` and `address` is null unless every structured part
+is non-blank. `photos` are the
+note's photos in note order (at most 10), from one read of the whole set
+(`MessageStore.getPhotoSet`), never photo 0 of one set with the extras of
+another: photo 0 is
+`/messages/:id/photo.<ext>` and extra still n ≥ 1 is
+`/messages/:id/photo/<n>.<ext>`, absolute from the public API base or the
+path alone when no public origin is set. `n` is the index the still is
+stored under, so a still that the set leaves out (an unrecognized type)
+drops only its own entry and never shifts the URLs after it; an
+unrecognized photo 0 leaves the list with the extras alone. `width` and `height` come from the
+image header only (JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`), swapped
+for a JPEG with EXIF orientation 5 to 8, and are `null` when the header
+cannot be read. `payUsername` is the till account's username when it has a
+username and a receiving address (a verified wallet with the LNURL server
+configured), otherwise `null`. `nip05` is the
+shop's `local@domain` from `/.well-known/nostr.json`, or `null` when
+`PUBLIC_BASE_URL` gives no NIP-05 domain. It is read from the NIP-05
+directory that `/.well-known/nostr.json` and the shop kind 0 share, cached in
+process for 60 s per store set. Its entry must carry the name of the note
+this request read; on the first missing entry or other name the request asks
+once for a forced refresh of the directory (at most one computation per 10 s
+per store set) and checks again, and when it still does not match (renamed
+or no longer public in between) the route reads the note again (a note
+no longer public is then 410); a mismatch on the last round answers the 503 with
+`reason: "nip05_stale"`. After
+the photo set the route reads the note again; when its text, pin, till
+account id or `deletedAt` differ from the note the answer is built from (a
+rename, text or pin change while the photos were read), it goes round once
+more with that re-read, and when the note still differs on that last round it
+answers the 503 with `reason: "note_changed"`, so a 200 never pairs the old
+name with photos set after the change. A request reads the note at most three
+times, asks for at most one forced NIP-05 directory refresh and reads the
+photo set at most twice
+([docs/shop-identity.md](docs/shop-identity.md) S3). `createdAt` is the note's
+ISO-8601 creation time.
+
+A **public shop** is a live top-level note with the `#21GiftsShop` token and
+a till account (`shop_account_id`). A pin and a structured address are
+optional. A **listed shop** is a public shop whose pin and description are
+complete (`shopPlaceProblem` and `shopTextProblem` both null); only that
+shop is sent to the OpenCryptoPay map. A write that makes a
+note a public shop for the first time (`POST /messages`,
+`PATCH /messages/:id/text`, `PATCH /messages/:id/place`,
+`PATCH /messages/:id/shop-account`, `PUT /me/about`,
+`POST /debug/messages/:id/restore`) creates its key after the commit with the
+shop KEK (`NOSTR_NSEC_KEK`; a memory boot uses a random process-ephemeral key); a failure logs `shop.nostr_key.failed` and never
+fails the request. The worker backfills keys that are missing. The key
+belongs to the note forever. Every store write that changes the text, pin,
+till account, hide state or photos of a note with a key queues the
+OpenCryptoPay outbox in the same transaction; the senders run in the
+background ([docs/shop-identity.md](docs/shop-identity.md) S5).
+
 ### `GET /view/:viewKey`
 
 Public capability URL for a read-only profile card. No auth. Not a session:
@@ -3273,6 +3389,13 @@ stays hidden. A published sats=0 note is unsigned (`resetSignedEvent`)
 so kind:1 can be rewritten.
 Store throw → **503** `{ "error": "Messages are unavailable" }`
 (`account.about.failed`).
+
+When the live profile note already has a complete pin and the new text
+fails `shopTextProblem`, the response is **400**
+`{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`.
+The note text stays, and a photo in the same request is not written.
+When `updateText` finds that note missing or hidden, the response is
+**404** `{ "error": "Not found" }`.
 
 Success → **Response** `200` with the account (same shape as `GET /me`).
 About me is the profile-note text when it is a real bio, else null (auto
@@ -3579,7 +3702,7 @@ process has no SQL client → **Response** `503`
 `nextCursor` when another page exists. Follow `nextCursor` until it is
 absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, `delivered_endpoints`, and `skip_endpoints` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
@@ -3974,11 +4097,12 @@ table). Success body is `{ "tables": { "<table>": [ ... ] } }` with one array
 per allowlisted name (cap 200): `account`, `passkey_credential`,
 `passkey_challenge`, `auth_session`, `api_log`,
 `contact`, `pos_charge`, `conversation`, `conversation_message`, `conversation_read`,
-`message`, `message_extra_photo`, `message_invoice`, `nostr_zap_ingest`,
-`nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
+`message`, `message_extra_photo`, `shop_identity`, `message_invoice`,
+`nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`, `nostr_zapper`,
 `nostr_blocked_pubkey`, `notification`, `push_subscription`, `push_outbox`,
-`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media
-bytes stay off JSON. `nostrNsecCiphertext` is envelope hex. `btc_usd_daily`,
+`trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`, `db_change`. Media bytes stay off JSON. `nostrNsecCiphertext` of an
+`account` row is envelope hex. A `shop_identity` row has the key metadata
+and the outbox state but never its encrypted secret. `btc_usd_daily`,
 `usd_fiat_daily`, and `db_change` dump stored rows when those list ports are
 wired (in-memory boots dump `[]` for `db_change`). `api_log` dumps when an
 audit store is wired (the newest 200; the full history is `GET /debug/api-log`
@@ -3993,7 +4117,7 @@ Unknown table → **Response** `404` unless the path segment is one of
 `account`, `passkey_credential`, `passkey_challenge`, `auth_session`,
 `api_log`, `contact`, `pos_charge`, `conversation`,
 `conversation_message`, `conversation_read`, `message`, `message_extra_photo`,
-`message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
+`shop_identity`, `message_invoice`, `nostr_zap_ingest`, `nostr_zap_receipt`, `nostr_zap_payment`,
 `nostr_zapper`, `nostr_blocked_pubkey`, `notification`, `push_subscription`,
 `push_outbox`, `trust_edge`, `gift`, `btc_usd_daily`, `usd_fiat_daily`,
 `db_change`. Same `DEBUG_TOKEN` gate. Unexpected store throw → **503**
@@ -4087,8 +4211,9 @@ not a finite `Date.parse` time, or a `beforeId` that is not a UUID is
 the newest 200; the full history is this endpoint. The log never stores
 OPTIONS, `/healthz`, the query string, request bodies, or the Authorization
 header. Paths pass through `requestLogPath` (`/view/<segment>` →
-`/view/:viewKey`). Write failure on the request path logs
-`api_log.write.failed` and does not replace the response.
+`/view/:viewKey`). The response is sent without waiting for the insert.
+Write failure on the request path logs `api_log.write.failed` and does not
+replace the response.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
 
@@ -4802,7 +4927,11 @@ Success → **Response** `200`:
 ### `POST /me/push-subscriptions`
 
 Bearer session. Upserts a browser PushSubscription for the account
-(`endpoint` unique; rebinds if another account held it).
+(`endpoint` unique; rebinds if another account held it) and binds it to the
+bearer session of this request (a re-POST from another session rebinds it).
+Notifications reach the endpoint only while that session is valid. Once the
+session expires, is removed, or its account is refused sessions, the push
+worker deletes the subscription instead of sending to it.
 
 No/invalid session → **401** `{ "error": "Unauthorized" }`.
 VAPID not configured → **503** `{ "error": "Push is not configured" }`.
@@ -5735,7 +5864,8 @@ column is not null (omitted when null), and when `goalCurrency` is stored also
 those keys),
 optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`;
-the key is omitted when unset),
+the key is omitted when unset), always `shopNpub` (the npub of a currently
+listed shop with a key in `shop_identity`, otherwise JSON `null`),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a receiving address (see [Receiving address](#receiving-address)); null or empty `eventId` is not payable),
 `authorCanReceive` (true when the author has a receiving address, whether or
@@ -5832,6 +5962,7 @@ Success → **Response** `200`:
       "photoTakenAts": [],
       "hasVideo": false,
       "videoContentType": null,
+      "shopNpub": null,
       "role": "basis",
       "replyCount": 0
     }
@@ -5961,13 +6092,15 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "countryCode", "accountId?" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "countryCode", "shopNpub", "accountId?" }] }`.
 `shop` is true when the note text contains the shop tag. `countryCode` is the
 ISO 3166-1 alpha-2 code of the country or territory that contains the pin,
 read from its coordinates on every request (never stored, so existing pins need
 no backfill), or `null` for a pin in the open sea. The app counts the shops per
 `countryCode` for the Shops country filter and passes the same code to
 `GET /messages?country=`. `accountId` is set for a 21gifts author and omitted for an external pin.
+`shopNpub` is the npub only when the row is a currently listed shop with a
+stored identity; otherwise it is JSON null.
 `address` is `{ "street", "houseNumber", "postalCode", "city", "country" }` or JSON `null`.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
@@ -6036,7 +6169,7 @@ Post to the public member forum. Bearer session required. JSON body (not
 multipart) with text and/or one photo, optional `photos` (array, max 10,
 each `{ contentType, data, takenAt? }` same shape as singular `photo`), an
 optional parent UUID, and optional `goalSats` (positive integer 1..10_000_000
-on a top-level note only). Optional `shopUsername` (JSON string or multipart field) on a shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
+on a top-level note only). Required `shopUsername` (JSON string or multipart field) on a top-level shop note stores that account on the same insert as the note and does not write `message_edit`. Omitted, null, blank, or `@` alone on a top-level shop note is 400 `A shop note needs a shop account` after the shop pin checks pass, and nothing is stored. The same blank value on a note that is not a shop stores nothing. A non-string is 400 `Username is not valid`. A reply, or a note that is not a shop, with a non-blank username is 400 `Only a shop note can set a shop account` before the handle is normalised or looked up. After that, a handle `normalizeUsername` rejects is 400 `Username is not valid`. An unknown username, or a stored username that is null or blank, is 404 `No account with that username`. A media replay of an existing live note does not change its shop account. Optional `takenAt` is `YYYY-MM-DDTHH:MM:SS` with an optional `±HH:MM`
 offset, a real calendar date, and a year from 1990 through the current UTC
 year + 1. `Z`, a fractional second, a leap second, a non-string, or a missing
 value is stored null and does not return 400:
@@ -6101,11 +6234,14 @@ or blank label without coordinates still stores no pin. Exactly one
 coordinate set is 400 `Place must be a latitude and longitude`.
 All five address fields blank means no address; any present field requires
 all five (same `Place address is invalid`). A top-level note whose text has
-`#21GiftsShop` and that carries a pin must pass `shopPlaceProblem` then
-`shopTextProblem`; otherwise **400** with that shop error and nothing is
-stored. A shop note without a pin stays allowed.
+`#21GiftsShop` and that has no pin is **400**
+`{ "error": "Shop name is required" }` and nothing is stored, because the
+shop name is the pin label. That check runs before the shop-account check.
+A pin on that note must pass `shopPlaceProblem` then `shopTextProblem`;
+otherwise **400** with that shop error and nothing is stored. A reply, and
+a note that is not a shop, may still omit the pin.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
-A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, but never before 2026-11-01, for `goal_term_days` days. A credit that filled on or before 2026-10-31 starts on 2026-11-01. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
+A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, but never before 2026-11-10, for `goal_term_days` days. A credit that filled on or before 2026-11-09 starts on 2026-11-10. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
 Above 10_000_000 is rejected, not clamped. Multipart video posts do not
 accept `inReplyTo` (they are always top-level).
@@ -6123,8 +6259,9 @@ created note is not signed yet, so `payable` is false while `authorCanReceive`
 is true when the author can receive), `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
-stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`, and
-`videoContentType`. May include `goalSats` (positive integer on a top-level
+stills) and `photoTakenAt` only when `photoCount` is 1, `hasVideo`,
+`videoContentType`, and always `shopNpub` (the npub of a currently listed
+shop with a key, otherwise JSON `null`). May include `goalSats` (positive integer on a top-level
 note; omitted when unset). May include `goalRepayable: true` when the stored
 column is true (omitted when null; never false). May include `goalTermDays`
 when the stored column is not null (omitted when null). May include `accountId` (21gifts author id) and `mentions`
@@ -6295,9 +6432,17 @@ Success → **Response** `200`:
   "photoTakenAts": [],
   "hasVideo": false,
   "videoContentType": null,
+  "shopNpub": null,
   "role": "verified"
 }
 ```
+
+A new note that is a public shop when it is read again after the commit gets
+its shop key, and creating the key queues its OpenCryptoPay place outbox (see
+the public shop rule above); the sender then PUTs a shop that is listed. A
+public shop that is not listed clears that flag and sends nothing. A note
+gone, hidden, or no longer a shop by that read gets no key, and nothing is
+sent. A replay creates no key and queues nothing.
 
 ### `POST /messages/:id/invoice`
 
@@ -6471,7 +6616,7 @@ Success → **Response** `200`:
 }
 ```
 
-`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, never before 2026-11-01. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
+`currency` is `BTC`, `USD`, `CHF`, `EUR`, or `PHP`. `fundedAt` is ISO-8601 or null until collected sats first reach the ask. `startsOn` is the first repayment day as `YYYY-MM-DD` UTC (the `dueOn` of `dayIndex` 0), or null until then; it is the day after `fundedAt`, never before 2026-11-10. `dueOn` is `YYYY-MM-DD` UTC, or null until then. `givenAmount` and `amount` are two-decimal strings in the ask currency, or null for bitcoin. For a fiat ask, `sats` on a repayment is the paid share or null until it is paid. `status` is `paid`, `due`, or `scheduled`. `unassignedSats` is bitcoin with no 21.gifts payer and is not in the plan. `canReceive` is true when the giver has a receiving address (`receivingAddress(account, lnurlServer) !== null`: the LNURL server is configured and the giver has a verified wallet with a username); a giver without an account is false. `dueSats` is set on a line with `status: "due"`: the share in sats for a bitcoin loan, or for a fiat loan the share priced in sats at the rate `POST /messages/:id/repayment` would use now; it is `null` on every other line. The rate is read once per request, so `dueSats` and `next.sats` agree. `next` is the oldest unpaid due share whose giver can receive once the credit has filled, else null. A 1-sat or 1-cent gift is its own row.
 
 Fiat amount or gift-day rate missing, or the rate cannot be read → **503** `{ "error": "Ask amount is unavailable" }`. This holds whenever a fiat share is due, also when every due share waits for a giver who cannot receive.
 
@@ -6843,7 +6988,10 @@ when the stored column is true (omitted when null; never false), optional
 keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
 `address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
-stored and omitted when unset, even when `accountId` is omitted,
+stored (omitted when unset or when that account has no username, even when
+`accountId` is omitted; a note whose till account has no username can still
+be a listed shop), and always
+`shopNpub` (the listed-shop npub or JSON null),
 `payable`, `authorCanReceive`, `hasPhoto`, `photoCount`
 (0–10; always present; `hasPhoto` still means photo 0 exists), `photoTakenAts`
 (always; length equals `photoCount`; null when unknown; `[]` when there are no
@@ -6996,6 +7144,16 @@ block additionally logs `messages.external.blocked` with only `messageId` and
 the hidden-row count, never the pubkey. On store throw it logs
 `messages.delete.failed`.
 
+Hiding a shop note that has a key queues its OpenCryptoPay place outbox in
+the same write (`trg_shop_identity_place` on `deleted_at`), whatever its pin
+was when the route read it, because a pin set concurrently may already be on
+the map. The sender sends DELETE to `/map/places` only when this outbox has
+already sent the place (`ocp_revision` greater than 0). A key that was never
+sent, including one stored from an existing map identity, is not deleted. A
+photo update does not raise that revision. A note without a key was never
+sent, and nothing is queued.
+Delivery is asynchronous; a failure never changes the 204.
+
 ### `PATCH /messages/:id/place`
 
 Staff map pin on a live top-level shop note (`#21GiftsShop`). No rules
@@ -7004,28 +7162,39 @@ gate. Checks run in this order: Bearer session required (**401**
 (**403** `{ "error": "Forbidden" }`); `:id` must match `MESSAGE_ID_RE` or
 the response is **404**; body is JSON via `c.req.json()` and a non-JSON
 body or an object with no `place` key is **400**
-`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null`
-(clears) — a bad coordinate is **400**
+`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null` — a bad coordinate is **400**
 `{ "error": "Place must be a latitude and longitude" }`, a label over 80
 characters is **400** `{ "error": "Place label must be at most 80 characters" }`,
 an invalid structured address is **400**
 `{ "error": "Place address is invalid" }`; a missing or hidden row is
 **404** `{ "error": "Not found" }` and no write; a reply is **400**
 `{ "error": "A reply cannot include a place" }`; a non-shop top-level
-note is **400** `{ "error": "Only a shop note can set a place" }`; for a
-non-null pin `shopPlaceProblem` is **400** with `Shop name is required`,
+note is **400** `{ "error": "Only a shop note can set a place" }`; `null`
+on a live shop note is **400** `{ "error": "Shop name is required" }` and
+nothing is stored, so this route does not clear a shop name; for a pin
+`shopPlaceProblem` is **400** with `Shop name is required`,
 `Shop address is required`, or `Shop name must not contain the address`
 and nothing is stored; then `shopTextProblem` against the stored text is
 **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`
-and nothing is stored. Clearing with `null` skips both shop checks.
+and nothing is stored.
 `setPlace` false → **404**. Store throw → **503**
 `{ "error": "Messages are unavailable" }` and `messages.place.failed`.
 
-Success → **200** live public message JSON (optional `place`, reply
-count, no hide stamps). Logs `messages.place.updated` with
-`messageId`, `accountId`, and `role` only. Text and publish state are
-unchanged. A real pin change appends `message_edit`. An identical pin
-does not.
+Success → **200** live public message JSON (optional `place`, reply count,
+no hide stamps). Logs `messages.place.updated` with `messageId`,
+`accountId`, and `role` only. Text and publish state are unchanged. A real
+pin change appends `message_edit`. An identical pin does not. A pin change
+on a shop with a key queues its OpenCryptoPay place outbox in the same
+write. The sender reads the note when it sends: a listed shop gets PUT to
+`/map/places`. A public shop that is not listed clears the place flag and
+sends nothing, so a pin that is incomplete leaves the map place as it is.
+This route does not accept `place: null`, so it does not queue a clear.
+A shop that is no longer public (tag removed, till account cleared, hidden,
+or gone, also by a concurrent request) gets DELETE only when this outbox has
+already sent the place (revision greater than 0). A key that has never been
+sent is not deleted. A later complete pin before the send is one PUT.
+Each send carries a new revision, so concurrent edits of one shop reach the
+map in order and the last send matches the last write.
 
 ### `PATCH /messages/:id/shop-account`
 
@@ -7034,7 +7203,7 @@ Staff assignment of a 21.gifts account on a live top-level shop note
 required. Live role must be at least `moderator`. No rules gate. `:id`
 must match `MESSAGE_ID_RE` or the response is **404**. Body is JSON via
 `c.req.json()`; a non-JSON body or an object with no `username` key is
-**400** `{ "error": "Invalid body" }`. `username: null` clears. A string
+**400** `{ "error": "Invalid body" }`. After the row is a live top-level shop note, `username: null` is **400** `{ "error": "A shop note needs a shop account" }` and nothing is stored. A missing or hidden row with `username: null` stays **404**. A string
 is trimmed, one leading `@` is stripped, then `normalizeUsername`. An
 invalid username is **400** `{ "error": "Username is not valid" }`.
 Missing or hidden row → **404** `{ "error": "Not found" }` and no write,
@@ -7048,15 +7217,20 @@ is **404** `{ "error": "No account with that username" }`.
 Store throw → **503** `{ "error": "Messages are unavailable" }` and
 `messages.shop_account.failed`.
 
-Success → **200** live public message JSON (optional `shopAccount`
-`{ id, username, name }`, omitted when cleared, reply count, no hide
-stamps). Logs `messages.shop_account.updated` with `messageId`,
+Success → **200** live public message JSON including `shopAccount`
+`{ id, username, name }` (reply count, no hide stamps). Logs `messages.shop_account.updated` with `messageId`,
 `accountId`, and `role` only. Text, place, and publish state are
 unchanged. The write stores only `shop_account_id`. A real change appends `message_edit`. An unchanged account does not. The same account id with a new name or username is unchanged.
+A real change on a shop with a key queues its OpenCryptoPay place outbox in
+the same write. The sender reads the note when it sends: a listed shop gets
+PUT, a public shop that is not map-complete sends nothing, and a note that
+is hidden or gone by then (also concurrently), or whose till account was
+cleared, gets DELETE only when this outbox has already sent the place
+(revision greater than 0).
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then PUT the current complete shop pin to `/map/places` when `mapPush` is set (an incomplete existing shop is not sent), and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a new outbox generation. A real change writes the body and `message_edit` together, creates the shop identity when needed, queues the durable OpenCryptoPay place outbox, and is **200** public message JSON; delivery is asynchronous. The sender reads the note when it sends: a listed shop gets PUT, a public shop that is not map-complete sends nothing and keeps its key, and a shop that is no longer public gets DELETE only when this outbox has already sent the place (revision greater than 0). A key that has never been sent, including one adopted from OpenCryptoPay and a public shop whose pin never had an address, is not deleted. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 
@@ -7064,7 +7238,7 @@ Staff replacement of the stills on a live top-level shop note. Bearer session re
 
 ### `GET /messages/:id/edits`
 
-Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null. `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
+Staff history for a top-level shop note, newest first, including a hidden shop note. Bearer session required. Live role must be at least `moderator`. GET is not a Sunday write. Success is **200** `{ "edits": [{ "id", "createdAt", "field", "before", "after", "actor" }] }`. `createdAt` is ISO. `field` is `"text"`, `"place"`, or `"shopAccount"` (SQL `shop_account` is published as `shopAccount`). `before` and `after` are the previous and next value: a text string, a place pin or null, or a shop account `{ "id", "username", "name" }` or null (`username` is null when the till account had none). `actor` is `{ "id", "name", "role" }`. A missing account keeps `{ "id", "name": null, "role": null }`. Empty history `{ "edits": [] }` is only for an existing top-level shop note, including a hidden one. A non-UUID `:id`, a missing row, a reply, or a non-shop note is **404** `{ "error": "Not found" }`. Public message JSON does not include `edits`.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
@@ -7097,7 +7271,7 @@ a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
 when a pin is stored; `address` is the structured postal address or JSON `null`;
 omitted when unset), optional `shopAccount`
 (`{ id, username, name }`) when a shop account is stored (omitted when
-unset), always-present `parentId` (JSON `null`
+unset or when the till account has no username), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
 authorPubkey !== null` (the same rule as public message JSON), and
 `deletedBy: { id, name, role }` resolved from
@@ -7947,7 +8121,6 @@ exist on the account model; `GET /debug/accounts` and
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
 - Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required, except for grant payouts from a start date set when it is built. An owner who continues chooses two people; 21.gifts keeps a backup share. Recovery keeps the account, gives it a new passkey with new 12 words and moves the wallet to it. No path in that document is reserved.
-- Shop identity ([docs/shop-identity.md](docs/shop-identity.md)). Not a v1 route. A shop's own NOSTR key, its page `/{npub}`, `GET /shops/:npub` and `shopNpub` are not built. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)

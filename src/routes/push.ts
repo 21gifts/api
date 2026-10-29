@@ -27,16 +27,26 @@ export interface PushRouteDeps {
   vapidPublicKey: string | undefined;
 }
 
+/** Resolve the account and token behind a request's bearer session, or `null`. */
+async function authedSession(
+  deps: PushRouteDeps,
+  header: string | undefined,
+): Promise<{ account: Account; token: string } | null> {
+  const token = bearerToken(header);
+  if (token === null) {
+    return null;
+  }
+  const account = await resolveSession(deps.authStore, deps.now(), token);
+  return account === null ? null : { account, token };
+}
+
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
   deps: PushRouteDeps,
   header: string | undefined,
 ): Promise<Account | null> {
-  const token = bearerToken(header);
-  if (token === null) {
-    return null;
-  }
-  return resolveSession(deps.authStore, deps.now(), token);
+  const session = await authedSession(deps, header);
+  return session === null ? null : session.account;
 }
 
 /** Whether push HTTP may proceed past the configured gate. */
@@ -63,8 +73,8 @@ export function pushRoutes(deps: PushRouteDeps): Hono {
       return c.json({ publicKey: deps.vapidPublicKey }, 200);
     })
     .post('/me/push-subscriptions', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
+      const session = await authedSession(deps, c.req.header('authorization'));
+      if (session === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
       if (!pushConfigured(deps)) {
@@ -77,10 +87,11 @@ export function pushRoutes(deps: PushRouteDeps): Hono {
       const createdAt = new Date(deps.now());
       const stored = await deps.pushStore.upsertSubscription({
         endpoint: parsed.endpoint,
-        accountId: account.id,
+        accountId: session.account.id,
         p256dh: parsed.p256dh,
         auth: parsed.auth,
         createdAt,
+        sessionToken: session.token,
       });
       return c.json({ endpoint: stored.endpoint, createdAt: stored.createdAt.toISOString() }, 200);
     })

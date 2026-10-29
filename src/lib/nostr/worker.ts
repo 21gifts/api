@@ -36,7 +36,7 @@ import {
   type Kind1ReplyTo,
 } from '@/lib/nostr/event';
 import { stillLook } from '@/lib/nostr/image';
-import { nip05Domain, nip05Identifier } from '@/lib/nip05';
+import { nip05Directory, nip05Domain, nip05Identifier, type ShopNip05Entry } from '@/lib/nip05';
 import {
   forumVideoUrl,
   isoBmffDisplaySize,
@@ -58,7 +58,15 @@ import {
   writeRelayUrls,
   type ResolvedWriteSet,
 } from '@/lib/nostr/relays';
-import { signEventForAccount } from '@/lib/nostr/sign';
+import { signEventForAccount, signEventForShop } from '@/lib/nostr/sign';
+import {
+  shopNpub,
+  type ShopCandidateCursor,
+  type ShopIdentityCursor,
+  type ShopIdentityRow,
+  type ShopIdentityStore,
+} from '@/lib/shop-identity';
+import { publicShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { indexOpenZapReceipts, ingestZapReceipt } from '@/lib/nostr/zap-index';
 import { receivingAddress } from '@/lib/receiving-address';
@@ -153,6 +161,8 @@ export interface NostrWorkerDeps {
   fiatRates?: FiatRateBook;
   /** Optional LNURL server; wallet-backed recipients resolve their receipt signer through it. */
   lnurlServer?: LnurlServerConfig;
+  /** Optional shop-key store; omitted on older/unit-only worker surfaces. */
+  shopIdentities?: ShopIdentityStore;
 }
 
 /** Worker collaborators the zap receipt ingest uses (no key, no publisher). */
@@ -419,7 +429,10 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * When a conversation store is present, `'all'` / `'fast'` also
  * signs/publishes NIP-17 wraps; `'all'` / `'ingest'` REQs inbound kind:1059 /
  * kind:4 to member and platform pubkeys. Fast-lane ticks are not serialised
- * (`setInterval` does not await the previous tick); the ingest lane waits for
+ * (`setInterval` does not await the previous tick), except the S1 shop key
+ * backfill and the shop kind 0 and kind 10002 passes, each skipped while its
+ * previous pass for the same store is in flight and bounded to `WORKER_BATCH`
+ * rows (`listCandidates` / `listRound`); the ingest lane waits for
  * each pass to settle before scheduling the next. When public publish is on
  * and the space ACK succeeded, kind:1 is also sent best-effort to the search
  * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
@@ -450,6 +463,7 @@ export async function runNostrWorkerTick(
   }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
+  await backfillShopKeys(deps);
   await signBatch(deps, nowMs);
   await signConversationBatch(deps, nowMs);
   await resignPhotoKind1(deps);
@@ -458,6 +472,8 @@ export async function runNostrWorkerTick(
   if (writeSet.publishEnabled) {
     await publishProfiles(deps, writeSet);
     await publishRelayLists(deps, writeSet);
+    await publishShopProfiles(deps, writeSet);
+    await publishShopRelayLists(deps, writeSet);
     await publishBatch(deps, writeSet, nowMs);
     await publishConversationBatch(deps, writeSet, nowMs);
   }
@@ -952,6 +968,59 @@ async function signBatch(deps: NostrWorkerDeps, nowMs: number): Promise<void> {
   }
 }
 
+const shopBackfillCursors = new WeakMap<ShopIdentityStore, ShopCandidateCursor | null>();
+
+/** Stores whose shop key backfill is in flight in this process. */
+const shopBackfillInFlight = new WeakSet<ShopIdentityStore>();
+
+/**
+ * Create keys for public shops that have none (S1 backfill), reading at most
+ * `WORKER_BATCH` raw candidates per tick. Candidates are live top-level
+ * `#21GiftsShop` notes with a till account, pinned or not, keyed or not; the
+ * page is bounded before the key check, the cursor advances on that raw page,
+ * and only the candidates without a key go to `ensureListed`, which checks
+ * {@link publicShop} in code. The keyset cursor by (`created_at`, `id`) moves past
+ * keyed notes and resets to the start only after a short raw
+ * page, so a run of keyed shops does not hold the slot
+ * of an unkeyed public shop behind it, and a lap over keyed shops never reads
+ * more than one page per tick. A new key queues the place push.
+ * A failure logs `shop.nostr_key.failed`.
+ * While a backfill for the same store is still in flight (ticks start
+ * without waiting for the previous one), the tick skips it, reading
+ * nothing, so overlapping ticks never stack scans or key generation and an
+ * older pass cannot set the cursor back to an earlier page.
+ *
+ * @param deps - Worker deps (`shopIdentities`, `kek`).
+ * @returns Resolves when the pass ended (the in-flight mark is cleared also
+ *   when the page read throws).
+ */
+async function backfillShopKeys(deps: NostrWorkerDeps): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined || shopBackfillInFlight.has(shops)) return;
+  shopBackfillInFlight.add(shops);
+  try {
+    const cursor = shopBackfillCursors.get(shops) ?? null;
+    const page = await shops.listCandidates(cursor, WORKER_BATCH);
+    const last = page[page.length - 1];
+    shopBackfillCursors.set(
+      shops,
+      page.length < WORKER_BATCH || last === undefined
+        ? null
+        : { createdAt: last.createdAt, id: last.id },
+    );
+    for (const candidate of page) {
+      if (candidate.keyed) continue;
+      try {
+        await shops.ensureListed(candidate.id, deps.kek);
+      } catch {
+        logEvent('shop.nostr_key.failed', { messageId: candidate.id });
+      }
+    }
+  } finally {
+    shopBackfillInFlight.delete(shops);
+  }
+}
+
 /**
  * Create a profile forum note for named accounts with a verified wallet that
  * lack one (or whose stored id no longer points at a message row).
@@ -1126,22 +1195,22 @@ async function publishReachCopy(
  * @param deps - Worker deps.
  * @param event - Signed event already accepted by space and the public relays.
  * @param nackEvent - Log name when the indexer does not ACK ok.
- * @param accountId - Account id for the nack log.
+ * @param owner - `{ accountId }` or `{ messageId }` (shop) for the nack log.
  */
 async function publishIndexerCopy(
   deps: NostrWorkerDeps,
   event: Record<string, unknown>,
   nackEvent: 'nostr.profile.indexer_nack' | 'nostr.relays.indexer_nack',
-  accountId: string,
+  owner: { accountId: string } | { messageId: string },
 ): Promise<void> {
   try {
     const acks = await deps.publisher.publish(event, [INDEXER_RELAY_URL], RELAY_TIMEOUT_MS);
     const ack = acks.find((row) => row.url === INDEXER_RELAY_URL);
     if (ack === undefined || !ack.ok) {
-      logEvent(nackEvent, { accountId });
+      logEvent(nackEvent, owner);
     }
   } catch {
-    logEvent(nackEvent, { accountId });
+    logEvent(nackEvent, owner);
   }
 }
 
@@ -1243,7 +1312,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
           deps,
           signed as unknown as Record<string, unknown>,
           'nostr.profile.indexer_nack',
-          live.id,
+          { accountId: live.id },
         );
       }
     } catch {
@@ -1344,7 +1413,7 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
           deps,
           signed as unknown as Record<string, unknown>,
           'nostr.relays.indexer_nack',
-          live.id,
+          { accountId: live.id },
         );
       }
     } catch {
@@ -1354,6 +1423,406 @@ async function publishRelayLists(deps: NostrWorkerDeps, writeSet: ResolvedWriteS
       logEvent('nostr.relays.nack', { accountId: live.id });
     }
   }
+}
+
+const shopProfileCaches = new WeakMap<ShopIdentityStore, Map<string, Kind0Reservation>>();
+const shopProfileWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>>();
+const shopRelayCaches = new WeakMap<ShopIdentityStore, Map<string, Kind0Reservation>>();
+const shopRelayWatermarks = new WeakMap<ShopIdentityStore, Map<string, number>>();
+
+/** Round-robin cursor of one shop publisher kind per store (last visited shop). */
+const shopProfileCursors = new WeakMap<ShopIdentityStore, ShopIdentityCursor>();
+const shopRelayCursors = new WeakMap<ShopIdentityStore, ShopIdentityCursor>();
+
+/** Stores whose shop kind 0 / kind 10002 pass is in flight in this process. */
+const shopProfileInFlight = new WeakSet<ShopIdentityStore>();
+const shopRelayInFlight = new WeakSet<ShopIdentityStore>();
+
+/**
+ * One bounded round-robin pass of a shop publisher kind: unless a pass of
+ * the same kind for this store is still in flight (then it returns at once,
+ * reading nothing), it reads at most `WORKER_BATCH` identities with
+ * `listRound` after that kind's cursor (the store wraps to the first rows
+ * when fewer follow it) and calls `visit` for each in order, moving the
+ * cursor to every visited shop before its visit, so a shop whose visit
+ * fails or publishes nothing still moves the lap on. `visit` returns
+ * `false` to stop the pass early.
+ *
+ * @param inFlight - In-flight stores of this kind.
+ * @param cursors - Cursors of this kind.
+ * @param shops - Shop identity store.
+ * @param visit - Work for one shop.
+ * @returns Resolves when the pass ended (the in-flight mark is cleared also
+ *   when the read or a visit throws).
+ */
+async function shopRoundPass(
+  inFlight: WeakSet<ShopIdentityStore>,
+  cursors: WeakMap<ShopIdentityStore, ShopIdentityCursor>,
+  shops: ShopIdentityStore,
+  visit: (identity: ShopIdentityRow) => Promise<boolean>,
+): Promise<void> {
+  if (inFlight.has(shops)) return;
+  inFlight.add(shops);
+  try {
+    const page = await shops.listRound(cursors.get(shops) ?? null, WORKER_BATCH);
+    for (const identity of page) {
+      cursors.set(shops, {
+        createdAt: new Date(identity.nostrKeyCreatedAt),
+        messageId: identity.messageId,
+      });
+      if (!(await visit(identity))) return;
+    }
+  } finally {
+    inFlight.delete(shops);
+  }
+}
+
+function shopCache<T>(
+  caches: WeakMap<ShopIdentityStore, Map<string, T>>,
+  store: ShopIdentityStore,
+): Map<string, T> {
+  const existing = caches.get(store);
+  if (existing !== undefined) return existing;
+  const created = new Map<string, T>();
+  caches.set(store, created);
+  return created;
+}
+
+/** Kind 0 `about` of a shop that is no longer public. */
+const SHOP_UNLISTED_ABOUT = 'This shop is no longer listed on 21.gifts.';
+
+/** Kind 0 name of a shop whose note is hidden or deleted. */
+const SHOP_HIDDEN_NAME = 'Shop';
+
+/**
+ * Site origin for a shop's kind 0 `website`: `PUBLIC_BASE_URL` without a
+ * trailing slash (as `notePageUrl` builds note links), or `https://21.gifts`
+ * when it is empty.
+ */
+function shopSiteOrigin(env: Record<string, string | undefined>): string {
+  const raw = (env['PUBLIC_BASE_URL'] ?? '').trim().replace(/\/$/, '');
+  return raw === '' ? 'https://21.gifts' : raw;
+}
+
+/** Arguments of `buildKind0Content` / `buildKind0Event` for one shop. */
+interface ShopKind0Args {
+  name: string;
+  lud16: string | null;
+  nip05: string | null;
+  about: string;
+  images: { picture: string | null; banner: string | null };
+  website: string;
+  listed: boolean;
+}
+
+/**
+ * Kind 0 fields of one shop identity (S2). A public shop gets its name,
+ * description, photos, `<site origin>/{npub}`, its NIP-05 and the till
+ * account's `lud16` (only when the till account has a name and a receiving
+ * address: a username and a verified wallet with the LNURL server on); a shop that is no longer public keeps `profile_name`
+ * (or `Shop` when the note is hidden or gone), the fixed about for a shop that
+ * is not public, and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
+ * only called for a public shop and only when `domain` is set, before any
+ * write; it returns the NIP-05 directory entry only when it carries the name this
+ * read sees. Without such an entry the shop gets no kind 0 this time: the
+ * result is `'nip05_stale'` and nothing was written. A public shop's note is
+ * read again after the last await of the build (directory, rename, till
+ * account, photo types); when its {@link shopListingFingerprint} (text, pin,
+ * till account, `deletedAt`) differs from the first read (a rename, text or
+ * pin change, or a hide inside the build), the result is `'note_changed'`,
+ * so no kind 0 is built from the older read and the shop is tried again on
+ * its next turn.
+ */
+async function shopKind0Args(
+  deps: NostrWorkerDeps,
+  shops: ShopIdentityStore,
+  identity: ShopIdentityRow,
+  nip05Entry: (messageId: string, name: string) => Promise<ShopNip05Entry | undefined>,
+  domain: string | null,
+): Promise<ShopKind0Args | 'nip05_stale' | 'note_changed'> {
+  const note = await deps.messages.getById(identity.messageId);
+  const website = `${shopSiteOrigin(deps.env)}/${shopNpub(identity)}`;
+  const shop = publicShop(note);
+  if (note === undefined || shop === null) {
+    const gone = note === undefined || note.deletedAt !== null;
+    return {
+      name: gone ? SHOP_HIDDEN_NAME : identity.profileName,
+      lud16: null,
+      nip05: null,
+      about: SHOP_UNLISTED_ABOUT,
+      images: { picture: null, banner: null },
+      website,
+      listed: false,
+    };
+  }
+  // Before any write, so a failing or stale directory leaves no side effect.
+  let nip05: string | null = null;
+  if (domain !== null) {
+    const entry = await nip05Entry(note.id, shop.name);
+    if (entry === undefined) return 'nip05_stale';
+    nip05 = `${entry.local}@${domain}`;
+  }
+  if (shop.name !== identity.profileName) {
+    // Conditional on this tick's snapshot: a newer rename that committed
+    // after the read above is not overwritten (S2 of docs/shop-identity.md).
+    await shops.renameIfListed(note);
+  }
+  const till = await deps.auth.getAccount(shop.tillAccountId);
+  // Same rule as `payUsername` on GET /shops/:npub, plus a published
+  // account kind 0 (a name): the till account's receiving address, so no
+  // lud16 without a username and a verified wallet.
+  const lud16 =
+    till === undefined || till.name === null
+      ? null
+      : (receivingAddress(till, deps.lnurlServer)?.address ?? null);
+  let picture: string | null = null;
+  let banner: string | null = null;
+  const apiBase = resolvePublicApiBase(deps.env);
+  if (apiBase !== '') {
+    // Content types only: this runs before the unchanged-content skip, so
+    // reading the photo bytes here would load them for every visited shop.
+    const types = await deps.messages.getPhotoContentTypes(note.id);
+    // picture = photo 0 and banner = the still stored at index 1, each on
+    // its own: a left-out photo 0 does not move another still into either.
+    if (types.photo !== null) {
+      picture = forumPhotoUrl(apiBase, note.id, types.photo);
+    }
+    const second = types.extras.find((extra) => extra.index === 1);
+    if (second !== undefined) {
+      banner = forumExtraPhotoUrl(apiBase, note.id, 1, second.contentType);
+    }
+  }
+  // Same check as GET /shops/:npub after its photo read: a kind 0 comes from
+  // one state of the note, never the name or listing of a read the build
+  // outlived.
+  const after = await deps.messages.getById(identity.messageId);
+  if (shopListingFingerprint(after) !== shopListingFingerprint(note)) return 'note_changed';
+  return {
+    name: shop.name,
+    lud16,
+    nip05,
+    about: shopDescription(note.text),
+    images: { picture, banner },
+    website,
+    listed: true,
+  };
+}
+
+/**
+ * Publish kind 0 for every shop identity, public or not, with the same
+ * cache, `created_at`, ack and indexer rules as {@link publishProfiles}.
+ * Each tick runs one bounded round-robin pass ({@link shopRoundPass}): it
+ * reads at most `WORKER_BATCH` identities after the kind 0 cursor (wrapping
+ * to the first rows) and visits each, also one whose content is unchanged or
+ * whose reads throw, and it does not start while the previous kind 0 pass
+ * for the store is still in flight, so ticks never overlap on a shop; a
+ * nack, or an error after the reservation, clears the shop's cache entry (a
+ * read that throws before it leaves the entry as it was). A tick reads at most
+ * `WORKER_BATCH` shops; their NIP-05 names come from the shared directory
+ * ({@link nip05Directory}, the same names as `/.well-known/nostr.json` and
+ * `GET /shops/:npub`, cached per store set), read only when a visited shop is
+ * public and the NIP-05 domain is set. The directory is computed at most once
+ * per `NIP05_DIRECTORY_TTL_MS` (60 s) on expiry, not per tick, whatever the
+ * number of shops. Each shop reads its note fresh, so when the directory has
+ * no entry for a public shop or one with another name (published or renamed
+ * since the directory), the shop asks for a forced refresh, which computes at
+ * most once per `NIP05_DIRECTORY_REFRESH_MS` (10 s) per store set and
+ * otherwise returns the cached directory. When that entry still does not
+ * match, the shop gets no kind 0 and no cache
+ * entry: the tick logs `nostr.profile.nack` with `reason: 'nip05_stale'` and
+ * the shop is tried again on its next turn. A public shop's note is read
+ * again right before the reservation; when its text, pin, till account or
+ * `deletedAt` changed during the build (a rename or a staff hide), the shop
+ * likewise gets no kind 0 and no cache entry, the tick logs
+ * `nostr.profile.nack` with `reason: 'note_changed'`, and the next turn
+ * publishes the new state. When a directory read throws, the
+ * tick logs `nostr.profile.nack` with `reason: 'nip05'` for that shop and
+ * publishes no further shop kind 0 in that tick (shops already published in
+ * that tick keep theirs; never one without its NIP-05); the rest of the tick
+ * still runs.
+ *
+ * @param deps - Worker deps.
+ * @param writeSet - Resolved write relays.
+ */
+async function publishShopProfiles(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined) return;
+  const cache = shopCache(shopProfileCaches, shops);
+  const watermarks = shopCache(shopProfileWatermarks, shops);
+  const urls = writeRelayUrls(writeSet);
+  const domain = nip05Domain(deps.env);
+  const stores = { identities: shops, messages: deps.messages };
+  let nip05Failed = false;
+  const directoryEntry = async (
+    messageId: string,
+    refresh: boolean,
+  ): Promise<ShopNip05Entry | undefined> => {
+    try {
+      return (await nip05Directory(deps.auth, stores, deps.now(), refresh)).shops.get(messageId);
+    } catch (error) {
+      nip05Failed = true;
+      throw error;
+    }
+  };
+  const nip05Entry = async (
+    messageId: string,
+    name: string,
+  ): Promise<ShopNip05Entry | undefined> => {
+    let entry = await directoryEntry(messageId, false);
+    if (entry?.name !== name) {
+      // Published or renamed after the cached directory: ask for a fresh one.
+      entry = await directoryEntry(messageId, true);
+    }
+    return entry?.name === name ? entry : undefined;
+  };
+  await shopRoundPass(shopProfileInFlight, shopProfileCursors, shops, async (identity) => {
+    const id = identity.messageId;
+    // The pass moved the cursor before this visit, so a shop whose reads
+    // fail (or whose content is unchanged) still uses a slot of the page.
+    let reservation: Kind0Reservation | undefined;
+    try {
+      const args = await shopKind0Args(deps, shops, identity, nip05Entry, domain);
+      if (typeof args === 'string') {
+        // No reservation was made, so the shop is tried again on its next turn.
+        logEvent('nostr.profile.nack', { messageId: id, reason: args });
+        return true;
+      }
+      const content = buildKind0Content(
+        args.name,
+        args.lud16,
+        args.nip05,
+        args.about,
+        args.images,
+        args.website,
+        args.listed,
+      );
+      if (reservedContent(cache, id) === content) return true;
+      const previous = cache.get(id);
+      reservation = {
+        content,
+        createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
+      };
+      cache.set(id, reservation);
+      reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
+      watermarks.set(id, reservation.createdAt);
+      const unsigned = buildKind0Event(
+        args.name,
+        args.lud16,
+        reservation.createdAt,
+        args.nip05,
+        args.about,
+        args.images,
+        args.website,
+        args.listed,
+      );
+      const signed = await signEventForShop(shops, id, deps.kek, unsigned);
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      if (
+        !spaceAcked(acks, writeSet.spaceUrl) ||
+        (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
+      ) {
+        cache.delete(id);
+        logEvent('nostr.profile.nack', { messageId: id });
+        return true;
+      }
+      logEvent('nostr.profile.ok', { messageId: id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.profile.indexer_nack',
+          { messageId: id },
+        );
+      }
+    } catch {
+      if (reservation !== undefined) cache.delete(id);
+      if (nip05Failed) {
+        // Every public shop needs the directory: stop kind 0 for this tick.
+        logEvent('nostr.profile.nack', { messageId: id, reason: 'nip05' });
+        return false;
+      }
+      logEvent('nostr.profile.nack', { messageId: id });
+    }
+    return true;
+  });
+}
+
+/**
+ * Publish kind 10002 (the same write relays as an account's) for every
+ * shop identity, with the same cache and ack rules as
+ * {@link publishRelayLists}, in one bounded round-robin pass per tick like
+ * {@link publishShopProfiles} (its own cursor and in-flight guard). Every
+ * row of the page counts, also one whose relay list is unchanged, so a tick
+ * reads at most `WORKER_BATCH` identities and a lap visits every shop.
+ *
+ * @param deps - Worker deps.
+ * @param writeSet - Resolved write relays.
+ */
+async function publishShopRelayLists(
+  deps: NostrWorkerDeps,
+  writeSet: ResolvedWriteSet,
+): Promise<void> {
+  const shops = deps.shopIdentities;
+  if (shops === undefined) return;
+  const cache = shopCache(shopRelayCaches, shops);
+  const watermarks = shopCache(shopRelayWatermarks, shops);
+  const urls = writeRelayUrls(writeSet);
+  const content = urls.join('\n');
+  await shopRoundPass(shopRelayInFlight, shopRelayCursors, shops, async (identity) => {
+    const id = identity.messageId;
+    // Every row of the page is visited (the cursor already moved past it),
+    // also one whose relay list is unchanged, so a lap reads each shop once.
+    if (reservedContent(cache, id) === content) return true;
+    const previous = cache.get(id);
+    const reservation: Kind0Reservation = {
+      content,
+      createdAt: Math.max(previous?.createdAt ?? 0, watermarks.get(id) ?? 0),
+    };
+    cache.set(id, reservation);
+    try {
+      reservation.createdAt = Math.max(Math.floor(deps.now() / 1000), reservation.createdAt + 1);
+      watermarks.set(id, reservation.createdAt);
+      const signed = await signEventForShop(
+        shops,
+        id,
+        deps.kek,
+        buildKind10002Event(urls, reservation.createdAt),
+      );
+      const acks = await deps.publisher.publish(
+        signed as unknown as Record<string, unknown>,
+        urls,
+        RELAY_TIMEOUT_MS,
+      );
+      if (
+        !spaceAcked(acks, writeSet.spaceUrl) ||
+        (writeSet.publicEnabled && !publicAcked(acks, writeSet.spaceUrl))
+      ) {
+        cache.delete(id);
+        logEvent('nostr.relays.nack', { messageId: id });
+        return true;
+      }
+      logEvent('nostr.relays.ok', { messageId: id });
+      if (writeSet.publicEnabled) {
+        await publishIndexerCopy(
+          deps,
+          signed as unknown as Record<string, unknown>,
+          'nostr.relays.indexer_nack',
+          { messageId: id },
+        );
+      }
+    } catch {
+      cache.delete(id);
+      logEvent('nostr.relays.nack', { messageId: id });
+    }
+    return true;
+  });
 }
 
 async function publishBatch(
@@ -1707,7 +2176,9 @@ async function indexInboundDirectMessages(
  * Fast lane: `setInterval(intervalMs)` (default {@link WORKER_INTERVAL_MS})
  * runs `runNostrWorkerTick(deps, 'fast')` with no in-flight guard — overlapping
  * ticks stay safe via sign/publish leases, and a guard would couple unpaid
- * latency to 5 s publish timeouts. A rejecting fast tick logs
+ * latency to 5 s publish timeouts. Only the S1 shop key backfill and the shop
+ * kind 0 and kind 10002 passes inside a tick skip while their previous pass
+ * for the same store is still in flight. A rejecting fast tick logs
  * `nostr.worker.tick.failed`.
  *
  * Ingest lane: starts one `runNostrWorkerTick(deps, 'ingest')` pass

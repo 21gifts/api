@@ -3594,6 +3594,7 @@ describe('POST /invoices/proof', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     store.put(unpaid({ messageId: POST_ID, comment: 'gm', amountMsat: 1000 }));
     const res = await createApp({

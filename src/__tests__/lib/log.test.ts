@@ -265,6 +265,7 @@ describe('requestLog', () => {
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
         spendApiToken: undefined,
+        awaitWrite: true,
       }),
     );
     app.get('/healthz', (c) => c.text('ok'));
@@ -404,6 +405,7 @@ describe('requestLog', () => {
         authStore,
         debugToken: undefined,
         spendApiToken: undefined,
+        awaitWrite: true,
       }),
     );
     app.get('/info', (c) => c.text('info'));
@@ -414,6 +416,46 @@ describe('requestLog', () => {
     expect(rows[0]?.authKind).toBe('none');
     expect(rows[0]?.accountId).toBeNull();
     expect(parsedEvents(warn).some((e) => e['event'] === 'api_log.write.failed')).toBe(false);
+  });
+
+  it('returns the response while the audit write is still pending', async () => {
+    let release = (): void => undefined;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    let started = false;
+    let finished = false;
+    const store = {
+      append: async (): Promise<void> => {
+        started = true;
+        await gate;
+        finished = true;
+      },
+      listLatest: async () => [],
+      listPage: async () => [],
+    };
+    const app = new Hono();
+    app.use(
+      '*',
+      requestLog({
+        apiLogStore: store,
+        authStore: new InMemoryAuthStore(),
+        debugToken: undefined,
+        spendApiToken: undefined,
+      }),
+    );
+    app.get('/info', (c) => c.text('info'));
+    const res = await app.request('/info');
+    expect(res.status).toBe(200);
+    expect(await res.text()).toBe('info');
+    await vi.waitFor(() => {
+      expect(started).toBe(true);
+    });
+    expect(finished).toBe(false);
+    release();
+    await vi.waitFor(() => {
+      expect(finished).toBe(true);
+    });
   });
 
   it('logs api_log.write.failed when append throws and keeps the response', async () => {
@@ -432,6 +474,7 @@ describe('requestLog', () => {
         authStore: new InMemoryAuthStore(),
         debugToken: undefined,
         spendApiToken: undefined,
+        awaitWrite: true,
       }),
     );
     app.get('/info', (c) => c.text('info'));
@@ -486,6 +529,7 @@ describe('requestLog', () => {
         authStore,
         debugToken: undefined,
         spendApiToken: undefined,
+        awaitWrite: true,
         now: () => 1,
       }),
     );

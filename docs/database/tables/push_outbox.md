@@ -19,6 +19,7 @@ Source: [src/lib/push-store.ts](../../../src/lib/push-store.ts)
 | `created_at`          | Date/time          | `timestamp with time zone` | No       | –         | –                            |
 | `delivered_endpoints` | Free text          | `text`                     | No       | `[]`      | –                            |
 | `skip_endpoints`      | Free text          | `text`                     | No       | `[]`      | –                            |
+| `finished_at`         | Date/time          | `timestamp with time zone` | Yes      | –         | –                            |
 
 ## Indexes
 

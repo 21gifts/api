@@ -1213,6 +1213,7 @@ describe('serializeViewProfile', () => {
       amountChf: null,
       amountEur: null,
       amountPhp: null,
+      shopNpub: null,
       payable: false,
       authorCanReceive: false,
       hasPhoto: false,

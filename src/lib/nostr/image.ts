@@ -31,6 +31,37 @@ export function imageDisplaySize(bytes: Uint8Array, mime: Kind1Photo['mime']): s
 }
 
 /**
+ * Width and height of a still from its header only, without decoding
+ * pixels: JPEG `SOF`, PNG `IHDR`, WebP `VP8`/`VP8L`/`VP8X`. For a JPEG whose
+ * EXIF orientation is 5 to 8 the two are swapped (the displayed size).
+ * {@link imageDisplaySize} stays as it is.
+ *
+ * @param bytes - Stored image bytes.
+ * @param mime - Stored still MIME.
+ * @returns Header size, or both `null` when the header cannot be read.
+ */
+export function imageHeaderSize(
+  bytes: Uint8Array,
+  mime: Kind1Photo['mime'],
+): { width: number | null; height: number | null } {
+  const dim =
+    mime === 'image/png'
+      ? pngHeaderSize(bytes)
+      : mime === 'image/jpeg'
+        ? jpegSize(bytes)
+        : mime === 'image/webp'
+          ? webpSize(bytes)
+          : null;
+  if (dim === null) {
+    return { width: null, height: null };
+  }
+  const [width, height] = dim.split('x').map(Number) as [number, number];
+  return mime === 'image/jpeg' && jpegExifOrientation(bytes) >= 5
+    ? { width: height, height: width }
+    : { width, height };
+}
+
+/**
  * BlurHash placeholder for a JPEG or PNG, or `null` when the bytes do not
  * decode. WebP and video return `null`. The sample is at most 32 px on the
  * long side.
@@ -93,7 +124,23 @@ function decodedDim(read: () => { width: number; height: number }): string | nul
   }
 }
 
-function jpegSize(bytes: Uint8Array): string | null {
+/**
+ * Walk the JPEG marker segments after `SOI` and hand each segment with a
+ * length to `visit`. Any number of `0xFF` fill bytes before a marker is
+ * skipped, and the length-less markers `TEM`, `SOI`, `EOI` and `RST0`–`RST7`
+ * carry no segment. The walk ends at the first byte that is not a marker, at
+ * a length below 2 or at a segment that runs past the end.
+ *
+ * @param bytes - Stored image bytes.
+ * @param visit - Gets the marker, the index of the two length bytes and the
+ *   length (which counts those two bytes); `undefined` walks on, any other
+ *   value ends the walk with it.
+ * @returns The first value `visit` gave, or `null` when the walk ended first.
+ */
+function walkJpegSegments<T>(
+  bytes: Uint8Array,
+  visit: (marker: number, start: number, length: number) => T | undefined,
+): T | null {
   if (bytes.length < 4 || bytes[0] !== 0xff || bytes[1] !== 0xd8) {
     return null;
   }
@@ -125,17 +172,27 @@ function jpegSize(bytes: Uint8Array): string | null {
     if (length < 2 || i + length > bytes.length) {
       return null;
     }
-    if (marker === 0xc0 || marker === 0xc1 || marker === 0xc2) {
-      if (length < 7) {
-        return null;
-      }
-      const height = (bytes[i + 3]! << 8) | bytes[i + 4]!;
-      const width = (bytes[i + 5]! << 8) | bytes[i + 6]!;
-      return dimText(width, height);
+    const result = visit(marker, i, length);
+    if (result !== undefined) {
+      return result;
     }
     i += length;
   }
   return null;
+}
+
+function jpegSize(bytes: Uint8Array): string | null {
+  return walkJpegSegments(bytes, (marker, i, length) => {
+    if (marker !== 0xc0 && marker !== 0xc1 && marker !== 0xc2) {
+      return undefined;
+    }
+    if (length < 7) {
+      return null;
+    }
+    const height = (bytes[i + 3]! << 8) | bytes[i + 4]!;
+    const width = (bytes[i + 5]! << 8) | bytes[i + 6]!;
+    return dimText(width, height);
+  });
 }
 
 function webpSize(bytes: Uint8Array): string | null {
@@ -211,6 +268,76 @@ function u32le(bytes: Uint8Array, offset: number): number {
       (bytes[offset + 3]! << 24)) >>>
     0
   );
+}
+
+const PNG_SIGNATURE = [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a];
+const PNG_IHDR = [0x49, 0x48, 0x44, 0x52];
+
+/** `WIDTHxHEIGHT` from the PNG signature and the `IHDR` chunk, or `null`. */
+function pngHeaderSize(bytes: Uint8Array): string | null {
+  if (
+    bytes.length < 24 ||
+    PNG_SIGNATURE.some((value, index) => bytes[index] !== value) ||
+    PNG_IHDR.some((value, index) => bytes[12 + index] !== value)
+  ) {
+    return null;
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  return dimText(view.getUint32(16), view.getUint32(20));
+}
+
+/**
+ * EXIF orientation (1–8) of a JPEG whose `SOF` was already found, or `1`
+ * when there is no readable orientation in an `APP1` `Exif` segment before
+ * the scan. Uses the same marker walk as the `SOF` reader
+ * ({@link walkJpegSegments}).
+ */
+function jpegExifOrientation(bytes: Uint8Array): number {
+  return (
+    walkJpegSegments(bytes, (marker, i, length) => {
+      if (marker === 0xda) {
+        return 1;
+      }
+      if (marker === 0xe1 && String.fromCharCode(...bytes.subarray(i + 2, i + 8)) === 'Exif\0\0') {
+        return exifOrientation(bytes, i + 8, i + length);
+      }
+      return undefined;
+    }) ?? 1
+  );
+}
+
+/**
+ * Orientation tag `0x0112` of IFD0 in a TIFF block `[tiff, end)`, or `1`.
+ * The header must be `II` or `MM` followed by the magic 42 in that byte
+ * order, and the entry must be one `SHORT` (type 3, count 1); anything else
+ * is read as orientation 1.
+ */
+function exifOrientation(bytes: Uint8Array, tiff: number, end: number): number {
+  const order = String.fromCharCode(bytes[tiff] ?? 0, bytes[tiff + 1] ?? 0);
+  if ((order !== 'II' && order !== 'MM') || tiff + 8 > end) {
+    return 1;
+  }
+  const little = order === 'II';
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  if (view.getUint16(tiff + 2, little) !== 42) {
+    return 1;
+  }
+  const ifd = tiff + view.getUint32(tiff + 4, little);
+  const count = ifd + 2 <= end ? view.getUint16(ifd, little) : 0;
+  for (let index = 0; index < count; index += 1) {
+    const entry = ifd + 2 + index * 12;
+    if (entry + 12 > end) {
+      return 1;
+    }
+    if (view.getUint16(entry, little) === 0x0112) {
+      if (view.getUint16(entry + 2, little) !== 3 || view.getUint32(entry + 4, little) !== 1) {
+        return 1;
+      }
+      const value = view.getUint16(entry + 8, little);
+      return value >= 1 && value <= 8 ? value : 1;
+    }
+  }
+  return 1;
 }
 
 function dimText(width: number, height: number): string | null {

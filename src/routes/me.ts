@@ -33,6 +33,7 @@ import {
 } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
@@ -109,6 +110,15 @@ export interface MeRouteDeps {
    * Omitted (no database) uses `setUsername` and then `renameAddress`.
    */
   mergeDb?: MergeDb;
+  /**
+   * Shop identities. With `shopKek` (or `nostrKek`), `PUT /me/about` creates
+   * the key when the profile note becomes a public shop. Omitted → no shop keys.
+   */
+  shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
+  /** Custodial nsec KEK; the default for `shopKek`. Omitted with `shopKek` → no shop keys. */
+  nostrKek?: Uint8Array;
 }
 
 /**
@@ -810,11 +820,25 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
         }
-        await deps.messages.updateText(noteId, textToWrite);
+        const written = await deps.messages.updateText(noteId, textToWrite);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
+        if (written === undefined) {
+          return c.json({ error: 'Not found' }, 404);
+        }
         if (photoKeyPresent && !createdThisRequest) {
           await deps.messages.updatePhoto(noteId, decodedPhoto ?? null);
         }
         const liveRow = await deps.messages.getById(noteId);
+        const shopKek = deps.shopKek ?? deps.nostrKek;
+        if (deps.shopIdentities !== undefined && shopKek !== undefined) {
+          try {
+            await deps.shopIdentities.ensureListed(noteId, shopKek);
+          } catch {
+            logEvent('shop.nostr_key.failed', { messageId: noteId });
+          }
+        }
         if (liveRow !== undefined && liveRow.sats === 0 && liveRow.eventId !== null) {
           await deps.messages.resetSignedEvent(noteId, liveRow.eventId);
         }

@@ -854,6 +854,7 @@ describe('POST /notifications/read-all', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const store = new InMemoryNotificationStore([note({ id: ID_A })]);
     const res = await mount(await seeded(), store, new InMemoryMessageStore(), {

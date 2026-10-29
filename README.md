@@ -62,7 +62,7 @@ but it never pays or holds funds. The spend-worker path is the exception
 
 | Layer       | Choice                          |
 | ----------- | ------------------------------- |
-| Runtime     | [Bun](https://bun.sh) ≥ 1.3     |
+| Runtime     | [Bun](https://bun.sh) ≥ 1.4.4   |
 | Language    | TypeScript (strict)             |
 | Framework   | [Hono](https://hono.dev)        |
 | Test runner | Vitest + `@vitest/coverage-v8`  |
@@ -111,7 +111,7 @@ bun run e2e             # Playwright against bun src/index.ts
 
 | Doc                                                                    | Purpose                                                                                                                                                                                             |
 | ---------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`docs/shop-identity.md`](./docs/shop-identity.md)                     | Every shop gets its own NOSTR identity and page `/{npub}`, shared with OpenCryptoPay (concept only, not implemented)                                                                                |
+| [`docs/shop-identity.md`](./docs/shop-identity.md)                     | Every shop gets its own NOSTR identity and page `/{npub}`, shared with OpenCryptoPay (S1, S2, S3 and S5 implemented; S4, the page, is in the app)                                                   |
 | [`CONCEPT.md`](./CONCEPT.md)                                           | Project vision, architecture, principles, decisions                                                                                                                                                 |
 | [`SPEC.md`](./SPEC.md)                                                 | Implemented HTTP surface (request/response contracts)                                                                                                                                               |
 | [`FLOWS.md`](./FLOWS.md)                                               | Core UI journeys (sign-in → profile → donate → recurring → message)                                                                                                                                 |

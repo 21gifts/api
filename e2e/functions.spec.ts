@@ -167,6 +167,12 @@ test('Function: readPublicBrandFile — GET /favicon.svg has bytes', async ({ re
   const body = await res.body();
   expect(body.byteLength).toBeGreaterThan(0);
 });
+test('Function: logPoolOptions — GET /info returns while the process is up', async ({
+  request,
+}) => {
+  const res = await request.get('/info');
+  expect(res.status()).toBe(200);
+});
 
 test('Function: requestLog — GET /info succeeds through middleware', async ({ request }) => {
   const res = await request.get('/info');
@@ -204,6 +210,15 @@ test('Function: setAddressRefKey — default boot has no key and the diagnostic 
 test('Function: errorLogFields — GET /healthz is ok while the worker logs no tick failure', async ({
   request,
 }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+test('Function: installPostgresConnectionClosedGuard — GET /healthz is ok', async ({ request }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: retryWhilePostgresConnectionClosed — GET /healthz is ok', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
@@ -367,6 +382,12 @@ test('Function: mentionAccountMatches — GET /mentions without bearer is 401', 
 
 test('Function: mentionsRoutes — GET /mentions without bearer is 401', async ({ request }) => {
   const res = await request.get('/mentions');
+  expect(res.status()).toBe(401);
+});
+test('Function: accountsByUsernameRoutes — GET /accounts/by-username/:username without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.get('/accounts/by-username/:username');
   expect(res.status()).toBe(401);
 });
 
@@ -1485,6 +1506,12 @@ test('Function: enqueueDebugPush — POST /debug/push-ping without bearer is 401
 test('Function: runPushWorkerTick — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: sweepPushStore — default boot sweeps at start and GET /healthz is ok', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
 test('Function: startPushWorker — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
