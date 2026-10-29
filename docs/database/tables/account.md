@@ -84,9 +84,12 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `notification`            | `recipient_account_id`    | `id`      |
 | `passkey_credential`      | `account_id`              | `id`      |
 | `passkey_renew_attempt`   | `account_id`              | `id`      |
+| `pending_recovery`        | `account_id`              | `id`      |
 | `pos_charge`              | `account_id`              | `id`      |
+| `previous_wallet`         | `account_id`              | `id`      |
 | `push_outbox`             | `account_id`              | `id`      |
 | `push_subscription`       | `account_id`              | `id`      |
+| `recovery_share`          | `account_id`              | `id`      |
 | `shop_payment`            | `account_id`              | `id`      |
 | `trust_edge`              | `actor_id`                | `id`      |
 | `trust_edge`              | `subject_id`              | `id`      |
@@ -121,9 +124,12 @@ erDiagram
     "notification" }o..|| "account" : "recipient_account_id"
     "passkey_credential" }o..|| "account" : "account_id"
     "passkey_renew_attempt" }o..|| "account" : "account_id"
+    "pending_recovery" |o--|| "account" : "account_id"
     "pos_charge" }o..|| "account" : "account_id"
+    "previous_wallet" }o--|| "account" : "account_id"
     "push_outbox" }o..|| "account" : "account_id"
     "push_subscription" }o..|| "account" : "account_id"
+    "recovery_share" }o--|| "account" : "account_id"
     "shop_payment" }o..|| "account" : "account_id"
     "trust_edge" }o..|| "account" : "actor_id"
     "trust_edge" }o..|| "account" : "subject_id"

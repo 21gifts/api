@@ -23,7 +23,10 @@ passkey credentials, and sessions survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. On the SQL path,
 `NOSTR_NSEC_KEK` (64 lowercase hex) is also required; missing or malformed
-KEK throws at boot. Public gift statistics
+KEK throws at boot. So is `RECOVERY_SHARE_KEK` (64 lowercase hex), the key
+of the 21.gifts recovery share, which must differ from `NOSTR_NSEC_KEK`; a
+missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
+boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
@@ -3700,7 +3703,8 @@ process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns
 `{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
 `nextCursor` when another page exists. Follow `nextCursor` until it is
-absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
+absent. `bytea` cells, including `nostr_nsec_ciphertext` and
+`recovery_share_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
 `auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
@@ -4008,7 +4012,11 @@ both accounts have that kind, and otherwise move. Proposals and
 rejections move even when they repeat.
 
 Passkeys of both accounts are kept, so both phones can sign in.
-Sessions of the source are deleted. Messages, invoice rows, edit
+Sessions of the source are deleted. The source's social recovery rows are
+deleted, not moved: its `recovery_share` rows, its `pending_recovery` row,
+its `previous_wallet` rows, and its `recovery` passkey challenges. They
+belong to the source's wallets, which go with the source row, and a share's
+additional data is the source id. Messages, invoice rows, edit
 history, contacts, push subscriptions, and the other foreign keys to
 `account(id)` are moved. Those foreign keys are read from the catalog
 inside the transaction, so a later table is moved too. A conversation

@@ -7,6 +7,7 @@ import { setDiagnosticSink } from '@/lib/log';
 import { InMemoryMemberEventStore } from '@/lib/member-event-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
+import { InMemoryPushStore, PostgresPushStore } from '@/lib/push-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
@@ -20,6 +21,7 @@ import {
   BOLT11,
   FREE_PAYMENTS_ENV,
   LNURL_SERVER,
+  WALLET_PUBKEY,
   createWalletAccount,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
@@ -569,6 +571,68 @@ describe('createApp', () => {
     });
     const res = await app.request('/healthz');
     expect(res.status).toBe(200);
+  });
+
+  it('links in-memory push subscriptions to the in-memory recovery commit', async () => {
+    const commitWith = async (pushStore: InMemoryPushStore | PostgresPushStore) => {
+      const authStore = new InMemoryAuthStore();
+      createApp({ authStore, pushStore });
+      const push = new InMemoryPushStore();
+      const subscriber = pushStore instanceof InMemoryPushStore ? pushStore : push;
+      await createWalletAccount(authStore, 'acc', 'ada');
+      await subscriber.upsertSubscription({
+        endpoint: 'https://push.example/acc',
+        accountId: 'acc',
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(1),
+      });
+      const newKey = `03${'2'.repeat(64)}`;
+      const now = Date.now();
+      await authStore.startRecoveryChallenge({
+        accountId: 'acc',
+        oldSparkPubkey: WALLET_PUBKEY,
+        challenge: {
+          id: 'c1',
+          type: 'recovery',
+          challenge: 'chal',
+          accountId: 'acc',
+          consumed: false,
+          createdAt: now,
+        },
+        now,
+      });
+      await authStore.storePendingRecovery({
+        challengeId: 'c1',
+        pending: {
+          accountId: 'acc',
+          oldSparkPubkey: WALLET_PUBKEY,
+          newSparkPubkey: newKey,
+          credentialId: 'new-credential',
+          publicKey: Uint8Array.of(1),
+          signCount: 0,
+          createdAt: now,
+          forwardedAt: null,
+        },
+        now,
+      });
+      await authStore.markRecoveryForwarded({
+        newSparkPubkey: newKey,
+        oldSparkPubkey: WALLET_PUBKEY,
+        username: 'ada',
+        now,
+      });
+      expect(
+        await authStore.commitRecovery({ accountId: 'acc', newSparkPubkey: newKey, now }),
+      ).toBe('committed');
+      return subscriber.listByAccount('acc');
+    };
+    expect(await commitWith(new InMemoryPushStore())).toEqual([]);
+    const unlinked = new PostgresPushStore({
+      query: async () => [],
+      execute: async () => undefined,
+    });
+    expect(await commitWith(unlinked)).toHaveLength(1);
   });
 
   it('returns 401 for unauthenticated GET /conversations', async () => {

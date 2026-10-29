@@ -5,6 +5,8 @@ import {
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { mentionAccountMatches } from '@/lib/mention-query';
+import type { InMemoryPushStore } from '@/lib/push-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 /**
  * Persistence for accounts, sessions, and passkeys.
@@ -242,12 +244,14 @@ export interface PasskeyCredential {
 }
 
 /** Kind of outstanding WebAuthn ceremony. */
-export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace' | 'seed';
+export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace' | 'seed' | 'recovery';
 
 /**
  * A one-time WebAuthn challenge. Registration stores the pending account id;
  * authentication looks the account up from the asserted credential; replace
- * and seed store the signed-in account id (never null).
+ * and seed store the signed-in account id (never null). `recovery`: a social
+ * recovery ceremony for the account with `accountId`. Consumed only when its
+ * pending recovery is stored.
  */
 export interface PasskeyChallenge {
   /** Opaque id returned to the client as `challengeId`. */
@@ -256,7 +260,10 @@ export interface PasskeyChallenge {
   type: PasskeyChallengeType;
   /** WebAuthn challenge (base64url) from the ceremony generator. */
   challenge: string;
-  /** Pending account id for register; signed-in id for replace/seed; `null` for authenticate. */
+  /**
+   * Pending account id for register; signed-in id for replace/seed; the
+   * recovered account's id for recovery; `null` for authenticate.
+   */
   accountId: string | null;
   /** Whether finish has already consumed this challenge. */
   consumed: boolean;
@@ -268,6 +275,73 @@ export interface PasskeyChallenge {
    */
   requestedName?: string | null;
 }
+
+/**
+ * Pending social recovery: stored by the finish, committed or dropped later.
+ * An unforwarded one counts as absent once `CHALLENGE_TTL_MS` has passed since
+ * `createdAt`; a forwarded one never expires.
+ */
+export interface PendingRecovery {
+  /** Account being recovered. */
+  accountId: string;
+  /** The account's verified `spark_pubkey` when the recovery was stored. */
+  oldSparkPubkey: string;
+  /** Identity key of the new wallet (66 lower-case hex). */
+  newSparkPubkey: string;
+  /** Credential id of the new passkey (base64url, from `verifyRegistration`). */
+  credentialId: string;
+  /** COSE public key of the new passkey. */
+  publicKey: Uint8Array;
+  /** Authenticator signature counter of the new passkey. */
+  signCount: number;
+  /** Time the finish stored it (epoch ms). */
+  createdAt: number;
+  /** Time the transfer route forwarded the address claim (epoch ms), or `null`. */
+  forwardedAt: number | null;
+}
+
+/** A wallet key an account had before a social recovery commit. */
+export interface PreviousWallet {
+  /** Account the wallet belonged to. */
+  accountId: string;
+  /** Identity key of that wallet (66 lower-case hex). */
+  sparkPubkey: string;
+  /** Spark address (`spark1…`) of that key. */
+  sparkAddress: string;
+  /** Time of the commit that replaced it (epoch ms). */
+  replacedAt: number;
+}
+
+/**
+ * Result of {@link AuthStore.startRecoveryChallenge}: `started` stored the
+ * challenge; `changed` means the account no longer holds that verified key (or
+ * is session-refused); `forwarded` means a forwarded pending recovery remains.
+ */
+export type RecoveryStartResult = 'started' | 'changed' | 'forwarded';
+
+/**
+ * Result of {@link AuthStore.storePendingRecovery}: `stored` wrote the row;
+ * `same` is the repeat of that finish (no write); `challenge` is a missing,
+ * expired, foreign, or used challenge; `changed` means the account no longer
+ * holds the old verified key; `pending` means the account already has one;
+ * `key` and `credential` mean the new wallet key or credential id is in use.
+ */
+export type RecoveryStoreResult =
+  'stored' | 'same' | 'challenge' | 'changed' | 'pending' | 'key' | 'credential';
+
+/**
+ * Result of {@link AuthStore.commitRecovery}: `committed` moved the account;
+ * `gone` means no forwarded pending recovery with that new key exists;
+ * `changed` means the account left the old key, so the pending row was dropped.
+ */
+export type RecoveryCommitResult = 'committed' | 'gone' | 'changed';
+
+/**
+ * Result of {@link AuthStore.putRecoveryShare}: `stored` is the first share of
+ * that wallet, `replaced` overwrote one, `changed` means the key is not the
+ * account's current verified key (no write).
+ */
+export type RecoveryShareResult = 'stored' | 'replaced' | 'changed';
 
 /** Stage of a passkey renew ceremony. */
 export type PasskeyRenewStage = 'begin' | 'ceremony' | 'finish';
@@ -703,6 +777,176 @@ export interface AuthStore {
    * @returns Ids at the moderator rank or above (order unspecified).
    */
   listStaffAccountIds(): Promise<string[]>;
+  /**
+   * The account's pending social recovery, unless it expired (unforwarded and
+   * older than `CHALLENGE_TTL_MS`).
+   *
+   * @param accountId - Account id.
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecovery(accountId: string, now: number): Promise<PendingRecovery | undefined>;
+  /**
+   * The pending social recovery whose new wallet key is `sparkPubkey`, unless
+   * it expired.
+   *
+   * @param sparkPubkey - New wallet key (66 lower-case hex).
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecoveryByNewSparkPubkey(
+    sparkPubkey: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined>;
+  /**
+   * The pending social recovery of the new passkey `credentialId`, unless it
+   * expired.
+   *
+   * @param credentialId - Credential id of the new passkey (base64url).
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecoveryByCredentialId(
+    credentialId: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined>;
+  /**
+   * Begin a social recovery ceremony as one locked step per account. Needs the
+   * account to hold `oldSparkPubkey` as its verified wallet key and not to be
+   * session-refused (else `changed`, no write). A forwarded pending recovery
+   * gives `forwarded` (no write). Otherwise it deletes an unforwarded pending
+   * recovery of any age, consumes every open `recovery` challenge of the
+   * account, evicts expired challenges, and stores `challenge`.
+   *
+   * @param input - Account, its verified old key, the new `recovery` challenge
+   *   (`consumed: false`), and the epoch ms of the step.
+   * @returns `started`, `changed`, or `forwarded`.
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  startRecoveryChallenge(input: {
+    accountId: string;
+    oldSparkPubkey: string;
+    challenge: PasskeyChallenge;
+    now: number;
+  }): Promise<RecoveryStartResult>;
+  /**
+   * Store the finish's pending recovery and consume its challenge as one
+   * locked step per account. Checks in order: the account still holds
+   * `pending.oldSparkPubkey` verified and is not session-refused (`changed`);
+   * the challenge exists with type `recovery`, this account, and is not
+   * expired (`challenge`); expired pending recoveries of every account are
+   * deleted; a consumed challenge answers `same` when the account's pending
+   * recovery has this credential id and new key, else `challenge`; any pending
+   * recovery of the account gives `pending`; the new key held by an account,
+   * a previous wallet, or another pending recovery gives `key`; the credential
+   * id stored or pending gives `credential`. Then it consumes the challenge and
+   * inserts `pending` with `forwardedAt` null.
+   *
+   * @param input - Challenge id, the pending recovery, and the epoch ms of the step.
+   * @returns One of {@link RecoveryStoreResult}.
+   * @throws When the Postgres adapter has no transaction port, or when the
+   *   insert hits a unique index (not mapped; the caller answers 503).
+   */
+  storePendingRecovery(input: {
+    challengeId: string;
+    pending: PendingRecovery;
+    now: number;
+  }): Promise<RecoveryStoreResult>;
+  /**
+   * Admit the transfer route's forward as one locked step per account: the
+   * pending recovery with this new key must be unforwarded, unexpired, and
+   * authorized by `oldSparkPubkey`; the account must still hold that key
+   * verified, not be session-refused, and have the username `username`
+   * (`lower(trim)` match). Sets `forwardedAt` to `now` in the same step.
+   *
+   * @param input - New key (path key), old key, normalized username, and epoch ms.
+   * @returns The forwarded pending recovery, or `undefined` with no write.
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  markRecoveryForwarded(input: {
+    newSparkPubkey: string;
+    oldSparkPubkey: string;
+    username: string;
+    now: number;
+  }): Promise<PendingRecovery | undefined>;
+  /**
+   * Commit a forwarded pending recovery in one step: add the old key and its
+   * Spark address to the previous wallets, replace every passkey credential of
+   * the account with the pending one, delete every session and push
+   * subscription of the account, store the new key (and its Spark address) as
+   * the wallet key with `walletRequired` true while keeping
+   * `sparkPubkeyVerifiedAt`, consume open `recovery` challenges, and delete the
+   * pending row. Username, `sessionRefused`, the Nostr key, and the stored
+   * recovery shares stay.
+   *
+   * @param input - Account, the pending recovery's new key, and epoch ms of the commit.
+   * @returns `committed`; `gone` without a forwarded pending recovery with that
+   *   new key; `changed` (pending row deleted) when the account left the old key.
+   * @throws When the Postgres adapter has no transaction port, or on a unique
+   *   violation (rolled back).
+   */
+  commitRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+    now: number;
+  }): Promise<RecoveryCommitResult>;
+  /**
+   * Delete the account's pending recovery only when its new key is
+   * `newSparkPubkey`. One conditional write.
+   *
+   * @param input - Account and new key.
+   * @returns Whether a row was deleted.
+   */
+  dropPendingRecovery(input: { accountId: string; newSparkPubkey: string }): Promise<boolean>;
+  /**
+   * The newest previous wallet with this key (`replacedAt` descending, then
+   * account id descending).
+   *
+   * @param sparkPubkey - Wallet key (66 lower-case hex).
+   * @returns The previous wallet, or `undefined`.
+   */
+  getPreviousWalletBySparkPubkey(sparkPubkey: string): Promise<PreviousWallet | undefined>;
+  /**
+   * The account's previous wallets, newest first (`replacedAt` descending,
+   * then `sparkPubkey` ascending).
+   *
+   * @param accountId - Account id.
+   * @returns The previous wallets (empty when none).
+   */
+  listPreviousWallets(accountId: string): Promise<PreviousWallet[]>;
+  /**
+   * Delete one previous wallet of the account together with the account's
+   * recovery share of that key, in one statement.
+   *
+   * @param accountId - Account id.
+   * @param sparkPubkey - Key of the previous wallet.
+   * @returns Whether a previous wallet was deleted (the share goes only then).
+   */
+  dropPreviousWallet(accountId: string, sparkPubkey: string): Promise<boolean>;
+  /**
+   * Store the encrypted 21.gifts recovery share of the account's current
+   * verified wallet as one locked step per account. Upserts by
+   * `(accountId, sparkPubkey)` and sets the stored time to `now`.
+   *
+   * @param input - Account, its wallet key, the share envelope, and epoch ms.
+   * @returns `stored`, `replaced`, or `changed` when `sparkPubkey` is not the
+   *   account's verified wallet key (no write).
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  putRecoveryShare(input: {
+    accountId: string;
+    sparkPubkey: string;
+    ciphertext: Uint8Array;
+    now: number;
+  }): Promise<RecoveryShareResult>;
+  /**
+   * Whether a recovery share is stored for the account's current
+   * `sparkPubkey` while that key is verified. Never reads the ciphertext.
+   *
+   * @param accountId - Account id.
+   * @returns `true` only in that case.
+   */
+  hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean>;
 }
 
 /** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
@@ -750,6 +994,25 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
   readonly #nostrKeys = new Map<string, NostrKeyRecord>();
   readonly #passkeyRenewAttempts: StoredPasskeyRenewAttempt[] = [];
+  /** Pending social recoveries by account id. */
+  readonly #pendingRecoveries = new Map<string, PendingRecovery>();
+  /** Previous wallets by `${accountId}:${sparkPubkey}`. */
+  readonly #previousWallets = new Map<string, PreviousWallet>();
+  /** Recovery share envelopes by `${accountId}:${sparkPubkey}`. */
+  readonly #recoveryShares = new Map<string, { ciphertext: Uint8Array; storedAt: number }>();
+  /** Push subscriptions a recovery commit deletes; unset until {@link usePushStore}. */
+  #pushStore: InMemoryPushStore | undefined;
+
+  /**
+   * Link the in-memory push store whose subscriptions {@link commitRecovery}
+   * deletes for the recovered account. `createApp` calls it when both default
+   * stores are in memory.
+   *
+   * @param push - Push store of the same process.
+   */
+  usePushStore(push: InMemoryPushStore): void {
+    this.#pushStore = push;
+  }
 
   async createAccount(account: Account): Promise<void> {
     if (this.#accountsByViewKey.has(account.viewKey)) {
@@ -1508,6 +1771,333 @@ export class InMemoryAuthStore implements AuthStore {
     return ids;
   }
 
+  // Every recovery method below reads and writes the maps in one synchronous
+  // run (no await inside), so each one is atomic within the process.
+
+  async getPendingRecovery(accountId: string, now: number): Promise<PendingRecovery | undefined> {
+    const pending = this.#pendingRecoveries.get(accountId);
+    return pending !== undefined && pendingRecoveryLive(pending, now) ? pending : undefined;
+  }
+
+  async getPendingRecoveryByNewSparkPubkey(
+    sparkPubkey: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.newSparkPubkey === sparkPubkey && pendingRecoveryLive(pending, now)) {
+        return pending;
+      }
+    }
+    return undefined;
+  }
+
+  async getPendingRecoveryByCredentialId(
+    credentialId: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.credentialId === credentialId && pendingRecoveryLive(pending, now)) {
+        return pending;
+      }
+    }
+    return undefined;
+  }
+
+  async startRecoveryChallenge(input: {
+    accountId: string;
+    oldSparkPubkey: string;
+    challenge: PasskeyChallenge;
+    now: number;
+  }): Promise<RecoveryStartResult> {
+    if (this.#verifiedHolder(input.accountId, input.oldSparkPubkey) === undefined) {
+      return 'changed';
+    }
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (pending !== undefined && pending.forwardedAt !== null) {
+      return 'forwarded';
+    }
+    this.#pendingRecoveries.delete(input.accountId);
+    this.#consumeRecoveryChallenges(input.accountId);
+    this.#evictExpiredPasskeyChallenges(input.now);
+    this.#passkeyChallenges.set(input.challenge.id, input.challenge);
+    return 'started';
+  }
+
+  async storePendingRecovery(input: {
+    challengeId: string;
+    pending: PendingRecovery;
+    now: number;
+  }): Promise<RecoveryStoreResult> {
+    const { pending, now } = input;
+    if (this.#verifiedHolder(pending.accountId, pending.oldSparkPubkey) === undefined) {
+      return 'changed';
+    }
+    const challenge = this.#passkeyChallenges.get(input.challengeId);
+    if (
+      challenge === undefined ||
+      challenge.type !== 'recovery' ||
+      challenge.accountId !== pending.accountId ||
+      now - challenge.createdAt > CHALLENGE_TTL_MS
+    ) {
+      return 'challenge';
+    }
+    for (const [accountId, stored] of this.#pendingRecoveries) {
+      if (!pendingRecoveryLive(stored, now)) {
+        this.#pendingRecoveries.delete(accountId);
+      }
+    }
+    const existing = this.#pendingRecoveries.get(pending.accountId);
+    if (challenge.consumed) {
+      return existing !== undefined &&
+        existing.credentialId === pending.credentialId &&
+        existing.newSparkPubkey === pending.newSparkPubkey
+        ? 'same'
+        : 'challenge';
+    }
+    if (existing !== undefined) {
+      return 'pending';
+    }
+    if (this.#recoveryKeyInUse(pending.newSparkPubkey)) {
+      return 'key';
+    }
+    if (this.#recoveryCredentialInUse(pending.credentialId)) {
+      return 'credential';
+    }
+    this.#passkeyChallenges.set(challenge.id, { ...challenge, consumed: true });
+    this.#pendingRecoveries.set(pending.accountId, { ...pending, forwardedAt: null });
+    return 'stored';
+  }
+
+  async markRecoveryForwarded(input: {
+    newSparkPubkey: string;
+    oldSparkPubkey: string;
+    username: string;
+    now: number;
+  }): Promise<PendingRecovery | undefined> {
+    const pending = [...this.#pendingRecoveries.values()].find(
+      (stored) => stored.newSparkPubkey === input.newSparkPubkey,
+    );
+    if (
+      pending === undefined ||
+      pending.forwardedAt !== null ||
+      !pendingRecoveryLive(pending, input.now) ||
+      pending.oldSparkPubkey !== input.oldSparkPubkey
+    ) {
+      return undefined;
+    }
+    const account = this.#verifiedHolder(pending.accountId, input.oldSparkPubkey);
+    if (account?.username?.trim().toLowerCase() !== input.username) {
+      return undefined;
+    }
+    const forwarded: PendingRecovery = { ...pending, forwardedAt: input.now };
+    this.#pendingRecoveries.set(pending.accountId, forwarded);
+    return forwarded;
+  }
+
+  async commitRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+    now: number;
+  }): Promise<RecoveryCommitResult> {
+    const account = this.#accounts.get(input.accountId);
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (
+      account === undefined ||
+      pending === undefined ||
+      pending.newSparkPubkey !== input.newSparkPubkey ||
+      pending.forwardedAt === null
+    ) {
+      return 'gone';
+    }
+    if (
+      account.sparkPubkey !== pending.oldSparkPubkey ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      this.#pendingRecoveries.delete(input.accountId);
+      return 'changed';
+    }
+    // Same refusal as the Postgres unique index on verified wallet keys.
+    for (const other of this.#accounts.values()) {
+      if (
+        other.id !== input.accountId &&
+        other.sparkPubkey === pending.newSparkPubkey &&
+        typeof other.sparkPubkeyVerifiedAt === 'number'
+      ) {
+        throw new Error('spark_pubkey is the verified wallet key of another account');
+      }
+    }
+    this.#previousWallets.set(`${input.accountId}:${pending.oldSparkPubkey}`, {
+      accountId: input.accountId,
+      sparkPubkey: pending.oldSparkPubkey,
+      sparkAddress: encodeSparkAddress(pending.oldSparkPubkey),
+      replacedAt: input.now,
+    });
+    for (const [credentialId, credential] of this.#passkeyCredentials) {
+      if (credential.accountId === input.accountId) {
+        this.#passkeyCredentials.delete(credentialId);
+      }
+    }
+    this.#passkeyCredentials.set(pending.credentialId, {
+      credentialId: pending.credentialId,
+      publicKey: pending.publicKey,
+      signCount: pending.signCount,
+      accountId: input.accountId,
+      createdAt: input.now,
+    });
+    for (const [token, session] of this.#sessions) {
+      if (session.accountId === input.accountId) {
+        this.#sessions.delete(token);
+      }
+    }
+    this.#pushStore?.removeAccountSubscriptions(input.accountId);
+    this.#accounts.set(input.accountId, {
+      ...account,
+      sparkPubkey: pending.newSparkPubkey,
+      walletRequired: true,
+    });
+    this.#consumeRecoveryChallenges(input.accountId);
+    this.#pendingRecoveries.delete(input.accountId);
+    return 'committed';
+  }
+
+  async dropPendingRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+  }): Promise<boolean> {
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (pending === undefined || pending.newSparkPubkey !== input.newSparkPubkey) {
+      return false;
+    }
+    this.#pendingRecoveries.delete(input.accountId);
+    return true;
+  }
+
+  async getPreviousWalletBySparkPubkey(sparkPubkey: string): Promise<PreviousWallet | undefined> {
+    let newest: PreviousWallet | undefined;
+    for (const wallet of this.#previousWallets.values()) {
+      if (wallet.sparkPubkey !== sparkPubkey) {
+        continue;
+      }
+      if (
+        newest === undefined ||
+        wallet.replacedAt > newest.replacedAt ||
+        (wallet.replacedAt === newest.replacedAt && wallet.accountId > newest.accountId)
+      ) {
+        newest = wallet;
+      }
+    }
+    return newest;
+  }
+
+  async listPreviousWallets(accountId: string): Promise<PreviousWallet[]> {
+    return [...this.#previousWallets.values()]
+      .filter((wallet) => wallet.accountId === accountId)
+      .sort((a, b) => {
+        if (a.replacedAt !== b.replacedAt) {
+          return b.replacedAt - a.replacedAt;
+        }
+        return a.sparkPubkey < b.sparkPubkey ? -1 : 1;
+      });
+  }
+
+  async dropPreviousWallet(accountId: string, sparkPubkey: string): Promise<boolean> {
+    const key = `${accountId}:${sparkPubkey}`;
+    if (!this.#previousWallets.delete(key)) {
+      return false;
+    }
+    this.#recoveryShares.delete(key);
+    return true;
+  }
+
+  async putRecoveryShare(input: {
+    accountId: string;
+    sparkPubkey: string;
+    ciphertext: Uint8Array;
+    now: number;
+  }): Promise<RecoveryShareResult> {
+    const account = this.#accounts.get(input.accountId);
+    if (
+      account === undefined ||
+      account.sparkPubkey !== input.sparkPubkey ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      return 'changed';
+    }
+    const key = `${input.accountId}:${input.sparkPubkey}`;
+    const existed = this.#recoveryShares.has(key);
+    this.#recoveryShares.set(key, { ciphertext: input.ciphertext, storedAt: input.now });
+    return existed ? 'replaced' : 'stored';
+  }
+
+  async hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean> {
+    const account = this.#accounts.get(accountId);
+    if (
+      account === undefined ||
+      typeof account.sparkPubkey !== 'string' ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      return false;
+    }
+    return this.#recoveryShares.has(`${accountId}:${account.sparkPubkey}`);
+  }
+
+  /** The account when it holds `sparkPubkey` as its verified wallet key and is not session-refused. */
+  #verifiedHolder(accountId: string, sparkPubkey: string): Account | undefined {
+    const account = this.#accounts.get(accountId);
+    return account !== undefined &&
+      account.sparkPubkey === sparkPubkey &&
+      typeof account.sparkPubkeyVerifiedAt === 'number' &&
+      account.sessionRefused !== true
+      ? account
+      : undefined;
+  }
+
+  /** Mark every open `recovery` challenge of the account consumed. */
+  #consumeRecoveryChallenges(accountId: string): void {
+    for (const [id, challenge] of this.#passkeyChallenges) {
+      if (
+        challenge.type === 'recovery' &&
+        challenge.accountId === accountId &&
+        !challenge.consumed
+      ) {
+        this.#passkeyChallenges.set(id, { ...challenge, consumed: true });
+      }
+    }
+  }
+
+  /** Whether an account, a previous wallet, or a pending recovery already holds this key. */
+  #recoveryKeyInUse(sparkPubkey: string): boolean {
+    for (const account of this.#accounts.values()) {
+      if (account.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    for (const wallet of this.#previousWallets.values()) {
+      if (wallet.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.newSparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Whether a stored credential or a pending recovery already holds this credential id. */
+  #recoveryCredentialInUse(credentialId: string): boolean {
+    if (this.#passkeyCredentials.has(credentialId)) {
+      return true;
+    }
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.credentialId === credentialId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Drop passkey challenges older than the TTL. */
   #evictExpiredPasskeyChallenges(now: number): void {
     for (const [id, challenge] of this.#passkeyChallenges) {
@@ -1534,6 +2124,14 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
   }
+}
+
+/**
+ * Whether a pending recovery still counts: forwarded, or stored no more than
+ * `CHALLENGE_TTL_MS` before `now`.
+ */
+function pendingRecoveryLive(pending: PendingRecovery, now: number): boolean {
+  return pending.forwardedAt !== null || now - pending.createdAt <= CHALLENGE_TTL_MS;
 }
 
 /** In-memory passkey renew row, including acknowledgement. */

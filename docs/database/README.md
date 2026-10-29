@@ -4,10 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 56
+- Tables: 58
 - Columns: 555
-- Foreign keys: 54
-
+- Foreign keys: 56
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
 | [`account`](tables/account.md)                                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 34      | 1            |
@@ -51,12 +50,14 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`passkey_challenge`](tables/passkey_challenge.md)                               | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 7       | 0            |
 | [`passkey_credential`](tables/passkey_credential.md)                             | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |
 | [`passkey_renew_attempt`](tables/passkey_renew_attempt.md)                       | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 23      | 1            |
+| [`pending_recovery`](tables/pending_recovery.md)                                 | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 8       | 1            |
 | [`pos_charge`](tables/pos_charge.md)                                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 14      | 1            |
 | [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
-| [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 12      | 1            |
-| [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 6       | 1            |
-| [`shop_identity`](tables/shop_identity.md)                                       | [src/lib/shop-identity.ts](../../src/lib/shop-identity.ts)             | 17      | 1            |
-| [`shop_offer`](tables/shop_offer.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 17      | 1            |
+| [`previous_wallet`](tables/previous_wallet.md)                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)           
+| [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)             
+| [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)             
+| [`recovery_share`](tables/recovery_share.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)           
+| [`shop_identity`](tables/shop_identity.md)                                       | [src/lib/shop-identity.ts](../../src/lib/shop-identity.ts)       | [`shop_offer`](tables/shop_offer.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 17      | 1            |
 | [`shop_payment`](tables/shop_payment.md)                                         | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 20      | 2            |
 | [`shop_proof`](tables/shop_proof.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 27      | 2            |
 | [`shop_proof_lookup`](tables/shop_proof_lookup.md)                               | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 10      | 1            |

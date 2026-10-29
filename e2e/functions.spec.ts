@@ -2069,6 +2069,12 @@ test('Function: serializeViewProfile — GET /view/:viewKey is 404 on default bo
 test('Function: parseNostrKek — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: parseKekHex — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: parseRecoveryShareKek — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: hexToBytes — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
@@ -2079,6 +2085,12 @@ test('Function: publicKeyHexFromSecret — default boot has no DATABASE_URL', as
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: encryptNostrSecret — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: sealAesGcmEnvelope — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: encryptRecoveryShare — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 test('Function: decryptNostrSecret — default boot has no DATABASE_URL', async ({ request }) => {

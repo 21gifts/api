@@ -552,6 +552,7 @@ function apiEnv() {
     LNURL_SERVER_URL: 'http://127.0.0.1:3999',
     LNURL_ZAP_NSEC_HEX: secrets.nsec,
     NOSTR_NSEC_KEK: secrets.kek,
+    RECOVERY_SHARE_KEK: secrets.recoveryShareKek,
     NOSTR_RELAY_SPACE: RELAY_URL,
     NOSTR_RELAY_PUBLIC: RELAY_URL,
     BTC_FIAT_SPOT_URL: SPOT_URL,
@@ -590,9 +591,16 @@ function ensureDir() {
       `${JSON.stringify({
         nsec: randomBytes(32).toString('hex'),
         kek: randomBytes(32).toString('hex'),
+        recoveryShareKek: randomBytes(32).toString('hex'),
       })}\n`,
       { mode: 0o600 },
     );
+  }
+  // A secrets file from before the recovery share key gets its own key once.
+  const secrets = JSON.parse(fs.readFileSync(secretsFile, 'utf8'));
+  if (typeof secrets.recoveryShareKek !== 'string') {
+    secrets.recoveryShareKek = randomBytes(32).toString('hex');
+    fs.writeFileSync(secretsFile, `${JSON.stringify(secrets)}\n`, { mode: 0o600 });
   }
 }
 

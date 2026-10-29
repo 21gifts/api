@@ -1,3 +1,4 @@
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import {
   redactPasskeyRenewField,
   sanitizePasskeyRenewDebug,
@@ -22,6 +23,12 @@ import {
   type PasskeyChallengeType,
   type PasskeyCredential,
   type PasskeyRenewAttemptInput,
+  type PendingRecovery,
+  type PreviousWallet,
+  type RecoveryCommitResult,
+  type RecoveryShareResult,
+  type RecoveryStartResult,
+  type RecoveryStoreResult,
   type Session,
   type SetUsernameResult,
 } from '@/lib/auth/store';
@@ -98,6 +105,41 @@ interface PasskeyCredentialRow {
   created_at: Date | string;
 }
 
+/** Row shape of `pending_recovery`. */
+interface PendingRecoveryRow {
+  account_id: string;
+  old_spark_pubkey: string;
+  new_spark_pubkey: string;
+  credential_id: string;
+  public_key: Uint8Array;
+  sign_count: number;
+  created_at: Date | string;
+  forwarded_at: Date | string | null;
+}
+
+/** Row shape of `previous_wallet`. */
+interface PreviousWalletRow {
+  account_id: string;
+  spark_pubkey: string;
+  spark_address: string;
+  replaced_at: Date | string;
+}
+
+/** The account row a social recovery step locks first. */
+interface LockedRecoveryAccountRow {
+  id: string;
+  username: string | null;
+  spark_pubkey: string | null;
+  spark_address: string | null;
+  spark_pubkey_verified_at: Date | string | null;
+  session_refused: boolean | null;
+}
+
+const PENDING_RECOVERY_COLUMNS =
+  'account_id, old_spark_pubkey, new_spark_pubkey, credential_id, public_key, sign_count, created_at, forwarded_at';
+
+const PREVIOUS_WALLET_COLUMNS = 'account_id, spark_pubkey, spark_address, replaced_at';
+
 /**
  * Apply {@link AUTH_SCHEMA_SQL} in order. Idempotent.
  *
@@ -146,12 +188,16 @@ export async function backfillSparkAddresses(sql: SqlClient): Promise<number> {
  */
 export class PostgresAuthStore implements AuthStore {
   readonly #sql: SqlClient;
+  readonly #transactions: MergeDb | undefined;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
+   * @param transactions - Transaction port for the social recovery steps. Boot
+   *   passes it. Without it those steps throw instead of running unlocked.
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, transactions?: MergeDb) {
     this.#sql = sql;
+    this.#transactions = transactions;
   }
 
   async createAccount(account: Account): Promise<void> {
@@ -1103,6 +1149,361 @@ LIMIT $2`,
     return rows.map((row) => row.id);
   }
 
+  async getPendingRecovery(accountId: string, now: number): Promise<PendingRecovery | undefined> {
+    return this.#livePendingRecovery('account_id', accountId, now);
+  }
+
+  async getPendingRecoveryByNewSparkPubkey(
+    sparkPubkey: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    return this.#livePendingRecovery('new_spark_pubkey', sparkPubkey, now);
+  }
+
+  async getPendingRecoveryByCredentialId(
+    credentialId: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    return this.#livePendingRecovery('credential_id', credentialId, now);
+  }
+
+  async startRecoveryChallenge(input: {
+    accountId: string;
+    oldSparkPubkey: string;
+    challenge: PasskeyChallenge;
+    now: number;
+  }): Promise<RecoveryStartResult> {
+    return this.#recoveryTransactions().begin(async (tx) => {
+      const account = await lockRecoveryAccount(tx, input.accountId);
+      if (!holdsVerifiedKey(account, input.oldSparkPubkey)) {
+        return 'changed';
+      }
+      const pending = await tx.query<{ forwarded_at: Date | string | null }>(
+        'SELECT forwarded_at FROM pending_recovery WHERE account_id = $1 FOR UPDATE',
+        [input.accountId],
+      );
+      if (pending.some((row) => row.forwarded_at !== null)) {
+        return 'forwarded';
+      }
+      await tx.query('DELETE FROM pending_recovery WHERE account_id = $1', [input.accountId]);
+      await tx.query(
+        `UPDATE passkey_challenge SET consumed = true
+         WHERE account_id = $1 AND type = 'recovery' AND consumed = false`,
+        [input.accountId],
+      );
+      await tx.query(
+        'DELETE FROM passkey_challenge WHERE created_at < to_timestamp($1::double precision / 1000.0)',
+        [input.now - CHALLENGE_TTL_MS],
+      );
+      const challenge = input.challenge;
+      await tx.query(
+        `INSERT INTO passkey_challenge (id, type, challenge, account_id, consumed, created_at, requested_name)
+         VALUES ($1, $2, $3, $4, $5, to_timestamp($6::double precision / 1000.0), $7)`,
+        [
+          challenge.id,
+          challenge.type,
+          challenge.challenge,
+          challenge.accountId,
+          challenge.consumed,
+          challenge.createdAt,
+          challenge.requestedName ?? null,
+        ],
+      );
+      return 'started';
+    });
+  }
+
+  async storePendingRecovery(input: {
+    challengeId: string;
+    pending: PendingRecovery;
+    now: number;
+  }): Promise<RecoveryStoreResult> {
+    const { pending, now } = input;
+    return this.#recoveryTransactions().begin(async (tx) => {
+      const account = await lockRecoveryAccount(tx, pending.accountId);
+      if (!holdsVerifiedKey(account, pending.oldSparkPubkey)) {
+        return 'changed';
+      }
+      const challenges = await tx.query<{ consumed: boolean; created_at: Date | string }>(
+        `SELECT consumed, created_at FROM passkey_challenge
+         WHERE id = $1 AND type = 'recovery' AND account_id = $2 FOR UPDATE`,
+        [input.challengeId, pending.accountId],
+      );
+      const challenge = challenges[0];
+      if (challenge === undefined || now - epochMs(challenge.created_at) > CHALLENGE_TTL_MS) {
+        return 'challenge';
+      }
+      await tx.query(
+        `DELETE FROM pending_recovery
+         WHERE forwarded_at IS NULL AND created_at < to_timestamp($1::double precision / 1000.0)`,
+        [now - CHALLENGE_TTL_MS],
+      );
+      const existing = await tx.query<{ credential_id: string; new_spark_pubkey: string }>(
+        'SELECT credential_id, new_spark_pubkey FROM pending_recovery WHERE account_id = $1',
+        [pending.accountId],
+      );
+      const stored = existing[0];
+      if (challenge.consumed) {
+        return stored !== undefined &&
+          stored.credential_id === pending.credentialId &&
+          stored.new_spark_pubkey === pending.newSparkPubkey
+          ? 'same'
+          : 'challenge';
+      }
+      if (stored !== undefined) {
+        return 'pending';
+      }
+      const keyInUse = await tx.query<{ one: number }>(
+        `SELECT 1 AS one FROM account WHERE spark_pubkey = $1
+         UNION ALL SELECT 1 AS one FROM previous_wallet WHERE spark_pubkey = $1
+         UNION ALL SELECT 1 AS one FROM pending_recovery WHERE new_spark_pubkey = $1
+         LIMIT 1`,
+        [pending.newSparkPubkey],
+      );
+      if (keyInUse.length > 0) {
+        return 'key';
+      }
+      const credentialInUse = await tx.query<{ one: number }>(
+        `SELECT 1 AS one FROM passkey_credential WHERE credential_id = $1
+         UNION ALL SELECT 1 AS one FROM pending_recovery WHERE credential_id = $1
+         LIMIT 1`,
+        [pending.credentialId],
+      );
+      if (credentialInUse.length > 0) {
+        return 'credential';
+      }
+      await tx.query(
+        'UPDATE passkey_challenge SET consumed = true WHERE id = $1 AND consumed = false',
+        [input.challengeId],
+      );
+      // A unique violation here propagates unmapped and rolls the step back.
+      await tx.query(
+        `INSERT INTO pending_recovery (account_id, old_spark_pubkey, new_spark_pubkey, credential_id, public_key, sign_count, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, to_timestamp($7::double precision / 1000.0))`,
+        [
+          pending.accountId,
+          pending.oldSparkPubkey,
+          pending.newSparkPubkey,
+          pending.credentialId,
+          pending.publicKey,
+          pending.signCount,
+          pending.createdAt,
+        ],
+      );
+      return 'stored';
+    });
+  }
+
+  async markRecoveryForwarded(input: {
+    newSparkPubkey: string;
+    oldSparkPubkey: string;
+    username: string;
+    now: number;
+  }): Promise<PendingRecovery | undefined> {
+    const transactions = this.#recoveryTransactions();
+    const owners = await this.#sql.query<{ account_id: string }>(
+      'SELECT account_id FROM pending_recovery WHERE new_spark_pubkey = $1',
+      [input.newSparkPubkey],
+    );
+    const accountId = owners[0]?.account_id;
+    if (accountId === undefined) {
+      return undefined;
+    }
+    return transactions.begin(async (tx) => {
+      const account = await lockRecoveryAccount(tx, accountId);
+      if (
+        !holdsVerifiedKey(account, input.oldSparkPubkey) ||
+        account.username === null ||
+        account.username.trim().toLowerCase() !== input.username
+      ) {
+        return undefined;
+      }
+      const rows = await tx.query<PendingRecoveryRow>(
+        `UPDATE pending_recovery SET forwarded_at = to_timestamp($5::double precision / 1000.0)
+         WHERE account_id = $1 AND new_spark_pubkey = $2 AND old_spark_pubkey = $3 AND forwarded_at IS NULL
+           AND created_at >= to_timestamp($4::double precision / 1000.0)
+         RETURNING ${PENDING_RECOVERY_COLUMNS}`,
+        [
+          accountId,
+          input.newSparkPubkey,
+          input.oldSparkPubkey,
+          input.now - CHALLENGE_TTL_MS,
+          input.now,
+        ],
+      );
+      const row = rows[0];
+      return row === undefined ? undefined : mapPendingRecovery(row);
+    });
+  }
+
+  async commitRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+    now: number;
+  }): Promise<RecoveryCommitResult> {
+    return this.#recoveryTransactions().begin(async (tx) => {
+      const account = await lockRecoveryAccount(tx, input.accountId);
+      if (account === undefined) {
+        return 'gone';
+      }
+      const rows = await tx.query<PendingRecoveryRow>(
+        `SELECT ${PENDING_RECOVERY_COLUMNS} FROM pending_recovery
+         WHERE account_id = $1 AND new_spark_pubkey = $2 AND forwarded_at IS NOT NULL
+         FOR UPDATE`,
+        [input.accountId, input.newSparkPubkey],
+      );
+      const row = rows[0];
+      if (row === undefined) {
+        return 'gone';
+      }
+      const pending = mapPendingRecovery(row);
+      if (
+        account.spark_pubkey !== pending.oldSparkPubkey ||
+        account.spark_pubkey_verified_at === null
+      ) {
+        await tx.query('DELETE FROM pending_recovery WHERE account_id = $1', [input.accountId]);
+        return 'changed';
+      }
+      await tx.query(
+        `INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at)
+         VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0))`,
+        [
+          input.accountId,
+          pending.oldSparkPubkey,
+          account.spark_address ?? encodeSparkAddress(pending.oldSparkPubkey),
+          input.now,
+        ],
+      );
+      await tx.query('DELETE FROM passkey_credential WHERE account_id = $1', [input.accountId]);
+      await tx.query(
+        `INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at)
+         VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))`,
+        [pending.credentialId, pending.publicKey, pending.signCount, input.accountId, input.now],
+      );
+      await tx.query('DELETE FROM auth_session WHERE account_id = $1', [input.accountId]);
+      await tx.query('DELETE FROM push_subscription WHERE account_id = $1', [input.accountId]);
+      await tx.query(
+        'UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE WHERE id = $1',
+        [input.accountId, pending.newSparkPubkey, encodeSparkAddress(pending.newSparkPubkey)],
+      );
+      await tx.query(
+        `UPDATE passkey_challenge SET consumed = true
+         WHERE account_id = $1 AND type = 'recovery' AND consumed = false`,
+        [input.accountId],
+      );
+      await tx.query('DELETE FROM pending_recovery WHERE account_id = $1', [input.accountId]);
+      return 'committed';
+    });
+  }
+
+  async dropPendingRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+  }): Promise<boolean> {
+    const rows = await this.#sql.query<{ account_id: string }>(
+      `DELETE FROM pending_recovery WHERE account_id = $1 AND new_spark_pubkey = $2
+       RETURNING account_id`,
+      [input.accountId, input.newSparkPubkey],
+    );
+    return rows.length > 0;
+  }
+
+  async getPreviousWalletBySparkPubkey(sparkPubkey: string): Promise<PreviousWallet | undefined> {
+    const rows = await this.#sql.query<PreviousWalletRow>(
+      `SELECT ${PREVIOUS_WALLET_COLUMNS} FROM previous_wallet WHERE spark_pubkey = $1
+       ORDER BY replaced_at DESC, account_id DESC LIMIT 1`,
+      [sparkPubkey],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPreviousWallet(row);
+  }
+
+  async listPreviousWallets(accountId: string): Promise<PreviousWallet[]> {
+    const rows = await this.#sql.query<PreviousWalletRow>(
+      `SELECT ${PREVIOUS_WALLET_COLUMNS} FROM previous_wallet WHERE account_id = $1
+       ORDER BY replaced_at DESC, spark_pubkey COLLATE "C" ASC`,
+      [accountId],
+    );
+    return rows.map((row) => mapPreviousWallet(row));
+  }
+
+  async dropPreviousWallet(accountId: string, sparkPubkey: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ dropped: number | string }>(
+      `WITH gone AS (DELETE FROM previous_wallet WHERE account_id = $1 AND spark_pubkey = $2 RETURNING spark_pubkey),
+            share AS (DELETE FROM recovery_share WHERE account_id = $1 AND spark_pubkey IN (SELECT spark_pubkey FROM gone))
+       SELECT count(*)::int AS dropped FROM gone`,
+      [accountId, sparkPubkey],
+    );
+    return Number(rows[0]?.dropped ?? 0) > 0;
+  }
+
+  async putRecoveryShare(input: {
+    accountId: string;
+    sparkPubkey: string;
+    ciphertext: Uint8Array;
+    now: number;
+  }): Promise<RecoveryShareResult> {
+    return this.#recoveryTransactions().begin(async (tx) => {
+      const account = await lockRecoveryAccount(tx, input.accountId);
+      if (
+        account === undefined ||
+        account.spark_pubkey !== input.sparkPubkey ||
+        account.spark_pubkey_verified_at === null
+      ) {
+        return 'changed';
+      }
+      const existing = await tx.query<{ one: number }>(
+        'SELECT 1 AS one FROM recovery_share WHERE account_id = $1 AND spark_pubkey = $2',
+        [input.accountId, input.sparkPubkey],
+      );
+      await tx.query(
+        `INSERT INTO recovery_share (account_id, spark_pubkey, recovery_share_ciphertext, stored_at)
+         VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0))
+         ON CONFLICT (account_id, spark_pubkey) DO UPDATE
+           SET recovery_share_ciphertext = EXCLUDED.recovery_share_ciphertext, stored_at = EXCLUDED.stored_at`,
+        [input.accountId, input.sparkPubkey, input.ciphertext, input.now],
+      );
+      return existing.length > 0 ? 'replaced' : 'stored';
+    });
+  }
+
+  async hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ stored: boolean }>(
+      `SELECT EXISTS (SELECT 1 FROM account a JOIN recovery_share s ON s.account_id = a.id AND s.spark_pubkey = a.spark_pubkey
+                      WHERE a.id = $1 AND a.spark_pubkey_verified_at IS NOT NULL) AS stored`,
+      [accountId],
+    );
+    return rows[0]?.stored === true;
+  }
+
+  /**
+   * The transaction port of the locked social recovery steps.
+   *
+   * @throws Error('auth transactions are not configured') without one.
+   */
+  #recoveryTransactions(): MergeDb {
+    const transactions = this.#transactions;
+    if (transactions === undefined) {
+      throw new Error('auth transactions are not configured');
+    }
+    return transactions;
+  }
+
+  /** One pending recovery by a unique column, unless it is unforwarded and expired. */
+  async #livePendingRecovery(
+    column: 'account_id' | 'new_spark_pubkey' | 'credential_id',
+    value: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    const rows = await this.#sql.query<PendingRecoveryRow>(
+      `SELECT ${PENDING_RECOVERY_COLUMNS} FROM pending_recovery
+       WHERE ${column} = $1 AND (forwarded_at IS NOT NULL OR created_at >= to_timestamp($2::double precision / 1000.0))`,
+      [value, now - CHALLENGE_TTL_MS],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPendingRecovery(row);
+  }
+
   async #evictExpiredSessions(now: number): Promise<void> {
     const cutoff = now - SESSION_TTL_MS;
     await this.#sql.execute(
@@ -1192,8 +1593,68 @@ function mapSession(row: SessionRow): Session {
   };
 }
 
+/**
+ * Lock the account row first in a social recovery step.
+ *
+ * @param tx - Open transaction.
+ * @param accountId - Account to lock.
+ * @returns The locked row, or `undefined` when the account does not exist.
+ */
+async function lockRecoveryAccount(
+  tx: MergeTx,
+  accountId: string,
+): Promise<LockedRecoveryAccountRow | undefined> {
+  const rows = await tx.query<LockedRecoveryAccountRow>(
+    `SELECT id, username, spark_pubkey, spark_address, spark_pubkey_verified_at, session_refused
+     FROM account WHERE id = $1 FOR UPDATE`,
+    [accountId],
+  );
+  return rows[0];
+}
+
+/** Whether the locked account holds `sparkPubkey` verified and is not session-refused. */
+function holdsVerifiedKey(
+  account: LockedRecoveryAccountRow | undefined,
+  sparkPubkey: string,
+): account is LockedRecoveryAccountRow {
+  return (
+    account !== undefined &&
+    account.spark_pubkey === sparkPubkey &&
+    account.spark_pubkey_verified_at !== null &&
+    account.session_refused !== true
+  );
+}
+
+function mapPendingRecovery(row: PendingRecoveryRow): PendingRecovery {
+  return {
+    accountId: row.account_id,
+    oldSparkPubkey: row.old_spark_pubkey,
+    newSparkPubkey: row.new_spark_pubkey,
+    credentialId: row.credential_id,
+    publicKey: new Uint8Array(row.public_key),
+    signCount: row.sign_count,
+    createdAt: epochMs(row.created_at),
+    forwardedAt: row.forwarded_at === null ? null : epochMs(row.forwarded_at),
+  };
+}
+
+function mapPreviousWallet(row: PreviousWalletRow): PreviousWallet {
+  return {
+    accountId: row.account_id,
+    sparkPubkey: row.spark_pubkey,
+    sparkAddress: row.spark_address,
+    replacedAt: epochMs(row.replaced_at),
+  };
+}
+
 function parsePasskeyChallengeType(raw: string): PasskeyChallengeType {
-  if (raw === 'register' || raw === 'authenticate' || raw === 'replace' || raw === 'seed') {
+  if (
+    raw === 'register' ||
+    raw === 'authenticate' ||
+    raw === 'replace' ||
+    raw === 'seed' ||
+    raw === 'recovery'
+  ) {
     return raw;
   }
   throw new Error(`Unknown passkey challenge type "${raw}"`);

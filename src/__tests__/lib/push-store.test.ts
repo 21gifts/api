@@ -151,6 +151,23 @@ describe('InMemoryPushStore', () => {
     expect(await store.listByAccount('acc-a')).toEqual([]);
   });
 
+  it('removeAccountSubscriptions deletes every subscription of one account and counts them', async () => {
+    const store = new InMemoryPushStore();
+    expect(store.removeAccountSubscriptions('acc-a')).toBe(0);
+    await store.upsertSubscription(SUB);
+    await store.upsertSubscription({ ...SUB, endpoint: 'https://push.example/b' });
+    await store.upsertSubscription({
+      ...SUB,
+      endpoint: 'https://push.example/c',
+      accountId: 'acc-b',
+    });
+    expect(store.removeAccountSubscriptions('acc-a')).toBe(2);
+    expect(await store.listByAccount('acc-a')).toEqual([]);
+    expect((await store.listByAccount('acc-b')).map((row) => row.endpoint)).toEqual([
+      'https://push.example/c',
+    ]);
+  });
+
   it('lists distinct account ids with subscriptions', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB);

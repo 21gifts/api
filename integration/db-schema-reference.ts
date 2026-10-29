@@ -1236,6 +1236,9 @@ export async function withScratchDatabase<T>(
 /** Throwaway 64-hex KEK; the scratch database stores no secrets. */
 const SCRATCH_NOSTR_KEK = '0'.repeat(64);
 
+/** Throwaway 64-hex recovery share KEK, distinct from {@link SCRATCH_NOSTR_KEK}. */
+const SCRATCH_RECOVERY_SHARE_KEK = '1'.repeat(64);
+
 /**
  * Builds schema reference pages against a scratch database migrated by boot stores.
  * Network fetches and zap relays are disabled so generation stays offline.
@@ -1253,12 +1256,16 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
         await sql.unsafe(text, [...params]);
       },
     };
-    // Boot requires a KEK (exactly 64 lowercase hex characters, parseNostrKek)
-    // whenever a database is set. The scratch database holds no secrets, so a
-    // fixed throwaway value is fine.
+    // Boot requires both KEKs (exactly 64 lowercase hex characters, parseKekHex)
+    // whenever a database is set. The scratch database holds no secrets, so
+    // fixed throwaway values are fine.
     const previousKek = process.env['NOSTR_NSEC_KEK'];
     if (previousKek === undefined || previousKek.trim() === '') {
       process.env['NOSTR_NSEC_KEK'] = SCRATCH_NOSTR_KEK;
+    }
+    const previousRecoveryKek = process.env['RECOVERY_SHARE_KEK'];
+    if (previousRecoveryKek === undefined || previousRecoveryKek.trim() === '') {
+      process.env['RECOVERY_SHARE_KEK'] = SCRATCH_RECOVERY_SHARE_KEK;
     }
     try {
       const sources = await sourceFiles(REPO_ROOT);
@@ -1282,6 +1289,8 @@ export async function generate(adminUrl: string): Promise<Map<string, string>> {
       setDiagnosticSink(null);
       if (previousKek === undefined) delete process.env['NOSTR_NSEC_KEK'];
       else process.env['NOSTR_NSEC_KEK'] = previousKek;
+      if (previousRecoveryKek === undefined) delete process.env['RECOVERY_SHARE_KEK'];
+      else process.env['RECOVERY_SHARE_KEK'] = previousRecoveryKek;
       if (typeof sql.close === 'function') await sql.close();
     }
   });

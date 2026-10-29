@@ -8,7 +8,11 @@
  * `notify_hearts`, `wallet_intro_seen`, `spark_address`, and `passkey_challenge.requested_name` on databases created before those
  * columns existed. `spark_address` values are filled by `backfillSparkAddresses`, not here.
  * Also creates `passkey_renew_attempt` (failed, cancelled, and
- * server-written succeeded seed rows).
+ * server-written succeeded seed rows), and the social recovery tables
+ * `recovery_share` (the encrypted 21.gifts share per account and wallet key),
+ * `pending_recovery` (at most one per account), and `previous_wallet` (wallet
+ * keys an account had before a recovery commit), plus an index on the open
+ * passkey challenges of an account and type.
  * `locale` and `fiat` are backfilled as nullable (no value backfill of
  * existing rows).
  * Drops leftover `auth_challenge` from LNURL-auth.
@@ -188,4 +192,42 @@ export const AUTH_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk`,
   `ALTER TABLE account ADD CONSTRAINT account_spark_address_chk
   CHECK (spark_address IS NULL OR (spark_pubkey IS NOT NULL AND spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$'))`,
+  `CREATE TABLE IF NOT EXISTS recovery_share (
+    account_id uuid NOT NULL REFERENCES account (id),
+    spark_pubkey text NOT NULL,
+    recovery_share_ciphertext bytea NOT NULL,
+    stored_at timestamptz NOT NULL,
+    PRIMARY KEY (account_id, spark_pubkey),
+    CONSTRAINT recovery_share_spark_pubkey_chk CHECK (spark_pubkey ~ '^0[23][0-9a-f]{64}$'),
+    CONSTRAINT recovery_share_ciphertext_chk CHECK (octet_length(recovery_share_ciphertext) BETWEEN 34 AND 1024)
+  )`,
+  `CREATE TABLE IF NOT EXISTS pending_recovery (
+    account_id uuid PRIMARY KEY REFERENCES account (id),
+    old_spark_pubkey text NOT NULL,
+    new_spark_pubkey text NOT NULL,
+    credential_id text NOT NULL,
+    public_key bytea NOT NULL,
+    sign_count integer NOT NULL,
+    created_at timestamptz NOT NULL,
+    forwarded_at timestamptz,
+    CONSTRAINT pending_recovery_keys_chk CHECK (
+      old_spark_pubkey ~ '^0[23][0-9a-f]{64}$'
+      AND new_spark_pubkey ~ '^0[23][0-9a-f]{64}$'
+      AND old_spark_pubkey <> new_spark_pubkey),
+    CONSTRAINT pending_recovery_sign_count_chk CHECK (sign_count >= 0)
+  )`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS pending_recovery_new_spark_pubkey_uidx ON pending_recovery (new_spark_pubkey)`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS pending_recovery_credential_id_uidx ON pending_recovery (credential_id)`,
+  `CREATE TABLE IF NOT EXISTS previous_wallet (
+    account_id uuid NOT NULL REFERENCES account (id),
+    spark_pubkey text NOT NULL,
+    spark_address text NOT NULL,
+    replaced_at timestamptz NOT NULL,
+    PRIMARY KEY (account_id, spark_pubkey),
+    CONSTRAINT previous_wallet_spark_pubkey_chk CHECK (spark_pubkey ~ '^0[23][0-9a-f]{64}$'),
+    CONSTRAINT previous_wallet_spark_address_chk CHECK (spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$')
+  )`,
+  `CREATE INDEX IF NOT EXISTS previous_wallet_spark_pubkey_idx ON previous_wallet (spark_pubkey)`,
+  `CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx
+    ON passkey_challenge (account_id, type) WHERE consumed = false`,
 ];

@@ -248,6 +248,33 @@ describe('mergeAccounts', () => {
     expect(queries.some((query) => /THEN \$2(?!::uuid)/.test(query.text))).toBe(false);
   });
 
+  it('deletes the source social recovery rows before the challenge move and the catalog loop', async () => {
+    const { db, queries } = fakeDatabase();
+
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+
+    const deletes = [
+      'DELETE FROM recovery_share WHERE account_id = $1',
+      'DELETE FROM pending_recovery WHERE account_id = $1',
+      'DELETE FROM previous_wallet WHERE account_id = $1',
+      "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
+    ].map((text) => queries.findIndex((query) => query.text === text));
+    const challengeMove = queries.findIndex(
+      (query) =>
+        query.text === 'UPDATE passkey_challenge SET account_id = $2 WHERE account_id = $1',
+    );
+    const catalog = queries.findIndex(
+      (query) => query.text.includes('pg_constraint') && query.text.includes('JOIN LATERAL'),
+    );
+    expect(deletes.every((index) => index >= 0)).toBe(true);
+    expect([...deletes].sort((a, b) => a - b)).toEqual(deletes);
+    for (const index of deletes) {
+      expect(queries[index]?.params).toEqual([FROM]);
+      expect(index).toBeLessThan(challengeMove);
+      expect(index).toBeLessThan(catalog);
+    }
+  });
+
   it('clears the source free first post mark before moving messages when the survivor has one', async () => {
     const { db, queries } = fakeDatabase();
 

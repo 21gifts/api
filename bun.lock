@@ -5,6 +5,7 @@
     "": {
       "name": "@21gifts/api",
       "dependencies": {
+        "@noble/curves": "2.0.1",
         "@rapideditor/country-coder": "5.6.1",
         "@scure/base": "2.0.0",
         "@simplewebauthn/server": "^13.2.1",

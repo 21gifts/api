@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { SQL } from 'bun';
 import { describe, expect, spyOn, test } from 'bun:test';
 import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
@@ -7,6 +8,8 @@ import {
   PostgresAuthStore,
 } from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
+import type { PasskeyChallenge, PendingRecovery } from '@/lib/auth/store';
+import { CHALLENGE_TTL_MS } from '@/lib/config';
 import {
   migrateDailyRosterSchema,
   moveDailyRosterToWalletAddresses,
@@ -24,7 +27,7 @@ import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store'
 import { migrateBannerSchema } from '@/lib/banner-store';
 import { migrateConversationSchema } from '@/lib/conversation-store';
 import { migrateNotificationSchema } from '@/lib/notification-store';
-import { migratePushSchema } from '@/lib/push-store';
+import { migratePushSchema, PostgresPushStore } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
 import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
@@ -1231,6 +1234,605 @@ describe('PostgresAuthStore spark pubkey', () => {
         malformed = error;
       }
       expect(sqlState(malformed)).toBe('23514');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresAuthStore social recovery', () => {
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+  const walletKey = (): string => `02${hex64()}`;
+
+  const setup = async (): Promise<{
+    client: SqlClient;
+    mergeDb: MergeDb;
+    sql: SQL;
+    store: PostgresAuthStore;
+    push: PostgresPushStore;
+  }> => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    await migrateAuthSchema(client);
+    await migratePushSchema(client);
+    await migrateAuthSchema(client);
+    await migratePushSchema(client);
+    await migrateDbChangeSchema(client);
+    return {
+      client,
+      mergeDb,
+      sql,
+      store: new PostgresAuthStore(client, mergeDb),
+      push: new PostgresPushStore(client),
+    };
+  };
+
+  /** An account whose verified wallet key is `sparkPubkey`. */
+  async function recoverable(
+    store: PostgresAuthStore,
+    sparkPubkey: string,
+  ): Promise<{ id: string; username: string }> {
+    const id = crypto.randomUUID();
+    const username = `recovery_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`;
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      username,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: hex64(),
+      createdAt: Date.now(),
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await store.claimSparkPubkey(id, sparkPubkey);
+    expect(await store.markSparkPubkeyVerified(id, sparkPubkey, username, Date.now())).toBe(true);
+    return { id, username };
+  }
+
+  function recoveryChallenge(accountId: string, now: number): PasskeyChallenge {
+    return {
+      id: hex64(),
+      type: 'recovery',
+      challenge: `challenge-${hex64()}`,
+      accountId,
+      consumed: false,
+      createdAt: now,
+    };
+  }
+
+  function pendingRecovery(
+    accountId: string,
+    oldSparkPubkey: string,
+    newSparkPubkey: string,
+    now: number,
+  ): PendingRecovery {
+    return {
+      accountId,
+      oldSparkPubkey,
+      newSparkPubkey,
+      credentialId: `credential-${hex64()}`,
+      publicKey: Uint8Array.of(4, 5, 6),
+      signCount: 0,
+      createdAt: now,
+      forwardedAt: null,
+    };
+  }
+
+  /** Begin and finish one recovery; returns the stored pending recovery and its challenge. */
+  async function stored(
+    store: PostgresAuthStore,
+    accountId: string,
+    oldSparkPubkey: string,
+    now: number,
+  ): Promise<{ pending: PendingRecovery; challenge: PasskeyChallenge }> {
+    const challenge = recoveryChallenge(accountId, now);
+    expect(await store.startRecoveryChallenge({ accountId, oldSparkPubkey, challenge, now })).toBe(
+      'started',
+    );
+    const pending = pendingRecovery(accountId, oldSparkPubkey, walletKey(), now);
+    expect(await store.storePendingRecovery({ challengeId: challenge.id, pending, now })).toBe(
+      'stored',
+    );
+    return { pending, challenge };
+  }
+
+  async function countRows(client: SqlClient, table: string, accountId: string): Promise<number> {
+    const rows = await client.query<{ n: number }>(
+      `SELECT count(*)::int AS n FROM ${table} WHERE account_id = $1`,
+      [accountId],
+    );
+    return rows[0]?.n ?? -1;
+  }
+
+  test('begin, finish, admission, and commit replace the passkey, sessions, push, and wallet key', async () => {
+    const { client, sql, store, push } = await setup();
+    try {
+      const oldKey = walletKey();
+      const { id, username } = await recoverable(store, oldKey);
+      const before = await store.getAccount(id);
+      await store.createPasskeyCredential({
+        credentialId: `login-${hex64()}`,
+        publicKey: Uint8Array.of(1, 2, 3),
+        signCount: 7,
+        accountId: id,
+        createdAt: Date.now(),
+      });
+      await store.createSession({ token: hex64(), accountId: id, createdAt: Date.now() });
+      await push.upsertSubscription({
+        endpoint: `https://push.example/${hex64()}`,
+        accountId: id,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(),
+      });
+      const now = Date.now();
+
+      const first = recoveryChallenge(id, now);
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: id,
+          oldSparkPubkey: oldKey,
+          challenge: first,
+          now,
+        }),
+      ).toBe('started');
+      expect(await store.getPasskeyChallenge(first.id)).toEqual({ ...first, requestedName: null });
+      const { pending, challenge } = await stored(store, id, oldKey, now);
+      expect((await store.getPasskeyChallenge(first.id))?.consumed).toBe(true);
+      expect((await store.getPasskeyChallenge(challenge.id))?.consumed).toBe(true);
+      expect(
+        await store.storePendingRecovery({ challengeId: challenge.id, pending, now: now + 1 }),
+      ).toBe('same');
+      expect(await store.getPendingRecovery(id, now)).toEqual(pending);
+      expect(await store.getPendingRecoveryByNewSparkPubkey(pending.newSparkPubkey, now)).toEqual(
+        pending,
+      );
+      expect(await store.getPendingRecoveryByCredentialId(pending.credentialId, now)).toEqual(
+        pending,
+      );
+      expect(await store.getPendingRecovery(id, now + CHALLENGE_TTL_MS + 1)).toBeUndefined();
+
+      const admission = {
+        newSparkPubkey: pending.newSparkPubkey,
+        oldSparkPubkey: oldKey,
+        now: now + 2,
+      };
+      expect(await store.markRecoveryForwarded({ ...admission, username: 'someone' })).toBe(
+        undefined,
+      );
+      const forwarded = await store.markRecoveryForwarded({ ...admission, username });
+      expect(forwarded).toEqual({ ...pending, forwardedAt: now + 2 });
+      expect(await store.markRecoveryForwarded({ ...admission, username })).toBeUndefined();
+      expect(await store.getPendingRecovery(id, now + 100 * CHALLENGE_TTL_MS)).toEqual(forwarded);
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: id,
+          oldSparkPubkey: oldKey,
+          challenge: recoveryChallenge(id, now + 3),
+          now: now + 3,
+        }),
+      ).toBe('forwarded');
+
+      expect(
+        await store.commitRecovery({
+          accountId: id,
+          newSparkPubkey: pending.newSparkPubkey,
+          now: now + 4,
+        }),
+      ).toBe('committed');
+
+      const credentials = await client.query<{ credential_id: string; public_key: Uint8Array }>(
+        'SELECT credential_id, public_key FROM passkey_credential WHERE account_id = $1',
+        [id],
+      );
+      expect(credentials.map((row) => row.credential_id)).toEqual([pending.credentialId]);
+      expect([...new Uint8Array(credentials[0]?.public_key ?? [])]).toEqual([...pending.publicKey]);
+      expect(await countRows(client, 'auth_session', id)).toBe(0);
+      expect(await countRows(client, 'push_subscription', id)).toBe(0);
+      expect(await countRows(client, 'pending_recovery', id)).toBe(0);
+      const account = await client.query<{
+        spark_pubkey: string;
+        spark_address: string;
+        wallet_required: boolean;
+        username: string;
+      }>(
+        'SELECT spark_pubkey, spark_address, wallet_required, username FROM account WHERE id = $1',
+        [id],
+      );
+      expect(account[0]).toEqual({
+        spark_pubkey: pending.newSparkPubkey,
+        spark_address: encodeSparkAddress(pending.newSparkPubkey),
+        wallet_required: true,
+        username,
+      });
+      expect((await store.getAccount(id))?.sparkPubkeyVerifiedAt).toBe(
+        before?.sparkPubkeyVerifiedAt,
+      );
+      const previous = {
+        accountId: id,
+        sparkPubkey: oldKey,
+        sparkAddress: encodeSparkAddress(oldKey),
+        replacedAt: now + 4,
+      };
+      expect(await store.listPreviousWallets(id)).toEqual([previous]);
+      expect(await store.getPreviousWalletBySparkPubkey(oldKey)).toEqual(previous);
+      expect(
+        await store.commitRecovery({
+          accountId: id,
+          newSparkPubkey: pending.newSparkPubkey,
+          now: now + 5,
+        }),
+      ).toBe('gone');
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: id,
+          oldSparkPubkey: oldKey,
+          challenge: recoveryChallenge(id, now + 6),
+          now: now + 6,
+        }),
+      ).toBe('changed');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the finish refuses a used challenge, a second pending, and a key or credential in use', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      const oldKey = walletKey();
+      const { id } = await recoverable(store, oldKey);
+      const other = await recoverable(store, walletKey());
+      const now = Date.now();
+
+      const expired = recoveryChallenge(id, now - CHALLENGE_TTL_MS - 1);
+      await store.startRecoveryChallenge({
+        accountId: id,
+        oldSparkPubkey: oldKey,
+        challenge: expired,
+        now: now - CHALLENGE_TTL_MS - 1,
+      });
+      expect(
+        await store.storePendingRecovery({
+          challengeId: expired.id,
+          pending: pendingRecovery(id, oldKey, walletKey(), now),
+          now,
+        }),
+      ).toBe('challenge');
+
+      const open = recoveryChallenge(id, now);
+      await store.startRecoveryChallenge({
+        accountId: id,
+        oldSparkPubkey: oldKey,
+        challenge: open,
+        now,
+      });
+      const finish = (pending: PendingRecovery) =>
+        store.storePendingRecovery({ challengeId: open.id, pending, now });
+      expect(await finish(pendingRecovery(id, walletKey(), walletKey(), now))).toBe('changed');
+      const otherAccount = await store.getAccount(other.id);
+      expect(await finish(pendingRecovery(id, oldKey, otherAccount?.sparkPubkey ?? '', now))).toBe(
+        'key',
+      );
+      const loginId = `login-${hex64()}`;
+      await store.createPasskeyCredential({
+        credentialId: loginId,
+        publicKey: Uint8Array.of(1),
+        signCount: 0,
+        accountId: other.id,
+        createdAt: now,
+      });
+      expect(
+        await finish({ ...pendingRecovery(id, oldKey, walletKey(), now), credentialId: loginId }),
+      ).toBe('credential');
+      expect((await store.getPasskeyChallenge(open.id))?.consumed).toBe(false);
+      const first = pendingRecovery(id, oldKey, walletKey(), now);
+      expect(await finish(first)).toBe('stored');
+      expect(await finish(pendingRecovery(id, oldKey, walletKey(), now))).toBe('challenge');
+
+      const next = recoveryChallenge(id, now);
+      await client.query(
+        `INSERT INTO passkey_challenge (id, type, challenge, account_id, consumed, created_at)
+         VALUES ($1, 'recovery', $2, $3, false, to_timestamp($4::double precision / 1000.0))`,
+        [next.id, next.challenge, id, now],
+      );
+      expect(
+        await store.storePendingRecovery({
+          challengeId: next.id,
+          pending: pendingRecovery(id, oldKey, walletKey(), now),
+          now,
+        }),
+      ).toBe('pending');
+      const otherFinish = await stored(store, other.id, otherAccount?.sparkPubkey ?? '', now);
+      expect(
+        await store.storePendingRecovery({
+          challengeId: next.id,
+          pending: {
+            ...pendingRecovery(id, oldKey, walletKey(), now),
+            credentialId: first.credentialId,
+          },
+          now,
+        }),
+      ).toBe('pending');
+      expect(otherFinish.pending.accountId).toBe(other.id);
+
+      expect(await store.dropPendingRecovery({ accountId: id, newSparkPubkey: walletKey() })).toBe(
+        false,
+      );
+      expect(
+        await store.dropPendingRecovery({ accountId: id, newSparkPubkey: first.newSparkPubkey }),
+      ).toBe(true);
+      expect(await store.getPendingRecovery(id, now)).toBeUndefined();
+      expect(
+        await store.storePendingRecovery({
+          challengeId: next.id,
+          pending: pendingRecovery(id, oldKey, otherFinish.pending.newSparkPubkey, now),
+          now,
+        }),
+      ).toBe('key');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: next.id,
+          pending: {
+            ...pendingRecovery(id, oldKey, walletKey(), now),
+            credentialId: otherFinish.pending.credentialId,
+          },
+          now,
+        }),
+      ).toBe('credential');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a commit after the account left the old verified key drops the pending recovery', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      const oldKey = walletKey();
+      const { id, username } = await recoverable(store, oldKey);
+      const now = Date.now();
+      const { pending } = await stored(store, id, oldKey, now);
+      expect(
+        await store.markRecoveryForwarded({
+          newSparkPubkey: pending.newSparkPubkey,
+          oldSparkPubkey: oldKey,
+          username,
+          now,
+        }),
+      ).toBeDefined();
+      await client.query('UPDATE account SET spark_pubkey_verified_at = NULL WHERE id = $1', [id]);
+      expect(
+        await store.commitRecovery({ accountId: id, newSparkPubkey: pending.newSparkPubkey, now }),
+      ).toBe('changed');
+      expect(await countRows(client, 'pending_recovery', id)).toBe(0);
+      expect((await store.getAccount(id))?.sparkPubkey).toBe(oldKey);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('parallel commits commit once and parallel finishes of one challenge store once', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      const oldKey = walletKey();
+      const { id, username } = await recoverable(store, oldKey);
+      const now = Date.now();
+      const challenge = recoveryChallenge(id, now);
+      await store.startRecoveryChallenge({ accountId: id, oldSparkPubkey: oldKey, challenge, now });
+      const pending = pendingRecovery(id, oldKey, walletKey(), now);
+      const finishes = await Promise.all([
+        store.storePendingRecovery({ challengeId: challenge.id, pending, now }),
+        store.storePendingRecovery({ challengeId: challenge.id, pending, now }),
+      ]);
+      expect([...finishes].sort()).toEqual(['same', 'stored']);
+      expect(await countRows(client, 'pending_recovery', id)).toBe(1);
+
+      await store.markRecoveryForwarded({
+        newSparkPubkey: pending.newSparkPubkey,
+        oldSparkPubkey: oldKey,
+        username,
+        now,
+      });
+      const commits = await Promise.all([
+        store.commitRecovery({ accountId: id, newSparkPubkey: pending.newSparkPubkey, now }),
+        store.commitRecovery({ accountId: id, newSparkPubkey: pending.newSparkPubkey, now }),
+      ]);
+      expect([...commits].sort()).toEqual(['committed', 'gone']);
+      expect(await countRows(client, 'previous_wallet', id)).toBe(1);
+      expect(await countRows(client, 'passkey_credential', id)).toBe(1);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a parallel begin and admission serialize on the account lock', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      for (let round = 0; round < 4; round += 1) {
+        const oldKey = walletKey();
+        const { id, username } = await recoverable(store, oldKey);
+        const now = Date.now();
+        const { pending } = await stored(store, id, oldKey, now);
+        const [begun, admitted] = await Promise.all([
+          store.startRecoveryChallenge({
+            accountId: id,
+            oldSparkPubkey: oldKey,
+            challenge: recoveryChallenge(id, now + 1),
+            now: now + 1,
+          }),
+          store.markRecoveryForwarded({
+            newSparkPubkey: pending.newSparkPubkey,
+            oldSparkPubkey: oldKey,
+            username,
+            now: now + 1,
+          }),
+        ]);
+        const rows = await client.query<{ forwarded_at: Date | null }>(
+          'SELECT forwarded_at FROM pending_recovery WHERE account_id = $1',
+          [id],
+        );
+        if (admitted === undefined) {
+          expect(begun).toBe('started');
+          expect(rows).toEqual([]);
+        } else {
+          expect(begun).toBe('forwarded');
+          expect(rows).toHaveLength(1);
+          expect(rows[0]?.forwarded_at).not.toBeNull();
+        }
+      }
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('shares are stored per wallet key, logged only as SHA-256, and dropped with their previous wallet', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      const oldKey = walletKey();
+      const { id, username } = await recoverable(store, oldKey);
+      const firstShare = crypto.getRandomValues(new Uint8Array(64));
+      const secondShare = crypto.getRandomValues(new Uint8Array(64));
+      const hexOf = (bytes: Uint8Array): string => Buffer.from(bytes).toString('hex');
+      const sha256OfBytea = (bytes: Uint8Array): string =>
+        createHash('sha256')
+          .update(`\\x${hexOf(bytes)}`, 'utf8')
+          .digest('hex');
+      const marker = await client.query<{ id: string }>(
+        'SELECT coalesce(max(id), 0)::text AS id FROM db_change',
+      );
+      const now = Date.now();
+      expect(await store.hasRecoveryShareForVerifiedWallet(id)).toBe(false);
+      expect(
+        await store.putRecoveryShare({
+          accountId: id,
+          sparkPubkey: walletKey(),
+          ciphertext: firstShare,
+          now,
+        }),
+      ).toBe('changed');
+      expect(
+        await store.putRecoveryShare({
+          accountId: id,
+          sparkPubkey: oldKey,
+          ciphertext: firstShare,
+          now,
+        }),
+      ).toBe('stored');
+      expect(await store.hasRecoveryShareForVerifiedWallet(id)).toBe(true);
+      expect(
+        await store.putRecoveryShare({
+          accountId: id,
+          sparkPubkey: oldKey,
+          ciphertext: secondShare,
+          now: now + 1,
+        }),
+      ).toBe('replaced');
+      const shares = await client.query<{ recovery_share_ciphertext: Uint8Array }>(
+        'SELECT recovery_share_ciphertext FROM recovery_share WHERE account_id = $1',
+        [id],
+      );
+      expect(shares.map((row) => new Uint8Array(row.recovery_share_ciphertext))).toEqual([
+        secondShare,
+      ]);
+
+      const { pending } = await stored(store, id, oldKey, now);
+      await store.markRecoveryForwarded({
+        newSparkPubkey: pending.newSparkPubkey,
+        oldSparkPubkey: oldKey,
+        username,
+        now,
+      });
+      await store.commitRecovery({ accountId: id, newSparkPubkey: pending.newSparkPubkey, now });
+      expect(await store.hasRecoveryShareForVerifiedWallet(id)).toBe(false);
+      expect(await countRows(client, 'recovery_share', id)).toBe(1);
+      expect(await store.dropPreviousWallet(id, pending.newSparkPubkey)).toBe(false);
+      expect(await countRows(client, 'recovery_share', id)).toBe(1);
+      expect(await store.dropPreviousWallet(id, oldKey)).toBe(true);
+      expect(await countRows(client, 'recovery_share', id)).toBe(0);
+      expect(await countRows(client, 'previous_wallet', id)).toBe(0);
+      expect(await store.dropPreviousWallet(id, oldKey)).toBe(false);
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE table_name = 'recovery_share' AND id > $1::bigint
+           AND coalesce(after ->> 'account_id', before ->> 'account_id') = $2
+         ORDER BY id ASC`,
+        [marker[0]?.id ?? '0', id],
+      );
+      expect(changes.map((row) => row.op)).toEqual(['INSERT', 'UPDATE', 'DELETE']);
+      expect(changes[0]?.after?.['recovery_share_ciphertext']).toBe(sha256OfBytea(firstShare));
+      expect(changes[1]?.before?.['recovery_share_ciphertext']).toBe(sha256OfBytea(firstShare));
+      expect(changes[1]?.after?.['recovery_share_ciphertext']).toBe(sha256OfBytea(secondShare));
+      expect(changes[2]?.before?.['recovery_share_ciphertext']).toBe(sha256OfBytea(secondShare));
+      const dump = JSON.stringify(changes);
+      for (const share of [firstShare, secondShare]) {
+        expect(dump.includes(hexOf(share))).toBe(false);
+      }
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('mergeAccounts deletes the merged account social recovery rows', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      await migrateDbChangeSchema(client);
+      const store = new PostgresAuthStore(client, mergeDb);
+      const oldKey = walletKey();
+      const from = await recoverable(store, oldKey);
+      const into = await recoverable(store, walletKey());
+      const now = Date.now();
+      const { pending } = await stored(store, from.id, oldKey, now);
+      await store.markRecoveryForwarded({
+        newSparkPubkey: pending.newSparkPubkey,
+        oldSparkPubkey: oldKey,
+        username: from.username,
+        now,
+      });
+      await store.commitRecovery({
+        accountId: from.id,
+        newSparkPubkey: pending.newSparkPubkey,
+        now,
+      });
+      await store.putRecoveryShare({
+        accountId: from.id,
+        sparkPubkey: pending.newSparkPubkey,
+        ciphertext: new Uint8Array(40).fill(1),
+        now,
+      });
+      await stored(store, from.id, pending.newSparkPubkey, now + 1);
+      await store.putRecoveryShare({
+        accountId: into.id,
+        sparkPubkey: (await store.getAccount(into.id))?.sparkPubkey ?? '',
+        ciphertext: new Uint8Array(40).fill(2),
+        now,
+      });
+      for (const table of ['recovery_share', 'pending_recovery', 'previous_wallet']) {
+        expect(await countRows(client, table, from.id)).toBe(1);
+      }
+
+      expect(
+        (await mergeAccounts(mergeDb, { from: from.id, into: into.id, verify: 'into' })).ok,
+      ).toBe(true);
+
+      for (const table of ['pending_recovery', 'previous_wallet']) {
+        expect(await countRows(client, table, into.id)).toBe(0);
+      }
+      expect(await countRows(client, 'recovery_share', into.id)).toBe(1);
+      expect(await store.hasRecoveryShareForVerifiedWallet(into.id)).toBe(true);
+      const challenges = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'`,
+        [into.id],
+      );
+      expect(challenges[0]?.n).toBe(0);
+      expect(await store.getAccount(from.id)).toBeUndefined();
     } finally {
       await closeIfPossible(sql);
     }
