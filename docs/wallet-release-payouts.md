@@ -59,10 +59,17 @@ The rest of this document is the evidence.
 - No manual data step is part of the release. Anything that has to change in
   data changes at boot (see
   [Roster account link at boot](#roster-account-link-at-boot)).
-  The one manual step is a setting: when social recovery reaches `main` in
-  this release, an operator sets `RECOVERY_SHARE_KEK` in production before
-  the `develop → main` merge, because the API with social recovery does not
-  boot without it.
+- Two manual steps are part of the release. The first is a setting: when
+  social recovery reaches `main` in this release, an operator sets
+  `RECOVERY_SHARE_KEK` in production before the `develop → main` merge,
+  because the API with social recovery does not boot without it.
+- The second is the welcome sweep. Every boot starts it off, so after the
+  deploy, and again after every restart, an operator reads
+  `GET /debug/welcome-sweep` (a dry-run: `wouldPing` lists the accounts the
+  sweep would ping, nobody is pinged) and turns the sweep on with
+  `PUT /debug/welcome-sweep` and body `{"enabled":true}` only when that list
+  holds no account that was welcomed before (see
+  [Check again before release](#check-again-before-release)).
 
 ## How a payout is triggered
 
