@@ -342,8 +342,9 @@ The contracts are in [SPEC.md](../SPEC.md):
   `POST /auth/passkey/authenticate/finish` (409 `recovery_pending`), owner
   JSON `socialRecoverySetUp`, and `POST /me/events` (`recovery_done`).
 
-The routes under `/lnurlpay` and `/me` are mounted only when
-`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; without them, begin answers 503. The tables are `recovery_share`, `pending_recovery` and
+The new routes under `/lnurlpay` and `/me` are mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; without them, begin
+answers 503. The tables are `recovery_share`, `pending_recovery` and
 `previous_wallet` (`docs/schema/`).
 
 ### The LNURL server

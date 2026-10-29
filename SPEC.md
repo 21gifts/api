@@ -780,6 +780,12 @@ and `account.previous_wallets.failed` `{ accountId }`.
 Success → **Response** `204` with no body. Logs
 `account.previous_wallet.dropped` `{ accountId }`, never the key.
 
+**Storage.** Deletes the `previous_wallet` row
+(`docs/schema/previous_wallet.sql`) and the account's `recovery_share` row of
+that key (`docs/schema/recovery_share.sql`) in one statement. Migrated with
+the auth schema when `DATABASE_URL` is set and covered by `db_change`; in
+memory otherwise.
+
 ### `POST /lnurlpay/:pubkey`
 
 Forward wallet name registration to the self-hosted LNURL server.
@@ -881,10 +887,12 @@ new passkey inserted; `spark_pubkey` becomes the new key with its
 `spark_pubkey_verified_at`; open `recovery` challenges are consumed and the
 pending row is deleted. Username, `session_refused`, the Nostr key, and
 recovery shares stay. Logs `account.recovery.committed`
-`{ accountId, via: "claim" }`. When the commit does not land → **Response**
-`409` `{ "error": "Wallet registration could not be confirmed" }` and
-`account.recovery.unconfirmed` `{ accountId }`; the pending recovery stays
-forwarded and a later lookup settles it (see `POST /lnurlpay/:pubkey/recover`).
+`{ accountId, via: "claim" }`. When the commit does not land, because the
+forwarded pending recovery is already gone, or because the account no longer
+holds the old key verified (then the commit deletes the pending recovery) →
+**Response** `409` `{ "error": "Wallet registration could not be confirmed" }`
+and `account.recovery.unconfirmed` `{ accountId }`; this request changes no
+account, and no pending recovery remains to settle.
 
 Upstream 2xx (after the commit) and every upstream 4xx (for example 409
 `"signature has already been used"`) pass through with their status, body
@@ -916,7 +924,8 @@ Forward signed recover. Mounted only when `LNURL_SERVER_URL` and
 
 **Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`, or, for a
 key no account claims, the key is the new key of a pending social recovery
-that is forwarded or not expired. Fail → 404. Upstream `POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
+that is forwarded or not expired. Fail → 404. Upstream
+`POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
 upstream 2xx passed through with its status, body and only the
 `content-type` / `cache-control` headers (a 204 stays a 204); upstream
 404 → 404; unreachable, store throw, or any other upstream status (other
@@ -2403,7 +2412,10 @@ In this order:
    key verified, became session-refused, or has a forwarded pending recovery
    by then → `503` `Lightning address service is unavailable`.
 
-A store throw at any step → `503`
+An unreachable LNURL server on the forward of step 5 or 7 (including the 15 s
+abort) logs `lnurl_server.unreachable` `{ route: "recovery" }` and answers
+`503` `{ "error": "Lightning address service is unavailable" }`. A store
+throw at any step → `503`
 `{ "error": "Lightning address service is unavailable" }`.
 
 **Response** `200`:
@@ -6756,7 +6768,8 @@ POST. `address` is the author's wallet-backed receiving address (no verified
 wallet → no ping). The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
 top-level row) only when `eligibleToday` for the author's funding grant and
-21.gifts recovery share **and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
+21.gifts recovery share **and** the new row has media (`hasPhoto` /
+`hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
 `no_media` (eligible text-only). When `role === 'verified'` and any live
 top-level photo or video exists, including the About-me note, the api also

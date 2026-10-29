@@ -332,13 +332,14 @@ in the settings, and needs a verified wallet; for members in the grant program
 it becomes a payout condition, and they are prompted to set it up. The 12
 words are split 2-of-3: one share each for two chosen people, passed only by
 QR code to their own signed-in 21.gifts app, and one backup share for
-21.gifts that the api stores encrypted and never decrypts. Two shares recover at once, in person. The old wallet key signs
-the account transfer, the account gets a new passkey with its own new 12
-words, and the old words move the Lightning address and the whole wallet
-balance to the new wallet. The v1 custodial NOSTR key does not change; with
-NIP-06 keys after v1, new 12 words would mean a new npub. Specified and
-implemented per [`docs/social-recovery.md`](./docs/social-recovery.md); the
-routes are in [`SPEC.md`](./SPEC.md).
+21.gifts that the api stores encrypted and never decrypts. Two shares recover
+at once, in person. The old wallet key signs the account transfer, the
+account gets a new passkey with its own new 12 words, and the old words move
+the Lightning address and the whole wallet balance to the new wallet. The v1
+custodial NOSTR key does not change; with NIP-06 keys after v1, new 12 words
+would mean a new npub. Specified and implemented per
+[`docs/social-recovery.md`](./docs/social-recovery.md); the routes are in
+[`SPEC.md`](./SPEC.md).
 The shop payment in
 [`docs/shop-stablecoin-payment.md`](./docs/shop-stablecoin-payment.md) does not read
 those words and does not deliver to a Spark address.

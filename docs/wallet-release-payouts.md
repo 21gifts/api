@@ -279,7 +279,9 @@ The release does not change who is eligible. `eligibleToday`
 payout needs a role other than `basis`, and an `admitted` grant or a `trial`
 grant on the current UTC day. The grant requirement has applied since
 2026-10-01 (`FUNDING_REQUIRED_FROM_UTC`). Daily payouts and moderator
-stipends both pass through it.
+stipends both pass through it. The 58 people had the roles `verified`,
+`moderator` and `founder` on 2026-10-16. A member who is not eligible on a
+day is not paid that day, before and after the release alike.
 
 Since social recovery ([docs/social-recovery.md](social-recovery.md)),
 `eligibleToday` also needs a stored 21.gifts recovery share for the member's
@@ -289,9 +291,7 @@ on production once released to `main`. A member in the grant program without
 that share is not paid that day, with the same answers as for a missing
 grant; the staff trial and admit pings are skipped too. Storing the first
 share of the current wallet pings that UTC day's newest media post, so later
-triggers that day pay as usual. The 58 people had the roles `verified`, `moderator` and
-`founder` on 2026-10-16. A member who is not eligible on a day is not paid that
-day, before and after the release alike.
+triggers that day pay as usual.
 
 The welcome gift does not cut a payout for these 58. 50 of the 51 `verified`
 people already have the platform `Welcome` reply, so no welcome ping is sent
