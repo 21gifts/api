@@ -562,8 +562,7 @@ Every HTTP endpoint **must** have at least one Playwright request against a
 booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
-the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push worker tick and sweep, and a closed SQL connection), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey`, whose route also needs the LNURL server, and `backfillSparkAddresses`), `QueryGiftStore`,
-`mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
+the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push worker tick and sweep, and a closed SQL connection), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey` and both `commitRecovery` implementations, whose routes need the LNURL server, and from `backfillSparkAddresses`), `QueryGiftStore`,`mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`, `PostgresFxSpotStore`, `migrateFxSpotSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
 `PostgresBannerStore`, `migrateBannerSchema`,
@@ -636,7 +635,7 @@ default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAc
 repayment bill of a loan, and a loan is a post, which needs a verified wallet (their tests assert
 posting 409 `missing: ['lightning-address']`);
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
-`concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL`) or when free in-app payments are on;
+`concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL` or the LNURL server) or when free in-app payments are on;
 `protoVarintField`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
