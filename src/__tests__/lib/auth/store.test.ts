@@ -7,6 +7,7 @@ import {
   parseStoredLocale,
   staffTagOf,
   type PasskeyChallenge,
+  type PasskeyCredential,
   type PendingRecovery,
 } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
@@ -3247,6 +3248,28 @@ describe('InMemoryAuthStore social recovery', () => {
       expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
       expect(await store.listPreviousWallets('acc')).toEqual([]);
       expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+    });
+
+    it('throws, writing nothing, when another account took the pending credential id meanwhile', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await forwarded(store, 'acc', 'ada');
+      const theirs: PasskeyCredential = {
+        credentialId: 'new-credential',
+        publicKey: Uint8Array.of(7, 8, 9),
+        signCount: 3,
+        accountId: 'other',
+        createdAt: NOW + 2,
+      };
+      expect(await store.createPasskeyCredential(theirs)).toBe(true);
+      await expect(
+        store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 3 }),
+      ).rejects.toThrow(/passkey of another account/);
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
+      expect(await store.listPreviousWallets('acc')).toEqual([]);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+      expect(await store.getPasskeyCredential('new-credential')).toEqual(theirs);
     });
   });
 

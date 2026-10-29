@@ -1922,7 +1922,8 @@ export class InMemoryAuthStore implements AuthStore {
       this.#pendingRecoveries.delete(input.accountId);
       return 'changed';
     }
-    // Same refusal as the Postgres unique index on verified wallet keys.
+    // Same refusals, before any write, as the Postgres unique index on verified
+    // wallet keys and the passkey_credential primary key.
     for (const other of this.#accounts.values()) {
       if (
         other.id !== input.accountId &&
@@ -1931,6 +1932,10 @@ export class InMemoryAuthStore implements AuthStore {
       ) {
         throw new Error('spark_pubkey is the verified wallet key of another account');
       }
+    }
+    const taken = this.#passkeyCredentials.get(pending.credentialId);
+    if (taken !== undefined && taken.accountId !== input.accountId) {
+      throw new Error('credential_id is a passkey of another account');
     }
     this.#previousWallets.set(`${input.accountId}:${pending.oldSparkPubkey}`, {
       accountId: input.accountId,
