@@ -243,15 +243,18 @@ describe('POST /debug/push-broadcast', () => {
     expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
 
-  it('returns 400 for unknown usernames and queues nothing', async () => {
+  it('returns 404 with the unknown usernames and queues nothing', async () => {
     const { authStore, pushStore } = await seeded();
     const res = await post(mount({ authStore, pushStore }), {
       title: 'Hi',
       body: 'Hello',
       usernames: ['alpha', 'zulu', 'Yankee'],
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Unknown usernames', usernames: ['zulu', 'yankee'] });
+    expect(res.status).toBe(404);
+    expect(await res.json()).toEqual({
+      error: 'No account with that username',
+      usernames: ['zulu', 'yankee'],
+    });
     expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
 

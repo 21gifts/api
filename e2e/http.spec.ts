@@ -1111,7 +1111,11 @@ test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live
     headers: { authorization: 'Bearer e2e-debug-token' },
     data: { title: 'Update', body: 'Hello', usernames: ['nobody-here'], dryRun: true },
   });
-  expect(res.status()).toBe(400);
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({
+    error: 'No account with that username',
+    usernames: ['nobody-here'],
+  });
   const all = await request.post('/debug/push-broadcast', {
     headers: { authorization: 'Bearer e2e-debug-token' },
     data: { title: 'Update', body: 'Hello', dryRun: true },

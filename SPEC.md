@@ -5663,8 +5663,10 @@ batch, lease, and retry rules as every other notification. The payload is
 `DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
 Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
 Invalid body → **400** `{ "error": "Expected a JSON body with \"title\" …" }`.
-A listed username without an account → **400**
-`{ "error": "Unknown usernames", "usernames": ["…"] }`; nothing is queued.
+A listed username without an account → **404**
+`{ "error": "No account with that username", "usernames": ["…"] }` (the text
+of `GET /accounts/by-username/:username`, plus every unknown username);
+nothing is queued.
 VAPID not configured and not a dry run → **503** `{ "error": "Push is not configured" }`.
 
 Dry run → **Response** `200`:

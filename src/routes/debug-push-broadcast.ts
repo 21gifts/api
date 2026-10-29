@@ -189,7 +189,7 @@ export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hon
           }
         }
         if (unknown.length > 0) {
-          return c.json({ error: 'Unknown usernames', usernames: unknown }, 400);
+          return c.json({ error: 'No account with that username', usernames: unknown }, 404);
         }
       }
       const targets = splitTargets(selected, subscribed);
