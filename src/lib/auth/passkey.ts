@@ -447,7 +447,9 @@ export async function startPasskeyAuthentication(
  *   {@link LOGINS_CLOSED_ERROR}.
  * @returns Session + account, or `{ ok: false, error }`. A credential id that
  *   is no stored passkey but the new passkey of a pending social recovery is
- *   {@link RECOVERY_PENDING_ERROR}; any other unknown id is `Unknown credential`.
+ *   {@link RECOVERY_PENDING_ERROR}. Without a pending recovery the credential
+ *   is read once more, so a recovery commit that landed between the two reads
+ *   signs in; an id still unknown then is `Unknown credential`.
  *   After the account is loaded, {@link isWrongAccount} is
  *   {@link WRONG_ACCOUNT_ERROR} and never issues a token.
  */
@@ -478,12 +480,17 @@ export async function finishPasskeyAuthentication(
   if (credentialId === null) {
     return { ok: false, error: 'Unknown credential' };
   }
-  const stored = await store.getPasskeyCredential(credentialId);
+  let stored = await store.getPasskeyCredential(credentialId);
   if (stored === undefined) {
     if ((await store.getPendingRecoveryByCredentialId(credentialId, now)) !== undefined) {
       return { ok: false, error: RECOVERY_PENDING_ERROR };
     }
-    return { ok: false, error: 'Unknown credential' };
+    // The recovery commit stores the credential and deletes the pending row
+    // in one transaction; a commit between the two reads shows up here.
+    stored = await store.getPasskeyCredential(credentialId);
+    if (stored === undefined) {
+      return { ok: false, error: 'Unknown credential' };
+    }
   }
   const account = await store.getAccount(stored.accountId);
   if (account === undefined) {
@@ -788,7 +795,9 @@ export async function finishPasskeySeed(
  * `via: 'begin'`), a drop goes on (log `account.recovery.dropped`), a keep is
  * `unavailable`. Then an unverified lookup is `unavailable`, and a key that no
  * longer holds the account's username is `operator` (log
- * `auth.passkey.recovery.fail`). Otherwise issues creation options as for a
+ * `auth.passkey.recovery.fail`), unless a commit landed during the lookup:
+ * when no account holds the key verified any more and a previous wallet has
+ * it, that is `done`. Otherwise issues creation options as for a
  * seed passkey (user id and name the account id, no `excludeCredentials`) and
  * stores a `recovery` challenge through `startRecoveryChallenge`, which also
  * consumes earlier ones and drops an unforwarded pending recovery.
@@ -872,6 +881,14 @@ export async function startPasskeyRecovery(
   const username =
     typeof account.username === 'string' ? normalizeUsername(account.username) : null;
   if (answer.kind === 'not_found' || username === null || answer.username !== username) {
+    // A commit (the transfer's claim or a settling lookup) may have landed
+    // while the lookup ran: the old key is then a previous wallet.
+    if (
+      (await store.getAccountByVerifiedSparkPubkey(input.sparkPubkey)) === undefined &&
+      (await store.getPreviousWalletBySparkPubkey(input.sparkPubkey)) !== undefined
+    ) {
+      return { ok: false, reason: 'done' };
+    }
     logEvent('auth.passkey.recovery.fail', {
       stage: 'begin',
       accountId: account.id,

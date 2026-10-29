@@ -2264,7 +2264,11 @@ not stored. A credential that is not stored but is the new passkey of a
 pending social recovery (forwarded, or not older than `CHALLENGE_TTL_MS`) is
 **409** `{ "error": "Recovery is not finished", "code": "recovery_pending" }`
 instead, so the app keeps that passkey: the recovery may still commit with it
-(through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). An account with `sessionRefused` is **403**
+(through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Without a
+pending recovery the credential is read once more: the commit stores the
+credential and deletes the pending recovery in one transaction, so a commit
+that lands between the two reads signs in instead of answering
+`Unknown credential`. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Same 403 `app_outdated` as register finish,
 checked first. While the login switch is closed, an account that is neither
@@ -2408,7 +2412,10 @@ In this order:
 8. Lookup not verified → `503` `Lightning address service is unavailable`.
    The key no longer holds the account's username (`"user not found"`, or
    another name) → **Response** `409`
-   `{ "error": "This account needs an operator to recover it", "code": "recovery_operator" }`.
+   `{ "error": "This account needs an operator to recover it", "code": "recovery_operator" }`,
+   unless a commit (the transfer's claim or a settling lookup) landed while
+   the lookup ran: when no account holds the key verified any more and a
+   previous wallet has it → `409` `recovery_done`.
 9. One locked step under the account row consumes the account's open
    `recovery` challenges, drops a pending recovery that was not forwarded, and
    stores the new `recovery` challenge. When the account no longer holds the

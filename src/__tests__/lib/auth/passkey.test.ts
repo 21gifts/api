@@ -1930,6 +1930,44 @@ describe('passkey recovery begin', () => {
     expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'operator' });
   });
 
+  it('answers done when a commit lands while the lookup runs', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({
+      recover: async () => {
+        expect(
+          await store.commitRecovery({
+            accountId: PINNED.accountId,
+            newSparkPubkey: PINNED.newSparkPubkey,
+            now: FORWARDED_AT,
+          }),
+        ).toBe('committed');
+        return lookupUserNotFound();
+      },
+    });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'done',
+    });
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    expect(warnEvents(warn).some((e) => e['error'] === 'operator')).toBe(false);
+  });
+
+  it('answers operator when the account left the key during the lookup without a commit', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const byKey = vi.spyOn(store, 'getAccountByVerifiedSparkPubkey');
+    const { fetchImpl } = scriptedLnurlFetch({
+      recover: () => {
+        byKey.mockResolvedValue(undefined);
+        return lookupUserNotFound();
+      },
+    });
+    expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'operator' });
+    expect(byKey).toHaveBeenCalledTimes(2);
+  });
+
   it('keeps a forwarded pending recovery inside the settling window', async () => {
     const store = new InMemoryAuthStore();
     await seedPinnedAccount(store);
@@ -2395,5 +2433,38 @@ describe('passkey authentication of a pending recovery passkey', () => {
         },
       ),
     ).toEqual({ ok: false, error: 'Unknown credential' });
+  });
+
+  it('signs in when the commit lands between the credential and the pending reads', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: T0 + 1_000 });
+    const at = T0 + 2_000;
+    const readPending = store.getPendingRecoveryByCredentialId.bind(store);
+    vi.spyOn(store, 'getPendingRecoveryByCredentialId').mockImplementationOnce(
+      async (credentialId, now) => {
+        expect(
+          await store.commitRecovery({
+            accountId: PINNED.accountId,
+            newSparkPubkey: PINNED.newSparkPubkey,
+            now,
+          }),
+        ).toBe('committed');
+        return readPending(credentialId, now);
+      },
+    );
+    const ceremony = new FakePasskeyCeremony();
+    const started = await startPasskeyAuthentication(store, ceremony, CONFIG, at);
+    const result = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      at,
+      ORIGIN,
+      started.challengeId,
+      { test: 'ok', id: PINNED.credentialId },
+    );
+    expect(result.ok && result.value.account.id).toBe(PINNED.accountId);
+    expect((await store.getPasskeyCredential(PINNED.credentialId))?.signCount).toBe(1);
   });
 });
