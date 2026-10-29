@@ -15,7 +15,7 @@ MEDIA_DIR="$(mktemp -d)" bun run dev    # → http://localhost:3000/healthz
 
 | Tool                       | Version | Purpose                                       |
 | -------------------------- | ------- | --------------------------------------------- |
-| [Bun](https://bun.sh)      | ≥ 1.3   | Runtime + package manager + test runner       |
+| [Bun](https://bun.sh)      | ≥ 1.4.4 | Runtime + package manager + test runner       |
 | Node.js (for tooling only) | ≥ 22    | Some dev-tools (TypeScript, ESLint) expect it |
 
 Install Bun:
