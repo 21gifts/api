@@ -863,7 +863,7 @@ async function loanRow(
     }
     // Sats with no account are not repaid, as in the schedule.
     const named = owed.filter((payer) => payer.accountId !== '');
-    // The rate is read only when there is a debt to price. A failing loader is the same 503 as a missing rate.
+    // The rate is read only when there is a debt to price. A failing loader is 503; a missing rate leaves sats null.
     const price = named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => null);
     if (price === null) {
       return 'unavailable';
@@ -899,7 +899,7 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the rate only now: a repaid loan is left out without it. A failing loader is the same 503 as a missing rate.
+  // Read the rate only now: a repaid loan is left out without it. A failing loader is 503; a missing rate leaves sats null.
   const price = await sharePricer(deps, row).catch(() => null);
   if (price === null) {
     return 'unavailable';
