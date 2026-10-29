@@ -507,11 +507,13 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         ) {
           return c.json(NOT_FOUND, 404);
         }
+        // Read after the body and the checks: the settle window counts from
+        // `forwardedAt`, which must not lie before the upstream send.
         const pending = await deps.auth.markRecoveryForwarded({
           newSparkPubkey: toPubkey,
           oldSparkPubkey: read.claim.fromPubkey,
           username: read.claim.username,
-          now,
+          now: deps.now(),
         });
         if (pending === undefined) {
           return c.json(NOT_FOUND, 404);

@@ -1024,7 +1024,56 @@ describe('lnurlServerRoutes', () => {
       await seedPinnedAccount(forwarded);
       await stagePendingRecovery(forwarded, { createdAt: NOW, forwardedAt: NOW });
       expect((await transfer(mount(forwarded, fetchImpl), signedBody())).status).toBe(404);
+
+      // The account left the old verified key after finish: on another
+      // verified key, or back on the old key but unverified.
+      for (const wallet of [
+        { pubkey: PUBKEY, verified: true },
+        { pubkey: PINNED.oldSparkPubkey, verified: false },
+      ]) {
+        const moved = await pendingStore();
+        await moved.deleteAccount(PINNED.accountId);
+        await seedWallet(moved, { id: PINNED.accountId, username: RECOVERY_USERNAME, ...wallet });
+        expect((await transfer(mount(moved, fetchImpl), signedBody())).status).toBe(404);
+        expect((await moved.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBeNull();
+      }
       expect(calls).toEqual([]);
+    });
+
+    it('stamps forwardedAt with the time after the body was read', async () => {
+      const store = await pendingStore();
+      let clock = NOW;
+      const bytes = new TextEncoder().encode(JSON.stringify(signedBody()));
+      // highWaterMark 0: the stream is pulled only when the route reads the body.
+      const slowUpload = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            clock = NOW + 4_000;
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      let seen: number | null | undefined;
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: async () => {
+          seen = (await store.getPendingRecovery(PINNED.accountId, clock))?.forwardedAt;
+          return new Response('"signature has already been used"', { status: 409 });
+        },
+      });
+      const request = new Request(`http://localhost${TRANSFER_PATH}`, {
+        method: 'POST',
+        body: slowUpload,
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+      const res = await mount(store, fetchImpl, () => clock).request(request);
+      expect(res.status).toBe(409);
+      expect(calls).toHaveLength(1);
+      expect(seen).toBe(NOW + 4_000);
+      expect((await store.getPendingRecovery(PINNED.accountId, clock))?.forwardedAt).toBe(
+        NOW + 4_000,
+      );
     });
 
     it('answers 409 when the upstream accepted but the commit did not land', async () => {

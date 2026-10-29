@@ -11,9 +11,10 @@ import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
  * Produced with the SDK's Node.js build (`@breeztech/breez-sdk-spark` 0.26.0,
  * `nodejs/breez_sdk_spark_wasm.js`) by
  * `defaultExternalSigners(mnemonic, null, 'mainnet').sparkSigner`:
- * `getIdentityPublicKey()` for the keys and `signMessage(<UTF-8 bytes of the
- * message>)` for the signature. Why this equals `BreezSdk.signMessage({ message, compact: true })` of a
- * connected wallet: both run the same chain. `signMessage` →
+ * `getIdentityPublicKey()` for the keys and `signMessage(bytes)` over the
+ * UTF-8 bytes of the message for the signature. Why this equals
+ * `BreezSdk.signMessage({ message, compact: true })` of a connected wallet:
+ * both run the same chain. `signMessage` →
  * `SparkWallet::sign_message` → `SparkSignerAdapter::sign_message` →
  * `DefaultSigner::sign_message_ecdsa` (identity path) over `sha256(message)`,
  * then `serialize_compact` (`crates/breez-sdk/core/src/sdk/api.rs:202-222`;
