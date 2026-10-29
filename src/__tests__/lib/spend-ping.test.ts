@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DailyRosterDocument } from '@/lib/daily-roster';
+import type { Account } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import {
   DAILY_ROSTER_DEFAULT_AMOUNT_USD,
   InMemoryDailyRosterStore,
@@ -10,12 +11,48 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
 import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
+import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';
 const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
+
+const LNURL: LnurlServerConfig = {
+  baseUrl: 'http://lnurl.test',
+  publicBaseUrl: 'https://example.com',
+  host: 'example.com',
+};
+
+/** Account id of each verified-wallet username in these tests. */
+const ACCOUNT_IDS: Record<string, string> = {
+  ada: '11111111-1111-4111-8111-111111111111',
+  other: '22222222-2222-4222-8222-222222222222',
+};
+
+/** Accounts that receive on `<username>@example.com`. */
+const LOOKUP = {
+  accounts: {
+    getAccountByUsername: async (username: string): Promise<Account | undefined> => {
+      const id = ACCOUNT_IDS[username];
+      return id === undefined
+        ? undefined
+        : ({ id, username, sparkPubkey: WALLET_PUBKEY, sparkPubkeyVerifiedAt: 1 } as Account);
+    },
+  },
+  lnurlServer: LNURL,
+};
+
+/** Roster rows named by the address their account receives on. */
+type AddressRows = { address: string; amountUsd: number }[];
+
+function accountRows(rows: AddressRows = []): { accountId: string; amountUsd: number }[] {
+  return rows.map((row) => ({
+    accountId: ACCOUNT_IDS[row.address.toLowerCase().split('@')[0] ?? ''] ?? row.address,
+    amountUsd: row.amountUsd,
+  }));
+}
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -30,14 +67,22 @@ function abortError(): Error {
   return err;
 }
 
-function writtenStore(partial: Partial<DailyRosterDocument> = {}): InMemoryDailyRosterStore {
+function writtenStore(
+  partial: {
+    comment?: string;
+    paymentsEnabled?: boolean;
+    moderatorPaymentsEnabled?: boolean;
+    recipients?: AddressRows;
+    moderators?: AddressRows;
+  } = {},
+): InMemoryDailyRosterStore {
   return new InMemoryDailyRosterStore({
     comment: partial.comment ?? '',
     paymentsEnabled: partial.paymentsEnabled ?? true,
     moderatorPaymentsEnabled: partial.moderatorPaymentsEnabled ?? true,
     defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-    recipients: partial.recipients ?? [],
-    moderators: partial.moderators ?? [],
+    recipients: accountRows(partial.recipients),
+    moderators: accountRows(partial.moderators),
   });
 }
 
@@ -104,7 +149,10 @@ describe('resolveSpendPing', () => {
     const ping = resolveSpendPing(
       { SPEND_URL: ' https://spend.example/// ', SPEND_API_TOKEN: ` ${TOKEN} ` },
       recording,
-      { rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }) },
+      {
+        ...LOOKUP,
+        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+      },
     );
     expect(ping).toBeInstanceOf(HttpSpendPing);
     await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
@@ -114,6 +162,7 @@ describe('resolveSpendPing', () => {
   it('accepts an options object that omits the gift ledger and the clock', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -128,6 +177,7 @@ describe('resolveSpendPing', () => {
   it('uses the current clock when the gift ledger is set and now is omitted', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -151,6 +201,7 @@ describe('resolveSpendPing', () => {
       kind: 'welcome',
     };
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -200,6 +251,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl: pingFetch({ pingStatus }),
+        ...LOOKUP,
         rosterStore: writtenStore(
           listed ? { recipients: [{ address: ADDRESS, amountUsd: 2 }] } : {},
         ),
@@ -219,6 +271,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -240,6 +293,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
@@ -252,6 +306,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(timeoutSpy).toHaveBeenCalledWith(5000);
@@ -259,6 +314,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
       timeoutMs: 1_000,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
@@ -273,6 +329,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -293,6 +350,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -307,6 +365,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -319,10 +378,13 @@ describe('HttpSpendPing', () => {
     const rosterStore = writtenStore();
     vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('network down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
-        ADDRESS,
-        MESSAGE_ID,
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
@@ -338,10 +400,13 @@ describe('HttpSpendPing', () => {
     const rosterStore = new InMemoryDailyRosterStore();
     vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
-        ADDRESS,
-        MESSAGE_ID,
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
@@ -358,6 +423,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -383,6 +449,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(seenInit?.method).toBe('POST');
@@ -410,6 +477,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -430,6 +498,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -449,6 +518,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
         moderatorPaymentsEnabled: false,
@@ -471,6 +541,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: 'other@example.com', amountUsd: 3 }],
       }),
@@ -497,6 +568,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: 'Ada@Example.com', amountUsd: 2 }],
@@ -529,6 +601,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
@@ -556,6 +629,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -582,6 +656,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -614,6 +689,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'trial');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -634,6 +710,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({ comment: 'thanks' }),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', grantStatus);
       expect(fetchImpl).not.toHaveBeenCalled();
@@ -662,6 +739,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -685,6 +763,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks', paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -711,6 +790,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -749,6 +829,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -780,6 +861,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -813,6 +895,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
       gifts,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
@@ -851,6 +934,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -900,6 +984,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -934,6 +1019,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -956,6 +1042,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -973,6 +1060,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -991,6 +1079,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1009,6 +1098,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1029,6 +1119,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1052,6 +1143,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1091,6 +1183,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1118,6 +1211,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1140,6 +1234,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1161,6 +1256,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1181,6 +1277,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1201,6 +1298,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1221,6 +1319,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1237,6 +1336,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1253,6 +1353,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1271,6 +1372,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1289,6 +1391,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1307,6 +1410,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1323,6 +1427,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1341,6 +1446,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1355,11 +1461,13 @@ describe('HttpSpendPing', () => {
     const rosterStore = new InMemoryDailyRosterStore();
     vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).pingOnDay(
-        ADDRESS,
-        MESSAGE_ID,
-        '2026-09-19',
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
     ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
@@ -1381,6 +1489,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1394,5 +1503,54 @@ describe('HttpSpendPing', () => {
         (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
+  });
+});
+
+describe('HttpSpendPing stored rows by account', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('matches no stored row without an account lookup and pays the default', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let seenInit: RequestInit | undefined;
+    const ping = resolveSpendPing(
+      { SPEND_URL, SPEND_API_TOKEN: TOKEN },
+      pingFetch({ onCall: (_url, init) => (seenInit = init) }),
+      { rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }) },
+    );
+    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(JSON.parse(String(seenInit?.body))).toMatchObject({ amountUsd: 1 });
+  });
+
+  it('matches no stored row for an address on another host', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    await new HttpSpendPing({
+      ...LOOKUP,
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 3 }] }),
+    }).ping('ada@elsewhere.example', MESSAGE_ID, 'moderator');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['reason'] === 'not_listed')).toBe(true);
+  });
+
+  it('logs spend.ping.failed and does not POST when the account lookup throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const ping = new HttpSpendPing({
+      accounts: { getAccountByUsername: () => Promise.reject(new Error('db down')) },
+      lnurlServer: LNURL,
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore(),
+    });
+    await ping.ping(ADDRESS, MESSAGE_ID);
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-10-01')).toEqual({ status: 'failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'spend.ping.failed')).toHaveLength(2);
   });
 });

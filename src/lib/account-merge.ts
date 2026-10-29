@@ -69,11 +69,13 @@ function quoteIdentifier(identifier: string): string {
  * the order `lockPaymentsForProofs` takes them in. When both accounts have a
  * pending charge, it then deletes the merged account's charge's
  * `pos_charge_invoice` rows and the charge; the catalog update moves the
- * rest of the merged account's charges and its shop payments. Before the
- * passkey challenges and the catalog-listed rows move, it deletes the merged
- * account's `recovery_share`, `pending_recovery`, and `previous_wallet` rows
- * and its `recovery` passkey challenges: they belong to the merged account's
- * wallets, which go with its row.
+ * rest of the merged account's charges and its shop payments. A daily
+ * roster row of the merged account in a bucket where the surviving account
+ * is listed too is deleted; the catalog update moves its other roster rows.
+ * Before the passkey challenges and the catalog-listed rows move, it deletes
+ * the merged account's `recovery_share`, `pending_recovery`, and
+ * `previous_wallet` rows and its `recovery` passkey challenges: they belong
+ * to the merged account's wallets, which go with its row.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -435,6 +437,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       `DELETE FROM account_image AS src
        USING account_image AS dst
        WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.slot = src.slot`,
+      accountParams,
+    );
+    await tx.query(
+      `DELETE FROM daily_roster_entry AS src
+       USING daily_roster_entry AS dst
+       WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.bucket = src.bucket`,
       accountParams,
     );
     // Every transaction that writes both `pos_charge` and `shop_payment` rows

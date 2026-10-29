@@ -11,12 +11,18 @@ export type SpendGrantStatus = 'none' | 'pending' | 'trial' | 'admitted' | 'reje
 /**
  * Decide whether this ping carries a USD amount and comment.
  *
- * @param input - Recipient address, ping kind, live roster JSON,
- *   optional daily grant status, and optional same-UTC-day welcome flag.
+ * A roster row with an `accountId` (the stored roster) is matched by
+ * `input.accountId`; a row with only an `address` (the live roster spend
+ * serves before one is stored) by `input.address`.
+ *
+ * @param input - Recipient address, the recipient's account id when known,
+ *   ping kind, roster JSON, optional daily grant status, and optional
+ *   same-UTC-day welcome flag.
  * @returns The amount and comment to POST, or a skip reason.
  */
 export function decideSpendInstruction(input: {
   address: string;
+  accountId?: string;
   kind: 'daily' | 'moderator' | 'welcome';
   roster: unknown;
   grantStatus?: SpendGrantStatus;
@@ -29,10 +35,7 @@ export function decideSpendInstruction(input: {
     if (record !== undefined && record['paymentsEnabled'] === false) {
       return { skip: 'payments_disabled' };
     }
-    const row = findCountableRow(
-      record === undefined ? undefined : record['recipients'],
-      input.address,
-    );
+    const row = findCountableRow(record === undefined ? undefined : record['recipients'], input);
     let decided: { amountUsd: number; comment: string } | { skip: 'not_listed' | 'undecided' };
     if (row !== undefined) {
       decided = { amountUsd: row.amountUsd, comment: rosterComment(record) };
@@ -72,7 +75,7 @@ export function decideSpendInstruction(input: {
   if (record['moderatorPaymentsEnabled'] === false) {
     return { skip: 'payments_disabled' };
   }
-  const row = findCountableRow(record['moderators'], input.address);
+  const row = findCountableRow(record['moderators'], input);
   if (row === undefined) {
     return { skip: 'not_listed' };
   }
@@ -83,13 +86,14 @@ export function decideSpendInstruction(input: {
  * Decide whether the spend worker should pay a daily gift from already-known
  * facts: passkey, post, media, eligibility, and the live roster.
  *
- * @param input - Recipient address, passkey / post / media / funding facts,
- *   live roster JSON, optional daily grant status, and optional same-UTC-day
- *   welcome flag.
+ * @param input - Recipient address, the recipient's account id when known,
+ *   passkey / post / media / funding facts, roster JSON, optional daily grant
+ *   status, and optional same-UTC-day welcome flag.
  * @returns A skip reason, or the amount, comment, and optional message id.
  */
 export function decideCliDailyInstruction(input: {
   address: string;
+  accountId?: string;
   hasPasskey: boolean;
   hasPosted: boolean;
   hasMedia: boolean;
@@ -126,6 +130,7 @@ export function decideCliDailyInstruction(input: {
   }
   const decided = decideSpendInstruction({
     address: input.address,
+    ...(input.accountId === undefined ? {} : { accountId: input.accountId }),
     kind: 'daily',
     roster: input.roster,
     ...(input.grantStatus === undefined ? {} : { grantStatus: input.grantStatus }),
@@ -222,27 +227,31 @@ function rosterComment(record: Record<string, unknown> | undefined): string {
 
 function findCountableRow(
   value: unknown,
-  address: string,
-): { address: string; amountUsd: number } | undefined {
+  recipient: { address: string; accountId?: string },
+): { amountUsd: number } | undefined {
   if (!Array.isArray(value)) {
     return undefined;
   }
-  const needle = address.toLowerCase();
+  const needle = recipient.address.toLowerCase();
   for (const item of value) {
     if (typeof item !== 'object' || item === null) {
       continue;
     }
     const row = item as Record<string, unknown>;
-    const rowAddress = row['address'];
     const amountUsd = row['amountUsd'];
-    if (typeof rowAddress !== 'string') {
-      continue;
-    }
     if (typeof amountUsd !== 'number' || !Number.isFinite(amountUsd) || amountUsd <= 0) {
       continue;
     }
-    if (rowAddress.toLowerCase() === needle) {
-      return { address: rowAddress, amountUsd };
+    const rowAccountId = row['accountId'];
+    if (typeof rowAccountId === 'string') {
+      if (rowAccountId === recipient.accountId) {
+        return { amountUsd };
+      }
+      continue;
+    }
+    const rowAddress = row['address'];
+    if (typeof rowAddress === 'string' && rowAddress.toLowerCase() === needle) {
+      return { amountUsd };
     }
   }
   return undefined;

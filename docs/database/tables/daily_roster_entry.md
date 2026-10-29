@@ -6,20 +6,29 @@ Source: [src/lib/daily-roster-store.ts](../../../src/lib/daily-roster-store.ts)
 
 ## Columns
 
-| Column       | Kind                                  | Database type      | Nullable | Default        | References |
-| ------------ | ------------------------------------- | ------------------ | -------- | -------------- | ---------- |
-| `id`         | Integer (primary key, auto-increment) | `integer`          | No       | auto-increment | –          |
-| `address`    | Free text                             | `text`             | No       | –              | –          |
-| `amount_usd` | Decimal                               | `double precision` | No       | –              | –          |
-| `bucket`     | ENUM                                  | `text`             | No       | –              | –          |
+| Column       | Kind                                  | Database type      | Nullable | Default        | References                   |
+| ------------ | ------------------------------------- | ------------------ | -------- | -------------- | ---------------------------- |
+| `id`         | Integer (primary key, auto-increment) | `integer`          | No       | auto-increment | –                            |
+| `address`    | Free text                             | `text`             | Yes      | –              | –                            |
+| `amount_usd` | Decimal                               | `double precision` | No       | –              | –                            |
+| `bucket`     | ENUM                                  | `text`             | No       | –              | –                            |
+| `account_id` | UUID (foreign key)                    | `uuid`             | Yes      | –              | [`account`.`id`](account.md) |
 
 ## Indexes
 
-| Columns             | Unique | Where | Definition                                                                                                             |
-| ------------------- | ------ | ----- | ---------------------------------------------------------------------------------------------------------------------- |
-| `address`, `bucket` | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_address_bucket_key ON public.daily_roster_entry USING btree (address, bucket)` |
-| `id`                | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_pkey ON public.daily_roster_entry USING btree (id)`                            |
+| Columns                | Unique | Where | Definition                                                                                                                 |
+| ---------------------- | ------ | ----- | -------------------------------------------------------------------------------------------------------------------------- |
+| `account_id`, `bucket` | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_account_bucket_uidx ON public.daily_roster_entry USING btree (account_id, bucket)` |
+| `address`, `bucket`    | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_address_bucket_key ON public.daily_roster_entry USING btree (address, bucket)`     |
+| `id`                   | Yes    | –     | `CREATE UNIQUE INDEX daily_roster_entry_pkey ON public.daily_roster_entry USING btree (id)`                                |
 
 ## Referenced by
 
 None.
+
+## Relations
+
+```mermaid
+erDiagram
+    "daily_roster_entry" }o..o| "account" : "account_id"
+```

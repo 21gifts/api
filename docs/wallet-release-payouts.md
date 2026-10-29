@@ -14,8 +14,8 @@ what must be true on release day for that to hold.
   not set up social recovery once it is on `main`. All 58 people paid from
   2026-10-13 to 2026-10-15 keep being paid without a gap on every day they are
   eligible for a grant, when these six conditions hold:
-  1. The API release includes the roster move at boot, so listed amounts and
-     moderator stipends keep matching.
+  1. The API release includes the roster account link at boot, so listed
+     amounts and moderator stipends keep matching.
   2. The API and the app go live together.
   3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
      `NEXT_PUBLIC_BREEZ_API_KEY` (app) set. Once social recovery is on
@@ -57,7 +57,8 @@ The rest of this document is the evidence.
   of their repository. After the `main` deploy of both, the switch is
   complete.
 - No manual data step is part of the release. Anything that has to change in
-  data changes at boot (see [Roster move at boot](#roster-move-at-boot)).
+  data changes at boot (see
+  [Roster account link at boot](#roster-account-link-at-boot)).
   The one manual step is a setting: when social recovery reaches `main` in
   this release, an operator sets `RECOVERY_SHARE_KEK` in production before
   the `develop → main` merge, because the API with social recovery does not
@@ -71,18 +72,20 @@ A daily payout or stipend is not paid on a timer. It follows the member's own fo
 | ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Daily grant       | The member publishes a top-level forum post with a photo or video (`POST /messages`), or a top-level note that is paid through a zap (no media check on that path). The API pings spend with the member's receiving address. When staff move a `pending` grant to `trial` or `admitted`, the API pings spend for the member's newest live top-level media post of that UTC day (for a member who was still `pending` when posting, this is the first ping); a move from an active `trial` to `admitted` does not ping. The first recovery share of the current wallet (`PUT /me/recovery-share`) sends the same ping.      | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/nostr/zap-index.ts` (zap-paid note), `src/routes/funding.ts` (trial and admit ping), `src/routes/me.ts` (first recovery share), `src/lib/funding-ping.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
 | Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                                                                                                                                                                         |
-| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                                                                                                                      |
+| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster row's payout address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                            | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                                                                                                                      |
 | Welcome gift      | Once per `verified` account: when it has a live top-level photo or video (including About me) and no welcome yet, the API pings spend with `kind: "welcome"` on a new top-level post, an About-me save, a verification by a moderator, at boot and every 15 minutes. A platform `Welcome` reply under one of its notes, or a welcome gift recorded under its username after its wallet was verified, counts as received. Spend pays 1 USD while `payments_enabled` is on. A daily payout on the same UTC day is then skipped (`welcome_paid`) unless the roster comment is `Welcome`; moderator stipends are not affected. | `src/lib/welcome-media.ts`, `src/routes/messages.ts`, `src/routes/me.ts`, `src/routes/trust.ts`, `src/index.ts` (`welcomeCatchUp`), `src/lib/spend-instruction.ts`                                                                                                           |
 | Operator replay   | Not a member trigger: an operator with `DEBUG_TOKEN` books the daily ping for a live top-level media post on that post's UTC day (`POST /debug/spend-ping`).                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `src/routes/debug-payments.ts` (`pingOnDay`)                                                                                                                                                                                                                                 |
 
-The amount comes from the daily roster when the address is listed there, and
+The amount comes from the daily roster when the account is listed there, and
 from `DAILY_ROSTER_DEFAULT_AMOUNT_USD` (1 USD) for an unlisted admitted or
 trial grant. Moderator stipends are paid only to listed moderator rows.
 
 The API roster (`daily_roster`, `daily_roster_entry`) is the master copy.
 Spend's `POST /funding/daily-roster/document` import writes only when the
 roster has never been written; after that it returns the stored document, and
-spend pays the addresses it returns. Spend's own local list (what
+spend pays the addresses it returns. Each row's address is the account's
+receiving address at that moment (`<username>@<host>` once its wallet is
+verified, `null` before). Spend's own local list (what
 `gifts-debug spend` prints) is not used for payment decisions once the API
 roster exists.
 
@@ -202,7 +205,7 @@ sends their payouts to `<username>@21.gifts`.
 
 Spend's live list on 2026-10-16 (`gifts-debug spend --raw`): 16 recipient rows
 and 6 moderator rows, every address on `walletofsatoshi.com`. The API's own rows
-(`gifts-debug db daily_roster_entry`), which the roster move works on (see
+(`gifts-debug db daily_roster_entry`), which the account link works on (see
 [How a payout is triggered](#how-a-payout-is-triggered)), held exactly the same
 22 addresses, amounts and buckets on 2026-10-16. In `daily_roster` the roster
 comment is not `Welcome`, and both `payments_enabled` (daily payouts and the
@@ -246,45 +249,40 @@ For the member with `wallet_required = false`, a blocking passkey renew dialog
 appears. Confirming it runs the passkey seed ceremony, returns
 `walletRequired: true`, and the background setup above follows.
 
-## Roster move at boot
+## Roster account link at boot
 
-Without a data change, every roster row would still hold a Wallet of Satoshi
-address. Pings and the daily run look rows up by the receiving address, so no
-row would match: listed recipients would fall back to the 1 USD default, and
-moderators would get no stipend.
+Every roster row held a Wallet of Satoshi address. Rows are now keyed by
+account (`daily_roster_entry.account_id`, one row per account and bucket), and
+the payout address is not stored: whoever reads a row for a payout resolves
+it from the account through `receivingAddress`, so it is `<username>@<host>`
+once the wallet is verified, also when that happens after the release, and
+no address before.
 
-`moveDailyRosterToWalletAddresses` (`src/lib/daily-roster-store.ts`) runs in
+`linkDailyRosterAccounts` (`src/lib/daily-roster-store.ts`) runs in
 `openBootStores` after `migrateDbChangeSchema` and `repairGiftKind`, so
-`db_change` records every DELETE and UPDATE it makes, when
-`resolveLnurlServerConfig` resolves:
+`db_change` records every row it links:
 
-- A row on the host (exactly one `@`, the part after it equals the host)
-  keeps its address, trimmed and lower-cased.
-- A row whose address equals an account's legacy `lightning_address`
-  (trimmed, case-insensitive) becomes `<username>@<host>`, the same string
-  `receivingAddress` returns. The amount and bucket stay.
-- Every other row is deleted (no account, or no username).
-- Per bucket and target address one row stays: the one already holding that
-  exact address, else a row on the host, else the oldest. The others are
-  deleted, so no row is ever rewritten to an address another row holds.
-- It is one SQL statement (`DAILY_ROSTER_WALLET_MOVE_SQL`), so it applies
-  completely or not at all, and all its `db_change` rows share one
-  transaction.
-- A second boot changes nothing. The log line `daily_roster.wallet_move`
-  carries the two counts only.
-- Until the wallet is verified, a member may still change the username.
-  With a database, `POST /me/username` writes that change and moves the
-  member's roster rows from `<old>@<host>` to `<new>@<host>` in one
-  transaction under the account row lock (a concurrent rename waits; a
-  failure changes nothing and the request fails with 500). Without a
-  database (in-memory) they are two steps: one atomic username write that
-  reports the replaced username, then `renameAddress` as a second step so
-  the fixed amount follows the new receiving address; if that second step
-  fails, the request fails with 500 and `daily_roster.address.rename_failed`
-  names the old and the new username so an operator can rename the roster row by hand.
+- A row without an account whose address equals an account's legacy
+  `lightning_address` (trimmed, case-insensitive) is linked to that account.
+  With the LNURL server configured, an address `<username>@<host>` links to
+  that username's account too.
+- Per account and bucket one row is linked (the oldest); a bucket that
+  already holds the account links none.
+- Amounts, buckets, and addresses do not change, and no row is deleted. A row
+  that matches no account keeps no account: it is in no document and is never
+  paid.
+- It is one SQL statement (`DAILY_ROSTER_ACCOUNT_LINK_SQL`). A second boot
+  changes nothing. The log line `daily_roster.accounts_linked` carries the
+  two counts only.
+- `GET /funding/daily-roster/links` (operator token,
+  `gifts-debug daily-roster-links`) lists every stored row count, the linked
+  count, the rows without an account by address and amount, and the count and
+  USD sums per bucket over all rows and over the linked rows.
+- A username change before the wallet is verified needs no roster change,
+  because rows name the account.
 
-On the roster of 2026-10-16 this rewrites 15 recipient rows and 6 moderator
-rows and deletes 1 recipient row.
+On the roster of 2026-10-16 this links 15 recipient rows and 6 moderator rows
+and leaves 1 recipient row without an account.
 
 ## Result
 
@@ -322,7 +320,7 @@ After the `main` release of both changes, every one of the 58 people paid
 from 2026-10-13 to 2026-10-15 keeps being paid without a gap on every day
 they are eligible, on the in-app wallet only, when all of these hold:
 
-1. The API release includes the roster move at boot.
+1. The API release includes the roster account link at boot.
 2. The API and the app go live together. The new API with the old app would
    block posting for everyone, because the old app cannot create a wallet.
 3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` set for the API and
@@ -334,8 +332,8 @@ they are eligible, on the in-app wallet only, when all of these hold:
 4. The API roster (`daily_roster_entry`) holds the same addresses, amounts and
    buckets as spend's live list in [Daily roster](#daily-roster). Every legacy
    row then belongs to an account with a username, except the one recipient
-   without an account, and the move keeps every listed amount. A row that is
-   only in the API roster and belongs to no account would be deleted. Both payment switches in `daily_roster` (`payments_enabled`, `moderator_payments_enabled`) are on, and its comment is not `Welcome`, which would let a daily payout through on a welcome day and mark payments as welcome payments.
+   without an account, and the link keeps every listed amount. A row that
+   belongs to no account stays stored without one and is never paid. Both payment switches in `daily_roster` (`payments_enabled`, `moderator_payments_enabled`) are on, and its comment is not `Welcome`, which would let a daily payout through on a welcome day and mark payments as welcome payments.
 5. Production runs the released heads: in each repository every
    `deploy-prd.yaml` run has status `completed`, and the run that finished
    last, whatever its result, succeeded and is on the `main` merge commit of
@@ -373,7 +371,10 @@ Read the API roster with `gifts-debug db daily_roster_entry` and compare it
 with `gifts-debug spend --raw`: same addresses, amounts and buckets, and every
 non-host address equal to an account's `lightning_address` with a username,
 except rows that belong to no account (on 2026-10-16 one recipient), which the
-roster move deletes. Read `gifts-debug db daily_roster`: both `payments_enabled` and `moderator_payments_enabled` must be `true`, and `comment` must not be `Welcome`.
+account link leaves without an account. After the deploy, read
+`gifts-debug daily-roster-links`: `linked` equals the old row count minus the
+rows without an account, `unlinked` lists exactly those rows, and per bucket
+`linkedUsd` equals `totalUsd` minus their amounts. Read `gifts-debug db daily_roster`: both `payments_enabled` and `moderator_payments_enabled` must be `true`, and `comment` must not be `Welcome`.
 Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
 (role not `basis`, and `admitted`, or `trial` for that UTC day). Once social

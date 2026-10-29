@@ -19,7 +19,8 @@
 #               GET /debug/dump, GET /debug/dump/:table,
 #               GET /funding/goal, GET /funding/payout-days,
 #               GET /funding/applications, GET /funding/applications/:accountId,
-#               GET /funding/daily-roster, GET /trust/proposals,
+#               GET /funding/daily-roster, GET /funding/daily-roster/links,
+#               GET /trust/proposals,
 #               GET /members/:accountId/activity, GET /messages/hidden,
 #               GET /messages/:id/edits,
 #               GET/PUT /debug/logins, POST /debug/logins/allowlist,
@@ -59,6 +60,7 @@
 #   gifts-debug applications [account-id]
 #                                    # pending grant applications, or one application JSON
 #   gifts-debug daily-roster         # API daily roster JSON (master copy, with identities)
+#   gifts-debug daily-roster-links   # roster rows linked to an account, rows without one, USD sums
 #   gifts-debug trust-proposals      # open moderator proposals JSON
 #   gifts-debug member-activity <account-id>
 #                                    # one member's donation activity JSON
@@ -841,6 +843,7 @@ case "${1:-}" in
   payout-days) cmd_get_json "/funding/payout-days" ;;
   applications) shift; cmd_applications "$@" ;;
   daily-roster) cmd_get_json "/funding/daily-roster" ;;
+  daily-roster-links) cmd_get_json "/funding/daily-roster/links" ;;
   trust-proposals) cmd_get_json "/trust/proposals" ;;
   member-activity) shift; cmd_member_activity "$@" ;;
   hidden) cmd_get_json "/messages/hidden" ;;

@@ -4,10 +4,13 @@
  * Missing env skips the ping; the process still boots. Failures never throw.
  */
 
+import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
 import type { GiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
+import { accountByReceivingAddress } from '@/lib/receiving-address';
 import {
   decideSpendInstruction,
   welcomeGiftPaidOnUtcDay,
@@ -89,7 +92,9 @@ export class NoopSpendPing implements SpendPing {
 /**
  * Until the roster store has been written, `GET {spendUrl}/daily-roster`
  * and decide from that JSON without importing it. After a roster has been
- * stored, read only the store (no GET). Then POST `{spendUrl}/ping` with
+ * stored, read only the store (no GET); its rows are matched by the account
+ * that receives on the pinged address (`accountByReceivingAddress`), so an
+ * address no verified wallet receives on matches no stored row. Then POST `{spendUrl}/ping` with
  * Bearer `SPEND_API_TOKEN`. A decided amount adds `amountUsd` and
  * `comment` to the ping JSON. Skipped reasons `payments_disabled`,
  * `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped`
@@ -109,11 +114,14 @@ export class HttpSpendPing implements SpendPing {
   readonly #rosterStore: DailyRosterStore;
   readonly #gifts: Pick<GiftStore, 'listOutbound'> | undefined;
   readonly #now: () => number;
+  readonly #accounts: Pick<AuthStore, 'getAccountByUsername'> | undefined;
+  readonly #lnurlServer: LnurlServerConfig | undefined;
 
   /**
    * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
    *   fetch, roster store, optional timeout (default 5000 ms), optional gift
-   *   ledger, optional clock.
+   *   ledger, optional clock, optional account lookup and LNURL server config
+   *   (both omitted → no stored row matches).
    */
   constructor(opts: {
     spendUrl: string;
@@ -123,6 +131,8 @@ export class HttpSpendPing implements SpendPing {
     timeoutMs?: number;
     gifts?: Pick<GiftStore, 'listOutbound'>;
     now?: () => number;
+    accounts?: Pick<AuthStore, 'getAccountByUsername'>;
+    lnurlServer?: LnurlServerConfig;
   }) {
     this.#spendUrl = opts.spendUrl;
     this.#token = opts.token;
@@ -131,6 +141,8 @@ export class HttpSpendPing implements SpendPing {
     this.#rosterStore = opts.rosterStore;
     this.#gifts = opts.gifts;
     this.#now = opts.now ?? (() => Date.now());
+    this.#accounts = opts.accounts;
+    this.#lnurlServer = opts.lnurlServer;
   }
 
   /**
@@ -159,6 +171,10 @@ export class HttpSpendPing implements SpendPing {
     if (roster === undefined) {
       return;
     }
+    const accountId = await this.#recipientId(address);
+    if (accountId === 'failed') {
+      return;
+    }
     let welcomePaidOnUtcDay: boolean | undefined;
     if (resolvedKind === 'daily') {
       const welcomePaid = await this.#welcomePaid(
@@ -172,6 +188,7 @@ export class HttpSpendPing implements SpendPing {
     }
     const decision = this.#instructionFor(
       address,
+      accountId,
       resolvedKind,
       roster,
       grantStatus,
@@ -227,11 +244,22 @@ export class HttpSpendPing implements SpendPing {
     if (roster === undefined) {
       return { status: 'failed' };
     }
+    const accountId = await this.#recipientId(address);
+    if (accountId === 'failed') {
+      return { status: 'failed' };
+    }
     const welcomePaid = await this.#welcomePaid(address, day);
     if (welcomePaid === 'failed') {
       return { status: 'failed' };
     }
-    const decision = this.#instructionFor(address, 'daily', roster, grantStatus, welcomePaid);
+    const decision = this.#instructionFor(
+      address,
+      accountId,
+      'daily',
+      roster,
+      grantStatus,
+      welcomePaid,
+    );
     if ('skip' in decision) {
       logEvent('spend.ping.skipped', { address, reason: decision.skip });
       return { status: 'skipped', reason: decision.skip };
@@ -342,8 +370,22 @@ export class HttpSpendPing implements SpendPing {
     }
   }
 
+  async #recipientId(address: string): Promise<string | undefined | 'failed'> {
+    if (this.#accounts === undefined) {
+      return undefined;
+    }
+    try {
+      return (await accountByReceivingAddress(this.#accounts, address, this.#lnurlServer))?.account
+        .id;
+    } catch {
+      logEvent('spend.ping.failed', { address });
+      return 'failed';
+    }
+  }
+
   #instructionFor(
     address: string,
+    accountId: string | undefined,
     kind: 'daily' | 'moderator' | 'welcome',
     roster: unknown,
     grantStatus: SpendGrantStatus | undefined,
@@ -351,6 +393,7 @@ export class HttpSpendPing implements SpendPing {
   ): ReturnType<typeof decideSpendInstruction> {
     return decideSpendInstruction({
       address,
+      ...(accountId === undefined ? {} : { accountId }),
       kind,
       roster,
       ...(kind === 'daily' && grantStatus !== undefined ? { grantStatus } : {}),
@@ -389,7 +432,8 @@ export class HttpSpendPing implements SpendPing {
  * @param env - Process environment slice (injected so tests need not mutate it).
  * @param fetchImpl - HTTP fetch used by {@link HttpSpendPing}.
  * @param opts - Roster store (required when both env values are set), optional
- *   gift ledger and clock forwarded to {@link HttpSpendPing}.
+ *   gift ledger, clock, account lookup, and LNURL server config forwarded to
+ *   {@link HttpSpendPing}.
  * @returns {@link HttpSpendPing} when both env values are set; otherwise `undefined`.
  */
 export function resolveSpendPing(
@@ -399,6 +443,8 @@ export function resolveSpendPing(
     rosterStore?: DailyRosterStore;
     gifts?: Pick<GiftStore, 'listOutbound'>;
     now?: () => number;
+    accounts?: Pick<AuthStore, 'getAccountByUsername'>;
+    lnurlServer?: LnurlServerConfig;
   },
 ): SpendPing | undefined {
   const rawUrl = env['SPEND_URL'];
@@ -423,5 +469,7 @@ export function resolveSpendPing(
     rosterStore,
     ...(opts?.gifts === undefined ? {} : { gifts: opts.gifts }),
     ...(opts?.now === undefined ? {} : { now: opts.now }),
+    ...(opts?.accounts === undefined ? {} : { accounts: opts.accounts }),
+    ...(opts?.lnurlServer === undefined ? {} : { lnurlServer: opts.lnurlServer }),
   });
 }

@@ -1,6 +1,7 @@
 /**
  * Persistence for the daily payout roster (amounts, both payment switches,
- * comment, daily recipients, and moderators).
+ * comment, daily recipients, and moderators). Rows are keyed by account; the
+ * payout address is not stored but resolved from the account when it is paid.
  *
  * v1 default is in-memory. Production boot injects Postgres when
  * `DATABASE_URL` is set. Column layout matches `docs/schema/daily_roster.sql`.
@@ -8,7 +9,6 @@
  * {@link DAILY_ROSTER_DEFAULT_AMOUNT_USD}.
  */
 
-import type { MergeDb } from '@/lib/account-merge';
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import {
   DAILY_ROSTER_ADDRESS_LISTED,
@@ -26,7 +26,7 @@ import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 /** USD paid to an unlisted admitted or trial grant. Never persisted. */
 export const DAILY_ROSTER_DEFAULT_AMOUNT_USD = 1;
 
-/** Listed-row bucket. The same address may exist in both. */
+/** Listed-row bucket. The same account may be listed in both. */
 export type DailyRosterBucket = 'daily' | 'moderator';
 
 /**
@@ -80,77 +80,75 @@ export interface DailyRosterStore {
   /**
    * Add a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400.
    */
-  addRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument>;
+  addRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument>;
 
   /**
    * Replace the USD amount for a daily recipient already on the roster.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400.
    */
-  updateRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument>;
+  updateRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument>;
 
   /**
    * Remove a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400 `'Unknown address'`.
    */
-  deleteRecipient(address: string): Promise<DailyRosterDocument>;
+  deleteRecipient(accountId: string): Promise<DailyRosterDocument>;
 
   /**
    * Add a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400.
    */
-  addModerator(address: string, amountUsd: number): Promise<DailyRosterDocument>;
+  addModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument>;
 
   /**
    * Replace the USD amount for a moderator already on the roster.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400.
    */
-  updateModerator(address: string, amountUsd: number): Promise<DailyRosterDocument>;
+  updateModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument>;
 
   /**
    * Remove a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    * @throws {@link DailyRosterRequestError} 400 `'Unknown address'`.
    */
-  deleteModerator(address: string): Promise<DailyRosterDocument>;
+  deleteModerator(accountId: string): Promise<DailyRosterDocument>;
 
   /**
-   * Point every row on `from` at `to`, in both buckets. A row whose bucket
-   * already holds `to` is deleted instead, so `UNIQUE (address, bucket)` never
-   * trips. No row on `from` is a no-op.
+   * Every stored row, linked to an account or not, for the operator check
+   * of the account link (see {@link DailyRosterLinkReport}).
    *
-   * @param from - Old address (trimmed, case-insensitive).
-   * @param to - New address (trimmed, case-insensitive).
-   * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
+   * @returns Row counts, the rows without an account, and USD sums per bucket.
    */
-  renameAddress(from: string, to: string): Promise<DailyRosterWalletMove>;
+  linkReport(): Promise<DailyRosterLinkReport>;
 
   /**
    * Write the full document only when it has never been written. A second
    * call returns the stored document unchanged, including an invalid body.
    * `defaultAmountUsd` in the body is ignored. A missing switch is `true`.
+   * Body rows carry an `address`; a row is listed only once it is linked to
+   * an account (see {@link linkDailyRosterAccounts}).
    *
    * @param body - Parsed JSON.
    * @returns The stored document.
@@ -174,10 +172,14 @@ export const DAILY_ROSTER_SCHEMA_SQL: readonly string[] = [
   bucket text NOT NULL CHECK (bucket IN ('daily', 'moderator')),
   UNIQUE (address, bucket)
 )`,
+  `ALTER TABLE daily_roster_entry ADD COLUMN IF NOT EXISTS account_id uuid REFERENCES account (id)`,
+  `ALTER TABLE daily_roster_entry ALTER COLUMN address DROP NOT NULL`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS daily_roster_entry_account_bucket_uidx
+    ON daily_roster_entry (account_id, bucket)`,
 ];
 
 /**
- * Apply {@link DAILY_ROSTER_SCHEMA_SQL} in order. Idempotent.
+ * Apply {@link DAILY_ROSTER_SCHEMA_SQL} in order. Idempotent. Needs `account`.
  *
  * @param sql - Parameter-bound SQL client.
  * @returns Resolves when every statement has executed.
@@ -189,222 +191,135 @@ export async function migrateDailyRosterSchema(sql: SqlClient): Promise<void> {
 }
 
 /**
- * Counts from {@link moveDailyRosterToWalletAddresses} and
- * {@link DailyRosterStore.renameAddress}.
+ * One statement that links rows without an account (see
+ * {@link linkDailyRosterAccounts}). `$1` is the lower-cased host, or null.
+ * The UPDATE runs as one statement, so `trg_db_change` records each row.
  */
-export interface DailyRosterWalletMove {
-  /** Rows rewritten to their new address. */
-  moved: number;
-  /**
-   * Rows deleted instead: no member behind the address, or the bucket already
-   * holds the new address.
-   */
-  removed: number;
-}
-
-/** Raised inside {@link setUsernameWithRoster} when the username write hits `account_username_uidx`. */
-class UsernameTakenInTransaction extends Error {}
-
-/** Result of {@link setUsernameWithRoster}. */
-export type UsernameRosterResult =
-  | { ok: true; previous: string | null; moved: number; removed: number }
-  | { ok: false; reason: 'frozen' | 'taken' | 'missing' };
-
-/**
- * One statement that points every listed row at the member's in-app wallet
- * address (see {@link moveDailyRosterToWalletAddresses}). `$1` is the host,
- * lower-cased. Data-modifying CTEs run as one statement, so the move is
- * atomic and `trg_db_change` records each DELETE and UPDATE.
- */
-export const DAILY_ROSTER_WALLET_MOVE_SQL = `WITH src AS (
-  SELECT e.id, e.bucket, e.address,
-         (btrim(e.address) ~ '^[^@]+@[^@]+$'
-          AND lower(split_part(btrim(e.address), '@', 2)) = $1) AS on_host,
-         a.username
+export const DAILY_ROSTER_ACCOUNT_LINK_SQL = `WITH matched AS (
+  SELECT e.id, e.bucket,
+         COALESCE(
+           (SELECT a.id FROM account a
+             WHERE lower(btrim(a.lightning_address)) = lower(btrim(e.address))),
+           (SELECT a.id FROM account a
+             WHERE $1::text IS NOT NULL AND btrim(coalesce(a.username, '')) <> ''
+               AND lower(btrim(a.username)) || '@' || $1::text = lower(btrim(e.address)))
+         ) AS account_id
     FROM daily_roster_entry e
-    LEFT JOIN account a
-      ON lower(btrim(a.lightning_address)) = lower(btrim(e.address))
-),
-targeted AS (
-  SELECT id, bucket, address, on_host,
-         CASE
-           WHEN on_host THEN lower(btrim(address))
-           WHEN btrim(coalesce(username, '')) <> '' THEN lower(btrim(username)) || '@' || $1
-         END AS target
-    FROM src
+   WHERE e.account_id IS NULL AND e.address IS NOT NULL
 ),
 ranked AS (
-  SELECT id, address, target,
-         row_number() OVER (
-           PARTITION BY bucket, target
-           ORDER BY (address = target) DESC, on_host DESC, id
-         ) AS position
-    FROM targeted
+  SELECT m.id, m.account_id,
+         row_number() OVER (PARTITION BY m.account_id, m.bucket ORDER BY m.id) AS position
+    FROM matched m
+   WHERE m.account_id IS NOT NULL
+     AND NOT EXISTS (
+       SELECT 1 FROM daily_roster_entry t
+        WHERE t.account_id = m.account_id AND t.bucket = m.bucket
+     )
 ),
-removed AS (
-  DELETE FROM daily_roster_entry d
-   USING ranked r
-   WHERE d.id = r.id AND (r.target IS NULL OR r.position > 1)
-  RETURNING d.id
-),
-moved AS (
+linked AS (
   UPDATE daily_roster_entry u
-     SET address = r.target
+     SET account_id = r.account_id
     FROM ranked r
-   WHERE u.id = r.id AND r.target IS NOT NULL AND r.position = 1 AND u.address <> r.target
+   WHERE u.id = r.id AND r.position = 1
   RETURNING u.id
 )
-SELECT (SELECT count(*) FROM moved)::int AS moved,
-       (SELECT count(*) FROM removed)::int AS removed`;
+SELECT (SELECT count(*) FROM linked)::int AS linked,
+       ((SELECT count(*) FROM daily_roster_entry WHERE account_id IS NULL)
+         - (SELECT count(*) FROM linked))::int AS unlinked`;
 
-/**
- * Point every listed row at the member's in-app wallet address.
- *
- * A row is on `host` when its trimmed address has exactly one `@` and the
- * part after it equals `host` (case-insensitive); its target is that address
- * trimmed and lower-cased. A row whose address equals an account's legacy
- * `lightning_address` (trimmed, case-insensitive) targets `<username>@<host>`
- * (username trimmed and lower-cased), the address `receivingAddress` gives
- * that member. Every other row (no account, or an account without a username)
- * is deleted. Per bucket and target one row stays: the one already holding
- * the exact target, else a row on `host`, else the lowest `id`; the others are
- * deleted. The kept row is rewritten to its target when it differs. No row is
- * rewritten to an address another row holds, so `UNIQUE (address, bucket)`
- * never trips. Runs as {@link DAILY_ROSTER_WALLET_MOVE_SQL}, one atomic
- * statement. A second run changes nothing. Needs `account` and
- * `daily_roster_entry`.
- *
- * @param sql - Parameter-bound SQL client.
- * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`).
- * @returns How many rows were rewritten and how many were deleted.
- */
-export async function moveDailyRosterToWalletAddresses(
-  sql: SqlClient,
-  host: string,
-): Promise<DailyRosterWalletMove> {
-  const [row] = await sql.query<{ moved: number | string; removed: number | string }>(
-    DAILY_ROSTER_WALLET_MOVE_SQL,
-    [host.toLowerCase()],
-  );
-  return { moved: Number(row?.moved ?? 0), removed: Number(row?.removed ?? 0) };
+/** Counts from {@link linkDailyRosterAccounts}. */
+export interface DailyRosterAccountLink {
+  /** Rows this run linked to an account. */
+  linked: number;
+  /** Rows still without an account after this run. They are never paid. */
+  unlinked: number;
 }
 
 /**
- * One statement that points every row on `$1` at `$2` (see
- * {@link DailyRosterStore.renameAddress}). `$1` and `$2` are already
- * normalized. Data-modifying CTEs run as one statement, so the rename is
- * atomic and `trg_db_change` records each DELETE and UPDATE.
+ * Link every roster row without an account to the account it names.
+ *
+ * A row's trimmed address is compared case-insensitively with the legacy
+ * `account.lightning_address` (unique per account), and, when `host` is
+ * given, with `<username>@<host>`; the legacy address wins. Per account and
+ * bucket only one row is linked: none when the bucket already holds a row of
+ * that account, else the lowest `id`. Rows that match no account keep a null
+ * `account_id`, are left out of every document, and are never paid. Amounts,
+ * buckets, and addresses are not changed and no row is deleted. Runs as
+ * {@link DAILY_ROSTER_ACCOUNT_LINK_SQL}, one statement. A second run changes
+ * nothing. Needs `account` and `daily_roster_entry`.
+ *
+ * @param sql - Parameter-bound SQL client.
+ * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`), or null when the LNURL server is off.
+ * @returns How many rows this run linked and how many stay without an account.
  */
-export const DAILY_ROSTER_RENAME_SQL = `WITH removed AS (
-  DELETE FROM daily_roster_entry d
-   WHERE d.address = $1
-     AND EXISTS (SELECT 1 FROM daily_roster_entry t WHERE t.bucket = d.bucket AND t.address = $2)
-  RETURNING d.id
-),
-moved AS (
-  UPDATE daily_roster_entry u
-     SET address = $2
-   WHERE u.address = $1
-     AND NOT EXISTS (SELECT 1 FROM daily_roster_entry t WHERE t.bucket = u.bucket AND t.address = $2)
-  RETURNING u.id
-)
-SELECT (SELECT count(*) FROM moved)::int AS moved,
-       (SELECT count(*) FROM removed)::int AS removed`;
+export async function linkDailyRosterAccounts(
+  sql: SqlClient,
+  host: string | null,
+): Promise<DailyRosterAccountLink> {
+  const [row] = await sql.query<{ linked: number | string; unlinked: number | string }>(
+    DAILY_ROSTER_ACCOUNT_LINK_SQL,
+    [host === null ? null : host.toLowerCase()],
+  );
+  return { linked: Number(row?.linked ?? 0), unlinked: Number(row?.unlinked ?? 0) };
+}
+
+/** One stored row without an account in {@link DailyRosterLinkReport}. */
+export interface DailyRosterUnlinkedRow {
+  /** Bucket of the row. */
+  bucket: DailyRosterBucket;
+  /** Stored legacy address, or `null`. */
+  address: string | null;
+  /** Stored USD amount. */
+  amountUsd: number;
+}
+
+/** USD sums of one bucket in {@link DailyRosterLinkReport}. */
+export interface DailyRosterBucketSums {
+  /** Stored rows of the bucket. */
+  rows: number;
+  /** Rows of the bucket linked to an account. */
+  linked: number;
+  /** Sum over every stored row of the bucket. */
+  totalUsd: number;
+  /** Sum over the rows linked to an account: what the bucket pays. */
+  linkedUsd: number;
+}
 
 /**
- * Set an account's username and move its daily roster rows from
- * `<previous>@<host>` to `<username>@<host>` in one transaction that holds the
- * account row lock, so a concurrent rename of the same account waits and then
- * sees both the new username and the moved rows. A missing account, a verified
- * wallet, or another account already holding the username leaves the rows
- * unchanged. A unique-index race on `account_username_uidx` is `'taken'`; any
- * other driver error, a roster unique violation included, rolls back and throws.
- * Each step is its own SQL statement so READ COMMITTED sees a fresh snapshot
- * after the lock. The rename statement is {@link DAILY_ROSTER_RENAME_SQL}.
- *
- * @param db - Transaction port ({@link MergeDb.begin}).
- * @param accountId - Account id.
- * @param username - Normalized username (see `normalizeUsername`).
- * @param host - Host of `PUBLIC_BASE_URL` (`LnurlServerConfig.host`).
- * @returns `{ ok: true, previous, moved, removed }` on success (`previous` is
- *   the replaced username, `null` when none was set); `{ ok: false, reason }`
- *   with `'frozen'`, `'taken'`, or `'missing'`.
- * @throws Unexpected driver errors, including a unique violation on the
- *   roster rows; only one on the account's username is `'taken'`.
+ * Operator check of the account link: every stored row, linked or not.
+ * `rows` minus `linked` rows are never paid; they are listed in `unlinked`.
  */
-export async function setUsernameWithRoster(
-  db: MergeDb,
-  accountId: string,
-  username: string,
-  host: string,
-): Promise<UsernameRosterResult> {
-  try {
-    return await db.begin(async (tx) => {
-      const locked = await tx.query<{
-        username: string | null;
-        spark_pubkey_verified_at: Date | string | null;
-      }>(`SELECT username, spark_pubkey_verified_at FROM account WHERE id = $1 FOR UPDATE`, [
-        accountId,
-      ]);
-      const row = locked[0];
-      if (row === undefined) {
-        return { ok: false, reason: 'missing' };
-      }
-      if (row.spark_pubkey_verified_at !== null) {
-        return { ok: false, reason: 'frozen' };
-      }
-      const taken = await tx.query<Record<string, unknown>>(
-        `SELECT 1 FROM account WHERE id <> $1 AND username IS NOT NULL
-          AND lower(trim(username)) = lower(trim($2)) LIMIT 1`,
-        [accountId, username],
-      );
-      if (taken[0] !== undefined) {
-        return { ok: false, reason: 'taken' };
-      }
-      try {
-        await tx.query(`UPDATE account SET username = $2 WHERE id = $1`, [accountId, username]);
-      } catch (error: unknown) {
-        // Only this write maps to 'taken'; a roster unique violation stays an error.
-        if (isUniqueViolation(error)) {
-          throw new UsernameTakenInTransaction();
-        }
-        throw error;
-      }
-      const previous = (row.username ?? '').trim().toLowerCase();
-      let moved = 0;
-      let removed = 0;
-      if (previous !== '' && previous !== username) {
-        const h = host.toLowerCase();
-        const from = `${previous}@${h}`.trim().toLowerCase();
-        const to = `${username}@${h}`.trim().toLowerCase();
-        const [rename] = await tx.query<{ moved: number | string; removed: number | string }>(
-          DAILY_ROSTER_RENAME_SQL,
-          [from, to],
-        );
-        moved = Number(rename?.moved ?? 0);
-        removed = Number(rename?.removed ?? 0);
-      }
-      return { ok: true, previous: row.username ?? null, moved, removed };
-    });
-  } catch (error: unknown) {
-    if (error instanceof UsernameTakenInTransaction) {
-      return { ok: false, reason: 'taken' };
-    }
-    throw error;
-  }
+export interface DailyRosterLinkReport {
+  /** Every stored row, both buckets. */
+  rows: number;
+  /** Rows linked to an account, both buckets. */
+  linked: number;
+  /** Rows without an account in `id` order. */
+  unlinked: DailyRosterUnlinkedRow[];
+  /** Counts and USD sums per bucket. */
+  buckets: Record<DailyRosterBucket, DailyRosterBucketSums>;
+}
+
+/** One stored row: an account, or a legacy address not linked to one. */
+interface StoredRosterRow {
+  accountId: string | null;
+  address: string | null;
+  amountUsd: number;
 }
 
 /**
  * Process-local {@link DailyRosterStore}. Used in tests and when no database
- * URL is configured — the process still boots.
+ * URL is configured — the process still boots. It has no accounts, so an
+ * imported address row stays without an account and is not listed.
  */
 export class InMemoryDailyRosterStore implements DailyRosterStore {
   #written = false;
   #comment = '';
   #paymentsEnabled = true;
   #moderatorPaymentsEnabled = true;
-  readonly #recipients: DailyRosterEntry[] = [];
-  readonly #moderators: DailyRosterEntry[] = [];
+  readonly #recipients: StoredRosterRow[] = [];
+  readonly #moderators: StoredRosterRow[] = [];
 
   /**
    * @param seed - Optional already-written document; copied into private storage.
@@ -417,8 +332,8 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
     this.#comment = seed.comment;
     this.#paymentsEnabled = seed.paymentsEnabled;
     this.#moderatorPaymentsEnabled = seed.moderatorPaymentsEnabled;
-    this.#recipients.push(...seed.recipients.map(copyEntry));
-    this.#moderators.push(...seed.moderators.map(copyEntry));
+    this.#recipients.push(...seed.recipients.map(storedRow));
+    this.#moderators.push(...seed.moderators.map(storedRow));
   }
 
   /**
@@ -481,103 +396,84 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
   /**
    * Append a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  async addRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#add('daily', address, amountUsd);
+  async addRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#add('daily', accountId, amountUsd);
   }
 
   /**
    * Replace a daily recipient amount.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  async updateRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#update('daily', address, amountUsd);
+  async updateRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#update('daily', accountId, amountUsd);
   }
 
   /**
    * Remove a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    */
-  async deleteRecipient(address: string): Promise<DailyRosterDocument> {
-    return this.#delete('daily', address);
+  async deleteRecipient(accountId: string): Promise<DailyRosterDocument> {
+    return this.#delete('daily', accountId);
   }
 
   /**
    * Append a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  async addModerator(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#add('moderator', address, amountUsd);
+  async addModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#add('moderator', accountId, amountUsd);
   }
 
   /**
    * Replace a moderator stipend amount.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  async updateModerator(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#update('moderator', address, amountUsd);
+  async updateModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#update('moderator', accountId, amountUsd);
   }
 
   /**
    * Remove a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    */
-  async deleteModerator(address: string): Promise<DailyRosterDocument> {
-    return this.#delete('moderator', address);
+  async deleteModerator(accountId: string): Promise<DailyRosterDocument> {
+    return this.#delete('moderator', accountId);
   }
 
   /**
-   * Point every row on `from` at `to`, in both buckets. A row whose bucket
-   * already holds `to` is deleted instead. Does not change whether the store
-   * has been written.
+   * Every stored row, linked or not.
    *
-   * @param from - Old address (trimmed, case-insensitive).
-   * @param to - New address (trimmed, case-insensitive).
-   * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
+   * @returns Counts, the rows without an account, and USD sums per bucket.
    */
-  async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
-    const source = rosterAddress(from);
-    const target = rosterAddress(to);
-    if (source === target) {
-      return { moved: 0, removed: 0 };
-    }
-    let moved = 0;
-    let removed = 0;
-    for (const list of [this.#recipients, this.#moderators]) {
-      const row = list.find((item) => item.address === source);
-      if (row === undefined) {
-        continue;
-      }
-      if (list.some((item) => item.address === target)) {
-        list.splice(list.indexOf(row), 1);
-        removed += 1;
-      } else {
-        row.address = target;
-        moved += 1;
-      }
-    }
-    return { moved, removed };
+  linkReport(): Promise<DailyRosterLinkReport> {
+    return Promise.resolve(
+      buildLinkReport([
+        ...this.#recipients.map((row) => ({ ...row, bucket: 'daily' as const })),
+        ...this.#moderators.map((row) => ({ ...row, bucket: 'moderator' as const })),
+      ]),
+    );
   }
 
   /**
    * First write of the full document, or a no-op when already written.
+   * Imported rows keep their address and no account.
    *
    * @param body - Parsed JSON.
    * @returns The stored document.
@@ -590,43 +486,42 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
     this.#comment = parsed.comment;
     this.#paymentsEnabled = parsed.paymentsEnabled;
     this.#moderatorPaymentsEnabled = parsed.moderatorPaymentsEnabled;
-    this.#recipients.splice(0, this.#recipients.length, ...parsed.recipients);
-    this.#moderators.splice(0, this.#moderators.length, ...parsed.moderators);
+    this.#recipients.splice(0, this.#recipients.length, ...parsed.recipients.map(importedRow));
+    this.#moderators.splice(0, this.#moderators.length, ...parsed.moderators.map(importedRow));
     this.#written = true;
     return Promise.resolve(this.#snapshot());
   }
 
-  #list(bucket: DailyRosterBucket): DailyRosterEntry[] {
+  #list(bucket: DailyRosterBucket): StoredRosterRow[] {
     return bucket === 'daily' ? this.#recipients : this.#moderators;
   }
 
-  #add(bucket: DailyRosterBucket, address: string, amountUsd: number): DailyRosterDocument {
-    const row = listedRow(address, amountUsd);
+  #add(bucket: DailyRosterBucket, accountId: string, amountUsd: number): DailyRosterDocument {
+    const row = listedRow(accountId, amountUsd);
     const list = this.#list(bucket);
-    if (list.some((item) => item.address === row.address)) {
+    if (list.some((item) => item.accountId === row.accountId)) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_ADDRESS_LISTED);
     }
     this.#written = true;
-    list.push(row);
+    list.push(storedRow(row));
     return this.#snapshot();
   }
 
-  #update(bucket: DailyRosterBucket, address: string, amountUsd: number): DailyRosterDocument {
-    const row = listedRow(address, amountUsd);
-    const list = this.#list(bucket);
-    const index = list.findIndex((item) => item.address === row.address);
-    if (index < 0) {
+  #update(bucket: DailyRosterBucket, accountId: string, amountUsd: number): DailyRosterDocument {
+    const row = listedRow(accountId, amountUsd);
+    const found = this.#list(bucket).find((item) => item.accountId === row.accountId);
+    if (found === undefined) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
     }
     this.#written = true;
-    list[index] = row;
+    found.amountUsd = row.amountUsd;
     return this.#snapshot();
   }
 
-  #delete(bucket: DailyRosterBucket, address: string): DailyRosterDocument {
-    const normalized = rosterAddress(address);
+  #delete(bucket: DailyRosterBucket, accountId: string): DailyRosterDocument {
+    const id = rosterAccountId(accountId);
     const list = this.#list(bucket);
-    const index = list.findIndex((item) => item.address === normalized);
+    const index = list.findIndex((item) => item.accountId === id);
     if (index < 0) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
     }
@@ -636,14 +531,14 @@ export class InMemoryDailyRosterStore implements DailyRosterStore {
   }
 
   #snapshot(): DailyRosterDocument {
-    return copyDocument({
+    return {
       comment: this.#comment,
       paymentsEnabled: this.#paymentsEnabled,
       moderatorPaymentsEnabled: this.#moderatorPaymentsEnabled,
       defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-      recipients: this.#recipients,
-      moderators: this.#moderators,
-    });
+      recipients: listedEntries(this.#recipients),
+      moderators: listedEntries(this.#moderators),
+    };
   }
 }
 
@@ -656,29 +551,34 @@ interface DailyRosterSettingsRow {
 
 /** Entry row from `daily_roster_entry`. */
 interface DailyRosterEntryRow {
-  address: string;
+  account_id: string | null;
+  address: string | null;
   amount_usd: number | string;
   bucket: DailyRosterBucket;
 }
 
 const SETTINGS_SELECT = 'comment, payments_enabled, moderator_payments_enabled';
-const ENTRY_SELECT = 'address, amount_usd, bucket';
+const ENTRY_SELECT = 'account_id, address, amount_usd, bucket';
 
 /**
  * Durable {@link DailyRosterStore} backed by Postgres.
  */
 export class PostgresDailyRosterStore implements DailyRosterStore {
   readonly #sql: SqlClient;
+  readonly #host: string | null;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
+   * @param host - Host of `PUBLIC_BASE_URL` for {@link linkDailyRosterAccounts} after an import, or null.
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, host: string | null = null) {
     this.#sql = sql;
+    this.#host = host;
   }
 
   /**
-   * Settings plus entries ordered by `id`. No settings row is the empty document.
+   * Settings plus the rows linked to an account, ordered by `id`. No settings
+   * row is the empty document.
    *
    * @returns A caller-owned copy.
    */
@@ -752,90 +652,87 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
   /**
    * Append a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  addRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#add('daily', address, amountUsd);
+  addRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#add('daily', accountId, amountUsd);
   }
 
   /**
    * Replace a daily recipient amount.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  updateRecipient(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#update('daily', address, amountUsd);
+  updateRecipient(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#update('daily', accountId, amountUsd);
   }
 
   /**
    * Remove a daily recipient.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    */
-  deleteRecipient(address: string): Promise<DailyRosterDocument> {
-    return this.#delete('daily', address);
+  deleteRecipient(accountId: string): Promise<DailyRosterDocument> {
+    return this.#delete('daily', accountId);
   }
 
   /**
    * Append a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  addModerator(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#add('moderator', address, amountUsd);
+  addModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#add('moderator', accountId, amountUsd);
   }
 
   /**
    * Replace a moderator stipend amount.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @param amountUsd - USD amount.
    * @returns The document after the change.
    */
-  updateModerator(address: string, amountUsd: number): Promise<DailyRosterDocument> {
-    return this.#update('moderator', address, amountUsd);
+  updateModerator(accountId: string, amountUsd: number): Promise<DailyRosterDocument> {
+    return this.#update('moderator', accountId, amountUsd);
   }
 
   /**
    * Remove a moderator stipend row.
    *
-   * @param address - Lightning address.
+   * @param accountId - Listed account.
    * @returns The document after the change.
    */
-  deleteModerator(address: string): Promise<DailyRosterDocument> {
-    return this.#delete('moderator', address);
+  deleteModerator(accountId: string): Promise<DailyRosterDocument> {
+    return this.#delete('moderator', accountId);
   }
 
   /**
-   * Point every row on `from` at `to`, in both buckets, as one statement.
+   * Every stored row, linked or not, in `id` order.
    *
-   * @param from - Old address (trimmed, case-insensitive).
-   * @param to - New address (trimmed, case-insensitive).
-   * @returns How many rows were rewritten and how many were deleted.
-   * @throws {@link DailyRosterRequestError} 400 `'Invalid address or amount'` when either is blank.
+   * @returns Counts, the rows without an account, and USD sums per bucket.
    */
-  async renameAddress(from: string, to: string): Promise<DailyRosterWalletMove> {
-    const source = rosterAddress(from);
-    const target = rosterAddress(to);
-    if (source === target) {
-      return { moved: 0, removed: 0 };
-    }
-    const [row] = await this.#sql.query<{ moved: number | string; removed: number | string }>(
-      DAILY_ROSTER_RENAME_SQL,
-      [source, target],
+  async linkReport(): Promise<DailyRosterLinkReport> {
+    const rows = await this.#entries();
+    return buildLinkReport(
+      rows.map((row) => ({
+        accountId: row.account_id,
+        address: row.address,
+        amountUsd: Number(row.amount_usd),
+        bucket: row.bucket,
+      })),
     );
-    return { moved: Number(row?.moved ?? 0), removed: Number(row?.removed ?? 0) };
   }
 
   /**
    * First write of the full document, or a no-op when a settings row exists.
+   * The address rows are stored, then linked with {@link linkDailyRosterAccounts}.
    *
    * @param body - Parsed JSON.
    * @returns The stored document.
@@ -883,15 +780,16 @@ FROM unnest($4::text[], $5::float8[], $6::text[]) AS imported(addr, amt, bucket)
       }
       throw error;
     }
+    await linkDailyRosterAccounts(this.#sql, this.#host);
     return this.#load();
   }
 
   async #add(
     bucket: DailyRosterBucket,
-    address: string,
+    accountId: string,
     amountUsd: number,
   ): Promise<DailyRosterDocument> {
-    const row = listedRow(address, amountUsd);
+    const row = listedRow(accountId, amountUsd);
     try {
       await this.#sql.execute(
         `WITH ensured AS (
@@ -899,9 +797,9 @@ FROM unnest($4::text[], $5::float8[], $6::text[]) AS imported(addr, amt, bucket)
   VALUES (true, '', true, true)
   ON CONFLICT (singleton) DO NOTHING
 )
-INSERT INTO daily_roster_entry (address, amount_usd, bucket)
+INSERT INTO daily_roster_entry (account_id, amount_usd, bucket)
 VALUES ($1, $2, $3)`,
-        [row.address, row.amountUsd, bucket],
+        [row.accountId, row.amountUsd, bucket],
       );
     } catch (error) {
       if (isUniqueViolation(error)) {
@@ -914,22 +812,22 @@ VALUES ($1, $2, $3)`,
 
   async #update(
     bucket: DailyRosterBucket,
-    address: string,
+    accountId: string,
     amountUsd: number,
   ): Promise<DailyRosterDocument> {
-    const row = listedRow(address, amountUsd);
-    const updated = await this.#sql.query<{ address: string }>(
+    const row = listedRow(accountId, amountUsd);
+    const updated = await this.#sql.query<{ id: number }>(
       `WITH updated AS (
   UPDATE daily_roster_entry SET amount_usd = $1
-  WHERE address = $2 AND bucket = $3
-  RETURNING address
+  WHERE account_id = $2 AND bucket = $3
+  RETURNING id
 ), ensured AS (
   INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
   SELECT true, '', true, true FROM updated
   ON CONFLICT (singleton) DO NOTHING
 )
-SELECT address FROM updated`,
-      [row.amountUsd, row.address, bucket],
+SELECT id FROM updated`,
+      [row.amountUsd, row.accountId, bucket],
     );
     if (updated[0] === undefined) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
@@ -937,20 +835,20 @@ SELECT address FROM updated`,
     return this.#load();
   }
 
-  async #delete(bucket: DailyRosterBucket, address: string): Promise<DailyRosterDocument> {
-    const normalized = rosterAddress(address);
-    const deleted = await this.#sql.query<{ address: string }>(
+  async #delete(bucket: DailyRosterBucket, accountId: string): Promise<DailyRosterDocument> {
+    const id = rosterAccountId(accountId);
+    const deleted = await this.#sql.query<{ id: number }>(
       `WITH deleted AS (
   DELETE FROM daily_roster_entry
-  WHERE address = $1 AND bucket = $2
-  RETURNING address
+  WHERE account_id = $1 AND bucket = $2
+  RETURNING id
 ), ensured AS (
   INSERT INTO daily_roster (singleton, comment, payments_enabled, moderator_payments_enabled)
   SELECT true, '', true, true FROM deleted
   ON CONFLICT (singleton) DO NOTHING
 )
-SELECT address FROM deleted`,
-      [normalized, bucket],
+SELECT id FROM deleted`,
+      [id, bucket],
     );
     if (deleted[0] === undefined) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
@@ -979,21 +877,24 @@ SELECT address FROM deleted`,
     const recipients: DailyRosterEntry[] = [];
     const moderators: DailyRosterEntry[] = [];
     for (const row of await this.#entries()) {
-      const entry = { address: row.address, amountUsd: Number(row.amount_usd) };
+      if (row.account_id === null) {
+        continue;
+      }
+      const entry = { accountId: row.account_id, amountUsd: Number(row.amount_usd) };
       if (row.bucket === 'moderator') {
         moderators.push(entry);
       } else {
         recipients.push(entry);
       }
     }
-    return copyDocument({
+    return {
       comment: settings.comment,
       paymentsEnabled: settings.payments_enabled,
       moderatorPaymentsEnabled: settings.moderator_payments_enabled,
       defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
       recipients,
       moderators,
-    });
+    };
   }
 }
 
@@ -1009,25 +910,78 @@ function emptyDocument(): DailyRosterDocument {
   };
 }
 
-/** Caller-owned copy. `defaultAmountUsd` is always the constant. */
-function copyDocument(doc: DailyRosterDocument): DailyRosterDocument {
-  return {
-    comment: doc.comment,
-    paymentsEnabled: doc.paymentsEnabled,
-    moderatorPaymentsEnabled: doc.moderatorPaymentsEnabled,
-    defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-    recipients: doc.recipients.map(copyEntry),
-    moderators: doc.moderators.map(copyEntry),
-  };
+/** Stored form of a listed entry. */
+function storedRow(row: DailyRosterEntry): StoredRosterRow {
+  return { accountId: row.accountId, address: null, amountUsd: row.amountUsd };
 }
 
-/** Caller-owned row copy. */
-function copyEntry(row: DailyRosterEntry): DailyRosterEntry {
-  return { address: row.address, amountUsd: row.amountUsd };
+/** One address row of an import body. */
+interface ImportedRosterRow {
+  address: string;
+  amountUsd: number;
+}
+
+/** Stored form of an imported address row: no account. */
+function importedRow(row: ImportedRosterRow): StoredRosterRow {
+  return { accountId: null, address: row.address, amountUsd: row.amountUsd };
+}
+
+/** Caller-owned copies of the rows linked to an account, in stored order. */
+function listedEntries(rows: readonly StoredRosterRow[]): DailyRosterEntry[] {
+  const entries: DailyRosterEntry[] = [];
+  for (const row of rows) {
+    if (row.accountId !== null) {
+      entries.push({ accountId: row.accountId, amountUsd: row.amountUsd });
+    }
+  }
+  return entries;
 }
 
 /**
- * Trim then lower-case, matching the roster address comparison.
+ * Count and sum stored rows for {@link DailyRosterStore.linkReport}.
+ *
+ * @param rows - Every stored row in `id` order, with its bucket.
+ * @returns The report.
+ */
+function buildLinkReport(
+  rows: readonly (StoredRosterRow & { bucket: DailyRosterBucket })[],
+): DailyRosterLinkReport {
+  const buckets: Record<DailyRosterBucket, DailyRosterBucketSums> = {
+    daily: { rows: 0, linked: 0, totalUsd: 0, linkedUsd: 0 },
+    moderator: { rows: 0, linked: 0, totalUsd: 0, linkedUsd: 0 },
+  };
+  const unlinked: DailyRosterUnlinkedRow[] = [];
+  for (const row of rows) {
+    const sums = buckets[row.bucket];
+    sums.rows += 1;
+    sums.totalUsd += row.amountUsd;
+    if (row.accountId === null) {
+      unlinked.push({ bucket: row.bucket, address: row.address, amountUsd: row.amountUsd });
+    } else {
+      sums.linked += 1;
+      sums.linkedUsd += row.amountUsd;
+    }
+  }
+  return { rows: rows.length, linked: rows.length - unlinked.length, unlinked, buckets };
+}
+
+/**
+ * Trim, matching the stored account id.
+ *
+ * @param accountId - Raw account id.
+ * @returns The stored form.
+ * @throws {@link DailyRosterRequestError} 400 when empty after trim.
+ */
+function rosterAccountId(accountId: string): string {
+  const trimmed = typeof accountId === 'string' ? accountId.trim() : '';
+  if (trimmed === '') {
+    throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
+  }
+  return trimmed;
+}
+
+/**
+ * Trim then lower-case an imported address.
  *
  * @param address - Raw address.
  * @returns The stored form.
@@ -1056,14 +1010,14 @@ function rosterAmount(amountUsd: number): number {
 }
 
 /**
- * Normalize address and amount for a listed row.
+ * Normalize account id and amount for a listed row.
  *
- * @param address - Raw address.
+ * @param accountId - Raw account id.
  * @param amountUsd - USD amount.
  * @returns The stored row.
  */
-function listedRow(address: string, amountUsd: number): DailyRosterEntry {
-  return { address: rosterAddress(address), amountUsd: rosterAmount(amountUsd) };
+function listedRow(accountId: string, amountUsd: number): DailyRosterEntry {
+  return { accountId: rosterAccountId(accountId), amountUsd: rosterAmount(amountUsd) };
 }
 
 /**
@@ -1104,8 +1058,8 @@ function parseImportBody(body: unknown): {
   comment: string;
   paymentsEnabled: boolean;
   moderatorPaymentsEnabled: boolean;
-  recipients: DailyRosterEntry[];
-  moderators: DailyRosterEntry[];
+  recipients: ImportedRosterRow[];
+  moderators: ImportedRosterRow[];
 } {
   if (typeof body !== 'object' || body === null || Array.isArray(body)) {
     throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_COMMENT);
@@ -1163,14 +1117,14 @@ function optionalImportSwitch(value: unknown): boolean {
  * @param value - Body field.
  * @returns Normalized rows in body order.
  */
-function optionalImportList(value: unknown): DailyRosterEntry[] {
+function optionalImportList(value: unknown): ImportedRosterRow[] {
   if (value === undefined) {
     return [];
   }
   if (!Array.isArray(value)) {
     throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
   }
-  const rows: DailyRosterEntry[] = [];
+  const rows: ImportedRosterRow[] = [];
   const seen = new Set<string>();
   for (const item of value) {
     if (typeof item !== 'object' || item === null) {
@@ -1184,7 +1138,7 @@ function optionalImportList(value: unknown): DailyRosterEntry[] {
     if (typeof amountUsd !== 'number') {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
     }
-    const row = listedRow(record['address'], amountUsd);
+    const row = { address: rosterAddress(record['address']), amountUsd: rosterAmount(amountUsd) };
     if (seen.has(row.address)) {
       throw new DailyRosterRequestError(400, DAILY_ROSTER_ADDRESS_LISTED);
     }

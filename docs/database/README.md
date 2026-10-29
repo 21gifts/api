@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 59
-- Columns: 571
-- Foreign keys: 57
+- Tables: 56
+- Columns: 556
+- Foreign keys: 55
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -25,7 +25,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`conversation_message_translation`](tables/conversation_message_translation.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 5       | 1            |
 | [`conversation_read`](tables/conversation_read.md)                               | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 3       | 2            |
 | [`daily_roster`](tables/daily_roster.md)                                         | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
-| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
+| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 5       | 1            |
 | [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                     | 7       | 0            |
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |
@@ -51,13 +51,10 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`passkey_challenge`](tables/passkey_challenge.md)                               | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 7       | 0            |
 | [`passkey_credential`](tables/passkey_credential.md)                             | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |
 | [`passkey_renew_attempt`](tables/passkey_renew_attempt.md)                       | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 23      | 1            |
-| [`pending_recovery`](tables/pending_recovery.md)                                 | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 8       | 1            |
 | [`pos_charge`](tables/pos_charge.md)                                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 14      | 1            |
 | [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
-| [`previous_wallet`](tables/previous_wallet.md)                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 12      | 1            |
 | [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 6       | 1            |
-| [`recovery_share`](tables/recovery_share.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`shop_identity`](tables/shop_identity.md)                                       | [src/lib/shop-identity.ts](../../src/lib/shop-identity.ts)             | 17      | 1            |
 | [`shop_offer`](tables/shop_offer.md)                                             | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 17      | 1            |
 | [`shop_payment`](tables/shop_payment.md)                                         | [src/lib/shop-payment-store.ts](../../src/lib/shop-payment-store.ts)   | 20      | 2            |

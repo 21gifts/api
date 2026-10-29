@@ -39,7 +39,7 @@ const PAYING_ROSTER: DailyRosterDocument = {
   paymentsEnabled: true,
   moderatorPaymentsEnabled: true,
   defaultAmountUsd: 1,
-  recipients: [{ address: ADDRESS, amountUsd: 2 }],
+  recipients: [{ accountId: 'acc-alice', amountUsd: 2 }],
   moderators: [],
 };
 
@@ -73,13 +73,13 @@ function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
     setComment: (comment) => fallback.setComment(comment),
     setPaymentsEnabled: (enabled) => fallback.setPaymentsEnabled(enabled),
     setModeratorPaymentsEnabled: (enabled) => fallback.setModeratorPaymentsEnabled(enabled),
-    addRecipient: (address, amountUsd) => fallback.addRecipient(address, amountUsd),
-    updateRecipient: (address, amountUsd) => fallback.updateRecipient(address, amountUsd),
-    deleteRecipient: (address) => fallback.deleteRecipient(address),
-    addModerator: (address, amountUsd) => fallback.addModerator(address, amountUsd),
-    updateModerator: (address, amountUsd) => fallback.updateModerator(address, amountUsd),
-    deleteModerator: (address) => fallback.deleteModerator(address),
-    renameAddress: (from, to) => fallback.renameAddress(from, to),
+    addRecipient: (accountId, amountUsd) => fallback.addRecipient(accountId, amountUsd),
+    updateRecipient: (accountId, amountUsd) => fallback.updateRecipient(accountId, amountUsd),
+    deleteRecipient: (accountId) => fallback.deleteRecipient(accountId),
+    addModerator: (accountId, amountUsd) => fallback.addModerator(accountId, amountUsd),
+    updateModerator: (accountId, amountUsd) => fallback.updateModerator(accountId, amountUsd),
+    deleteModerator: (accountId) => fallback.deleteModerator(accountId),
+    linkReport: () => fallback.linkReport(),
     importDocument: (body) => fallback.importDocument(body),
   };
 }
