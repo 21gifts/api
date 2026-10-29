@@ -45,7 +45,7 @@ api/
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
 │   │   ├── mentions.ts       # GET /mentions (Bearer, forum.read; username prefix suggestions, at most 20)
 │   │   ├── links.ts          # GET /links/:code (public; 8-hex prefix of a message or account id)
-│   │   ├── view.ts           # GET /view/:viewKey (public profile card); GET /view/:viewKey/about/photo; GET /view/:viewKey/activity
+│   │   ├── view.ts           # GET /view/:viewKey (same public card as /members); photo, activity, posts, shops, credits, replies
 │   │   ├── lightning-address.ts  # GET /lightning-address (public LUD-16 resolve)
 │   │   ├── debug.ts          # GET/POST /debug/accounts; GET/PATCH /debug/accounts/:id; POST /debug/accounts/:id/session (DEBUG_TOKEN)
 │   │   ├── debug-logins.ts   # GET/PUT /debug/logins; POST /debug/logins/allowlist; DELETE /debug/logins/allowlist/:accountId; DELETE /debug/sessions (operator DEBUG_TOKEN)

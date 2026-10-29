@@ -1,12 +1,23 @@
 import { describe, it, expect, vi } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryFundingStore } from '@/lib/funding-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { viewRoutes } from '@/routes/view';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const VIEW_KEY = 'a'.repeat(64);
+const PUBLIC_CARD = {
+  id: 'acc',
+  role: 'basis' as const,
+  postCount: 0,
+  replyCount: 0,
+  shopCount: 0,
+  creditCount: 0,
+  fundingReviewedAt: null,
+  fundingReviewedByName: null,
+};
 const NOTE_ID = 'note-ada';
 const JPEG_BYTES = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
@@ -16,7 +27,12 @@ function mount(
 ): Hono {
   return new Hono().route(
     '/view',
-    viewRoutes({ store, messageStore: messages, lnurlServer: LNURL_SERVER }),
+    viewRoutes({
+      store,
+      messageStore: messages,
+      lnurlServer: LNURL_SERVER,
+      fundingStore: new InMemoryFundingStore(),
+    }),
   );
 }
 
@@ -83,13 +99,50 @@ describe('GET /view/:viewKey', () => {
     expect(await res.json()).toEqual({ error: 'Not found' });
   });
 
-  it('returns the ten-field public profile without Authorization', async () => {
+  it('returns the reviewer name when the member is admitted', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store);
+    await store.createAccount({
+      id: 'staff',
+      linkingKey: null,
+      role: 'moderator',
+      name: 'Bea',
+      forumLawsDismissed: true,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 3,
+      rulesAgreedAt: 3,
+    });
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'acc',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 2,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 2,
+        note: null,
+      },
+    ]);
+    const res = await new Hono()
+      .route('/view', viewRoutes({ store, fundingStore, lnurlServer: LNURL_SERVER }))
+      .request(`/view/${VIEW_KEY}`);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({
+      fundingReviewedAt: 2,
+      fundingReviewedByName: 'Bea',
+    });
+  });
+
+  it('returns the public profile card without Authorization', async () => {
     const store = new InMemoryAuthStore();
     await adaAccount(store);
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
     const body = (await res.json()) as Record<string, unknown>;
     expect(body).toEqual({
+      ...PUBLIC_CARD,
       name: 'Ada',
       username: 'ada',
       location: null,
@@ -100,11 +153,10 @@ describe('GET /view/:viewKey', () => {
       aboutMe: null,
       aboutMeHasPhoto: false,
       aboutMessageId: null,
+      profileMessage: null,
     });
     const raw = JSON.stringify(body);
-    expect(body).not.toHaveProperty('id');
     expect(raw).not.toContain('linkingKey');
-    expect(raw).not.toContain('role');
     expect(raw).not.toContain('viewKey');
     expect(raw).not.toContain('profileMessageId');
     expect(Object.keys(body).sort()).toEqual([
@@ -112,11 +164,20 @@ describe('GET /view/:viewKey', () => {
       'aboutMeHasPhoto',
       'aboutMessageId',
       'createdAt',
+      'creditCount',
+      'fundingReviewedAt',
+      'fundingReviewedByName',
       'hasPasskey',
+      'id',
       'lightningAddress',
       'lightningAddressVerified',
       'location',
       'name',
+      'postCount',
+      'profileMessage',
+      'replyCount',
+      'role',
+      'shopCount',
       'username',
     ]);
   });
@@ -134,6 +195,7 @@ describe('GET /view/:viewKey', () => {
     const res = await mount(store).request(`/view/${VIEW_KEY}`);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
+      ...PUBLIC_CARD,
       name: 'Ada',
       username: 'ada',
       location: null,
@@ -144,6 +206,7 @@ describe('GET /view/:viewKey', () => {
       aboutMe: null,
       aboutMeHasPhoto: false,
       aboutMessageId: null,
+      profileMessage: null,
     });
   });
 
@@ -193,10 +256,14 @@ describe('GET /view/:viewKey', () => {
       aboutMe: string | null;
       aboutMeHasPhoto: boolean;
       aboutMessageId: string | null;
+      profileMessage: { id: string; hearted: boolean; heartCount: number } | null;
     };
     expect(bioBody.aboutMe).toBe('I build on Bitcoin');
     expect(bioBody.aboutMeHasPhoto).toBe(false);
     expect(bioBody.aboutMessageId).toBe(NOTE_ID);
+    expect(bioBody.profileMessage?.id).toBe(NOTE_ID);
+    expect(bioBody.profileMessage?.hearted).toBe(false);
+    expect(bioBody.profileMessage?.heartCount).toBe(0);
 
     const nameStore = new InMemoryAuthStore();
     await adaAccount(nameStore, { profileMessageId: NOTE_ID });
@@ -426,6 +493,115 @@ describe('GET /view/:viewKey/about/photo', () => {
         (call) => typeof call[0] === 'string' && call[0].includes('view.photo.failed'),
       ),
     ).toBe(true);
+    warn.mockRestore();
+  });
+});
+
+const FEEDS = ['posts', 'shops', 'credits', 'replies'] as const;
+
+describe('GET /view/:viewKey feeds', () => {
+  it('returns 404 for a short key on every list', async () => {
+    const app = mount(new InMemoryAuthStore());
+    for (const feed of FEEDS) {
+      const res = await app.request(`/view/abcd/${feed}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+    }
+  });
+
+  it('returns 404 for an unknown key on every list', async () => {
+    const app = mount(new InMemoryAuthStore());
+    for (const feed of FEEDS) {
+      const res = await app.request(`/view/${VIEW_KEY}/${feed}`);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+    }
+  });
+
+  it('returns the same lists as the member card without Authorization', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store);
+    const messages = new InMemoryMessageStore();
+    const createdAt = new Date(1_000_000);
+    await messages.create({
+      id: 'post-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'hello',
+      createdAt,
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'shop-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: '#21GiftsShop open',
+      createdAt,
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.create({
+      id: 'credit-1',
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'lend me',
+      createdAt,
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      goalRepayable: true,
+    });
+    await messages.create({
+      ...unsignedNostrDefaults(),
+      id: 'reply-1',
+      accountId: 'acc',
+      parentId: 'post-1',
+      name: 'Ada',
+      text: 'reply',
+      createdAt,
+      hasPhoto: false,
+    });
+    const app = mount(store, messages);
+    const posts = (await (await app.request(`/view/${VIEW_KEY}/posts`)).json()) as {
+      messages: Array<{ id: string; hearted: boolean }>;
+    };
+    const shops = (await (await app.request(`/view/${VIEW_KEY}/shops`)).json()) as {
+      messages: Array<{ id: string }>;
+    };
+    const credits = (await (await app.request(`/view/${VIEW_KEY}/credits`)).json()) as {
+      messages: Array<{ id: string }>;
+    };
+    const replies = (await (await app.request(`/view/${VIEW_KEY}/replies`)).json()) as {
+      messages: Array<{ id: string; hearted: boolean }>;
+    };
+    expect(posts.messages.map((row) => row.id).sort()).toEqual(['credit-1', 'post-1', 'shop-1']);
+    expect(posts.messages.every((row) => row.hearted === false)).toBe(true);
+    expect(shops.messages.map((row) => row.id)).toEqual(['shop-1']);
+    expect(credits.messages.map((row) => row.id)).toEqual(['credit-1']);
+    expect(replies.messages.map((row) => row.id)).toEqual(['reply-1']);
+    expect(replies.messages[0]?.hearted).toBe(false);
+  });
+
+  it('returns 503 when a list throws', async () => {
+    const store = new InMemoryAuthStore();
+    await adaAccount(store);
+    const messages = new InMemoryMessageStore();
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.spyOn(messages, 'listPostsByAccount').mockRejectedValue(new Error('down'));
+    vi.spyOn(messages, 'listShopsByAccount').mockRejectedValue(new Error('down'));
+    vi.spyOn(messages, 'listCreditsByAccount').mockRejectedValue(new Error('down'));
+    vi.spyOn(messages, 'listRepliesByAccount').mockRejectedValue(new Error('down'));
+    const app = mount(store, messages);
+    for (const feed of FEEDS) {
+      const res = await app.request(`/view/${VIEW_KEY}/${feed}`);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    }
+    const logged = warn.mock.calls.map((call) => String(call[0]));
+    expect(logged.some((line) => line.includes('view.posts.failed'))).toBe(true);
+    expect(logged.some((line) => line.includes('view.shops.failed'))).toBe(true);
+    expect(logged.some((line) => line.includes('view.credits.failed'))).toBe(true);
+    expect(logged.some((line) => line.includes('view.replies.failed'))).toBe(true);
     warn.mockRestore();
   });
 });

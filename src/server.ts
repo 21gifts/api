@@ -808,6 +808,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       now,
+      fundingStore,
       ...receivingDeps,
     }),
   );
