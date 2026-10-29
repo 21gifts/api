@@ -440,7 +440,7 @@ api/
 │   ├── wallet.sql            # wallet_balance_snapshot + wallet_payment (POST /me/wallet/report)
 │   ├── member_event.sql      # member_event interaction log (POST /me/events)
 │   ├── login_gate.sql        # app_setting (operator login switch) + login_allowlist
-│   ├── shop_identity.sql     # one Nostr key per listed shop note + OpenCryptoPay place/photo outbox and its queue triggers
+│   ├── shop_identity.sql     # one Nostr key per public shop note + OpenCryptoPay place/photo outbox and its queue triggers
 │   └── db_change.sql         # append-only row-change log
 ├── scripts/
 │   ├── check-handbook.mjs    # CI gate: missing heading → exit 1

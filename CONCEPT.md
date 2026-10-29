@@ -404,7 +404,8 @@ payment.
 
 ### Shop identity
 
-Every listed shop gets its own custodial NOSTR identity, generated, held and
+Every public shop (a live top-level `#21GiftsShop` note with a till account)
+gets its own custodial NOSTR identity, generated, held and
 published by the api exactly like an account's. Its page is
 `https://21.gifts/{npub}`. OpenCryptoPay requires that same public key for
 every shop on its map and uses it as the shop's id; it holds no keys and
