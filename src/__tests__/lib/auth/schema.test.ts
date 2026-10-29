@@ -141,9 +141,15 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(AUTH_SCHEMA_SQL.join('\n')).toMatch(
       /ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true/,
     );
-    expect(AUTH_SCHEMA_SQL[AUTH_SCHEMA_SQL.length - 1]).toBe(
+    const notifyHeartsAt = AUTH_SCHEMA_SQL.indexOf(
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
+    expect(AUTH_SCHEMA_SQL.slice(notifyHeartsAt + 1)).toEqual([
+      'ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_address text',
+      'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk',
+      `ALTER TABLE account ADD CONSTRAINT account_spark_address_chk
+  CHECK (spark_address IS NULL OR (spark_pubkey IS NOT NULL AND spark_address ~ '^spark1[02-9ac-hj-np-z]{62}$'))`,
+    ]);
     const staffTagAt = AUTH_SCHEMA_SQL.indexOf(
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS staff_tag text',
     );

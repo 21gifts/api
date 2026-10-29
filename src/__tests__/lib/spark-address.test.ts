@@ -1,11 +1,13 @@
 import { bech32m } from '@scure/base';
 import { describe, expect, it } from 'vitest';
 import { concatBytes, protoBytesField } from '@/lib/protobuf';
-import { decodeSparkAddress } from '@/lib/spark-address';
+import { decodeSparkAddress, encodeSparkAddress } from '@/lib/spark-address';
 import { encodeSparkInvoice } from '@/lib/spark-invoice';
 
 const PUBKEY = '0209cb7d2b5d3df3a0ac4ef86cfcfa229ffa52b687d797274c8669cbd5235eccd5';
 const ID = new Uint8Array(16).fill(7);
+/** BIP-350 bech32m of `0x0a 0x21 <PUBKEY>` under `spark`, computed outside this codebase. */
+const ADDRESS = 'spark1pgssyzwt0544600n5zkya7rvlnaz98l622mg04uhyaxgv6wt6534anx4kc986w';
 
 function encoded(prefix: string, bytes: Uint8Array): string {
   return bech32m.encode(prefix, bech32m.toWords(bytes), false);
@@ -66,5 +68,18 @@ describe('decodeSparkAddress', () => {
         ),
       ),
     ).toBeNull();
+  });
+});
+
+describe('encodeSparkAddress', () => {
+  it('encodes the identity key as the mainnet Spark address that decodes back to it', () => {
+    expect(encodeSparkAddress(PUBKEY)).toBe(ADDRESS);
+    expect(decodeSparkAddress(ADDRESS)).toEqual({ identityPublicKey: PUBKEY, memo: null });
+  });
+
+  it('throws when the key is not 33 bytes', () => {
+    expect(() => encodeSparkAddress(PUBKEY.slice(2))).toThrow(
+      'Spark identity public key must be 33 bytes',
+    );
   });
 });

@@ -457,7 +457,7 @@ describe('buildAccountActivity', () => {
     expect(stats.donatedOverTime[0]?.usd).toBe('0.40');
   });
 
-  it('nulls a remainder currency that either side did not store', async () => {
+  it('keeps a stored currency when the other side omitted it', async () => {
     const messages = new InMemoryMessageStore([
       note({
         sats: 42,
@@ -472,10 +472,10 @@ describe('buildAccountActivity', () => {
       ingest({ amountUsd: '0.40', amountChf: null, amountEur: '0.40', amountPhp: null }),
     );
     const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
-    expect(stats.receivedOverTime[0]?.usd).toBeNull();
-    expect(stats.receivedOverTime[0]?.chf).toBeNull();
-    expect(stats.receivedOverTime[0]?.eur).toBeNull();
-    expect(stats.receivedOverTime[0]?.php).toBeNull();
+    expect(stats.receivedOverTime[0]?.usd).toBe('0.40');
+    expect(stats.receivedOverTime[0]?.chf).toBe('0.80');
+    expect(stats.receivedOverTime[0]?.eur).toBe('0.40');
+    expect(stats.receivedOverTime[0]?.php).toBe('50.00');
   });
 
   it('nulls a remainder when the note stores less than the ingest', async () => {
@@ -493,11 +493,68 @@ describe('buildAccountActivity', () => {
       ingest({ amountUsd: '0.40', amountChf: '0.30', amountEur: '0.40', amountPhp: '20.00' }),
     );
     const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
-    expect(stats.receivedOverTime[0]?.usd).toBeNull();
+    expect(stats.receivedOverTime[0]?.usd).toBe('0.40');
     expect(stats.receivedOverTime[0]?.chf).toBe('0.80');
   });
 
-  it('converts CHF/EUR/PHP on received house gifts when a fiat book is seeded', async () => {
+  it('keeps a currency stored on one ingest when the sibling omitted it', async () => {
+    const messages = new InMemoryMessageStore([note({ sats: 42 })]);
+    await messages.recordZapIngest(
+      ingest({
+        amountUsd: null,
+        amountChf: '0.10',
+        amountEur: null,
+        amountPhp: null,
+      }),
+    );
+    await messages.recordZapIngest(
+      ingest({
+        id: 'zi-2',
+        receiptId: 'r2',
+        amountUsd: '0.20',
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedOverTime[0]?.usd).toBe('0.20');
+    expect(stats.receivedOverTime[0]?.chf).toBe('0.10');
+    expect(stats.receivedOverTime[0]?.eur).toBeNull();
+    expect(stats.receivedOverTime[0]?.php).toBeNull();
+  });
+
+  it('adds two usd snapshots when the note sats equal the ingests', async () => {
+    const messages = new InMemoryMessageStore([note({ sats: 42 })]);
+    await messages.recordZapIngest(
+      ingest({
+        amountUsd: '0.10',
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      }),
+    );
+    await messages.recordZapIngest(
+      ingest({
+        id: 'zi-2',
+        receiptId: 'r2',
+        amountUsd: '0.20',
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+      }),
+    );
+    const stats = await activity({ messages, rates: new InMemoryBtcUsdStore() });
+    expect(stats.receivedSats).toBe(42);
+    expect(stats.receivedOverTime).toHaveLength(1);
+    expect(stats.receivedOverTime[0]?.giftCount).toBe(2);
+    expect(stats.receivedOverTime[0]?.usd).toBe('0.30');
+    expect(stats.receivedOverTime[0]?.chf).toBeNull();
+    expect(stats.receivedOverTime[0]?.eur).toBeNull();
+    expect(stats.receivedOverTime[0]?.php).toBeNull();
+  });
+
+  it('leaves unstored fiat null on received house gifts when a fiat book is seeded', async () => {
     const gifts = new InMemoryGiftStore([
       { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
     ]);
@@ -506,16 +563,11 @@ describe('buildAccountActivity', () => {
       fiatRates: new InMemoryFiatStore({ [DAY]: { CHF: '0.80', EUR: '0.90', PHP: '50' } }),
     });
     expect(stats.receivedSats).toBe(1000);
-    expect(stats.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
-    expect(stats.receivedOverTime[0]?.cumulativeChf).toBe('0.80');
-    expect(stats.receivedOverTime[0]?.cumulativeEur).toBe('0.90');
-    expect(stats.receivedOverTime[0]?.cumulativePhp).toBe('50.00');
-    expect(stats.fx.quotes).toEqual([
-      { code: 'USD', pair: 'BTC-USD', source: 'coinbase-exchange-daily-close' },
-      { code: 'CHF', pair: 'USD-CHF', source: 'frankfurter-ecb' },
-      { code: 'EUR', pair: 'USD-EUR', source: 'frankfurter-ecb' },
-      { code: 'PHP', pair: 'USD-PHP', source: 'frankfurter-ecb' },
-    ]);
+    expect(stats.receivedOverTime[0]?.cumulativeUsd).toBeNull();
+    expect(stats.receivedOverTime[0]?.cumulativeChf).toBeNull();
+    expect(stats.receivedOverTime[0]?.cumulativeEur).toBeNull();
+    expect(stats.receivedOverTime[0]?.cumulativePhp).toBeNull();
+    expect(stats.fx.quotes).toEqual(FX.quotes);
   });
 
   it('omits fiat ensureDays when activity is empty', async () => {
@@ -524,7 +576,7 @@ describe('buildAccountActivity', () => {
     expect(ensureDays).not.toHaveBeenCalled();
   });
 
-  it('logs account.activity.fiat_failed and still returns USD when fiat throws', async () => {
+  it('leaves unstored fiat null and does not log account.activity.fiat_failed when fiat throws', async () => {
     const gifts = new InMemoryGiftStore([
       { paidAt: PAID_AT, amountSats: 1000, recipientWosUser: 'ada', kind: 'daily' },
     ]);
@@ -539,7 +591,7 @@ describe('buildAccountActivity', () => {
         },
       });
       expect(stats.receivedSats).toBe(1000);
-      expect(stats.receivedOverTime[0]?.cumulativeUsd).toBe('1.00');
+      expect(stats.receivedOverTime[0]?.cumulativeUsd).toBeNull();
       expect(stats.receivedOverTime[0]?.cumulativeChf).toBeNull();
       expect(stats.receivedOverTime[0]?.cumulativeEur).toBeNull();
       expect(stats.receivedOverTime[0]?.cumulativePhp).toBeNull();
@@ -547,7 +599,7 @@ describe('buildAccountActivity', () => {
         .map((call) => call[0])
         .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
         .map((arg) => JSON.parse(arg) as Record<string, unknown>);
-      expect(events.some((e) => e['event'] === 'account.activity.fiat_failed')).toBe(true);
+      expect(events.some((e) => e['event'] === 'account.activity.fiat_failed')).toBe(false);
     } finally {
       warn.mockRestore();
     }

@@ -103,6 +103,12 @@ function charge(accountId: string): PosCharge {
     expiresAt: new Date(),
     paidAt: new Date(),
     sparkInvoice: null,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
   };
 }
 

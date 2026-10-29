@@ -92,7 +92,7 @@ api/
 │   │   ├── secret-shape.ts   # isSecretFieldName / looksLikeSecretValue (never store keys, seeds, phrases)
 │   │   ├── encoded-secret.ts # containsEncodedSecret (secret material inside Spark/BOLT11/bech32 tokens)
 │   │   ├── client-instant.ts # parseClientInstant (ISO or epoch timestamp from the app, bounded)
-│   │   ├── spark-address.ts  # decodeSparkAddress (identity key + memo of a Spark address or invoice)
+│   │   ├── spark-address.ts  # encodeSparkAddress (mainnet address of an identity key); decodeSparkAddress (identity key + memo of a Spark address or invoice)
 │   │   ├── wallet-report.ts  # parseWalletReport (allow-listed wallet report body)
 │   │   ├── wallet-category.ts # walletPaymentClassifier (member/shop/platform/gift/outside_lightning/onchain/unknown)
 │   │   ├── wallet-store.ts   # WalletStore port, InMemory/Postgres adapters, WALLET_SCHEMA_SQL
@@ -176,7 +176,7 @@ api/
 │   │   ├── debug-token.ts    # Constant-time DEBUG_TOKEN Bearer compare
 │   │   ├── login-gate.ts     # LoginGate (login switch, allowlist, platform account), LOGINS_OPEN_DEFAULT and APP_BUILD_REQUIRED resolvers, X-App-Build check
 │   │   ├── login-gate-store.ts # LoginGateStore port, InMemory/Postgres adapters, LOGIN_GATE_SCHEMA_SQL (app_setting + login_allowlist)
-│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (every stored column; envelope hex, never decrypt)
+│   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (operator projections; `account` rows leave out the legacy `lightning_address` / `lightning_address_verified` and the derived `spark_address`; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
@@ -207,7 +207,7 @@ api/
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
 │   │       ├── schema.ts     # AUTH_SCHEMA_SQL (incl. session_refused)
-│   │       ├── postgres-store.ts  # Durable AuthStore
+│   │       ├── postgres-store.ts  # Durable AuthStore; backfillSparkAddresses
 │   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
 │   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
 │   └── __tests__/            # Mirror tree; one *.test.ts per source file
@@ -540,7 +540,7 @@ Every HTTP endpoint **must** have at least one Playwright request against a
 booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
-the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `QueryGiftStore`,
+the default boot surface (today: `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `backfillSparkAddresses`, `encodeSparkAddress` (only called from `PostgresAuthStore.claimSparkPubkey`, whose route also needs the LNURL server, and `backfillSparkAddresses`), `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`, `PostgresFxSpotStore`, `migrateFxSpotSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
@@ -610,7 +610,8 @@ default boot): `ShopPayments`, `InMemoryShopPaymentStore`, `endPayment`, `lockAc
 repayment bill of a loan, and a loan is a post, which needs a verified wallet (their tests assert
 posting 409 `missing: ['lightning-address']`);
 `migrateSparkInvoiceSchema` and `PostgresSparkInvoiceStore`, which need `DATABASE_URL`;
-`concatBytes`, `protoVarintField`, `protoBytesField`, `decodeProto`, `encodeSparkInvoice`, `uuidV7`,
+`concatBytes` and `protoBytesField`, which are reached through `encodeSparkAddress` (needs `DATABASE_URL`) or when free in-app payments are on;
+`protoVarintField`, `encodeSparkInvoice`, `uuidV7`,
 `InMemorySparkInvoiceStore`, `encodeQuerySparkInvoicesRequest`, `parseQuerySparkInvoicesResponse`,
 `querySparkInvoices`, `zapReceiptSecretKey`, `buildZapReceipt`, `runSparkInvoiceTick`,
 `startSparkInvoiceWorker`, and `zapReceiptIngest`, which are reached only when free in-app payments

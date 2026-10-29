@@ -419,6 +419,14 @@ test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('Function: encodeSparkAddress — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
   request,
 }) => {
@@ -473,6 +481,11 @@ test('Function: usernameFromDisplayName — POST /me/name without bearer is 401'
 test('Function: backfillAccountUsernames — GET /healthz is ok after boot backfill', async ({
   request,
 }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: backfillSparkAddresses — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
@@ -2273,10 +2286,22 @@ test('Function: protoBytesField — free in-app payments are off on the default 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+test('Function: decodeProto — a wallet report with a Spark address invoice is acknowledged', async ({
   request,
 }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'spark-address',
+        invoice: 'spark1pgssyzwt0544600n5zkya7rvlnaz98l622mg04uhyaxgv6wt6534anx4kc986w',
+        method: 'spark',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['spark-address'] });
 });
 test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
   request,
@@ -4464,4 +4489,30 @@ test('Function: migrateShopPaymentSchema — default boot has no DATABASE_URL', 
   request,
 }) => {
   await noDatabase(request);
+});
+
+test('Function: parseTypedFiatAmount — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: isPosFiatCode — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: freezePosFiatCrosses — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: serializePosFiat — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: payRoutes — GET /pay/charges/:id is 404 when missing', async ({ request }) => {
+  expect((await request.get('/pay/charges/:id')).status()).toBe(404);
+});
+
+test('Function: payRoutes — GET /pay/:username/charges/:id is 404 when missing', async ({
+  request,
+}) => {
+  expect((await request.get('/pay/:username/charges/:id')).status()).toBe(404);
 });

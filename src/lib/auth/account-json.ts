@@ -360,7 +360,8 @@ export const EMPTY_DEBUG_NOSTR: DebugNostrFields = {
 
 /**
  * Operator JSON shape: the `account` columns except the legacy
- * `lightning_address` and `lightning_address_verified`, plus Nostr debug fields.
+ * `lightning_address` and `lightning_address_verified` and the derived
+ * `spark_address` (it follows from `sparkPubkey`), plus Nostr debug fields.
  */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
@@ -566,7 +567,8 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
  * Includes the `account` columns except the legacy `lightning_address` and
- * `lightning_address_verified`, plus Nostr debug fields. Never used by member
+ * `lightning_address_verified` and the derived `spark_address` (it follows from
+ * `sparkPubkey`), plus Nostr debug fields. Never used by member
  * `GET /me`. Does not decrypt nsec.
  *
  * @param account - Stored account.

@@ -6,16 +6,22 @@ Source: [src/lib/pos-store.ts](../../../src/lib/pos-store.ts)
 
 ## Columns
 
-| Column          | Kind               | Database type              | Nullable | Default | References                   |
-| --------------- | ------------------ | -------------------------- | -------- | ------- | ---------------------------- |
-| `id`            | UUID (primary key) | `uuid`                     | No       | –       | –                            |
-| `account_id`    | UUID (foreign key) | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
-| `amount_sats`   | Integer            | `bigint`                   | No       | –       | –                            |
-| `status`        | ENUM               | `text`                     | No       | –       | –                            |
-| `created_at`    | Date/time          | `timestamp with time zone` | No       | –       | –                            |
-| `expires_at`    | Date/time          | `timestamp with time zone` | No       | –       | –                            |
-| `paid_at`       | Date/time          | `timestamp with time zone` | Yes      | –       | –                            |
-| `spark_invoice` | Free text          | `text`                     | Yes      | –       | –                            |
+| Column            | Kind               | Database type              | Nullable | Default | References                   |
+| ----------------- | ------------------ | -------------------------- | -------- | ------- | ---------------------------- |
+| `id`              | UUID (primary key) | `uuid`                     | No       | –       | –                            |
+| `account_id`      | UUID (foreign key) | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
+| `amount_sats`     | Integer            | `bigint`                   | No       | –       | –                            |
+| `status`          | ENUM               | `text`                     | No       | –       | –                            |
+| `created_at`      | Date/time          | `timestamp with time zone` | No       | –       | –                            |
+| `expires_at`      | Date/time          | `timestamp with time zone` | No       | –       | –                            |
+| `paid_at`         | Date/time          | `timestamp with time zone` | Yes      | –       | –                            |
+| `spark_invoice`   | Free text          | `text`                     | Yes      | –       | –                            |
+| `amount_currency` | ENUM               | `text`                     | Yes      | –       | –                            |
+| `amount_text`     | Free text          | `text`                     | Yes      | –       | –                            |
+| `fiat_usd`        | Decimal            | `numeric(20,2)`            | Yes      | –       | –                            |
+| `fiat_chf`        | Decimal            | `numeric(20,2)`            | Yes      | –       | –                            |
+| `fiat_eur`        | Decimal            | `numeric(20,2)`            | Yes      | –       | –                            |
+| `fiat_php`        | Decimal            | `numeric(20,2)`            | Yes      | –       | –                            |
 
 ## Indexes
 

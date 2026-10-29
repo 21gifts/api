@@ -13,15 +13,8 @@
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
 import { fiatAmountToCents } from '@/lib/credit-repayment';
 import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
-import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/btc-usd-candles';
-import {
-  fiatFromSats,
-  satsToUsdCents,
-  usdCentsToFiatCents,
-  usdCentsToString,
-  type FiatAmounts,
-} from '@/lib/money';
+import type { FiatAmounts } from '@/lib/money';
 import type { PostDayCount } from '@/lib/post-stats';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import { canonicalGoalAmount, type GoalCurrency } from '@/lib/goal-rate';
@@ -157,29 +150,29 @@ function mapGoalFiatText(value: string | number | null | undefined): string | nu
   return amount.toFixed(2);
 }
 
+/**
+ * Resolve the payment snapshot for a new forum row.
+ *
+ * An omitted snapshot is null for USD, CHF, EUR, and PHP. It is not priced
+ * from a spot or from the daily rate book. A snapshot the caller passed,
+ * including `null`, is returned unchanged.
+ *
+ * @param _sats - Whole sats on the row. Unused.
+ * @param _createdAt - Row creation instant. Unused.
+ * @param supplied - Caller snapshot, `null`, or omitted.
+ * @param _options - Spot fetch and rate book. Unused.
+ * @returns The caller snapshot, or `null` when it was omitted.
+ */
 async function resolvePaymentFiat(
-  sats: number,
-  createdAt: Date,
+  _sats: number,
+  _createdAt: Date,
   supplied: FiatAmounts | null | undefined,
-  options: Required<PaymentFiatStoreOptions>,
+  _options: Required<PaymentFiatStoreOptions>,
 ): Promise<FiatAmounts | null> {
-  if (supplied !== undefined) {
-    return supplied;
-  }
-  if (sats === 0) {
+  if (supplied === undefined) {
     return null;
   }
-  const spot = await fetchBtcUsdSpot(options.fetchImpl);
-  if (spot === null) {
-    return null;
-  }
-  const day = createdAt.toISOString().slice(0, 10);
-  try {
-    const crosses = (await options.fiatRates.ensureDays([day], options.now())).get(day) ?? {};
-    return fiatFromSats(sats, spot, crosses);
-  } catch {
-    return fiatFromSats(sats, spot, {});
-  }
+  return supplied;
 }
 
 function kind1MissingPhotoUrl(event: Record<string, unknown> | null, messageId: string): boolean {
@@ -2097,94 +2090,6 @@ export async function migrateMessageSchema(sql: SqlClient): Promise<void> {
   for (const statement of MESSAGE_SCHEMA_SQL) {
     await sql.execute(statement);
   }
-  await backfillMessageFiat(sql, 'message', 'sats');
-  await backfillMessageFiat(sql, 'nostr_zap_ingest', 'amount_sats');
-}
-
-interface MessageFiatBackfillRow {
-  id: string;
-  created_at: Date | string;
-  amount_sats: number | string | bigint;
-}
-
-interface MessageFiatBackfillRateRow {
-  day: Date | string;
-  usd_per_btc: string | number;
-  quote: string | null;
-  rate: string | number | null;
-}
-
-/** UTC day, or `null` when the stored instant is not a real timestamp. */
-function utcDayOrNull(value: Date | string): string | null {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return date.toISOString().slice(0, 10);
-}
-
-/** Network-free, idempotent stored-fiat backfill for one message payment table. */
-async function backfillMessageFiat(
-  sql: SqlClient,
-  table: 'message' | 'nostr_zap_ingest',
-  satsColumn: 'sats' | 'amount_sats',
-): Promise<void> {
-  const candidates = await sql.query<MessageFiatBackfillRow>(
-    `SELECT id, created_at, ${satsColumn} AS amount_sats
-     FROM ${table}
-     WHERE ${satsColumn} > 0 AND fiat_usd IS NULL`,
-  );
-  const days = [
-    ...new Set(
-      candidates.flatMap((row) => {
-        const day = utcDayOrNull(row.created_at);
-        return day === null ? [] : [day];
-      }),
-    ),
-  ];
-  if (days.length === 0) {
-    return;
-  }
-  const placeholders = days.map((_, index) => `$${index + 1}::date`).join(', ');
-  const rateRows = await sql.query<MessageFiatBackfillRateRow>(
-    `SELECT b.day::text AS day, b.usd_per_btc::text AS usd_per_btc,
-            f.quote, f.rate::text AS rate
-     FROM btc_usd_daily b
-     LEFT JOIN usd_fiat_daily f ON f.day = b.day AND f.quote IN ('CHF', 'EUR', 'PHP')
-     WHERE b.day IN (${placeholders})`,
-    days,
-  );
-  const rates = new Map<string, { usdPerBtc: string; crosses: Record<string, string> }>();
-  for (const row of rateRows) {
-    const day = String(row.day).slice(0, 10);
-    const value = rates.get(day) ?? { usdPerBtc: String(row.usd_per_btc), crosses: {} };
-    if (row.quote !== null && row.rate !== null) {
-      value.crosses[row.quote] = String(row.rate);
-    }
-    rates.set(day, value);
-  }
-  for (const row of candidates) {
-    const day = utcDayOrNull(row.created_at);
-    if (day === null) {
-      continue;
-    }
-    const rate = rates.get(day);
-    if (rate === undefined) {
-      continue;
-    }
-    const usdCents = satsToUsdCents(Number(row.amount_sats), rate.usdPerBtc);
-    const quote = (code: 'CHF' | 'EUR' | 'PHP'): string | null => {
-      const cross = rate.crosses[code];
-      return cross === undefined ? null : usdCentsToString(usdCentsToFiatCents(usdCents, cross));
-    };
-    await sql.execute(
-      `UPDATE ${table}
-       SET fiat_usd = $2::numeric, fiat_chf = $3::numeric,
-           fiat_eur = $4::numeric, fiat_php = $5::numeric
-       WHERE id = $1 AND fiat_usd IS NULL`,
-      [row.id, usdCentsToString(usdCents), quote('CHF'), quote('EUR'), quote('PHP')],
-    );
-  }
 }
 
 /** Copy a {@link ForumPhoto} so callers cannot mutate store buffers. */
@@ -2455,12 +2360,15 @@ function copyZapIngest(row: ZapIngestRow): ZapIngestRow {
 }
 
 function addPayerCents(current: bigint | null, amount: string | null | undefined): bigint | null {
-  if (current === null || amount === null || amount === undefined) {
-    return null;
+  if (amount === null || amount === undefined) {
+    return current;
   }
   const cents = fiatAmountToCents(amount);
   if (cents === null) {
-    return null;
+    return current;
+  }
+  if (current === null) {
+    return cents;
   }
   return current + cents;
 }
@@ -3950,10 +3858,10 @@ export class InMemoryMessageStore implements MessageStore {
       );
       const current = totals.get(receipt.payerAccountId) ?? {
         sats: 0,
-        usd: 0n,
-        chf: 0n,
-        eur: 0n,
-        php: 0n,
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
       };
       current.sats += receipt.sats;
       current.usd = addPayerCents(current.usd, ingest?.amountUsd);
@@ -7250,10 +7158,10 @@ export class PostgresMessageStore implements MessageStore {
     }>(
       `SELECT r.payer_account_id AS account_id,
               SUM(r.sats)::bigint AS sats,
-              CASE WHEN COUNT(i.fiat_usd) = COUNT(*) THEN SUM(i.fiat_usd)::text ELSE NULL END AS usd,
-              CASE WHEN COUNT(i.fiat_chf) = COUNT(*) THEN SUM(i.fiat_chf)::text ELSE NULL END AS chf,
-              CASE WHEN COUNT(i.fiat_eur) = COUNT(*) THEN SUM(i.fiat_eur)::text ELSE NULL END AS eur,
-              CASE WHEN COUNT(i.fiat_php) = COUNT(*) THEN SUM(i.fiat_php)::text ELSE NULL END AS php
+              SUM(i.fiat_usd)::text AS usd,
+              SUM(i.fiat_chf)::text AS chf,
+              SUM(i.fiat_eur)::text AS eur,
+              SUM(i.fiat_php)::text AS php
        FROM nostr_zap_receipt r
        LEFT JOIN LATERAL (
          SELECT fiat_usd, fiat_chf, fiat_eur, fiat_php

@@ -1,8 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -120,6 +125,47 @@ describe('migrateAuthSchema', () => {
     const sql = new MockSql();
     await migrateAuthSchema(sql);
     expect(sql.executes.map((e) => e.text)).toEqual([...AUTH_SCHEMA_SQL]);
+  });
+});
+
+describe('backfillSparkAddresses', () => {
+  const KEY_A = `02${'a'.repeat(64)}`;
+  const KEY_B = `03${'b'.repeat(64)}`;
+  const KEY_C = `02${'c'.repeat(64)}`;
+  const UPDATE =
+    'UPDATE account SET spark_address = $3 WHERE id = $1 AND spark_pubkey = $2 RETURNING id';
+
+  it('writes a missing or stale address, skips a current one, and logs the rows written', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sql = new MockSql();
+    sql.nextQueryRows = [
+      [
+        { id: 'a', spark_pubkey: KEY_A, spark_address: null },
+        { id: 'b', spark_pubkey: KEY_B, spark_address: encodeSparkAddress(KEY_B) },
+        { id: 'c', spark_pubkey: KEY_C, spark_address: encodeSparkAddress(KEY_A) },
+      ],
+      [{ id: 'a' }],
+      [],
+    ];
+    try {
+      expect(await backfillSparkAddresses(sql)).toBe(1);
+      expect(sql.queries.map((q) => q.text)).toEqual([
+        'SELECT id, spark_pubkey, spark_address FROM account WHERE spark_pubkey IS NOT NULL',
+        UPDATE,
+        UPDATE,
+      ]);
+      expect(sql.queries[1]?.params).toEqual(['a', KEY_A, encodeSparkAddress(KEY_A)]);
+      expect(sql.queries[2]?.params).toEqual(['c', KEY_C, encodeSparkAddress(KEY_C)]);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'account.spark_address.backfill' && e['count'] === 1),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
   });
 });
 
@@ -2085,12 +2131,14 @@ describe('PostgresAuthStore spark pubkey', () => {
       { ...ACCOUNT_ROW, spark_pubkey: PUBKEY, wallet_required: true, username: 'ada' },
     ];
     const stored = await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY);
-    expect(sql.queries[0]?.text).toMatch(/UPDATE account SET spark_pubkey = \$2/);
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE account SET spark_pubkey = \$2, spark_address = \$3/,
+    );
     expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required IS TRUE/);
     expect(sql.queries[0]?.text).toMatch(/username IS NOT NULL AND trim\(username\) <> ''/);
     expect(sql.queries[0]?.text).toMatch(/RETURNING/);
-    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY]);
+    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY, encodeSparkAddress(PUBKEY)]);
     expect(stored?.wrote).toBe(true);
     expect(stored?.account.sparkPubkey).toBe(PUBKEY);
   });

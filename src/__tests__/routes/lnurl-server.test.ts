@@ -927,6 +927,12 @@ describe('lnurlServerRoutes', () => {
           expiresAt: new Date(NOW + 60_000),
           paidAt: null,
           sparkInvoice: null,
+          amountCurrency: null,
+          amountText: null,
+          fiatUsd: null,
+          fiatChf: null,
+          fiatEur: null,
+          fiatPhp: null,
         };
       }
 
