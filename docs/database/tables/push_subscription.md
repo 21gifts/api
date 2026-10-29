@@ -6,13 +6,14 @@ Source: [src/lib/push-store.ts](../../../src/lib/push-store.ts)
 
 ## Columns
 
-| Column       | Kind                    | Database type              | Nullable | Default | References                   |
-| ------------ | ----------------------- | -------------------------- | -------- | ------- | ---------------------------- |
-| `endpoint`   | Free text (primary key) | `text`                     | No       | –       | –                            |
-| `account_id` | UUID (foreign key)      | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
-| `p256dh`     | Free text               | `text`                     | No       | –       | –                            |
-| `auth`       | Free text               | `text`                     | No       | –       | –                            |
-| `created_at` | Date/time               | `timestamp with time zone` | No       | –       | –                            |
+| Column          | Kind                    | Database type              | Nullable | Default | References                   |
+| --------------- | ----------------------- | -------------------------- | -------- | ------- | ---------------------------- |
+| `endpoint`      | Free text (primary key) | `text`                     | No       | –       | –                            |
+| `account_id`    | UUID (foreign key)      | `uuid`                     | No       | –       | [`account`.`id`](account.md) |
+| `p256dh`        | Free text               | `text`                     | No       | –       | –                            |
+| `auth`          | Free text               | `text`                     | No       | –       | –                            |
+| `created_at`    | Date/time               | `timestamp with time zone` | No       | –       | –                            |
+| `session_token` | Free text               | `text`                     | Yes      | –       | –                            |
 
 ## Indexes
 

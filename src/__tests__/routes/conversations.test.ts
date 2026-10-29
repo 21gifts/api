@@ -2422,6 +2422,7 @@ describe('POST /conversations/:id', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(auth, conversations, new InMemoryMessageStore(), { pushStore }).request(
       `/conversations/${thread.id}`,
@@ -2454,6 +2455,7 @@ describe('POST /conversations/:id', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     pushStore.enqueue = async () => {
       throw new Error('enqueue boom');
@@ -2520,6 +2522,7 @@ describe('POST /conversations/:id', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/marites',
@@ -2527,6 +2530,7 @@ describe('POST /conversations/:id', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(auth, conversations, new InMemoryMessageStore(), { pushStore }).request(
       `/conversations/${thread.id}`,

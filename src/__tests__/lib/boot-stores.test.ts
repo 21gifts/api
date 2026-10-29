@@ -24,7 +24,7 @@ import { PostgresPushStore } from '@/lib/push-store';
 import { PostgresTrustStore } from '@/lib/trust-store';
 import { PostgresApiLogStore } from '@/lib/api-log';
 import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
-import { setDiagnosticSink } from '@/lib/log';
+import { logEvent, setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
 import {
   DAILY_ROSTER_WALLET_MOVE_SQL,
@@ -36,6 +36,7 @@ import { PostgresBannerStore } from '@/lib/banner-store';
 import { PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { PostgresWalletStore } from '@/lib/wallet-store';
 import { PostgresMemberEventStore } from '@/lib/member-event-store';
+import { PostgresShopIdentityStore } from '@/lib/shop-identity';
 
 function unusedClient(): SqlClient {
   return {
@@ -600,6 +601,60 @@ describe('openBootStores', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'diagnostic.write.failed')).toBe(true);
   });
 
+  it('writes api_log and diagnostic_event on logSql', async () => {
+    const inserts: string[] = [];
+    const client = (label: string): SqlClient => ({
+      query: async <T>(text: string): Promise<T[]> => {
+        if (text.includes('min(paid_at)')) {
+          return [{ min: null, max: null }] as T[];
+        }
+        return [] as T[];
+      },
+      execute: async (text: string) => {
+        if (text.includes('INSERT INTO api_log')) {
+          inserts.push(`${label}:api_log`);
+        } else if (text.includes('INSERT INTO diagnostic_event')) {
+          inserts.push(`${label}:diagnostic_event`);
+        }
+      },
+    });
+    const stores = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => client('primary'),
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        logSql: client('log'),
+      },
+    );
+    if (stores.apiLogStore === undefined) {
+      throw new Error('expected api log store');
+    }
+    await stores.apiLogStore.append({
+      id: '00000000-0000-4000-8000-000000000001',
+      createdAt: new Date(0),
+      method: 'GET',
+      path: '/info',
+      status: 200,
+      ms: 1,
+      accountId: null,
+      authKind: 'none',
+      clientIp: null,
+      clientCountry: null,
+      cfRay: null,
+      userAgent: null,
+      acceptLanguage: null,
+      origin: null,
+    });
+    logEvent('boot.test.log_client');
+    await vi.waitFor(() => {
+      expect(inserts).toContain('log:diagnostic_event');
+    });
+    expect(inserts.filter((row) => row.startsWith('primary:'))).toEqual([]);
+    expect(inserts).toContain('log:api_log');
+  });
+
   it('logs a failed external-zapper backfill and still returns every durable store', async () => {
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {
@@ -623,6 +678,7 @@ describe('openBootStores', () => {
     });
 
     expect(stores.messageStore).toBeInstanceOf(PostgresMessageStore);
+    expect(stores.shopIdentityStore).toBeInstanceOf(PostgresShopIdentityStore);
     expect(stores.translationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).toBeInstanceOf(PostgresTranslationStore);
     expect(stores.conversationTranslationStore).not.toBe(stores.translationStore);

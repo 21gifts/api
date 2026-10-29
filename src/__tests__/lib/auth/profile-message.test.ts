@@ -98,6 +98,7 @@ describe('ensureProfileMessage', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const result = await ensureProfileMessage({
       auth,
@@ -133,6 +134,7 @@ describe('ensureProfileMessage', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const result = await ensureProfileMessage({
       auth,

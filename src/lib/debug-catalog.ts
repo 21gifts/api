@@ -21,6 +21,7 @@ import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import { serializeTrustEdge } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
+import type { ShopIdentityStore } from '@/lib/shop-identity';
 
 /** Postgres table names the operator dump may read. */
 export const DEBUG_CATALOG_TABLES = [
@@ -36,6 +37,7 @@ export const DEBUG_CATALOG_TABLES = [
   'conversation_read',
   'message',
   'message_extra_photo',
+  'shop_identity',
   'message_invoice',
   'nostr_zap_ingest',
   'nostr_zap_receipt',
@@ -73,6 +75,11 @@ export interface DebugCatalogDeps {
   auth: AuthStore;
   /** Forum notes, invoices, zaps, extra-photo meta. */
   messages: MessageStore;
+  /**
+   * Shop Nostr identities and OpenCryptoPay outbox state. Omitted dumps
+   * `shop_identity` as `[]`. The encrypted secret is never dumped.
+   */
+  shops?: ShopIdentityStore;
   /** Contact mailbox. */
   contacts: ContactStore;
   /** Point-of-sale charges. Omitted dumps as `[]`. */
@@ -285,6 +292,25 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
     }
     case 'message_extra_photo':
       return (await deps.messages.listExtraPhotoMeta?.(MESSAGE_LIST_LIMIT)) ?? [];
+    case 'shop_identity':
+      return ((await deps.shops?.listDebug(MESSAGE_LIST_LIMIT)) ?? []).map((row) => ({
+        messageId: row.messageId,
+        nostrPubkey: row.nostrPubkey,
+        nostrKekId: row.nostrKekId,
+        nostrKeyCustody: row.nostrKeyCustody,
+        nostrKeyCreatedAt: row.nostrKeyCreatedAt.toISOString(),
+        profileName: row.profileName,
+        ocpPhotosHash: row.ocpPhotosHash,
+        ocpPhotosPending: row.ocpPhotosPending,
+        ocpPhotosGeneration: row.ocpPhotosGeneration,
+        ocpPhotosClaimedUntil: iso(row.ocpPhotosClaimedUntil),
+        ocpPhotosClaim: row.ocpPhotosClaim,
+        ocpPlacePending: row.ocpPlacePending,
+        ocpPlaceGeneration: row.ocpPlaceGeneration,
+        ocpPlaceClaimedUntil: iso(row.ocpPlaceClaimedUntil),
+        ocpPlaceClaim: row.ocpPlaceClaim,
+        ocpRevision: row.ocpRevision,
+      }));
     case 'message_invoice':
       return (await deps.messages.listInvoiceAttempts(MESSAGE_LIST_LIMIT)).map(serializeInvoice);
     case 'nostr_zap_ingest':
@@ -329,6 +355,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         p256dh: row.p256dh,
         auth: row.auth,
         createdAt: row.createdAt.toISOString(),
+        sessionToken: row.sessionToken,
       }));
     }
     case 'push_outbox': {
@@ -343,6 +370,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         attempts: row.attempts,
         claimedUntil: iso(row.claimedUntil),
         createdAt: row.createdAt.toISOString(),
+        finishedAt: iso(row.finishedAt),
         deliveredEndpoints: row.deliveredEndpoints,
         skipEndpoints: row.skipEndpoints,
       }));

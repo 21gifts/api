@@ -99,6 +99,11 @@ import {
   PostgresMemberEventStore,
   type MemberEventStore,
 } from '@/lib/member-event-store';
+import {
+  migrateShopIdentitySchema,
+  PostgresShopIdentityStore,
+  type ShopIdentityStore,
+} from '@/lib/shop-identity';
 
 /** Auth, gift, forum, contact, conversation, notification, push, trust, funding, and FX persistence produced from `DATABASE_URL`. */
 export interface BootStores {
@@ -125,6 +130,8 @@ export interface BootStores {
    * opened so `createApp` keeps the empty in-memory default.
    */
   messageStore: MessageStore | undefined;
+  /** Postgres shop identities/outboxes, or `undefined` on memory boots. */
+  shopIdentityStore: ShopIdentityStore | undefined;
   /**
    * Postgres-backed translation cache, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
@@ -247,6 +254,13 @@ export interface BootFxOptions {
    * (default: `resolveLnurlServerConfig(process.env)`).
    */
   lnurlServer?: LnurlServerConfig | null;
+  /**
+   * Client for `api_log` and `diagnostic_event`.
+   * Production passes a small pool with statement and lock timeouts.
+   * Omitted in tests, which then use the primary client. Migrations always
+   * use the primary client.
+   */
+  logSql?: SqlClient;
 }
 
 /**
@@ -271,18 +285,20 @@ export interface BootFxOptions {
  * `memberEventStore: undefined`,
  * `loginGateStore: undefined`,
  * `listDbChange: undefined`,
- * `debugDbStore: undefined`, `nostrKek: undefined`,
+ * `debugDbStore: undefined`, `shopIdentityStore: undefined`, `nostrKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, an empty {@link InMemoryFiatStore}, and an
  * empty {@link InMemoryFxSpotStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
  * `openAuthStore`) then the FX tables (`btc_usd_daily`, `usd_fiat_daily`, then
  * `btc_fiat_spot`, served by {@link PostgresFxSpotStore}),
- * `message`, `contact`, `member_habit` (via `migrateMemberHabitSchema`),
+ * `message`, `shop_identity` (via `migrateShopIdentitySchema`), `contact`,
+ * `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
  * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
+ * {@link PostgresShopIdentityStore},
  * {@link PostgresTranslationStore},
  * {@link PostgresContactStore}, {@link PostgresMemberHabitStore},
  * {@link PostgresPosStore}, {@link PostgresConversationStore},
@@ -302,7 +318,7 @@ export interface BootFxOptions {
  * Memory boots omit
  * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
  * undefined, and do not run the `db_change` migrate. SQL boots return
- * {@link PostgresNotificationStore}, {@link PostgresTrustStore},
+ * {@link PostgresShopIdentityStore}, {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
  * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
@@ -311,7 +327,9 @@ export interface BootFxOptions {
  * `migrateDailyRosterSchema` run after auth/`account`
  * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
  * `trg_db_change` attaches to `trust_edge`, `funding_grant`, `daily_roster`,
- * and `daily_roster_entry`.
+ * and `daily_roster_entry`. `migrateShopIdentitySchema` runs right after
+ * `migrateMessageSchema` and before `migrateDbChangeSchema`, so
+ * `trg_db_change` attaches to `shop_identity`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
@@ -359,6 +377,7 @@ export async function openBootStores(
       fiatRates: new InMemoryFiatStore(),
       fxSpotStore: new InMemoryFxSpotStore(),
       messageStore: undefined,
+      shopIdentityStore: undefined,
       translationStore: undefined,
       conversationTranslationStore: undefined,
       nostrKek: undefined,
@@ -391,6 +410,7 @@ export async function openBootStores(
   await migrateFxSpotSchema(sqlClient);
   await migrateGiftSchema(sqlClient);
   await migrateMessageSchema(sqlClient);
+  await migrateShopIdentitySchema(sqlClient);
   await migrateContactSchema(sqlClient);
   const habitSql = {
     query: async (text: string, params?: unknown[]) => ({
@@ -413,7 +433,8 @@ export async function openBootStores(
   await migrateWalletSchema(sqlClient);
   await migrateMemberEventSchema(sqlClient);
   await migrateLoginGateSchema(sqlClient);
-  const diagnosticStore = new PostgresDiagnosticStore(sqlClient);
+  const logSql = fx?.logSql ?? sqlClient;
+  const diagnosticStore = new PostgresDiagnosticStore(logSql);
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
       .append({
@@ -546,6 +567,7 @@ export async function openBootStores(
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });
+  const shopIdentityStore = new PostgresShopIdentityStore(sqlClient, messageStore);
   const translationStore = new PostgresTranslationStore(sqlClient);
   const conversationTranslationStore = new PostgresTranslationStore(
     sqlClient,
@@ -574,7 +596,7 @@ export async function openBootStores(
     },
   });
   const posStore = new PostgresPosStore(sqlClient, transactions);
-  const apiLogStore = new PostgresApiLogStore(sqlClient);
+  const apiLogStore = new PostgresApiLogStore(logSql);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);
   const notificationStore = new PostgresNotificationStore(sqlClient);
@@ -589,6 +611,7 @@ export async function openBootStores(
     fiatRates,
     fxSpotStore: new PostgresFxSpotStore(sqlClient),
     messageStore,
+    shopIdentityStore,
     translationStore,
     conversationTranslationStore,
     nostrKek,

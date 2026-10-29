@@ -197,7 +197,7 @@ export function readRelaysFromKind10002(tags: readonly (readonly string[])[], ma
 }
 
 /**
- * Public HTTP origin for photo URLs in kind:1.
+ * Public HTTP origin for photo URLs (kind:1, shop kind 0, GET /shops/:npub).
  *
  * Maps `https://21.gifts` → `https://api.21.gifts`,
  * `https://dev.21.gifts` → `https://dev-api.21.gifts`, and

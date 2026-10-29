@@ -181,13 +181,87 @@ export interface RequestLogDeps {
   spendApiToken: string | undefined;
   /** Clock returning epoch milliseconds (default: `Date.now`). */
   now?: () => number;
+  /**
+   * When `true`, wait until the audit write finishes or fails before the
+   * middleware returns. Production leaves this unset: a waiting write holds
+   * the HTTP response, so a stuck insert keeps the client on an open request.
+   */
+  awaitWrite?: boolean;
+}
+
+/** Fields captured before the audit write, so the write does not touch the Hono context. */
+interface RequestLogCapture {
+  /** HTTP method. */
+  method: string;
+  /** Redacted path. */
+  path: string;
+  /** Response status. */
+  status: number;
+  /** Handler duration in milliseconds. */
+  ms: number;
+  /** Authorization header, or `undefined`. */
+  authorizationHeader: string | undefined;
+  /** Validated client metadata. */
+  meta: ReturnType<typeof readClientRequestMeta>;
+}
+
+/**
+ * Classify the bearer and append one `api_log` row.
+ *
+ * Auth failure still stores `authKind: 'none'`. A store failure logs
+ * `api_log.write.failed` and does not throw.
+ *
+ * @param deps - Audit store, auth store, tokens, and optional clock.
+ * @param captured - Method, path, status, duration, and client metadata.
+ * @returns Resolves when the write has finished or failed.
+ */
+async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture): Promise<void> {
+  const clock = deps.now ?? Date.now;
+  let accountId: string | null = null;
+  let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
+  try {
+    const auth = await resolveRequestAuth({
+      authorizationHeader: captured.authorizationHeader,
+      debugToken: deps.debugToken,
+      spendApiToken: deps.spendApiToken,
+      authStore: deps.authStore,
+      now: clock(),
+    });
+    accountId = auth.accountId;
+    authKind = auth.authKind;
+  } catch {
+    accountId = null;
+    authKind = 'none';
+  }
+  try {
+    await deps.apiLogStore.append({
+      id: crypto.randomUUID(),
+      createdAt: new Date(clock()),
+      method: captured.method,
+      path: captured.path,
+      status: captured.status,
+      ms: captured.ms,
+      accountId,
+      authKind,
+      clientIp: captured.meta.clientIp,
+      clientCountry: captured.meta.clientCountry,
+      cfRay: captured.meta.cfRay,
+      userAgent: captured.meta.userAgent,
+      acceptLanguage: captured.meta.acceptLanguage,
+      origin: captured.meta.origin,
+    });
+  } catch {
+    logEvent('api_log.write.failed');
+  }
 }
 
 /**
  * Hono middleware: one `http.request` event after the handler, then one
  * `api_log` row. Skips `/healthz` and `OPTIONS` (stdout and store). Never
  * includes the query string, body, Authorization, or tokens. Redacts
- * `/view/<segment>` via {@link requestLogPath}. A store write failure logs
+ * `/view/<segment>` via {@link requestLogPath}. The audit write does not
+ * delay the response unless {@link RequestLogDeps.awaitWrite} is set, so a
+ * stuck insert cannot hold the client open. A store write failure logs
  * `api_log.write.failed` and does not replace the response.
  *
  * @param deps - Audit store, auth store, tokens, and optional clock.
@@ -203,49 +277,29 @@ export function requestLog(deps: RequestLogDeps): MiddlewareHandler {
         return;
       }
       const ms = Date.now() - started;
-      logEvent('http.request', {
+      const captured: RequestLogCapture = {
         method: c.req.method,
         path: requestLogPath(c.req.path),
         status: c.res.status,
         ms,
+        authorizationHeader: c.req.header('authorization'),
+        meta,
+      };
+      logEvent('http.request', {
+        method: captured.method,
+        path: captured.path,
+        status: captured.status,
+        ms: captured.ms,
       });
-      const clock = deps.now ?? Date.now;
-      let accountId: string | null = null;
-      let authKind: 'session' | 'debug' | 'spend' | 'none' = 'none';
-      try {
-        const auth = await resolveRequestAuth({
-          authorizationHeader: c.req.header('authorization'),
-          debugToken: deps.debugToken,
-          spendApiToken: deps.spendApiToken,
-          authStore: deps.authStore,
-          now: clock(),
-        });
-        accountId = auth.accountId;
-        authKind = auth.authKind;
-      } catch {
-        accountId = null;
-        authKind = 'none';
+      const write = writeRequestLog(deps, captured);
+      if (deps.awaitWrite === true) {
+        await write;
+        return;
       }
-      try {
-        await deps.apiLogStore.append({
-          id: crypto.randomUUID(),
-          createdAt: new Date(clock()),
-          method: c.req.method,
-          path: requestLogPath(c.req.path),
-          status: c.res.status,
-          ms,
-          accountId,
-          authKind,
-          clientIp: meta.clientIp,
-          clientCountry: meta.clientCountry,
-          cfRay: meta.cfRay,
-          userAgent: meta.userAgent,
-          acceptLanguage: meta.acceptLanguage,
-          origin: meta.origin,
-        });
-      } catch {
+      void write.catch(() => {
+        /* v8 ignore next -- writeRequestLog already swallows auth and append failures */
         logEvent('api_log.write.failed');
-      }
+      });
     });
   };
 }

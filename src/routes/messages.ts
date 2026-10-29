@@ -51,6 +51,7 @@ import {
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
+  type MessageShopAccount,
 } from '@/lib/message';
 import {
   textHasHashtagToken,
@@ -98,8 +99,8 @@ import {
   placesMatch,
   type ForumPlace,
 } from '@/lib/place';
-import { shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
-import { removeShopOcpPlace, syncShopOcpPlace, type MapPush } from '@/lib/ocp-place';
+import { SHOP_NAME_REQUIRED, shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
+import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { repaymentDueBills, repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
@@ -286,11 +287,14 @@ export interface MessagesRouteDeps {
    */
   spendPing?: SpendPing;
   /**
-   * Optional push of a `#21GiftsShop` pin to the OpenCryptoPay map (PUT on
-   * write, DELETE on clear or hide). Omitted → the forum write still
-   * succeeds and nothing is sent.
+   * Shop identities. With `shopKek` (or `nostrKek`), a write that makes a
+   * note a public shop creates its key after the commit. The response
+   * carries `shopNpub` only for a listed shop. The OpenCryptoPay
+   * outbox is queued by the store write itself. Omitted → no shop keys.
    */
-  mapPush?: MapPush;
+  shopIdentities?: ShopIdentityStore;
+  /** KEK for new shop keys. Default `nostrKek`. */
+  shopKek?: Uint8Array;
   /**
    * Funding grants for spend-ping eligibility (default: empty
    * {@link InMemoryFundingStore}).
@@ -363,6 +367,31 @@ export interface MessagesRouteDeps {
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
 const defaultHeartLimiter = new HeartRateLimiter();
+
+/**
+ * After a committed write that can make a note a public shop: create its key
+ * once (S1). The HTTP response carries `shopNpub` only for a listed shop.
+ * The OpenCryptoPay outbox is queued by the store write itself.
+ * A failure logs `shop.nostr_key.failed` and never fails the request.
+ *
+ * @param deps - Route deps (shop identities and KEK).
+ * @param messageId - Written note id.
+ * @returns The shop npub, or `undefined` when the note has no key.
+ */
+async function ensureShopIdentity(
+  deps: MessagesRouteDeps,
+  messageId: string,
+): Promise<string | undefined> {
+  const kek = deps.shopKek ?? deps.nostrKek;
+  if (deps.shopIdentities === undefined || kek === undefined) return undefined;
+  try {
+    const identity = await deps.shopIdentities.ensureListed(messageId, kek);
+    return identity === undefined ? undefined : shopNpub(identity);
+  } catch {
+    logEvent('shop.nostr_key.failed', { messageId });
+    return undefined;
+  }
+}
 
 /**
  * Whether a credit note still has money out. Once any sats arrived, the note
@@ -460,7 +489,7 @@ function ensureShopNoteTag(text: string): string {
  * Both absent matches. One absent does not. Only the account id counts.
  */
 function shopAccountsMatch(
-  a: { id: string; username: string; name: string } | null | undefined,
+  a: MessageShopAccount | null | undefined,
   b: { id: string; username: string; name: string } | null,
 ): boolean {
   const left = a ?? null;
@@ -871,12 +900,17 @@ async function frozenAskResponse(
   return { goal: frozen.goal };
 }
 
+/** A top-level shop note must name its 21.gifts account. */
+const SHOP_ACCOUNT_REQUIRED = 'A shop note needs a shop account';
+
 /**
- * Resolve an optional shop username before a note is created.
+ * Resolve `shopUsername` before a note is created.
  *
  * Omitted, null, blank, or only `@` means no assignment. A non-blank value
  * is only valid on a top-level shop note. Unknown and unusable handles fail
- * before `persistForumPost`.
+ * before `persistForumPost`. A top-level shop note with no assignment is
+ * rejected afterwards by {@link shopAccountRequiredProblem}, after the pin
+ * checks.
  *
  * @param deps - Auth store used for the username lookup.
  * @param text - Normalised note body.
@@ -925,8 +959,11 @@ async function postedShopAccount(
 }
 
 /**
- * Shop-with-pin completeness for create. A shop note without a pin stays
- * allowed. Replies never carry a pin.
+ * Shop-pin completeness for create. A top-level shop note needs a pin,
+ * because the shop name is the pin label. A missing pin is
+ * {@link SHOP_NAME_REQUIRED}. A pin must pass {@link shopPlaceProblem} and
+ * then {@link shopTextProblem}. Replies and notes that are not shops skip
+ * this. A non-shop pin may still omit its label.
  *
  * @param text - Normalised forum text.
  * @param parentId - Reply parent, or `null` for top-level.
@@ -938,10 +975,34 @@ function shopPinRegistrationProblem(
   parentId: string | null,
   place: ForumPlace | null,
 ): string | null {
-  if (parentId !== null || place === null || !textHasHashtagToken(text, '21GiftsShop')) {
+  if (parentId !== null || !textHasHashtagToken(text, '21GiftsShop')) {
     return null;
   }
+  if (place === null) {
+    return SHOP_NAME_REQUIRED;
+  }
   return shopPlaceProblem(place) ?? shopTextProblem(text, place);
+}
+
+/**
+ * Shop-account requirement for create. Runs after the pin checks, so an
+ * incomplete pin is still reported first. A note that is not a top-level
+ * shop keeps a missing account as "store nothing".
+ *
+ * @param text - Normalised forum text.
+ * @param parentId - Reply parent, or `null` for top-level.
+ * @param snapshot - Resolved shop account, or `null` when unset.
+ * @returns {@link SHOP_ACCOUNT_REQUIRED}, or `null` when the note may be stored.
+ */
+function shopAccountRequiredProblem(
+  text: string,
+  parentId: string | null,
+  snapshot: { id: string; username: string; name: string } | null,
+): string | null {
+  if (parentId !== null || snapshot !== null || !textHasHashtagToken(text, '21GiftsShop')) {
+    return null;
+  }
+  return SHOP_ACCOUNT_REQUIRED;
 }
 
 /**
@@ -1257,14 +1318,8 @@ async function persistForumPost(
     }
     const published = created;
     if (!isReplay) {
-      await syncShopOcpPlace({
-        ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-        messageId: published.id,
-        text: published.text,
-        parentId: published.parentId ?? null,
-        place: published.place ?? null,
-        textHasHashtagToken,
-      });
+      const npub = await ensureShopIdentity(deps, published.id);
+      if (npub !== undefined) published.shopNpub = npub;
     }
     const attached = await attachHeartStats(
       (ids, viewer) => deps.store.heartStats(ids, viewer),
@@ -1434,6 +1489,10 @@ async function postMultipartMessage(
   const shopProblem = shopPinRegistrationProblem(text, null, place);
   if (shopProblem !== null) {
     return c.json({ error: shopProblem }, 400);
+  }
+  const shopAccountMissing = shopAccountRequiredProblem(text, null, shopParsed.snapshot);
+  if (shopAccountMissing !== null) {
+    return c.json({ error: shopAccountMissing }, 400);
   }
   return persistForumPost(
     deps,
@@ -1991,6 +2050,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (shopProblem !== null) {
         return c.json({ error: shopProblem }, 400);
       }
+      const shopAccountMissing = shopAccountRequiredProblem(text, parentId, shopParsed.snapshot);
+      if (shopAccountMissing !== null) {
+        return c.json({ error: shopAccountMissing }, 400);
+      }
       return persistForumPost(
         deps,
         postLimiter,
@@ -2354,17 +2417,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             return c.json({ error: 'An open credit cannot be deleted' }, 409);
           }
         }
-        if (
-          target.parentId === null &&
-          target.place !== null &&
-          target.place !== undefined &&
-          textHasHashtagToken(target.text, '21GiftsShop')
-        ) {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: target.id,
-          });
-        }
         if (target.accountId === null && target.authorPubkey !== null) {
           const cascaded = await deps.store.blockPubkeyAndHideRows(
             target.authorPubkey,
@@ -2447,15 +2499,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a place' }, 400);
         }
-        if (parsed.value !== null) {
-          const problem = shopPlaceProblem(parsed.value);
-          if (problem !== null) {
-            return c.json({ error: problem }, 400);
-          }
-          const textProblem = shopTextProblem(row.text, parsed.value);
-          if (textProblem !== null) {
-            return c.json({ error: textProblem }, 400);
-          }
+        if (parsed.value === null) {
+          return c.json({ error: SHOP_NAME_REQUIRED }, 400);
+        }
+        const problem = shopPlaceProblem(parsed.value);
+        if (problem !== null) {
+          return c.json({ error: problem }, 400);
         }
         const placeChanged = !placesMatch(row.place ?? null, parsed.value);
         const written = placeChanged
@@ -2469,6 +2518,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               after: parsed.value,
             })
           : await deps.store.setPlace(id, parsed.value);
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (!written) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -2488,21 +2540,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (parsed.value !== null) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: parsed.value,
-            textHasHashtagToken,
-          });
-        } else {
-          await removeShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         const attached = await attachHeartStats(
           (ids, viewer) => deps.store.heartStats(ids, viewer),
           account.id,
@@ -2551,9 +2590,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Invalid body' }, 400);
       }
       const usernameValue = (raw as { username: unknown }).username;
-      let normalizedUsername: string | null;
+      let normalizedUsername: string | undefined;
       if (usernameValue === null) {
-        normalizedUsername = null;
+        normalizedUsername = undefined;
       } else if (typeof usernameValue !== 'string') {
         return c.json({ error: 'Username is not valid' }, 400);
       } else {
@@ -2574,22 +2613,22 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (!textHasHashtagToken(row.text, '21GiftsShop')) {
           return c.json({ error: 'Only a shop note can set a shop account' }, 400);
         }
-        let snapshot: { id: string; username: string; name: string } | null = null;
-        if (normalizedUsername !== null) {
-          const found = await deps.authStore.getAccountByUsername(normalizedUsername);
-          if (found === undefined) {
-            return c.json({ error: 'No account with that username' }, 404);
-          }
-          const storedUsername = found.username;
-          if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
-            return c.json({ error: 'No account with that username' }, 404);
-          }
-          snapshot = {
-            id: found.id,
-            username: storedUsername,
-            name: found.name ?? '',
-          };
+        if (normalizedUsername === undefined) {
+          return c.json({ error: SHOP_ACCOUNT_REQUIRED }, 400);
         }
+        const found = await deps.authStore.getAccountByUsername(normalizedUsername);
+        if (found === undefined) {
+          return c.json({ error: 'No account with that username' }, 404);
+        }
+        const storedUsername = found.username;
+        if (typeof storedUsername !== 'string' || storedUsername.trim() === '') {
+          return c.json({ error: 'No account with that username' }, 404);
+        }
+        const snapshot = {
+          id: found.id,
+          username: storedUsername,
+          name: found.name ?? '',
+        };
         const accountChanged = !shopAccountsMatch(row.shopAccount, snapshot);
         const written = accountChanged
           ? await deps.store.setShopAccount(id, snapshot, {
@@ -2621,16 +2660,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        if (updated.place !== null && updated.place !== undefined) {
-          await syncShopOcpPlace({
-            ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-            messageId: updated.id,
-            text: updated.text,
-            parentId: updated.parentId ?? null,
-            place: updated.place,
-            textHasHashtagToken,
-          });
-        }
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         const attached = await attachHeartStats(
           (ids, viewer) => deps.store.heartStats(ids, viewer),
           account.id,
@@ -2704,10 +2735,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured.length > MESSAGE_MAX_LENGTH) {
           return c.json({ error: `Text must be 1–${MESSAGE_MAX_LENGTH} characters` }, 400);
         }
-        if (row.place !== null && row.place !== undefined && shopPlaceProblem(row.place) === null) {
-          const problem = shopTextProblem(ensured, row.place);
-          if (problem !== null) {
-            return c.json({ error: problem }, 400);
+        const pinned = row.place ?? null;
+        if (pinned !== null && shopPlaceProblem(pinned) === null) {
+          const textProblem = shopTextProblem(ensured, pinned);
+          if (textProblem !== null) {
+            return c.json({ error: textProblem }, 400);
           }
         }
         if (ensured === row.text) {
@@ -2747,6 +2779,9 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           before: row.text,
           after: ensured,
         });
+        if (typeof written === 'string') {
+          return c.json({ error: written }, 400);
+        }
         if (written === undefined) {
           return c.json({ error: 'Not found' }, 404);
         }
@@ -2766,14 +2801,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           accountId: account.id,
           role: account.role,
         });
-        await syncShopOcpPlace({
-          ...(deps.mapPush === undefined ? {} : { mapPush: deps.mapPush }),
-          messageId: updated.id,
-          text: updated.text,
-          parentId: updated.parentId ?? null,
-          place: updated.place ?? null,
-          textHasHashtagToken,
-        });
+        const npub = await ensureShopIdentity(deps, updated.id);
+        if (npub !== undefined) updated.shopNpub = npub;
         const attached = await attachHeartStats(
           (ids, viewer) => deps.store.heartStats(ids, viewer),
           account.id,
@@ -3014,6 +3043,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               address: row.address,
               shop: row.shop,
               countryCode: placeCountryCode(row),
+              shopNpub: row.shopNpub,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
           },

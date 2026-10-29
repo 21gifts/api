@@ -9,20 +9,20 @@
 #
 # Configuration is environment-variable only; see CONTRIBUTING.md.
 
-FROM oven/bun:1.3-alpine AS deps
+FROM oven/bun:1.4.4-alpine AS deps
 WORKDIR /app
 COPY package.json bun.lock* bun.lockb* ./
 # Install with dev deps (vitest/tsc/eslint not strictly needed at runtime but
 # kept here so the same dep layer is reusable for tooling steps if added later).
 RUN bun install --frozen-lockfile
 
-FROM oven/bun:1.3-alpine AS builder
+FROM oven/bun:1.4.4-alpine AS builder
 WORKDIR /app
 COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN bun build src/index.ts --target=bun --outdir=dist
 
-FROM oven/bun:1.3-alpine
+FROM oven/bun:1.4.4-alpine
 WORKDIR /app
 RUN addgroup -S app && adduser -S app -G app \
   && mkdir -p /data/media && chown app:app /data/media

@@ -231,6 +231,7 @@ describe('serializeMessage', () => {
       photoTakenAts: [],
       hasVideo: false,
       videoContentType: null,
+      shopNpub: null,
       role: 'moderator',
     });
     expect(serializeMessage(row, NOT_PAYABLE, 'basis')).not.toHaveProperty('accountId');
@@ -745,7 +746,7 @@ describe('serializeMessage', () => {
     });
   });
 
-  it('omits shopAccount when unset or null', () => {
+  it('omits shopAccount when unset, null, or without a username', () => {
     const row: MessageRow = {
       id: 'msg-noshop',
       accountId: 'acc-1',
@@ -760,6 +761,15 @@ describe('serializeMessage', () => {
     );
     expect(
       serializeMessage({ ...row, shopAccount: null }, NOT_PAYABLE, 'basis', undefined, false),
+    ).not.toHaveProperty('shopAccount');
+    expect(
+      serializeMessage(
+        { ...row, shopAccount: { id: 'shop-acc', username: null, name: 'Ada' } },
+        NOT_PAYABLE,
+        'basis',
+        undefined,
+        false,
+      ),
     ).not.toHaveProperty('shopAccount');
   });
 

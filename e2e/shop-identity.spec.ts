@@ -1,0 +1,651 @@
+import { deflateSync } from 'node:zlib';
+import { expect, test, type APIRequestContext } from '@playwright/test';
+import { nip19 } from 'nostr-tools';
+
+const PUBLIC_CACHE = 'public, max-age=60';
+const DEBUG = { authorization: 'Bearer e2e-debug-token' };
+const ADDRESS = {
+  street: 'Bahnhofstrasse',
+  houseNumber: '1',
+  postalCode: '8001',
+  city: 'Zürich',
+  country: 'CH',
+};
+
+function crc32(bytes: Uint8Array): number {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = crc & 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type: string, data: Uint8Array): Buffer {
+  const body = Buffer.concat([Buffer.from(type, 'latin1'), Buffer.from(data)]);
+  const out = Buffer.alloc(body.length + 8);
+  out.writeUInt32BE(data.length, 0);
+  body.copy(out, 4);
+  out.writeUInt32BE(crc32(body), body.length + 4);
+  return out;
+}
+
+/** A valid RGB PNG of `width` × `height`, base64-encoded for `POST /messages`. */
+function pngBase64(width: number, height: number): string {
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(width, 0);
+  header.writeUInt32BE(height, 4);
+  header[8] = 8;
+  header[9] = 2;
+  const rows = Buffer.alloc(height * (1 + width * 3), 0x80);
+  for (let y = 0; y < height; y += 1) rows[y * (1 + width * 3)] = 0;
+  return Buffer.concat([
+    Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', deflateSync(rows)),
+    pngChunk('IEND', new Uint8Array()),
+  ]).toString('base64');
+}
+
+interface ShopPhoto {
+  url: string;
+  width: number | null;
+  height: number | null;
+}
+
+interface ShopBody {
+  shop: {
+    npub: string;
+    messageId: string;
+    name: string;
+    description: string;
+    place: { lat: number; lng: number; label: string; address: typeof ADDRESS };
+    photos: ShopPhoto[];
+    payUsername: string | null;
+    nip05: string | null;
+    createdAt: string;
+  };
+}
+
+interface ListedShopFixture {
+  /** Bearer headers of the shop author (a moderator). */
+  auth: { authorization: string };
+  /** Shop note id. */
+  noteId: string;
+  /** Shop name (pin label). */
+  name: string;
+  /** Shop npub answered by `POST /messages`. */
+  npub: string;
+  /** 64-hex shop public key. */
+  pubkey: string;
+  /** Till account username. */
+}
+
+/**
+ * Provision a moderator author and a till account through `/debug/accounts`,
+ * then build a complete `#21GiftsShop` note without `POST /messages`, which
+ * needs a verified wallet that the default boot cannot confirm: the author
+ * saves the shop text with one 3×2 PNG as About me (`PUT /me/about`), then
+ * sets the pin (`PATCH /messages/:id/place`) and the till account
+ * (`PATCH /messages/:id/shop-account`). The memory boot creates the shop key.
+ */
+async function listedShop(request: APIRequestContext, tag: string): Promise<ListedShopFixture> {
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const authorName = `E2eShopMod${tag}${stamp}`;
+  const tillName = `E2eTill${tag}${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        { name: authorName, username: `e2e-shopmod-${stamp}`.slice(0, 32) },
+        { name: tillName, username: `e2e-till-${stamp}`.slice(0, 32) },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const author = accounts.find((row) => row.name === authorName);
+  const till = accounts.find((row) => row.name === tillName);
+  expect(author).toBeDefined();
+  expect(till?.username).toBeTruthy();
+
+  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
+  expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+
+  const name = `Cafe ${tag} ${stamp}`;
+  const saved = await request.put('/me/about', {
+    headers: auth,
+    data: {
+      text: `Coffee roasted on site and served at the bar every morning by ${name}.\n\n#21GiftsShop`,
+      photo: { contentType: 'image/png', data: pngBase64(3, 2) },
+    },
+  });
+  expect(saved.status()).toBe(200);
+  const noteId = await profileNoteId(request, author?.id as string);
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 47.3769, lng: 8.5417, label: name, address: ADDRESS } },
+  });
+  expect(pinned.status()).toBe(200);
+  const assigned = await request.patch(`/messages/${noteId}/shop-account`, {
+    headers: auth,
+    data: { username: till?.username },
+  });
+  expect(assigned.status()).toBe(200);
+  const note = (await assigned.json()) as { id: string; shopNpub: string | null };
+  expect(note.shopNpub).toMatch(/^npub1[02-9ac-hj-np-z]{58}$/);
+  const npub = note.shopNpub as string;
+  const pubkey = nip19.decode(npub as nip19.NPub).data;
+  return { auth, noteId: note.id, name, npub, pubkey };
+}
+
+/**
+ * The About-me note id of one account, read from `GET /debug/accounts`.
+ *
+ * @param request - Playwright request context.
+ * @param accountId - Account whose profile note is wanted.
+ * @returns The profile note id.
+ */
+async function profileNoteId(request: APIRequestContext, accountId: string): Promise<string> {
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === accountId);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return row?.profileMessageId as string;
+}
+
+/**
+ * A second moderator with its own About-me note, so a test can hold a tagged
+ * note next to the listed shop of `listedShop`.
+ */
+async function freshModerator(
+  request: APIRequestContext,
+  tag: string,
+): Promise<{ auth: { authorization: string }; id: string }> {
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const name = `E2eTagMod${tag}${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [{ name, username: `e2e-tagmod-${stamp}`.slice(0, 32) }],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const author = (
+    (await listed.json()) as { accounts: Array<{ id: string; name: string }> }
+  ).accounts.find((row) => row.name === name);
+  expect(author).toBeDefined();
+  const session = await request.post(`/debug/accounts/${author?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  const auth = { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
+  expect((await request.post('/me/rules-agreement', { headers: auth })).status()).toBe(200);
+  const promoted = await request.patch(`/debug/accounts/${author?.id}`, {
+    headers: DEBUG,
+    data: { role: 'moderator' },
+  });
+  expect(promoted.status()).toBe(200);
+  return { auth, id: author?.id as string };
+}
+
+async function getShop(request: APIRequestContext, segment: string): Promise<ShopBody> {
+  const response = await request.get(`/shops/${segment}`);
+  expect(response.status()).toBe(200);
+  expect(response.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  return (await response.json()) as ShopBody;
+}
+
+async function expectNotFound(request: APIRequestContext, path: string): Promise<void> {
+  const response = await request.get(path);
+  expect(response.status()).toBe(404);
+  expect(response.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  expect(await response.json()).toEqual({ error: 'Not found' });
+}
+
+test('GET /shops/:npub is 404 with the public cache header for a segment that is no key', async ({
+  request,
+}) => {
+  const response = await request.get('/shops/:npub');
+  expect(response.status()).toBe(404);
+  expect(response.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  expect(await response.json()).toEqual({ error: 'Not found' });
+});
+
+test('GET /shops/:npub is 404 for an unknown hex key and an unknown npub', async ({ request }) => {
+  await expectNotFound(request, `/shops/${'11'.repeat(32)}`);
+  await expectNotFound(request, `/shops/${nip19.npubEncode('11'.repeat(32))}`);
+});
+
+test('GET /shops/activity keeps its own handler next to GET /shops/:npub', async ({ request }) => {
+  const response = await request.get('/shops/activity');
+  expect(response.status()).toBe(200);
+});
+
+test('GET /shops lists a keyed shop and omits a tagged note that is not listed', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'List');
+  const other = await freshModerator(request, 'List');
+  const label = `Unlisted ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  // A tagged About-me note with no pin and no till account keeps the tag and
+  // stays off GET /shops.
+  const tagged = await request.put('/me/about', {
+    headers: other.auth,
+    data: { text: `${label} is tagged as a shop and not listed.\n\n#21GiftsShop` },
+  });
+  expect(tagged.status()).toBe(200);
+  const taggedId = await profileNoteId(request, other.id);
+  const taggedNote = (await (await request.get(`/messages/${taggedId}`)).json()) as {
+    shopNpub: string | null;
+  };
+  expect(taggedNote.shopNpub).toBeNull();
+
+  const response = await request.get('/shops');
+  expect(response.status()).toBe(200);
+  expect(response.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  const body = (await response.json()) as {
+    shops: Array<{
+      npub: string;
+      name: string;
+      place: { lat: number; lng: number; label: string; address: typeof ADDRESS };
+    }>;
+  };
+  expect(body.shops.find((row) => row.npub === shop.npub)).toEqual({
+    npub: shop.npub,
+    name: shop.name,
+    place: { lat: 47.3769, lng: 8.5417, label: shop.name, address: ADDRESS },
+  });
+  expect(body.shops.map((row) => row.name)).not.toContain(label);
+});
+
+/**
+ * A live shop note with a till account and no pin. The directory still lists it.
+ * `POST /messages` refuses this shape, so the note is stored through
+ * `POST /debug/shop-notes` and then read back.
+ */
+async function shopWithoutPin(
+  request: APIRequestContext,
+  tag: string,
+  text: string,
+): Promise<void> {
+  const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
+  const authorName = `E2eOpenMod${tag}${stamp}`;
+  const tillName = `E2eOpenTill${tag}${stamp}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: {
+      accounts: [
+        { name: authorName, username: `e2e-openmod-${stamp}`.slice(0, 32) },
+        { name: tillName, username: `e2e-opentill-${stamp}`.slice(0, 32) },
+      ],
+    },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const accounts = (
+    (await listed.json()) as {
+      accounts: Array<{ id: string; name: string; username: string | null }>;
+    }
+  ).accounts;
+  const author = accounts.find((row) => row.name === authorName);
+  const till = accounts.find((row) => row.name === tillName);
+  expect(author?.id).toBeTruthy();
+  expect(till?.username).toBeTruthy();
+  const posted = await request.post('/debug/shop-notes', {
+    headers: { ...DEBUG, 'content-type': 'application/json' },
+    data: { text, shopUsername: till?.username, authorId: author?.id },
+  });
+  expect(posted.status()).toBe(200);
+}
+
+test('Function: debugShopNoteRoutes — POST /debug/shop-notes without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-notes');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: publicShop — GET /shops lists a shop that has no pin', async ({ request }) => {
+  const line = `Morning stall ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;
+  await shopWithoutPin(request, 'Open', `${line}\n\n#21GiftsShop`);
+  const response = await request.get('/shops?limit=100');
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    shops: Array<{ npub: string; name: string; place: unknown }>;
+  };
+  const row = body.shops.find((item) => item.name === line);
+  expect(row).toEqual({
+    npub: expect.stringMatching(/^npub1[02-9ac-hj-np-z]{58}$/),
+    name: line,
+    place: null,
+  });
+  const detail = await request.get(`/shops/${row?.npub}`);
+  expect(detail.status()).toBe(200);
+  expect((await detail.json()) as { shop: { name: string; place: unknown } }).toMatchObject({
+    shop: { name: line, place: null },
+  });
+});
+
+test('Function: publicShopName — a shop with no pin is named from its description', async ({
+  request,
+}) => {
+  const line = `Corner stall ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`;
+  await shopWithoutPin(request, 'Name', `${line}\n\n#21GiftsShop`);
+  const response = await request.get('/shops?limit=100');
+  expect(response.status()).toBe(200);
+  const body = (await response.json()) as {
+    shops: Array<{ npub: string; name: string; place: unknown }>;
+  };
+  const row = body.shops.find((item) => item.name === line);
+  expect(row?.place).toBeNull();
+  const detail = await request.get(`/shops/${row?.npub}`);
+  expect(detail.status()).toBe(200);
+  expect(((await detail.json()) as { shop: { name: string } }).shop.name).toBe(line);
+});
+
+test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Flow');
+  const body = await getShop(request, shop.npub);
+  expect(body.shop.npub).toBe(shop.npub);
+  expect(body.shop.messageId).toBe(shop.noteId);
+
+  const hex = await request.get(`/shops/${shop.pubkey}`, { maxRedirects: 0 });
+  expect(hex.status()).toBe(301);
+  expect(hex.headers()['location']).toBe(`/shops/${shop.npub}`);
+
+  const hidden = await request.delete(`/messages/${shop.noteId}`, { headers: shop.auth });
+  expect(hidden.status()).toBe(204);
+  const gone = await request.get(`/shops/${shop.npub}`);
+  expect(gone.status()).toBe(410);
+  expect(gone.headers()['cache-control']).toBe(PUBLIC_CACHE);
+  expect(await gone.json()).toEqual({ error: 'Shop is no longer listed', npub: shop.npub });
+
+  const restored = await request.post(`/debug/messages/${shop.noteId}/restore`, {
+    headers: DEBUG,
+  });
+  expect(restored.status()).toBe(204);
+  expect((await getShop(request, shop.npub)).shop.npub).toBe(shop.npub);
+});
+
+test('Function: shopRoutes — GET /shops/:npub answers the listed shop', async ({ request }) => {
+  const shop = await listedShop(request, 'Route');
+  const body = await getShop(request, shop.npub);
+  // The default boot has no LNURL server, so the till account cannot receive
+  // and the shop carries no pay username.
+  expect(body.shop).toMatchObject({
+    npub: shop.npub,
+    messageId: shop.noteId,
+    name: shop.name,
+    payUsername: null,
+    nip05: null,
+  });
+  expect(body.shop.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+  await expectNotFound(request, `/shops/${'22'.repeat(32)}`);
+});
+
+test('Function: InMemoryShopIdentityStore — the memory boot keeps one key per shop', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Mem');
+  const hex = await request.get(`/shops/${shop.pubkey}`, { maxRedirects: 0 });
+  expect(hex.status()).toBe(301);
+  expect(hex.headers()['location']).toBe(`/shops/${shop.npub}`);
+  const edited = await request.patch(`/messages/${shop.noteId}/text`, {
+    headers: { ...shop.auth, 'content-type': 'application/json' },
+    data: {
+      text: `Fresh coffee and cake served all day long at ${shop.name}.\n\n#21GiftsShop`,
+    },
+  });
+  expect(edited.status()).toBe(200);
+  expect(((await edited.json()) as { shopNpub: string | null }).shopNpub).toBe(shop.npub);
+});
+
+test('Function: shopListingFingerprint — GET /shops/:npub answers from one state of the edited note', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Fpr');
+  const before = await getShop(request, shop.npub);
+  const text = `Fresh coffee and cake served all day long at ${shop.name}.`;
+  const edited = await request.patch(`/messages/${shop.noteId}/text`, {
+    headers: { ...shop.auth, 'content-type': 'application/json' },
+    data: { text: `${text}\n\n#21GiftsShop` },
+  });
+  expect(edited.status()).toBe(200);
+  // The re-read after the photos sees the same fingerprint, so the answer is
+  // the edited state with the unchanged name and photos.
+  const after = await getShop(request, shop.npub);
+  expect(after.shop.description).toBe(text);
+  expect(after.shop.description).not.toBe(before.shop.description);
+  expect(after.shop.name).toBe(shop.name);
+  expect(after.shop.photos).toEqual(before.shop.photos);
+});
+
+test('Function: listedShop — GET /shops/:npub carries the name, pin and description', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Pin');
+  const body = await getShop(request, shop.npub);
+  expect(body.shop.place).toEqual({
+    lat: 47.3769,
+    lng: 8.5417,
+    label: shop.name,
+    address: ADDRESS,
+  });
+  expect(body.shop.description).toBe(
+    `Coffee roasted on site and served at the bar every morning by ${shop.name}.`,
+  );
+});
+
+/** NIP-05 local part of a fresh shop name (no collision: the name carries a stamp). */
+function shopLocal(name: string): string {
+  return name
+    .normalize('NFKD')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 24);
+}
+
+/**
+ * `GET /.well-known/nostr.json?name=` until it answers `local`. The directory
+ * is cached; a name it does not hold forces one fresh directory, at most once
+ * per 10 s (`NIP05_DIRECTORY_REFRESH_MS`), so a parallel test's refresh can
+ * delay this one by that gap.
+ */
+async function pollNip05(
+  request: APIRequestContext,
+  local: string,
+): Promise<Record<string, string>> {
+  let names: Record<string, string> = {};
+  await expect
+    .poll(
+      async () => {
+        const response = await request.get(`/.well-known/nostr.json?name=${local}`);
+        expect(response.status()).toBe(200);
+        names = ((await response.json()) as { names: Record<string, string> }).names;
+        return names[local] ?? null;
+      },
+      { timeout: 20_000, intervals: [250, 500, 1_000] },
+    )
+    .not.toBeNull();
+  return names;
+}
+
+test('Function: listedShopName — nostr.json names the shop after its pin label', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Nip');
+  const local = shopLocal(shop.name);
+  expect((await pollNip05(request, local))[local]).toBe(shop.pubkey);
+});
+
+test('Function: listShopNip05Entries — GET /.well-known/nostr.json?name= answers the shop key', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Dir');
+  const local = shopLocal(shop.name);
+  expect(await pollNip05(request, local)).toEqual({ [local]: shop.pubkey });
+});
+
+test('Function: nip05Directory — the full nostr.json carries a shop once a ?name= refresh found it', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Cache');
+  const local = shopLocal(shop.name);
+  await pollNip05(request, local);
+  // The forced refresh replaced the shared cache, so the full body has it too.
+  const all = await request.get('/.well-known/nostr.json');
+  expect(all.status()).toBe(200);
+  expect(((await all.json()) as { names: Record<string, string> }).names[local]).toBe(shop.pubkey);
+});
+
+test('Function: isListedShop — a shop note keeps its till account', async ({ request }) => {
+  const shop = await listedShop(request, 'Unl');
+  const cleared = await request.patch(`/messages/${shop.noteId}/shop-account`, {
+    headers: { ...shop.auth, 'content-type': 'application/json' },
+    data: { username: null },
+  });
+  expect(cleared.status()).toBe(400);
+  expect(await cleared.json()).toEqual({ error: 'A shop note needs a shop account' });
+  const note = await request.get(`/messages/${shop.noteId}`);
+  expect(note.status()).toBe(200);
+  expect(((await note.json()) as { shopNpub: string | null }).shopNpub).toBe(shop.npub);
+  expect((await getShop(request, shop.npub)).shop.npub).toBe(shop.npub);
+});
+
+test('Function: shopNpub — GET /messages/:id and GET /messages/places carry the shop npub', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Npub');
+  const note = await request.get(`/messages/${shop.noteId}`);
+  expect(note.status()).toBe(200);
+  expect(((await note.json()) as { shopNpub: string | null }).shopNpub).toBe(shop.npub);
+  const places = await request.get('/messages/places', { headers: shop.auth });
+  expect(places.status()).toBe(200);
+  const row = (
+    (await places.json()) as { places: Array<{ id: string; shop: unknown; shopNpub: unknown }> }
+  ).places.find((item) => item.id === shop.noteId);
+  expect(row?.shopNpub).toBe(shop.npub);
+  expect(nip19.npubEncode(shop.pubkey)).toBe(shop.npub);
+});
+
+test('Function: imageHeaderSize — GET /shops/:npub reports each photo size', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'Img');
+  const body = await getShop(request, shop.npub);
+  expect(body.shop.photos).toEqual([
+    {
+      url: expect.stringMatching(new RegExp(`/messages/${shop.noteId}/photo\\.png$`)),
+      width: 3,
+      height: 2,
+    },
+  ]);
+  const cover = await request.get(`/messages/${shop.noteId}/photo`);
+  expect(cover.status()).toBe(200);
+});
+
+// Exceptions (CONTRIBUTING.md E2E): these need DATABASE_URL, NOSTR_NSEC_KEK with a
+// publisher, or the OpenCryptoPay map target, all blank in webServer.env. Each test
+// proves the default boot serves a listed shop without them.
+
+test('Function: migrateShopIdentitySchema — DATABASE_URL blank still serves a listed shop', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'NoMig');
+  expect((await getShop(request, shop.npub)).shop.npub).toBe(shop.npub);
+});
+
+test('Function: PostgresShopIdentityStore — DATABASE_URL blank keeps shop keys in memory', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'NoPg');
+  expect((await getShop(request, shop.pubkey)).shop.npub).toBe(shop.npub);
+});
+
+test('Function: signEventForShop — no publisher, the shop is served without a kind 0', async ({
+  request,
+}) => {
+  const shop = await listedShop(request, 'NoSig');
+  expect((await getShop(request, shop.npub)).shop.nip05).toBeNull();
+});
+
+async function servedWithoutMap(request: APIRequestContext, tag: string): Promise<void> {
+  const shop = await listedShop(request, tag);
+  expect((await getShop(request, shop.npub)).shop.photos).toHaveLength(1);
+}
+
+test('Function: runOcpPlaceOutboxPass — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpPl'));
+
+test('Function: runOcpPhotoOutboxPass — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpPh'));
+
+test('Function: ocpPhotoSetHash — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpHs'));
+
+test('Function: queueAllShopPlaces — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpQ'));
+
+test('Function: queueAllShopPhotos — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpQP'));
+
+test('Function: startOcpOutboxWorker — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpW'));
+
+test('Function: shopOcpPlaceInput — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpIn'));
+
+test('Function: debugShopKeyRoutes — POST /debug/shop-keys without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('Function: shopKeyMustBeAdopted — POST /debug/shop-keys rejects a note outside the adopted set', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/shop-keys', {
+    headers: DEBUG,
+    data: {
+      messageId: '00000000-0000-4000-8000-000000000001',
+      secret: '11'.repeat(32),
+    },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Invalid shop key' });
+});
+
+test('Function: resolveMapPush — OCP map target blank, the listed shop is still served', ({
+  request,
+}) => servedWithoutMap(request, 'OcpMp'));

@@ -172,6 +172,16 @@ function doomedReadIndex(queries: readonly RecordedQuery[]): number {
 }
 
 describe('mergeAccounts', () => {
+  it('moves message.shop_account_id to the surviving account, so a shop stays listed', async () => {
+    const { db, queries } = fakeDatabase();
+    await mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' });
+    expect(queries).toContainEqual({
+      text: 'UPDATE "public"."message" SET "shop_account_id" = $1 WHERE "shop_account_id" = $2',
+      params: [INTO, FROM],
+    });
+    expect(queries.some((query) => query.text.includes('shop_identity'))).toBe(false);
+  });
+
   it('moves catalog foreign keys after disambiguation and deletes the source account', async () => {
     const { db, queries, begins } = fakeDatabase();
 
