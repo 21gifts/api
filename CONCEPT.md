@@ -591,6 +591,10 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 **In** — api:
 
 - Passkey endpoints: register/authenticate/replace begin and finish, session issuance; `POST /me/wallet-backup-seen`
+- Social recovery ([`docs/social-recovery.md`](./docs/social-recovery.md)):
+  `POST /auth/passkey/recovery/begin` and `/finish`, the address transfer
+  `POST /lnurlpay/:pubkey/transfer`, `PUT /me/recovery-share`, and
+  `GET` / `DELETE /me/previous-wallets`
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
 - Receiving address: verified in-app wallet only
@@ -620,8 +624,9 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 
 - Passkey + PRF → NOSTR identity (NIP-06) — moves to the non-custodial phase
 - Client-side event signing (v1 signs server-side with custodial keys)
-- Any second login method or account recovery (no email, no backup auth —
-  accepted risk, see "v1 Transitional Model")
+- Any second login method (no email, no password, no backup auth). A lost
+  passkey comes back only with the 12 words or with social recovery
+  ([`docs/social-recovery.md`](./docs/social-recovery.md)).
 - Linking multiple LNURL-auth wallets to one account
 - Non-custodial donor spending (replaces the v1 spend worker)
 - Non-custodial client-side DMs (v1 ships a custodial PN channel on

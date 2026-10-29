@@ -90,7 +90,8 @@ Setup may happen remotely, for example with the QR code shown in a video call.
    account id and the share's SLIP-39 identifier.
 4. The same for share 2 and person 2. A browser that already holds a share
    with the same owner and identifier, under any account, refuses it, so one
-   phone never holds two shares of one set. A share of the holder's own
+   browser never holds two shares of one set (a second browser or cleared
+   storage on the same phone cannot be detected). A share of the holder's own
    account is refused too. The identifier is a random 15-bit value; if a new
    set happens to draw the identifier of an old set a person still holds,
    that browser refuses it too, and setup starts again with a new split.
