@@ -3217,6 +3217,39 @@ test('Function: buildFundingPayoutMatrix — default boot has no DATABASE_URL', 
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+// The payout gate decides only for a member with a verified wallet on a payout path; the spend
+// routes need SPEND_API_TOKEN and LNURL_SERVER_URL (both blank here), so the spend gate answers first.
+test('Function: inGrantProgramToday — GET /invoices/eligible unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+test('Function: loadPayoutEligibility — GET /invoices/eligible unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.get('/invoices/eligible?address=ada@127.0.0.1');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend invoices are not configured' });
+});
+// The trial ping needs a staff session and a configured spend ping (SPEND_URL blank here).
+test('Function: pingTodayMedia — POST /funding/trial without bearer is 401', async ({
+  request,
+}) => {
+  const res = await request.post('/funding/trial', { data: { accountId: 'x' } });
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+// The explorer balance is read only by the previous-wallet list, which exists only with the
+// LNURL server (LNURL_SERVER_URL blank here).
+test('Function: fetchSparkAddressBalance — GET /me/previous-wallets is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.get('/me/previous-wallets');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
 test('Function: dailyPayoutStoppedNotice — default boot has no DATABASE_URL', async ({
   request,
 }) => {

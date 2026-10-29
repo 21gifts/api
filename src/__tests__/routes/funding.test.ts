@@ -9,6 +9,7 @@ import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
 import { fundingRoutes, GRANT_PLACES_FULL_ERROR } from '@/routes/funding';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
@@ -137,7 +138,6 @@ async function seedApplyProfile(
 const LIVE_PHOTO = { contentType: 'image/jpeg' as const, bytes: APPLY_JPEG };
 const PHOTO_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PHOTO_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const DAY_MS = 86_400_000;
 
 /** Give `accountId` the username `ada` and a verified wallet (`ada@example.test`). */
 async function setWallet(authStore: InMemoryAuthStore, accountId: string): Promise<void> {
@@ -1153,13 +1153,12 @@ describe('POST /funding/admit', () => {
     );
   });
 
-  it('pings the newest of two today media posts after admit from pending', async () => {
+  it("pings today's live top-level photo after admit from pending", async () => {
     const { authStore, fundingStore } = await staffed();
     await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - 1), { text: 'older' });
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { text: 'newer' });
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()));
     const ping = vi.fn(async () => {
       expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
     });
@@ -1192,58 +1191,6 @@ describe('POST /funding/admit', () => {
     expect(ping).not.toHaveBeenCalled();
   });
 
-  it('does not ping when the only live media post is the previous UTC day', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setWallet(authStore, VERIFIED);
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const messageStore = new InMemoryMessageStore();
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - DAY_MS));
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
-  });
-
-  it('does not ping admit-from-pending with no media or no verified wallet', async () => {
-    const ping = vi.fn(async () => undefined);
-
-    const noMedia = await staffed();
-    await setWallet(noMedia.authStore, VERIFIED);
-    await noMedia.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    expect(
-      (
-        await post(
-          mount(noMedia.authStore, noMedia.fundingStore, new InMemoryMessageStore(), { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
-    const nullAddress = await staffed();
-    await nullAddress.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const nullMessages = new InMemoryMessageStore();
-    await seedLivePhoto(nullMessages, VERIFIED, PHOTO_A, new Date(now()));
-    expect(
-      (
-        await post(
-          mount(nullAddress.authStore, nullAddress.fundingStore, nullMessages, { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
-    expect(ping).not.toHaveBeenCalled();
-  });
-
   it('returns 200 and admits when ping throws', async () => {
     const { authStore, fundingStore } = await staffed();
     await setWallet(authStore, VERIFIED);
@@ -1262,60 +1209,6 @@ describe('POST /funding/admit', () => {
     expect(res.status).toBe(200);
     expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.daily_ping.failed')).toBe(true);
-  });
-
-  it('does not ping a photo reply with no top-level media', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setWallet(authStore, VERIFIED);
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const messageStore = new InMemoryMessageStore();
-    await messageStore.create({
-      id: PHOTO_A,
-      accountId: VERIFIED,
-      name: 'Ada',
-      text: 'parent',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-    });
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { parentId: PHOTO_A });
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
-  });
-
-  it('does not ping admit-from-pending when the media row is missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setWallet(authStore, VERIFIED);
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const inner = new InMemoryMessageStore();
-    await seedLivePhoto(inner, VERIFIED, PHOTO_A, new Date(now()));
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'getById') {
-          return async () => undefined;
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
-    }) as InMemoryMessageStore;
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
   });
 
   it('still returns 200 on admit-from-pending when spendPing is omitted', async () => {
@@ -1365,6 +1258,97 @@ describe('POST /funding/admit', () => {
     });
     expect(res.status).toBe(503);
   });
+});
+
+describe('trial and admit pings from the grant gate day', () => {
+  const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
+  const gateClock = (): number => GATE_NOW;
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  /** Staff session `gate`, the member's verified wallet, a pending grant, and today's photo. */
+  async function gated(share: boolean): Promise<{
+    authStore: InMemoryAuthStore;
+    fundingStore: InMemoryFundingStore;
+    messageStore: InMemoryMessageStore;
+  }> {
+    const { authStore, fundingStore } = await staffed();
+    await authStore.createSession({ token: 'gate', accountId: FOUNDER, createdAt: GATE_NOW });
+    await setWallet(authStore, VERIFIED);
+    if (share) {
+      await storeRecoveryShare(authStore, VERIFIED, WALLET_PUBKEY);
+    }
+    await fundingStore.upsert(
+      grant({ accountId: VERIFIED, status: 'pending', appliedAt: GATE_NOW - 60_000 }),
+    );
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(GATE_NOW));
+    return { authStore, fundingStore, messageStore };
+  }
+
+  for (const route of ['trial', 'admit'] as const) {
+    const status = route === 'trial' ? 'trial' : 'admitted';
+
+    it(`does not ping after ${route} without a recovery share`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(false);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe(status);
+      expect(ping).not.toHaveBeenCalled();
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'not_eligible' }),
+      );
+    });
+
+    it(`pings after ${route} with a recovery share`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(true);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', status);
+    });
+
+    it(`answers 200 after ${route} when the share read throws after the grant write`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(true);
+      vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet').mockRejectedValue(
+        new Error('share down'),
+      );
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { id: string; funding: { status: string } };
+      expect(body.id).toBe(VERIFIED);
+      expect(body.funding.status).toBe(status);
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe(status);
+      expect(ping).not.toHaveBeenCalled();
+      const names = parsedEvents(warn).map((e) => e['event']);
+      expect(names).toContain('funding.daily_ping.failed');
+      expect(names).not.toContain('funding.write.failed');
+    });
+  }
 });
 
 describe('POST /funding/reject', () => {

@@ -52,8 +52,8 @@ import { signEventForAccount } from '@/lib/nostr/sign';
 import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { eligibleToday } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TranslateTarget } from '@/lib/translate-config';
 import {
@@ -1010,10 +1010,13 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                 deps.now(),
               );
               if (publicToday) {
-                const grant = await (
-                  deps.fundingStore ?? new InMemoryFundingStore()
-                ).getByAccountId(account.id);
-                if (!eligibleToday(account.role, grant, deps.now())) {
+                const { eligible } = await loadPayoutEligibility(
+                  deps.fundingStore ?? new InMemoryFundingStore(),
+                  deps.authStore,
+                  account,
+                  deps.now(),
+                );
+                if (!eligible) {
                   logEvent('spend.ping.skipped', { reason: 'not_eligible' });
                 } else {
                   try {

@@ -15,6 +15,7 @@ import {
   type OwnerFundingJson,
 } from '@/lib/funding';
 import { loadGrantEffective, type FundingStore } from '@/lib/funding-store';
+import { pingTodayMedia } from '@/lib/funding-ping';
 import { buildFundingPayoutMatrix } from '@/lib/funding-payouts';
 import type { GiftStore } from '@/lib/gift-store';
 import { isOperatorBearer } from '@/lib/debug-token';
@@ -22,7 +23,6 @@ import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import type { SpendGrantStatus } from '@/lib/spend-instruction';
 import type { SpendPing } from '@/lib/spend-ping';
 import { canEditDailyPayoutRoster, roleAtLeast } from '@/lib/auth/roles';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -70,7 +70,10 @@ export interface FundingRouteDeps {
   lnurlServer?: LnurlServerConfig;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
-  /** Optional spend ping. Omitted → skip the daily post ping after trial/admit. */
+  /**
+   * Optional spend ping. Omitted → skip the daily post ping after trial/admit
+   * ({@link pingTodayMedia}, which also requires the member's recovery share).
+   */
   spendPing?: SpendPing;
   /**
    * Daily payout roster. Omitted → a fresh in-memory store.
@@ -283,47 +286,6 @@ function parseAccountId(
     return { error: 'Not found', status: 404 };
   }
   return { accountId: parsed.data.accountId };
-}
-
-/**
- * Daily spend ping for the newest live top-level photo or video posted
- * today UTC. No-op when spend ping is omitted, the address is blank, or
- * there is no such post. Lookup and ping failures are logged and swallowed.
- *
- * @param deps - Route collaborators.
- * @param account - Subject after the grant write.
- * @param nowMs - Grant decision clock.
- * @param grantStatus - Effective grant status after the write.
- */
-async function pingTodayMedia(
-  deps: FundingRouteDeps,
-  account: Account,
-  nowMs: number,
-  grantStatus: SpendGrantStatus,
-): Promise<void> {
-  if (deps.spendPing === undefined) {
-    return;
-  }
-  const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
-  if (address === null) {
-    return;
-  }
-  try {
-    const id = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
-    if (id === null) {
-      return;
-    }
-    const row = await deps.messageStore.getById(id);
-    if (row === undefined) {
-      return;
-    }
-    if (utcDayKey(row.createdAt.getTime()) !== utcDayKey(nowMs)) {
-      return;
-    }
-    await deps.spendPing.ping(address, id, 'daily', grantStatus);
-  } catch {
-    logEvent('funding.daily_ping.failed', { accountId: account.id });
-  }
 }
 
 /**
@@ -735,7 +697,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
           return c.json({ error: 'Conflict' }, 409);
         }
         logEvent('funding.trial', { accountId: subject.id, actorId: staff.caller.id });
-        await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs));
+        await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs), true);
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {
         logEvent('funding.write.failed');
@@ -793,7 +755,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         }
         logEvent('funding.admitted', { accountId: subject.id, actorId: staff.caller.id });
         if (status === 'pending') {
-          await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs));
+          await pingTodayMedia(deps, subject, nowMs, effectiveStatus(grant, nowMs), true);
         }
         return c.json(decisionBody(subject, grant, nowMs, staff.caller.name), 200);
       } catch {

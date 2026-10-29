@@ -15,6 +15,7 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { setDiagnosticSink } from '@/lib/log';
 import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { createApp } from '@/server';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const TOKEN = 'spend-secret-token';
@@ -105,14 +106,22 @@ function auth(init?: RequestInit): RequestInit {
   };
 }
 
-async function verifyWallet(authStore: InMemoryAuthStore): Promise<void> {
+/**
+ * Verify the wallet of `acc-alice` and, unless `share` is false, store the
+ * 21.gifts recovery share a payout needs from the grant gate day on.
+ */
+async function verifyWallet(authStore: InMemoryAuthStore, share = true): Promise<void> {
   await authStore.claimSparkPubkey('acc-alice', WALLET_PUBKEY);
   await authStore.markSparkPubkeyVerified('acc-alice', WALLET_PUBKEY, 'alice', 2);
+  if (share) {
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+  }
 }
 
 async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
   role: 'verified' | 'basis' = 'verified',
+  share = true,
 ): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
@@ -127,7 +136,7 @@ async function seedPasskeyAccount(
     createdAt: 1,
     rulesAgreedAt: null,
   });
-  await verifyWallet(authStore);
+  await verifyWallet(authStore, share);
   await authStore.createPasskeyCredential({
     credentialId: 'cred-alice',
     publicKey: new Uint8Array([1]),
@@ -354,6 +363,34 @@ describe('POST /spend/daily-instruction', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+  });
+
+  it('returns not_eligible for an admitted member without a recovery share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, 'verified', false);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+    const paid = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(await paid.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: POST_ID,
+    });
   });
 
   it('returns payments_disabled when the roster switch is off', async () => {

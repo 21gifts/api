@@ -29,8 +29,9 @@ import {
   verifiedExternalZapRequest,
 } from '@/lib/nostr/external';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { notifyForumPost, notifyForumReply, notifyHeart, notifyZap } from '@/lib/notification';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { SpendPing } from '@/lib/spend-ping';
@@ -2505,10 +2506,13 @@ async function insertGiftReply(
   const spendAddress = receivingAddress(args.payer, args.lnurlServer)?.address ?? null;
   if (parentId === null && spendAddress !== null && args.spendPing !== undefined) {
     try {
-      const grant = await (args.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
-        args.payer.id,
+      const { grant, eligible } = await loadPayoutEligibility(
+        args.fundingStore ?? new InMemoryFundingStore(),
+        args.auth,
+        args.payer,
+        args.now(),
       );
-      if (!eligibleToday(args.payer.role, grant, args.now())) {
+      if (!eligible) {
         logEvent('spend.ping.skipped', { reason: 'not_eligible' });
       } else {
         await args.spendPing.ping(

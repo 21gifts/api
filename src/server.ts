@@ -307,7 +307,8 @@ export interface AppDeps {
   shopKek?: Uint8Array;
   /**
    * Optional AES-256 KEK (`RECOVERY_SHARE_KEK`) that encrypts the 21.gifts
-   * recovery share. Memory boots omit it.
+   * recovery share. Memory boots omit it, and `PUT /me/recovery-share` then
+   * answers 503.
    */
   recoveryShareKek?: Uint8Array;
   /**
@@ -782,12 +783,14 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
       fundingStore,
       dailyRoster: rosterStore,
+      fetchImpl,
       ...receivingDeps,
       shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
+      ...(deps.recoveryShareKek === undefined ? {} : { recoveryShareKek: deps.recoveryShareKek }),
     }),
   );
   app.route(

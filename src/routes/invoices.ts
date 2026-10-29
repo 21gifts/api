@@ -26,8 +26,9 @@ import type { MessageStore } from '@/lib/message-store';
 import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 import {
@@ -40,7 +41,8 @@ import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Spend-worker invoice routes: check passkey eligibility, a funding grant
- * (`eligibleToday`), and a live top-level forum post, fetch a recipient
+ * with the member's 21.gifts recovery share (`loadPayoutEligibility`, which
+ * applies `eligibleToday`), and a live top-level forum post, fetch a recipient
  * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
  * with `messageId` attaches a platform gift-reply when that message is a
  * top-level post. If `messageId` is already a reply, the proof persists a
@@ -58,12 +60,16 @@ export interface InvoiceRouteDeps {
   store: InvoiceStore;
   /**
    * Auth store for receiving address → account (by username), passkey,
-   * platform, and custodial pubkey lookup. Distinct from {@link InvoiceStore}
-   * (`store`).
+   * platform, custodial pubkey, and recovery share lookup. Distinct from
+   * {@link InvoiceStore} (`store`).
    */
   authStore: Pick<
     AuthStore,
-    'getAccountByUsername' | 'accountHasPasskey' | 'listAccounts' | 'getNostrPublicKey'
+    | 'getAccountByUsername'
+    | 'accountHasPasskey'
+    | 'listAccounts'
+    | 'getNostrPublicKey'
+    | 'hasRecoveryShareForVerifiedWallet'
   >;
   /**
    * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
@@ -611,15 +617,14 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (account === undefined || account.role === 'basis') {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
-      const grant = await fundingStore.getByAccountId(account.id);
       const nowMs = deps.now();
-      return c.json(
-        {
-          eligible: eligibleToday(account.role, grant, nowMs),
-          status: effectiveStatus(grant, nowMs),
-        },
-        200,
+      const { grant, eligible } = await loadPayoutEligibility(
+        fundingStore,
+        deps.authStore,
+        account,
+        nowMs,
       );
+      return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
     })
     .get('/posted', async (c) => {
       const denied = authGate(
@@ -738,8 +743,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
       const account = receiver.account;
 
-      const grant = await fundingStore.getByAccountId(account.id);
-      if (!eligibleToday(account.role, grant, deps.now())) {
+      const { eligible } = await loadPayoutEligibility(
+        fundingStore,
+        deps.authStore,
+        account,
+        deps.now(),
+      );
+      if (!eligible) {
         logEvent('invoice.funding_required', { address });
         return c.json({ error: 'Funding grant required' }, 403);
       }

@@ -188,29 +188,15 @@ export function fundingGrantRequired(nowMs: number): boolean {
 }
 
 /**
- * Whether the account may receive a spend ping / spend invoice today.
+ * Whether the member is in the grant program on this UTC day: admitted, or
+ * on trial with `trialUtcDate === utcDayKey(nowMs)`. Expired or future
+ * trials, pending, rejected, and missing grants are not.
  *
- * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
- * other role is true (passkey and living-room post still gate issue). From
- * that UTC day, true iff admitted OR (trial AND `trialUtcDate === utcDayKey(nowMs)`).
- * Expired trial, pending, rejected, and missing grants are then false.
- *
- * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
  * @param nowMs - Epoch milliseconds (UTC day).
- * @returns `true` when money paths may proceed today.
+ * @returns `true` for an admitted grant or today's trial.
  */
-export function eligibleToday(
-  role: AccountRole,
-  grant: FundingGrant | undefined,
-  nowMs: number,
-): boolean {
-  if (role === 'basis') {
-    return false;
-  }
-  if (!fundingGrantRequired(nowMs)) {
-    return true;
-  }
+export function inGrantProgramToday(grant: FundingGrant | undefined, nowMs: number): boolean {
   if (grant === undefined) {
     return false;
   }
@@ -218,6 +204,39 @@ export function eligibleToday(
     return true;
   }
   return grant.status === 'trial' && grant.trialUtcDate === utcDayKey(nowMs);
+}
+
+/**
+ * Whether the account may receive a spend ping / spend invoice today.
+ *
+ * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
+ * other role is true (passkey and living-room post still gate issue). From
+ * that UTC day, true iff {@link inGrantProgramToday} and
+ * `recoveryShareStored`. Expired trial, pending, rejected, and missing grants
+ * are then false, and so is a grant without the share. The share condition
+ * has no start date of its own.
+ *
+ * @param role - Live account role.
+ * @param grant - Stored grant, or `undefined` when no row.
+ * @param nowMs - Epoch milliseconds (UTC day).
+ * @param recoveryShareStored - Whether a 21.gifts recovery share is stored for
+ *   the account's current verified wallet
+ *   (`AuthStore.hasRecoveryShareForVerifiedWallet`).
+ * @returns `true` when money paths may proceed today.
+ */
+export function eligibleToday(
+  role: AccountRole,
+  grant: FundingGrant | undefined,
+  nowMs: number,
+  recoveryShareStored: boolean,
+): boolean {
+  if (role === 'basis') {
+    return false;
+  }
+  if (!fundingGrantRequired(nowMs)) {
+    return true;
+  }
+  return inGrantProgramToday(grant, nowMs) && recoveryShareStored;
 }
 
 /**

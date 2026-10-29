@@ -20,6 +20,7 @@ import type { GiftRecord } from '@/lib/gift-recorder';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
@@ -66,11 +67,22 @@ const LNURL_ENV = {
   PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
 };
 
-/** Claim and verify the wallet of `acc-alice` (username `alice`). */
-async function verifyWallet(authStore: InMemoryAuthStore, id = 'acc-alice'): Promise<void> {
+/**
+ * Claim and verify the wallet of `acc-alice` (username `alice`) and, unless
+ * `share` is false, store the 21.gifts recovery share that payouts need from
+ * the grant gate day on.
+ */
+async function verifyWallet(
+  authStore: InMemoryAuthStore,
+  id = 'acc-alice',
+  share = true,
+): Promise<void> {
   const account = await authStore.getAccount(id);
   await authStore.claimSparkPubkey(id, WALLET_PUBKEY);
   await authStore.markSparkPubkeyVerified(id, WALLET_PUBKEY, account!.username!, 2);
+  if (share) {
+    await storeRecoveryShare(authStore, id, WALLET_PUBKEY);
+  }
 }
 
 const spendApp = createApp;
@@ -137,9 +149,13 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 
 /**
  * Seed `acc-alice` (wallet `alice@example.test`) with a passkey credential so
- * POST /invoices can reach LNURL / 200.
+ * POST /invoices can reach LNURL / 200. `share: false` leaves out the 21.gifts
+ * recovery share.
  */
-async function seedPasskeyAccount(authStore: InMemoryAuthStore): Promise<void> {
+async function seedPasskeyAccount(
+  authStore: InMemoryAuthStore,
+  { share = true }: { share?: boolean } = {},
+): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
     username: 'alice',
@@ -153,7 +169,7 @@ async function seedPasskeyAccount(authStore: InMemoryAuthStore): Promise<void> {
     createdAt: 1,
     rulesAgreedAt: null,
   });
-  await verifyWallet(authStore);
+  await verifyWallet(authStore, 'acc-alice', share);
   await authStore.createPasskeyCredential({
     credentialId: 'cred-alice',
     publicKey: new Uint8Array([1]),
@@ -211,8 +227,11 @@ function liveReplyStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   ]);
 }
 
-async function seedPasskeyAndPlatform(authStore: InMemoryAuthStore): Promise<void> {
-  await seedPasskeyAccount(authStore);
+async function seedPasskeyAndPlatform(
+  authStore: InMemoryAuthStore,
+  options: { share?: boolean } = {},
+): Promise<void> {
+  await seedPasskeyAccount(authStore, options);
   await authStore.createAccount({
     id: 'plat',
     linkingKey: null,
@@ -4658,5 +4677,136 @@ describe('spend lookups by wallet address', () => {
     expect(result.posted).toEqual(EMPTY_POSTED);
     expect(result.post.status).toBe(403);
     expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('payout gate: the 21.gifts recovery share', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('refuses an admitted member without a share like a missing grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'invoice.funding_required', addressRef: ADDRESS_REF }),
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers eligible false with the admitted status without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => GATE_MS }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it("answers eligible false with the trial status for today's trial without a share", async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fundingStore = new InMemoryFundingStore([
+      { ...expiredTrialGrant(), trialUtcDate: FUNDING_REQUIRED_FROM_UTC },
+    ]);
+    const app = createApp({ spendApiToken: TOKEN, authStore, fundingStore, now: () => GATE_MS });
+    const before = await app.request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await before.json()).toEqual({ eligible: false, status: 'trial' });
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+    const after = await app.request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await after.json()).toEqual({ eligible: true, status: 'trial' });
+  });
+
+  it('refuses the welcome gift without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses the moderator stipend without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore, { share: false });
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl,
+      conversationStore,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+          comment: '21gifts moderator',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not read the share before the gate day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const shareRead = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => NOW_MS }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+    expect(shareRead).not.toHaveBeenCalled();
   });
 });

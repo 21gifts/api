@@ -276,6 +276,15 @@ describe('POST /me/events', () => {
     expect(JSON.stringify(rows[0])).not.toContain('not_an_event');
   });
 
+  it('stores recovery_done instead of dropping it', async () => {
+    const { app, store } = mount({ authStore: await seededAuth() });
+    const res = await post(app, { events: [validEvent({ name: 'recovery_done' })] });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
+    const rows = await store.listForAccount('acc', 10);
+    expect(rows.map((row) => row.name)).toEqual(['recovery_done']);
+  });
+
   it('strips secret keys and secret-shaped values and never logs them', async () => {
     const { app, store } = mount({ authStore: await seededAuth() });
     const body = {

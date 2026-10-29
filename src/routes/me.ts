@@ -11,16 +11,20 @@ import {
   type DailyRosterWalletMove,
 } from '@/lib/daily-roster-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
+import { encryptRecoveryShare, RECOVERY_SHARE_TEXT } from '@/lib/auth/recovery-share';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore, PreviousWallet } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { pingTodayMedia } from '@/lib/funding-ping';
 import { normalizeLocation } from '@/lib/location';
-import { logEvent } from '@/lib/log';
+import type { FetchFn } from '@/lib/lnurlp';
+import { errorLogFields, logEvent } from '@/lib/log';
 import {
   MESSAGE_MAX_LENGTH,
   decodeForumPhoto,
@@ -36,6 +40,7 @@ import type { SpendPing } from '@/lib/spend-ping';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
+import { fetchSparkAddressBalance } from '@/lib/spark-explorer';
 import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
@@ -48,9 +53,12 @@ import type { PushStore } from '@/lib/push-store';
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, wallet backup seen,
- * and the optional wallet public-key bind (`PUT /wallet` when the LNURL server
- * is configured). The verified wallet is the member's only receiving address.
- * Shares the {@link AuthStore} instance with `/auth`.
+ * and, when the LNURL server is configured, the wallet public-key bind
+ * (`PUT /wallet`), the 21.gifts recovery share (`PUT /recovery-share`), and the
+ * previous wallets of a social recovery (`GET /previous-wallets`,
+ * `DELETE /previous-wallets/:sparkPubkey`). The verified wallet is the
+ * member's only receiving address. Shares the {@link AuthStore} instance with
+ * `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
@@ -91,14 +99,28 @@ export interface MeRouteDeps {
   /**
    * Optional spend ping. After About me is saved, a verified account with a
    * live top-level photo or video (including this note) is welcome-pinged.
+   * After the first recovery share of the current wallet is stored, an
+   * account eligible today gets the daily ping of today's newest media post.
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
   /**
-   * LNURL server config. When set, mounts `PUT /wallet` and resolves the
-   * receiving address in owner JSON and the welcome ping. Omitted → off.
+   * LNURL server config. When set, mounts `PUT /wallet`, `PUT /recovery-share`,
+   * `GET /previous-wallets`, and `DELETE /previous-wallets/:sparkPubkey`, and
+   * resolves the receiving address in owner JSON and the welcome ping.
+   * Omitted → off.
    */
   lnurlServer?: LnurlServerConfig;
+  /**
+   * `RECOVERY_SHARE_KEK` that encrypts the 21.gifts recovery share. Omitted
+   * (memory boot) → `PUT /recovery-share` answers 503.
+   */
+  recoveryShareKek?: Uint8Array;
+  /**
+   * Fetch for the anonymous explorer balance of previous wallets (default
+   * `globalThis.fetch`).
+   */
+  fetchImpl?: FetchFn;
   /**
    * Daily payout roster; `POST /username` moves its rows from the old to the
    * new receiving address. Omitted skips that.
@@ -176,6 +198,18 @@ const locationBody = z.object({ location: z.string() });
 
 /** Body schema for binding the member's wallet public key. */
 const walletBody = z.object({ sparkPubkey: z.string() });
+
+/** Body schema for storing the 21.gifts recovery share. Unknown keys are 400. */
+const recoveryShareBody = z.object({ sparkPubkey: z.string(), share: z.string() }).strict();
+
+/** Single 400 copy for a missing or invalid recovery share body. */
+const RECOVERY_SHARE_BODY_ERROR = 'Expected a JSON body with sparkPubkey and a recovery share';
+
+/** 503 copy when the share cannot be stored (no `RECOVERY_SHARE_KEK`, or a store or crypto failure). */
+const RECOVERY_SHARE_UNAVAILABLE = 'Social recovery is unavailable';
+
+/** 503 copy of the previous-wallet routes, shared with `POST /wallet/report`. */
+const WALLET_DATA_UNAVAILABLE = 'Wallet data is unavailable';
 
 /** Body schema for skipping a wizard step (`lightning-address` is the receiving-wallet step). */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
@@ -271,10 +305,51 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
 }
 
 /**
+ * Daily ping after the first recovery share of the current wallet is stored:
+ * reads the grant and, when the account is eligible today with that share,
+ * pings today's newest media post through {@link pingTodayMedia} (no second
+ * share read). No-op without a spend ping. A grant read failure logs
+ * `funding.daily_ping.failed`; the route's answer never depends on this.
+ *
+ * @param deps - `/me` collaborators.
+ * @param lnurlServer - LNURL server config (the share routes exist only with it).
+ * @param account - The account, read before the share write.
+ * @param nowMs - Clock of the share write.
+ */
+async function pingAfterShareStored(
+  deps: MeRouteDeps,
+  lnurlServer: LnurlServerConfig,
+  account: Account,
+  nowMs: number,
+): Promise<void> {
+  const spendPing = deps.spendPing;
+  if (spendPing === undefined) {
+    return;
+  }
+  try {
+    const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
+      account.id,
+    );
+    if (!eligibleToday(account.role, grant, nowMs, true)) {
+      return;
+    }
+    await pingTodayMedia(
+      { spendPing, lnurlServer, messageStore: deps.messages, authStore: deps.store },
+      account,
+      nowMs,
+      effectiveStatus(grant, nowMs),
+      false,
+    );
+  } catch {
+    logEvent('funding.daily_ping.failed', { accountId: account.id });
+  }
+}
+
+/**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet` and the receiving address, optional `dailyRoster` for `POST /username` roster rewrites, and optional `mergeDb` so that write and roster move share one transaction.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
+ * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet`, the recovery share and previous-wallet routes, and the receiving address, optional `recoveryShareKek` for the share, optional `fetchImpl` for the explorer balance, optional `dailyRoster` for `POST /username` roster rewrites, and optional `mergeDb` so that write and roster move share one transaction.
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, optional recovery share and previous wallets, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
@@ -1112,6 +1187,114 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       }
       logEvent('account.wallet.claimed', { accountId: current.id });
       return c.json(await ownerJson(deps, result.account), 200);
+    });
+
+    const lnurlServer = deps.lnurlServer;
+    const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+
+    app.put('/recovery-share', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const kek = deps.recoveryShareKek;
+      if (kek === undefined) {
+        return c.json({ error: RECOVERY_SHARE_UNAVAILABLE }, 503);
+      }
+      const parsed = recoveryShareBody.safeParse(await c.req.json().catch(() => null));
+      const sparkPubkey = parsed.success ? normalizeSparkPubkey(parsed.data.sparkPubkey) : null;
+      if (!parsed.success || sparkPubkey === null || !RECOVERY_SHARE_TEXT.test(parsed.data.share)) {
+        return c.json({ error: RECOVERY_SHARE_BODY_ERROR }, 400);
+      }
+      try {
+        const current = await storedAccount(deps, account.id);
+        /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+        if (current === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (typeof current.sparkPubkeyVerifiedAt !== 'number') {
+          return c.json({ error: 'Wallet is not connected' }, 409);
+        }
+        if (sparkPubkey !== current.sparkPubkey) {
+          return c.json({ error: 'Wallet changed' }, 409);
+        }
+        const ciphertext = await encryptRecoveryShare(parsed.data.share, kek, current.id);
+        const nowMs = deps.now();
+        const result = await deps.store.putRecoveryShare({
+          accountId: current.id,
+          sparkPubkey,
+          ciphertext,
+          now: nowMs,
+        });
+        if (result === 'changed') {
+          return c.json({ error: 'Wallet changed' }, 409);
+        }
+        logEvent('account.recovery_share.stored', {
+          accountId: current.id,
+          replaced: result === 'replaced',
+        });
+        if (result === 'stored') {
+          await pingAfterShareStored(deps, lnurlServer, current, nowMs);
+        }
+        return c.json(await ownerJson(deps, current), 200);
+      } catch (error) {
+        logEvent('account.recovery_share.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: RECOVERY_SHARE_UNAVAILABLE }, 503);
+      }
+    });
+
+    app.get('/previous-wallets', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      let wallets: PreviousWallet[];
+      try {
+        wallets = await deps.store.listPreviousWallets(account.id);
+      } catch (error) {
+        logEvent('account.previous_wallets.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: WALLET_DATA_UNAVAILABLE }, 503);
+      }
+      // The explorer balance is information only; an unknown one is null.
+      const listed = await Promise.all(
+        wallets.map(async (wallet) => ({
+          sparkPubkey: wallet.sparkPubkey,
+          sparkAddress: wallet.sparkAddress,
+          replacedAt: wallet.replacedAt,
+          balanceSats: await fetchSparkAddressBalance(fetchImpl, wallet.sparkAddress),
+        })),
+      );
+      return c.json({ wallets: listed }, 200);
+    });
+
+    app.delete('/previous-wallets/:sparkPubkey', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const sparkPubkey = normalizeSparkPubkey(c.req.param('sparkPubkey'));
+      if (sparkPubkey === null) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        if (!(await deps.store.dropPreviousWallet(account.id, sparkPubkey))) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+      } catch (error) {
+        logEvent('account.previous_wallets.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: WALLET_DATA_UNAVAILABLE }, 503);
+      }
+      logEvent('account.previous_wallet.dropped', { accountId: account.id });
+      return c.body(null, 204);
     });
   }
 

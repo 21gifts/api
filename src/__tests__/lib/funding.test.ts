@@ -11,6 +11,7 @@ import {
   fundingGrantRequired,
   fundingReviewedAt,
   grantPlaces,
+  inGrantProgramToday,
   serializeOwnerFunding,
 } from '@/lib/funding';
 
@@ -92,65 +93,103 @@ describe('fundingGrantRequired', () => {
   });
 });
 
+describe('inGrantProgramToday', () => {
+  it('is true for an admitted grant and for a trial dated today', () => {
+    expect(inGrantProgramToday(grant({ status: 'admitted', admittedAt: GATE_MS }), GATE_MS)).toBe(
+      true,
+    );
+    expect(inGrantProgramToday(trial(GATE_TODAY), GATE_MS)).toBe(true);
+  });
+
+  it('is false without a grant, for pending, rejected, and other-day trials', () => {
+    expect(inGrantProgramToday(undefined, GATE_MS)).toBe(false);
+    expect(inGrantProgramToday(grant({ status: 'pending' }), GATE_MS)).toBe(false);
+    expect(inGrantProgramToday(grant({ status: 'rejected' }), GATE_MS)).toBe(false);
+    expect(inGrantProgramToday(trial(GATE_YESTERDAY), GATE_MS)).toBe(false);
+    expect(inGrantProgramToday(trial(GATE_TOMORROW), GATE_MS)).toBe(false);
+  });
+
+  it('does not depend on the gate day', () => {
+    expect(inGrantProgramToday(trial(GATE_YESTERDAY), BEFORE_GATE_MS)).toBe(true);
+    expect(inGrantProgramToday(undefined, BEFORE_GATE_MS)).toBe(false);
+  });
+});
+
 describe('eligibleToday', () => {
-  it('is true for non-basis without a grant before the gate day', () => {
-    expect(eligibleToday(NON_BASIS, undefined, BEFORE_GATE_MS)).toBe(true);
-    expect(eligibleToday(NON_BASIS, grant({ status: 'pending' }), BEFORE_GATE_MS)).toBe(true);
-    expect(eligibleToday(NON_BASIS, grant({ status: 'rejected' }), BEFORE_GATE_MS)).toBe(true);
-  });
-
-  it('is always false for basis, including before the gate day', () => {
-    expect(eligibleToday('basis', undefined, BEFORE_GATE_MS)).toBe(false);
-    expect(eligibleToday('basis', grant({ status: 'admitted' }), GATE_MS)).toBe(false);
-    expect(eligibleToday('basis', trial(GATE_TODAY), GATE_MS)).toBe(false);
-  });
-
-  it('is false when the grant is missing, from the gate day', () => {
-    expect(eligibleToday(NON_BASIS, undefined, GATE_MS)).toBe(false);
-    expect(eligibleToday(NON_BASIS, undefined, Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`))).toBe(
-      false,
+  it('is true for non-basis without a grant or share before the gate day', () => {
+    expect(eligibleToday(NON_BASIS, undefined, BEFORE_GATE_MS, false)).toBe(true);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'pending' }), BEFORE_GATE_MS, false)).toBe(
+      true,
+    );
+    expect(eligibleToday(NON_BASIS, grant({ status: 'rejected' }), BEFORE_GATE_MS, false)).toBe(
+      true,
     );
   });
 
-  it('keeps admitted true and basis false the day after the gate', () => {
+  it('is always false for basis, including before the gate day and with a share', () => {
+    expect(eligibleToday('basis', undefined, BEFORE_GATE_MS, true)).toBe(false);
+    expect(eligibleToday('basis', grant({ status: 'admitted' }), GATE_MS, true)).toBe(false);
+    expect(eligibleToday('basis', trial(GATE_TODAY), GATE_MS, true)).toBe(false);
+  });
+
+  it('is false when the grant is missing, from the gate day, even with a share', () => {
+    expect(eligibleToday(NON_BASIS, undefined, GATE_MS, true)).toBe(false);
+    expect(
+      eligibleToday(NON_BASIS, undefined, Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`), true),
+    ).toBe(false);
+  });
+
+  it('keeps admitted with a share true and basis false the day after the gate', () => {
     const after = Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`);
     const admitted = grant({ status: 'admitted', admittedAt: GATE_MS });
-    expect(eligibleToday(NON_BASIS, admitted, after)).toBe(true);
-    expect(eligibleToday('basis', admitted, after)).toBe(false);
+    expect(eligibleToday(NON_BASIS, admitted, after, true)).toBe(true);
+    expect(eligibleToday('basis', admitted, after, true)).toBe(false);
   });
 
   it('is false for a pending grant on a non-basis role, from the gate day', () => {
-    expect(eligibleToday(NON_BASIS, grant({ status: 'pending' }), GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'pending' }), GATE_MS, true)).toBe(false);
   });
 
-  it('is true for a non-basis trial on the gate UTC day', () => {
-    expect(eligibleToday(NON_BASIS, trial(GATE_TODAY), GATE_MS)).toBe(true);
+  it('is true for a non-basis trial with a share on the gate UTC day', () => {
+    expect(eligibleToday(NON_BASIS, trial(GATE_TODAY), GATE_MS, true)).toBe(true);
   });
 
   it('is false for a trial whose day is yesterday, from the gate day', () => {
-    expect(eligibleToday(NON_BASIS, trial(GATE_YESTERDAY), GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, trial(GATE_YESTERDAY), GATE_MS, true)).toBe(false);
   });
 
   it('is false for a trial whose day is tomorrow, from the gate day', () => {
-    expect(eligibleToday(NON_BASIS, trial(GATE_TOMORROW), GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, trial(GATE_TOMORROW), GATE_MS, true)).toBe(false);
   });
 
-  it('is true for admitted on a non-basis role and false for basis', () => {
+  it('is true for admitted with a share on a non-basis role and false for basis', () => {
     const admitted = grant({
       status: 'admitted',
       admittedAt: GATE_MS,
     });
-    expect(eligibleToday(NON_BASIS, admitted, GATE_MS)).toBe(true);
-    expect(eligibleToday('basis', admitted, GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, admitted, GATE_MS, true)).toBe(true);
+    expect(eligibleToday('basis', admitted, GATE_MS, true)).toBe(false);
   });
 
   it('is false for rejected, from the gate day', () => {
-    expect(eligibleToday(NON_BASIS, grant({ status: 'rejected' }), GATE_MS)).toBe(false);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'rejected' }), GATE_MS, true)).toBe(false);
+  });
+
+  it('is false for admitted or today trial without a share, from the gate day', () => {
+    const after = Date.parse(`${GATE_TOMORROW}T00:00:00.000Z`);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'admitted' }), GATE_MS, false)).toBe(false);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'admitted' }), after, false)).toBe(false);
+    expect(eligibleToday(NON_BASIS, trial(GATE_TODAY), GATE_MS, false)).toBe(false);
+  });
+
+  it('has no start date of its own for the share: it applies from the gate day', () => {
+    expect(eligibleToday(NON_BASIS, undefined, BEFORE_GATE_MS, false)).toBe(true);
+    expect(eligibleToday(NON_BASIS, grant({ status: 'admitted' }), GATE_MS, false)).toBe(false);
   });
 });
 
 describe('effectiveStatus and eligibleToday matrix', () => {
-  it('covers stored statuses for verified vs basis', () => {
+  it('covers stored statuses for verified vs basis, with and without a share', () => {
     const cases: Array<{
       status: FundingStatus;
       trialUtcDate: string | null;
@@ -172,8 +211,10 @@ describe('effectiveStatus and eligibleToday matrix', () => {
     for (const row of cases) {
       const stored = grant({ status: row.status, trialUtcDate: row.trialUtcDate });
       expect(effectiveStatus(stored, GATE_MS)).toBe(row.effective);
-      expect(eligibleToday(NON_BASIS, stored, GATE_MS)).toBe(row.eligibleVerified);
-      expect(eligibleToday('basis', stored, GATE_MS)).toBe(false);
+      expect(inGrantProgramToday(stored, GATE_MS)).toBe(row.eligibleVerified);
+      expect(eligibleToday(NON_BASIS, stored, GATE_MS, true)).toBe(row.eligibleVerified);
+      expect(eligibleToday(NON_BASIS, stored, GATE_MS, false)).toBe(false);
+      expect(eligibleToday('basis', stored, GATE_MS, true)).toBe(false);
     }
   });
 });

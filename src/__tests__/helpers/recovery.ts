@@ -185,6 +185,34 @@ export async function seedPinnedAccount(store: AuthStore): Promise<void> {
 }
 
 /**
+ * Store a 21.gifts recovery share for the account's verified wallet key, as
+ * `PUT /me/recovery-share` does after encrypting it. The envelope bytes are a
+ * placeholder: nothing in the api reads them back.
+ *
+ * @param store - Auth store.
+ * @param accountId - Account id.
+ * @param sparkPubkey - The account's verified wallet key.
+ * @returns Resolves when the share is stored.
+ * @throws Error when the store refuses because the key is not the account's
+ *   verified wallet key.
+ */
+export async function storeRecoveryShare(
+  store: AuthStore,
+  accountId: string,
+  sparkPubkey: string,
+): Promise<void> {
+  const result = await store.putRecoveryShare({
+    accountId,
+    sparkPubkey,
+    ciphertext: Uint8Array.of(1, 2, 3),
+    now: 1,
+  });
+  if (result === 'changed') {
+    throw new Error('recovery share not stored');
+  }
+}
+
+/**
  * DER low-S ECDSA over one SHA-256 of the UTF-8 message, as the Breez SDK
  * signs LNURL server messages.
  *

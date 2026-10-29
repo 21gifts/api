@@ -39,7 +39,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace|recovery begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/wallet-intro-seen; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet, PUT /me/recovery-share, GET /me/previous-wallets, DELETE /me/previous-wallets/:sparkPubkey (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/wallet-intro-seen; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
@@ -98,6 +98,7 @@ api/
 │   │   ├── recovery-signature.ts # Social recovery message and its compact signature check; LNURL transfer messages and DER check (@noble/curves)
 │   │   ├── client-instant.ts # parseClientInstant (ISO or epoch timestamp from the app, bounded)
 │   │   ├── spark-address.ts  # encodeSparkAddress (mainnet address of an identity key); decodeSparkAddress (identity key + memo of a Spark address or invoice)
+│   │   ├── spark-explorer.ts # fetchSparkAddressBalance (anonymous Sparkscan soft balance of a previous wallet; information only)
 │   │   ├── wallet-report.ts  # parseWalletReport (allow-listed wallet report body)
 │   │   ├── wallet-category.ts # walletPaymentClassifier (member/shop/platform/gift/outside_lightning/onchain/unknown)
 │   │   ├── wallet-store.ts   # WalletStore port, InMemory/Postgres adapters, WALLET_SCHEMA_SQL
@@ -145,8 +146,10 @@ api/
 │   │   ├── uuid.ts           # UUID_PATTERN and normalizeUuid (shared id shape check)
 │   │   ├── trust.ts          # Trust-chain types, buildTrustChain, accountTrust, serializeTrustEdge
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
-│   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
+│   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, inGrantProgramToday, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
+│   │   ├── payout-eligibility.ts # loadPayoutEligibility (grant plus the 21.gifts recovery share: the payout gate of every payout path)
+│   │   ├── funding-ping.ts   # pingTodayMedia (daily ping after a staff trial or admit, and after the first recovery share)
 │   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)
 │   │   ├── api-log.ts        # HTTP audit log store (`api_log`)
@@ -227,7 +230,7 @@ api/
 │       │   ├── fake-passkey.ts   # PasskeyCeremony test double
 │       │   ├── address-ref.ts    # Expected `addressRef` of a console line
 │       │   ├── shop-proof-fixture.ts # Shop payment rows, RPC fakes, and the harness of the proof, worker, and shop route tests
-│       │   ├── recovery.ts       # Pinned SDK recovery signature vector, recoverable account, signed lookup and transfer bodies, scripted LNURL server
+│       │   ├── recovery.ts       # Pinned SDK recovery signature vector, recoverable account, stored recovery share, signed lookup and transfer bodies, scripted LNURL server
 │       │   └── wallet-lnurl.ts   # Verified-wallet account, LNURL server config, and BOLT11 test vectors
 │       ├── integration/
 │       │   ├── auth-flow.test.ts
@@ -245,6 +248,7 @@ api/
 │       │   ├── recovery-signature.test.ts
 │       │   ├── client-instant.test.ts
 │       │   ├── spark-address.test.ts
+│       │   ├── spark-explorer.test.ts
 │       │   ├── wallet-report.test.ts
 │       │   ├── wallet-category.test.ts
 │       │   ├── wallet-store.test.ts
@@ -339,6 +343,8 @@ api/
 │       │   ├── request-meta.test.ts
 │       │   ├── funding.test.ts
 │       │   ├── funding-store.test.ts
+│       │   ├── payout-eligibility.test.ts
+│       │   ├── funding-ping.test.ts
 │       │   ├── postgres-text-array.test.ts
 │       │   ├── conversation.test.ts
 │       │   ├── conversation-store.test.ts
@@ -601,6 +607,12 @@ asserts the 502 for a host that does not resolve;
 `normalizeHex32`, `preimageMatchesHash`, `NoopGiftRecorder`, and
 `recipientHandleFromAddress`, which need `SPEND_API_TOKEN` and a reachable
 LNURL-pay;
+`inGrantProgramToday` and `loadPayoutEligibility`, which decide only for a member with a verified
+wallet (`LNURL_SERVER_URL`) on a payout path (spend invoices need `SPEND_API_TOKEN`), so their tests
+assert `GET /invoices/eligible` 503 unconfigured;
+`pingTodayMedia`, which pings only with a configured spend ping (`SPEND_URL` and `SPEND_API_TOKEN`)
+after a staff decision or a stored recovery share, so its test asserts `POST /funding/trial` 401
+without a session;
 `fetchFxSpot`, `runFxSpotTick`, and `startFxSpotWorker`, which store a quote only from a reachable
 provider, so their tests assert the empty `GET /fx/spot` result for the pinned refused
 `BTC_FIAT_SPOT_URL`;
@@ -609,7 +621,7 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `signEventForShop`, which only the Nostr worker calls (it needs `DATABASE_URL`, `NOSTR_NSEC_KEK`, and a publisher);
 `shopOcpPlaceInput`, `runOcpPlaceOutboxPass`, `runOcpPhotoOutboxPass`, `ocpPhotoSetHash`, `queueAllShopPlaces`, `queueAllShopPhotos`, and `startOcpOutboxWorker`, which need the OpenCryptoPay map target (`OCP_MAP_BASE_URL` + `OCP_PLACE_INGEST_TOKEN`);
 `normalizeSparkPubkey`, `IpRateLimiter`, `callLnurlServer`, `walletPayRequest`,
-`lnurlServerRoutes`, `accountByReceivingAddress`, `readLookupAnswer`, `forwardRecoveryLookup`, `settleDecision`, `settleAfterLookup`,
+`lnurlServerRoutes`, `accountByReceivingAddress`, `readLookupAnswer`, `forwardRecoveryLookup`, `settleDecision`, `settleAfterLookup`, `fetchSparkAddressBalance` (the previous-wallet list),
 `startPasskeyRecovery` (social recovery begin answers 503 first), `lnurlTransferFromMessage`, `lnurlTransferToMessage`, `verifyLnurlDerSignature` (the address transfer route),
 `recoveryMessage` and `verifyRecoverySignature` (only for a recovery challenge, which only that begin issues), `duplicateInvoiceLogFields` (an invoice route with a pending charge), and `PaymentHashClaims` (a charge's invoice record or a shop payment of a memory boot), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
 `parseMultipartCoord`, `loadLatestGoalRateDay`,

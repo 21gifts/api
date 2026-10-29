@@ -202,6 +202,12 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only. False for every other failure.
    */
   passkeyRenewPrfUnsupported: boolean;
+  /**
+   * True when the api holds a 21.gifts recovery share for the account's
+   * current verified wallet (`sparkPubkey` with `sparkWalletVerified`). No
+   * grant or date check. Owner only.
+   */
+  socialRecoverySetUp: boolean;
 }
 
 /**
@@ -646,7 +652,8 @@ export function serializeDebugAccountDetail(
  * `passkeyCredentialId` (base64url or `null`, default `null`); the seventh is
  * `passkeyRenewFailed` (default `false`); the eighth is `passkeyRenewClosed`
  * (default `false`); the ninth is `passkeyRenewPrfUnsupported`
- * (default `false`).
+ * (default `false`); the tenth is the LNURL server config; the eleventh is
+ * `socialRecoverySetUp` (default `false`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -668,13 +675,15 @@ export function serializeDebugAccountDetail(
  *   failed renew is `prfUnsupported`. Defaults to `false`.
  * @param lnurlServer - LNURL server config for the receiving address
  *   (`lightningAddress`), or `undefined` when off.
+ * @param socialRecoverySetUp - True when a 21.gifts recovery share is stored
+ *   for the current verified wallet. Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
  * `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
  * `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
  * `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
- * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
- * `passkeyRenewPrfUnsupported`.
+ * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
+ * `passkeyRenewPrfUnsupported`, and `socialRecoverySetUp`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -687,6 +696,7 @@ export function serializeOwnerAccount(
   passkeyRenewClosed = false,
   passkeyRenewPrfUnsupported = false,
   lnurlServer?: LnurlServerConfig,
+  socialRecoverySetUp = false,
 ): OwnerAccountResponse {
   return {
     ...serializeAccount(account, lnurlServer),
@@ -713,6 +723,7 @@ export function serializeOwnerAccount(
     passkeyRenewFailed,
     passkeyRenewClosed,
     passkeyRenewPrfUnsupported,
+    socialRecoverySetUp,
   };
 }
 
@@ -722,7 +733,10 @@ export interface OwnerFundingLookup {
   store: FundingStore;
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
-  /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
+  /**
+   * Account lookup for admitted `reviewedByName`, owner `passkeyCredentialId`,
+   * the renew flags, and `socialRecoverySetUp`.
+   */
   authStore: Pick<
     AuthStore,
     | 'getAccount'
@@ -730,6 +744,7 @@ export interface OwnerFundingLookup {
     | 'hasUnacknowledgedPasskeyRenewFailure'
     | 'hasAcknowledgedPasskeyRenewFailure'
     | 'latestUnacknowledgedPasskeyRenewErrorName'
+    | 'hasRecoveryShareForVerifiedWallet'
   >;
 }
 
@@ -763,16 +778,19 @@ export interface OwnerFundingLookup {
  *   if `walletRequired` is false, and sets `passkeyRenewClosed` only when
  *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
  *   is true. `walletRequired` is read after that predicate, so a seed that
- *   already acknowledged the failure is not closed.
+ *   already acknowledged the failure is not closed. When `funding` is
+ *   passed, `socialRecoverySetUp` is
+ *   `authStore.hasRecoveryShareForVerifiedWallet` of the re-read account;
+ *   when it is omitted, the field is false and that method is not called.
  * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
  *   `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
  *   `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
  *   `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
- *   `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ *   `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
  *   `passkeyRenewPrfUnsupported` (true only when
- *   the newest unacknowledged failed renew is `prfUnsupported`, via
- *   {@link serializeOwnerAccount}).
+ *   the newest unacknowledged failed renew is `prfUnsupported`), and
+ *   `socialRecoverySetUp` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
@@ -800,6 +818,7 @@ export async function serializeOwnerAccountWithPosts(
   let passkeyRenewFailed = false;
   let passkeyRenewClosed = false;
   let passkeyRenewPrfUnsupported = false;
+  let socialRecoverySetUp = false;
   let serializedAccount = account;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null, '');
@@ -832,6 +851,9 @@ export async function serializeOwnerAccountWithPosts(
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
     passkeyRenewClosed = serializedAccount.walletRequired !== true && acknowledgedRenew;
+    socialRecoverySetUp = await funding.authStore.hasRecoveryShareForVerifiedWallet(
+      serializedAccount.id,
+    );
   }
   return serializeOwnerAccount(
     serializedAccount,
@@ -844,6 +866,7 @@ export async function serializeOwnerAccountWithPosts(
     passkeyRenewClosed,
     passkeyRenewPrfUnsupported,
     lnurlServer,
+    socialRecoverySetUp,
   );
 }
 

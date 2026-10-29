@@ -28,6 +28,7 @@ export const MEMBER_EVENT_NAMES: ReadonlySet<string> = new Set([
   'wallet_move_copied',
   'wallet_move_closed',
   'wallet_move_done',
+  'recovery_done',
 ]);
 
 /** Maximum events in one `POST /me/events` body. */

@@ -12,6 +12,7 @@ import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
@@ -1389,5 +1390,111 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Message is not from today' });
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+  });
+
+  describe('spend-ping replay from the grant gate day', () => {
+    const GATE_NOW = (): number => Date.parse('2026-10-29T12:00:00.000Z');
+    const messageId = '18181818-1818-4181-8181-181818181818';
+    const accountId = 'c4444444-4444-4444-8444-444444444444';
+
+    /** An admitted receiver with today's photo post, and optionally the recovery share. */
+    async function gated(share: boolean): Promise<{
+      store: InMemoryMessageStore;
+      auth: InMemoryAuthStore;
+      fundingStore: InMemoryFundingStore;
+    }> {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await createReceiver(auth, { id: accountId, role: 'verified', name: 'Ada' });
+      if (share) {
+        const receiver = await auth.getAccount(accountId);
+        await storeRecoveryShare(auth, accountId, receiver!.sparkPubkey!);
+      }
+      await store.create(
+        {
+          id: messageId,
+          accountId,
+          name: 'Ada',
+          text: 'photo',
+          createdAt: new Date('2026-10-29T08:00:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+        },
+        SPEND_PHOTO,
+      );
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: 'staff',
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      return { store, auth, fundingStore };
+    }
+
+    async function replay(
+      deps: Awaited<ReturnType<typeof gated>>,
+      spendPing: ReturnType<typeof spendPingMock>,
+    ): Promise<Response> {
+      const app = mount(deps.store, 'secret', {
+        spendPing,
+        auth: deps.auth,
+        fundingStore: deps.fundingStore,
+        now: GATE_NOW,
+      });
+      return app.request('/debug/spend-ping', {
+        method: 'POST',
+        headers: SPEND_HEADERS,
+        body: JSON.stringify({ messageId }),
+      });
+    }
+
+    it('answers 403 Not eligible for an admitted member without a recovery share', async () => {
+      const spendPing = spendPingMock();
+      const res = await replay(await gated(false), spendPing);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Not eligible' });
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({
+          event: 'debug.spend_ping.skipped',
+          messageId,
+          reason: 'not_eligible',
+        }),
+      );
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('replays for an admitted member with a recovery share', async () => {
+      const spendPing = spendPingMock();
+      const res = await replay(await gated(true), spendPing);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ messageId, status: 'accepted' });
+      expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+        'ada@example.test',
+        messageId,
+        '2026-10-29',
+        'admitted',
+      ]);
+    });
+
+    it('answers 503 when the share read throws', async () => {
+      const deps = await gated(true);
+      vi.spyOn(deps.auth, 'hasRecoveryShareForVerifiedWallet').mockRejectedValue(
+        new Error('share down'),
+      );
+      const spendPing = spendPingMock();
+      const res = await replay(deps, spendPing);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'debug.spend_ping.failed', messageId }),
+      );
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
   });
 });
