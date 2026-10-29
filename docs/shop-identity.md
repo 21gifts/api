@@ -314,7 +314,7 @@ Kind 0 content of a public shop:
 | `banner`       | absolute URL of `/messages/:id/photo/1.<ext>`, otherwise `KIND0_BANNER_URL` |
 | `website`      | `<site origin>/{npub}`, see below                                           |
 | `nip05`        | `<local>@<domain>`, see below                                               |
-| `lud16`        | the till account's Lightning address, see below                             |
+| `lud16`        | the till account's receiving address (verified wallet), see below           |
 
 The `picture` and `banner` URLs need only the content types of photo 0
 (`photo.<ext>`) and of the extra still stored at index 1 (`photo/1.<ext>`).
@@ -371,8 +371,8 @@ The `lud16` is the till account's receiving address
 its own kind 0), a non-blank username and a verified wallet, and the LNURL
 server is configured. That is the
 `payUsername` rule of `GET /shops/:npub` plus the name, so a till account
-without a username lists the shop but gives it no `lud16`, although its own
-kind 0 carries one. The till account's LNURL response is unchanged, so this
+without a username or without a verified wallet lists the shop but gives it
+no `lud16`. The till account's LNURL response is unchanged, so this
 spec adds no zap receipts for a shop key.
 
 ### NIP-05
