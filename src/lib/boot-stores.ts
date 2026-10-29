@@ -583,6 +583,19 @@ export async function openBootStores(
         importedAt: iso(row.imported_at),
       }));
     },
+    async () => {
+      const rows = await giftSql.query<{ id: string }>(
+        `SELECT DISTINCT a.id::text AS id
+         FROM account a
+         JOIN gift g
+           ON g.direction = 'outbound'
+          AND g.kind = 'welcome'
+          AND lower(btrim(g.recipient_wos_user)) = lower(split_part(btrim(a.lightning_address), '@', 1))
+         WHERE a.lightning_address IS NOT NULL
+           AND split_part(btrim(a.lightning_address), '@', 1) <> ''`,
+      );
+      return rows.map((row) => row.id);
+    },
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });

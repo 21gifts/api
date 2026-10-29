@@ -51,6 +51,7 @@ import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { pushRoutes } from '@/routes/push';
 import { walletReportRoutes } from '@/routes/wallet-report';
 import { walletHeartRoutes } from '@/routes/wallet-hearts';
@@ -242,6 +243,12 @@ export interface AppDeps {
    * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Switch of the 15-minute welcome sweep, shared with the boot timer
+   * (default: a fresh switch, off). `GET` and `PUT /debug/welcome-sweep` read
+   * and set it.
+   */
+  welcomeSweep?: WelcomeSweepSwitch;
   /**
    * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
    * Boot injects the same instance used by {@link resolveSpendPing}.
@@ -886,6 +893,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       trustStore,
       giftStore,
       ...receivingDeps,
+      gifts: giftStore,
+      welcomeSweep: deps.welcomeSweep ?? { enabled: false },
     }),
   );
   app.route(

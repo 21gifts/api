@@ -1,4 +1,5 @@
 import { Hono } from 'hono';
+import { z } from 'zod';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseClientInstant } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
@@ -17,6 +18,7 @@ import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { GiftStore } from '@/lib/gift-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
+import { welcomeSweepCandidates, type WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -52,6 +54,10 @@ export interface DebugPaymentsRouteDeps {
   giftStore: Pick<GiftStore, 'listOutbound'>;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
+  /** Outbound gifts for the welcome sweep dry-run; omitted → only `Welcome` replies count. */
+  gifts?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
+  /** Switch of the 15-minute welcome sweep that `GET` and `PUT /welcome-sweep` read and set. */
+  welcomeSweep: WelcomeSweepSwitch;
 }
 
 const DEBUG_LIST_LIMIT = 200;
@@ -86,6 +92,7 @@ function parseReplayWindow(
   }
   return { fromMs, toMs, dryRun: dryRun === true };
 }
+const welcomeSweepBody = z.object({ enabled: z.boolean() }).strict();
 
 /** Shared 503/401 gate matching `/debug/accounts`. */
 function gateDebugToken(
@@ -161,8 +168,9 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  *   day (202 `{ messageId, status: 'accepted' }` or 200
  *   `{ messageId, status: 'skipped', reason }`); with `{ from, to, dryRun? }`,
  *   replay every payout trigger of that window through `replayPayoutWindow`
- *   (200 `{ from, to, dryRun, events, totals }`). Never returns the Lightning
- *   address.
+ *   (200 `{ from, to, dryRun, events, totals }`); and `GET` / `PUT
+ *   /welcome-sweep` (the sweep switch and the accounts the sweep would ping
+ *   now, without pinging). Never returns the Lightning address.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -397,6 +405,49 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         logEvent('debug.spend_ping.failed', { messageId });
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
+    })
+    .get('/welcome-sweep', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      try {
+        const candidates = await welcomeSweepCandidates({
+          auth: deps.auth,
+          messages: deps.store,
+          gifts: deps.gifts,
+          lnurlServer: deps.lnurlServer,
+        });
+        logEvent('debug.welcome_sweep.listed', { count: candidates.length });
+        return c.json(
+          {
+            enabled: deps.welcomeSweep.enabled,
+            spendPing: deps.spendPing !== undefined,
+            wouldPing: candidates.map(({ accountId, username, messageId }) => ({
+              accountId,
+              username,
+              messageId,
+            })),
+          },
+          200,
+        );
+      } catch {
+        logEvent('debug.welcome_sweep.list_failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .put('/welcome-sweep', async (c) => {
+      const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));
+      if (!gate.ok) {
+        return c.json(gate.body, gate.status);
+      }
+      const parsed = welcomeSweepBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an "enabled" boolean' }, 400);
+      }
+      deps.welcomeSweep.enabled = parsed.data.enabled;
+      logEvent('debug.welcome_sweep.set', { enabled: parsed.data.enabled });
+      return c.json({ enabled: deps.welcomeSweep.enabled }, 200);
     })
     .get('/zap-ingests', async (c) => {
       const gate = gateDebugToken(deps.debugToken, c.req.header('authorization'));

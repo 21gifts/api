@@ -284,9 +284,11 @@ is funding-eligible today and the new row has media (`hasPhoto` /
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
 the welcome gift is once per account: an account that already has a
-platform `Welcome` reply under one of its notes, or a recorded `welcome` gift with description `21gifts welcome`
+platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
+external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
-verified and saving About me while verified also welcome-ping; boot and a
+verified and saving About me while verified also welcome-ping; while an operator has turned
+the welcome sweep on (`PUT /debug/welcome-sweep`; off on every boot), boot and a
 15-minute timer welcome-ping every verified account that already has a photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;

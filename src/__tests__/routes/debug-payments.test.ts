@@ -14,6 +14,7 @@ import { InMemoryFundingStore } from '@/lib/funding-store';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
+import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
@@ -50,6 +51,8 @@ function mount(
     auth?: InMemoryAuthStore;
     now?: () => number;
     giftStore?: InMemoryGiftStore;
+    gifts?: InMemoryGiftStore;
+    welcomeSweep?: WelcomeSweepSwitch;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -64,7 +67,9 @@ function mount(
       conversationStore: new InMemoryConversationStore(),
       trustStore: new InMemoryTrustStore(),
       giftStore: extra.giftStore ?? new InMemoryGiftStore(),
+      ...(extra.gifts === undefined ? {} : { gifts: extra.gifts }),
       lnurlServer: LNURL_SERVER,
+      welcomeSweep: extra.welcomeSweep ?? { enabled: false },
     }),
   );
 }
@@ -480,6 +485,7 @@ describe('debugPaymentsRoutes', () => {
         conversationStore: new InMemoryConversationStore(),
         trustStore: new InMemoryTrustStore(),
         giftStore: new InMemoryGiftStore(),
+        welcomeSweep: { enabled: false },
       }),
     );
     const settled = await app.request('/debug/invoices/settle', {
@@ -1683,5 +1689,107 @@ describe('debugPaymentsRoutes', () => {
         true,
       );
     });
+  });
+});
+
+describe('/debug/welcome-sweep', () => {
+  const accountId = 'a1111111-1111-4111-8111-111111111111';
+  const messageId = 'b1111111-1111-4111-8111-111111111111';
+
+  async function seedOwed(): Promise<{ store: InMemoryMessageStore; auth: InMemoryAuthStore }> {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, { id: accountId, role: 'verified', name: 'Ada' });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: SPEND_CREATED_AT,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    return { store, auth };
+  }
+
+  it('answers 503 without a debug token and 401 without the bearer', async () => {
+    const store = new InMemoryMessageStore();
+    expect((await mount(store, undefined).request('/debug/welcome-sweep')).status).toBe(503);
+    const app = mount(store, 'secret');
+    expect((await app.request('/debug/welcome-sweep')).status).toBe(401);
+    expect((await app.request('/debug/welcome-sweep', { method: 'PUT' })).status).toBe(401);
+  });
+
+  it('lists the accounts the sweep would ping without pinging', async () => {
+    const { store, auth } = await seedOwed();
+    const spendPing = spendPingMock();
+    const app = mount(store, 'secret', { spendPing, auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: false,
+      spendPing: true,
+      wouldPing: [{ accountId, username: 'ada', messageId }],
+    });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    expect(await store.listInvoiceAttempts(10)).toEqual([]);
+  });
+
+  it('leaves out an account welcomed at its legacy external address', async () => {
+    const { store, auth } = await seedOwed();
+    const gifts = new InMemoryGiftStore([], [accountId]);
+    const app = mount(store, 'secret', { auth, gifts });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(await res.json()).toEqual({ enabled: false, spendPing: false, wouldPing: [] });
+  });
+
+  it('answers 503 when the accounts cannot be read', async () => {
+    const auth = new InMemoryAuthStore();
+    vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('down'));
+    const app = mount(new InMemoryMessageStore(), 'secret', { auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('turns the switch on and off', async () => {
+    const welcomeSweep = { enabled: false };
+    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    const on = await app.request('/debug/welcome-sweep', {
+      method: 'PUT',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toEqual({ enabled: true });
+    expect(welcomeSweep.enabled).toBe(true);
+    const listed = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(((await listed.json()) as { enabled: boolean }).enabled).toBe(true);
+    const off = await app.request('/debug/welcome-sweep', {
+      method: 'PUT',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(await off.json()).toEqual({ enabled: false });
+    expect(welcomeSweep.enabled).toBe(false);
+  });
+
+  it('rejects a body without an enabled boolean', async () => {
+    const welcomeSweep = { enabled: false };
+    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    for (const body of ['{"enabled":"yes"}', '{"enabled":true,"x":1}', 'nope']) {
+      const res = await app.request('/debug/welcome-sweep', {
+        method: 'PUT',
+        headers: SPEND_HEADERS,
+        body,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Expected a JSON body with an "enabled" boolean' });
+    }
+    expect(welcomeSweep.enabled).toBe(false);
   });
 });

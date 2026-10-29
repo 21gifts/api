@@ -19,7 +19,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import {
   accountByReceivingAddress,
   lnurlServerFetch,
-  type ReceivingAddress,
+  receivingAddress,
 } from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -37,6 +37,7 @@ import {
   type GiftRecorder,
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import { accountWelcomed } from '@/lib/welcome-media';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -99,11 +100,12 @@ export interface InvoiceRouteDeps {
    */
   lnurlServer?: LnurlServerConfig;
   /**
-   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the member's
-   * username at or after the wallet verification counts as a paid welcome
-   * gift. Omitted → only the platform `Welcome` reply counts.
+   * Outbound house gifts. A `welcome` gift paid to the member's legacy
+   * external address, or one with description `21gifts welcome` recorded under
+   * the member's username at or after the wallet verification, counts as a
+   * paid welcome gift. Omitted → only the platform `Welcome` reply counts.
    */
-  giftStore?: Pick<GiftStore, 'listOutbound'>;
+  giftStore?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
   /**
    * Persist a proven gift into `gift` for `/gifts/stats`. Default no-op.
    * Insert failures are logged; proof still returns 200.
@@ -263,44 +265,30 @@ async function addressHasPasskey(
 }
 
 /**
- * Whether the account already received the one-time welcome gift: a platform
- * `Welcome` reply under one of its notes, or a welcome gift paid to a wallet
- * address ({@link WELCOME_GIFT_DESCRIPTION}) recorded under its username at or
- * after its wallet was verified. Older welcome records keep only the local part
- * of an external address, which may be another member's, so only the reply
- * counts for them. The gift is once per account, so a member whose receiving
- * address changed is not paid again.
+ * Whether `address` is a wallet address whose member has a passkey but no
+ * verified wallet yet, so it cannot receive.
  *
- * @param deps - Auth store (platform lookup), forum store, optional gift store.
- * @param receiver - Receiving account and its wallet address.
- * @returns `true` when the welcome gift was already paid.
+ * @param deps - Account and credential lookup, LNURL server config.
+ * @param address - Normalised `local@domain`.
+ * @returns `true` only for such a member; another domain, an unknown
+ *   username, or the LNURL server off is `false`.
  */
-async function alreadyWelcomed(
-  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
-  receiver: {
-    account: Pick<Account, 'id' | 'sparkPubkeyVerifiedAt'>;
-    receiving: ReceivingAddress;
-  },
+async function passkeyWithoutWallet(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'lnurlServer'>,
+  address: string,
 ): Promise<boolean> {
-  const { account, receiving } = receiver;
-  const handle = receiving.address.slice(0, receiving.address.lastIndexOf('@'));
-  const verifiedAtMs = Number(account.sparkPubkeyVerifiedAt);
+  const at = address.lastIndexOf('@');
   if (
-    deps.giftStore !== undefined &&
-    (await deps.giftStore.listOutbound()).some(
-      (row) =>
-        row.kind === 'welcome' &&
-        row.description === WELCOME_GIFT_DESCRIPTION &&
-        row.recipientWosUser.trim().toLowerCase() === handle &&
-        row.paidAt.getTime() >= verifiedAtMs,
-    )
+    deps.lnurlServer === undefined ||
+    address.slice(at + 1).toLowerCase() !== deps.lnurlServer.host.toLowerCase()
   ) {
-    return true;
+    return false;
   }
-  const platform = (await deps.authStore.listAccounts()).find((item) => item.isPlatform === true);
+  const account = await deps.authStore.getAccountByUsername(address.slice(0, at).toLowerCase());
   return (
-    platform !== undefined &&
-    (await deps.messageStore.accountHasWelcomeGift(account.id, platform.id))
+    account !== undefined &&
+    receivingAddress(account, deps.lnurlServer) === null &&
+    (await deps.authStore.accountHasPasskey(account.id))
   );
 }
 
@@ -310,18 +298,21 @@ async function alreadyWelcomed(
  * the welcome gift reports no welcome media.
  *
  * @param deps - Auth store, forum store, and optional gift store.
- * @param receiver - Address owner and its wallet address.
+ * @param account - Address owner.
  * @returns `welcomeHasMedia` and the newest media note id (or null).
  */
 async function welcomePostedFields(
   deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
-  receiver: {
-    account: Pick<Account, 'id' | 'sparkPubkeyVerifiedAt'>;
-    receiving: ReceivingAddress;
-  },
+  account: Pick<Account, 'id' | 'username' | 'sparkPubkeyVerifiedAt'>,
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
-  const { account } = receiver;
-  if (await alreadyWelcomed(deps, receiver)) {
+  if (
+    await accountWelcomed({
+      auth: deps.authStore,
+      messages: deps.messageStore,
+      gifts: deps.giftStore,
+      account,
+    })
+  ) {
     return { welcomeHasMedia: false, welcomeMessageId: null };
   }
   const welcomeMessageId = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
@@ -655,7 +646,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         );
       }
       const { account } = receiver;
-      const welcome = await welcomePostedFields(deps, receiver);
+      const welcome = await welcomePostedFields(deps, account);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
@@ -734,6 +725,10 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
+        logEvent('invoice.wallet_required', { address });
+        return c.json({ error: 'Wallet required' }, 403);
+      }
       if (
         receiver === undefined ||
         !(await deps.authStore.accountHasPasskey(receiver.account.id))
@@ -755,7 +750,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       const welcomeRefused = async (): Promise<boolean> =>
-        parsed.data.comment === 'Welcome' && (await alreadyWelcomed(deps, receiver));
+        parsed.data.comment === 'Welcome' &&
+        (await accountWelcomed({
+          auth: deps.authStore,
+          messages: deps.messageStore,
+          gifts: deps.giftStore,
+          account,
+        }));
       // With a groupMessageId the check waits until it is resolved: a resolved
       // moderator payout is recorded as `moderator`, not as a welcome.
       if (parsed.data.groupMessageId === undefined && (await welcomeRefused())) {

@@ -464,6 +464,9 @@ describe('openBootStores', () => {
         if (text.includes('min(paid_at)')) {
           throw new Error('range query failed');
         }
+        if (text.includes('split_part(btrim(a.lightning_address)')) {
+          return [{ id: 'acc-legacy' }] as T[];
+        }
         if (text.includes('lightning_invoice')) {
           return [
             {
@@ -567,6 +570,7 @@ describe('openBootStores', () => {
     expect(fiatRates).toBeInstanceOf(PostgresFiatStore);
     expect(typeof listDbChange).toBe('function');
     expect(await listDbChange?.(10)).toEqual([]);
+    expect(await giftStore?.listLegacyWelcomeAccountIds?.()).toEqual(['acc-legacy']);
     expect(await giftStore?.listDebug?.(10)).toEqual([
       expect.objectContaining({
         id: 1,
