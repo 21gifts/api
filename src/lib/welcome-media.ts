@@ -199,13 +199,16 @@ export async function welcomeSweepCandidates(args: {
  * Tell spend a verified account is owed the one-time welcome gift.
  *
  * Pass `account` after a new top-level post, an About-me save, or a
- * verification. Omit `account` for the sweep, which pings every
- * {@link welcomeSweepCandidates} entry, and only while `sweep.enabled` is
- * true; an omitted or off switch pings nobody. Omitted spend ping, a role
+ * verification. Omit `account` for the sweep, which pings every account
+ * {@link welcomeSweepCandidates} would list, and only while `sweep.enabled`
+ * is true: an omitted or off switch pings nobody, and a switch turned off
+ * during a sweep stops it before its next ping. Omitted spend ping, a role
  * other than `verified`, no receiving address (no verified wallet, or the
  * LNURL server off), no photo/video, or a welcome gift already paid to the
  * account ({@link accountWelcomed}) is a no-op. The gift is once per account,
- * not once per address. Failures are logged; does not throw.
+ * not once per address. A failing account or ledger read pings nobody; a
+ * failing check or ping of one account skips only that account. Failures are
+ * logged; does not throw.
  *
  * @param args - Spend ping, forum store, auth store, optional gift store,
  *   optional LNURL server config, optionally one account, and the sweep switch.
@@ -219,32 +222,39 @@ export async function syncWelcomePing(args: {
   lnurlServer?: LnurlServerConfig;
   sweep?: WelcomeSweepSwitch;
 }): Promise<void> {
-  if (args.spendPing === undefined) {
+  const spendPing = args.spendPing;
+  if (spendPing === undefined) {
     return;
   }
-  if (args.account === undefined && args.sweep?.enabled !== true) {
+  const one = args.account;
+  const sweepOff = (): boolean => one === undefined && args.sweep?.enabled !== true;
+  if (sweepOff()) {
     logEvent('spend.ping.skipped', { reason: 'sweep_off' });
     return;
   }
-  let owed: WelcomeSweepCandidate[];
+  let accounts: Account[];
+  let ledger: WelcomeLedger;
   try {
-    if (args.account === undefined) {
-      owed = await welcomeSweepCandidates(args);
-    } else {
-      const ledger = await loadWelcomeLedger(await args.auth.listAccounts(), args.gifts);
-      const one = await welcomeOwed(ledger, args.messages, args.account, args.lnurlServer);
-      if (one === 'welcomed') {
-        logEvent('spend.ping.skipped', { reason: 'welcomed' });
-      }
-      owed = one === null || one === 'welcomed' ? [] : [one];
-    }
+    accounts = await args.auth.listAccounts();
+    ledger = await loadWelcomeLedger(accounts, args.gifts);
   } catch {
     logEvent('spend.ping.failed');
     return;
   }
-  for (const candidate of owed) {
+  for (const account of one === undefined ? accounts : [one]) {
     try {
-      await args.spendPing.ping(candidate.address, candidate.messageId, 'welcome');
+      const owed = await welcomeOwed(ledger, args.messages, account, args.lnurlServer);
+      if (owed === 'welcomed' && one !== undefined) {
+        logEvent('spend.ping.skipped', { reason: 'welcomed' });
+      }
+      if (owed === null || owed === 'welcomed') {
+        continue;
+      }
+      if (sweepOff()) {
+        logEvent('spend.ping.skipped', { reason: 'sweep_off' });
+        return;
+      }
+      await spendPing.ping(owed.address, owed.messageId, 'welcome');
     } catch {
       logEvent('spend.ping.failed');
     }

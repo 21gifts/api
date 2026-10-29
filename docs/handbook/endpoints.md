@@ -270,7 +270,7 @@
 
 ## Endpoint: PUT /debug/welcome-sweep
 
-- **Purpose:** Operator set of the welcome sweep switch. Body `{ enabled: boolean }` (no other keys). The switch is process memory shared with the boot timer; every boot starts with it off, so the sweep (`syncWelcomePing` without an account, on boot and every 15 minutes) pings nobody until an operator turns it on. Single-account welcome pings after a post, an About-me save, or a verification are not affected. Returns `{ enabled }`. Logs `debug.welcome_sweep.set`.
+- **Purpose:** Operator set of the welcome sweep switch. Body `{ enabled: boolean }` (no other keys). The switch is process memory shared with the boot timer; every boot starts with it off, so the sweep (`syncWelcomePing` without an account, on boot and every 15 minutes) pings nobody until an operator turns it on; turning it off stops a running sweep before its next ping. Single-account welcome pings after a post, an About-me save, or a verification are not affected. Returns `{ enabled }`. Logs `debug.welcome_sweep.set`.
 - **Errors:** 503 Debug is not configured; 401 Unauthorized; 400 `{ error: 'Expected a JSON body with an "enabled" boolean' }`.
 - **Used by:** Operators turning the welcome sweep on after `GET /debug/welcome-sweep` showed the expected list, and off again.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.

@@ -5832,7 +5832,10 @@ Operator set of the welcome sweep switch. Authenticated with
 `Authorization: Bearer` matching `DEBUG_TOKEN`. JSON body
 `{ "enabled": <boolean> }` with no other keys. The switch lives in process
 memory: every boot starts with it off, so the sweep pings nobody until an
-operator turns it on again. Single-account welcome pings (a new post, an
+operator turns it on again. The sweep reads the switch again right before each
+ping, so turning it off stops a running sweep before its next ping. One
+account whose check fails is skipped; the sweep goes on with the next.
+Single-account welcome pings (a new post, an
 About-me save, a verification) are not affected. Logs
 `debug.welcome_sweep.set`.
 

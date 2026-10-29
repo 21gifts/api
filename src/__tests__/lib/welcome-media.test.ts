@@ -765,6 +765,66 @@ describe('syncWelcomePing', () => {
     });
     expect(ping).not.toHaveBeenCalled();
   });
+
+  it('stops a running sweep before its next ping once the switch is turned off', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await verifyWallet(auth, 'acc', '8');
+    const sweep = { enabled: true };
+    const messages = await photoStore();
+    const media = messages.latestLiveTopLevelMediaId.bind(messages);
+    vi.spyOn(messages, 'latestLiveTopLevelMediaId').mockImplementation(async (id) => {
+      sweep.enabled = false;
+      return media(id);
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep,
+    });
+    expect(ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).filter(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'sweep_off',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('keeps sweeping past an account whose check fails', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    for (const [index, id] of ['first', 'broken', 'last'].entries()) {
+      await auth.createAccount(
+        account({ id, role: 'verified', viewKey: String(index).repeat(64) }),
+      );
+      await verifyWallet(auth, id, String(index + 1));
+    }
+    const media = vi.spyOn(messages, 'latestLiveTopLevelMediaId').mockImplementation(async (id) => {
+      if (id === 'broken') {
+        throw new Error('media boom');
+      }
+      return `${id}-photo`;
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep: { enabled: true },
+    });
+    expect(media).toHaveBeenCalledTimes(3);
+    expect(ping.mock.calls).toEqual([
+      ['first@example.test', 'first-photo', 'welcome'],
+      ['last@example.test', 'last-photo', 'welcome'],
+    ]);
+    expect(
+      parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
+    ).toHaveLength(1);
+  });
 });
 
 describe('accountWelcomed', () => {
