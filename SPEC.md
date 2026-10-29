@@ -48,10 +48,11 @@ to link, change, verify, or remove an external Lightning address. Without a
 verified wallet a member cannot receive and cannot post (`missing` contains
 `lightning-address` until the wallet is verified). The `lightning_address`
 column and its data are kept but are not written by the api (new rows
-take `lightning_address_verified` from its `DEFAULT false`); only the legacy
-boot repair of unclassified `gift.kind` rows, the daily roster account link
-(`linkDailyRosterAccounts`), and the already-paid check of the `POST /debug/spend-ping`
-window replay (`listLegacyPayoutHandles`) still match by it. Public
+take `lightning_address_verified` from its `DEFAULT false`); old gift rows are
+still matched by it in the legacy boot repair of unclassified `gift.kind` rows
+and in the already-paid check of the `POST /debug/spend-ping` window replay
+(`listLegacyPayoutHandles`), and daily roster rows in the roster account link
+(`linkDailyRosterAccounts`). Public
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
