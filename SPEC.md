@@ -6317,19 +6317,21 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
 
-No account for the address, or the account has no passkey credential →
-**403** (before any LNURL fetch; no invoice is stored):
-
-```json
-{ "error": "Passkey required" }
-```
-
 `address` is the wallet-backed address of a member who has a passkey but no
-verified wallet yet → **403** (before any LNURL fetch; no invoice is stored;
-logs `invoice.wallet_required`):
+verified wallet yet → **403** (checked first; before any LNURL fetch; no
+invoice is stored; logs `invoice.wallet_required`):
 
 ```json
 { "error": "Wallet required" }
+```
+
+Any other address that finds no member with a verified wallet (another
+domain, an unknown username, the LNURL server off, or a member with neither a
+passkey nor a verified wallet), or a member with a verified wallet but no
+passkey credential → **403** (before any LNURL fetch; no invoice is stored):
+
+```json
+{ "error": "Passkey required" }
 ```
 
 The account has a passkey but is not funding-eligible today (`eligibleToday`,
