@@ -1,5 +1,4 @@
 import { Hono, type Context } from 'hono';
-import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
@@ -9,16 +8,14 @@ import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { isOperatorBearer } from '@/lib/debug-token';
-import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, messagePay, serializeMessage, type MessageRow } from '@/lib/message';
+import { loadMemberProfileNote, memberPublicMessages } from '@/lib/member-public-feed';
 import type { MessageStore } from '@/lib/message-store';
 import { fundingReviewedAt, fundingReviewedByName } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { receivingAddress } from '@/lib/receiving-address';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
-import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
@@ -67,39 +64,6 @@ export interface MembersRouteDeps {
 
 /** Auth or member-load outcome. */
 type MemberLoad = { ok: true; account: Account } | { ok: false; response: Response };
-
-/**
- * Delete a `hasVideo` row whose file is missing or empty. Notes without video
- * are unchanged.
- *
- * @param store - Message store.
- * @param row - Store row.
- * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
- *   credit with sats, is read again and returned while it is live; `null` when
- *   it is gone or hidden.
- */
-async function dropMissingVideoRow(
-  store: MessageStore,
-  row: MessageRow,
-): Promise<MessageRow | null> {
-  if (
-    row.hasVideo !== true ||
-    row.videoContentType === undefined ||
-    row.videoContentType === null
-  ) {
-    return row;
-  }
-  const present = await forumVideoFilePresent(resolveMediaDir(), row.id, row.videoContentType);
-  if (present) {
-    return row;
-  }
-  if (!(await store.deleteById(row.id))) {
-    const kept = await store.getById(row.id);
-    return kept !== undefined && kept.deletedAt === null ? kept : null;
-  }
-  logEvent('messages.video.dropped');
-  return null;
-}
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -211,46 +175,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const viewerAccountId = auth.account.id;
-        const account = member.account;
-        const rows = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let dropped = 0;
-          for (const child of children) {
-            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
-            if (keptChild === null) {
-              dropped += 1;
-            }
-          }
-          const pay = messagePay(kept, account, deps.lnurlServer);
-          messages.push(
-            serializeMessage(
-              kept,
-              pay,
-              account.role,
-              Math.max(0, row.replyCount - dropped),
-              true,
-              undefined,
-              staffTagOf(account.staffTag),
-            ),
-          );
-        }
-        return c.json(
-          {
-            messages: await attachHeartStats(
-              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
-              viewerAccountId,
-              messages,
-            ),
-          },
-          200,
-        );
+        const messages = await memberPublicMessages({
+          kind: 'posts',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
       } catch {
         logEvent('members.posts.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -266,49 +199,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const viewerAccountId = auth.account.id;
-        const account = member.account;
-        const rows = await deps.messageStore.listShopsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let dropped = 0;
-          for (const child of children) {
-            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
-            if (keptChild === null) {
-              dropped += 1;
-            }
-          }
-          const author =
-            kept.accountId === null ? undefined : await deps.authStore.getAccount(kept.accountId);
-          const pay = messagePay(kept, author, deps.lnurlServer);
-          const role = kept.accountId === null ? undefined : (author?.role ?? 'basis');
-          messages.push(
-            serializeMessage(
-              kept,
-              pay,
-              role,
-              Math.max(0, row.replyCount - dropped),
-              true,
-              undefined,
-              staffTagOf(author?.staffTag),
-            ),
-          );
-        }
-        return c.json(
-          {
-            messages: await attachHeartStats(
-              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
-              viewerAccountId,
-              messages,
-            ),
-          },
-          200,
-        );
+        const messages = await memberPublicMessages({
+          kind: 'shops',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
       } catch {
         logEvent('members.shops.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -324,46 +223,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const viewerAccountId = auth.account.id;
-        const account = member.account;
-        const rows = await deps.messageStore.listCreditsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let dropped = 0;
-          for (const child of children) {
-            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
-            if (keptChild === null) {
-              dropped += 1;
-            }
-          }
-          const pay = messagePay(kept, account, deps.lnurlServer);
-          messages.push(
-            serializeMessage(
-              kept,
-              pay,
-              account.role,
-              Math.max(0, row.replyCount - dropped),
-              true,
-              undefined,
-              staffTagOf(account.staffTag),
-            ),
-          );
-        }
-        return c.json(
-          {
-            messages: await attachHeartStats(
-              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
-              viewerAccountId,
-              messages,
-            ),
-          },
-          200,
-        );
+        const messages = await memberPublicMessages({
+          kind: 'credits',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
       } catch {
         logEvent('members.credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -379,42 +247,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const viewerAccountId = auth.account.id;
-        const account = member.account;
-        const rows = await deps.messageStore.listRepliesByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          try {
-            const pay = messagePay(kept, account, deps.lnurlServer);
-            messages.push(
-              serializeMessage(
-                kept,
-                pay,
-                account.role,
-                undefined,
-                true,
-                undefined,
-                staffTagOf(account.staffTag),
-              ),
-            );
-          } catch {
-            continue;
-          }
-        }
-        return c.json(
-          {
-            messages: await attachHeartStats(
-              (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
-              viewerAccountId,
-              messages,
-            ),
-          },
-          200,
-        );
+        const messages = await memberPublicMessages({
+          kind: 'replies',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
       } catch {
         logEvent('members.replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -430,43 +271,16 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const viewerAccountId = auth.account.id;
         const account = member.account;
-        let profileMessage: ReturnType<typeof serializeMessage> | null = null;
-        let aboutMe: string | null = null;
-        let aboutMeHasPhoto = false;
-        const profileId = account.profileMessageId;
-        if (typeof profileId === 'string' && profileId.trim() !== '') {
-          const row = await deps.messageStore.getById(profileId);
-          if (row !== undefined && row.deletedAt === null) {
-            const pay = messagePay(row, account, deps.lnurlServer);
-            const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
-            profileMessage = serializeMessage(
-              row,
-              pay,
-              account.role,
-              children.length,
-              true,
-              undefined,
-              staffTagOf(account.staffTag),
-            );
-            aboutMe = aboutMeFromNote(account.name, row.text, row.name);
-            aboutMeHasPhoto = row.hasPhoto === true;
-          }
-        }
-        if (profileMessage !== null) {
-          const attached = await attachHeartStats(
-            (ids, viewer) => deps.messageStore.heartStats(ids, viewer),
-            viewerAccountId,
-            [profileMessage],
-          );
-          const body = attached[0];
-          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
-          if (body === undefined) {
-            throw new Error('attachHeartStats returned no message');
-          }
-          profileMessage = body;
-        }
+        const note = await loadMemberProfileNote({
+          account,
+          messageStore: deps.messageStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        const profileMessage = note?.profileMessage ?? null;
+        const aboutMe = note?.aboutMe ?? null;
+        const aboutMeHasPhoto = note?.aboutMeHasPhoto ?? false;
         const counts = await deps.messageStore.countByAccount(account.id);
         const shopCount = await deps.messageStore.countShopsByAccount(account.id);
         const creditCount = await deps.messageStore.countCreditsByAccount(account.id);
