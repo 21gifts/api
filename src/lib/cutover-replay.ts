@@ -229,8 +229,8 @@ function handleOf(value: string): string {
 }
 
 /**
- * Whether the gift ledger records a `kind` payout to `account` on `day`,
- * under its username or its legacy external address.
+ * Whether the gift ledger records a `kind` payout on `day` to any of
+ * `handles` (the account's username or its legacy external address).
  */
 function paidInLedger(
   gifts: readonly GiftRow[],
