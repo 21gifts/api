@@ -224,7 +224,8 @@ describe('replayPayoutWindow', () => {
     ]);
     expect(JSON.stringify(first)).not.toContain('@example.test');
 
-    // The member's own post on the new day is booked on that day, next to the replay.
+    // The stand-in keeps spend's record per day: the live ping for the member's own post on the
+    // new day (not the replay) still books that day next to the replayed one.
     await h.spend.ping('ada@example.test', id(3), 'daily');
     expect(h.spend.booked).toEqual([
       { kind: 'daily', address: 'ada@example.test', day: DAY, messageId: id(1) },
@@ -586,7 +587,7 @@ describe('replayPayoutWindow', () => {
     h.deps.now = () => Date.parse('2026-10-30T06:00:00.000Z');
     await h.member(ADA, 'ada', 'moderator');
     await h.post(id(1), ADA, '2026-10-29T09:00:00.000Z');
-    const base = Date.parse('2026-10-30T02:00:00.000Z');
+    const base = Date.parse('2026-10-29T12:00:00.000Z');
     for (let i = 0; i < MESSAGE_LIST_LIMIT + 1; i += 1) {
       await h.post(id(2000 + i), ADA, new Date(base + i * 1000).toISOString(), false);
     }

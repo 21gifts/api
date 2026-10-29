@@ -181,7 +181,7 @@ api/
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
 │   │   ├── spend-instruction.ts  # Decide the USD amount and memo for a spend ping
 │   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
-│   │   ├── cutover-replay.ts # replayPayoutWindow: every payout trigger of a time window, booked on its own UTC day (`POST /debug/spend-ping` window body)
+│   │   ├── cutover-replay.ts # replayPayoutWindow: every payout trigger of a time window; daily and moderator payouts on the event's UTC day, welcomes through the welcome path (`POST /debug/spend-ping` window body)
 │   │   ├── daily-roster.ts   # Daily roster types, 400 texts, comment folding, editor identity projection, payout address projection
 │   │   ├── daily-roster-store.ts  # DailyRosterStore port (rows keyed by account), InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL, linkDailyRosterAccounts (DAILY_ROSTER_ACCOUNT_LINK_SQL)
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
