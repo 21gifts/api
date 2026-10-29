@@ -6406,8 +6406,9 @@ outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
 `lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
 handle from the invoice address, description `21gifts moderator` when the
 invoice has `groupMessageId`, else `21gifts welcome` when `comment` is
-exactly `Welcome` (the welcome checks count only these records), else
-`21gifts daily`,
+exactly `Welcome` (on the username path the welcome checks count only these
+records; a `welcome` gift of any description paid to the account's legacy
+external address counts too), else `21gifts daily`,
 `source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
@@ -6958,12 +6959,12 @@ of `eligibleToday` and independent of whether the new row itself has media.
 Spend pays the welcome gift and does not also pay the daily gift on that
 same UTC day. A later UTC day still pays the daily gift.
 The same ping runs when the account becomes verified and when About me is
-saved while verified. On boot, and every 15 minutes, the welcome sweep
-welcome-pings every verified account that already has a live top-level photo
-or video (About me or a living-room post), so the gift still goes out when
-the photo post and verification happened in either order. The sweep runs
-only while an operator has turned it on with `PUT /debug/welcome-sweep`; a
-process starts with it off (`spend.ping.skipped` / `sweep_off`).
+saved while verified. Every 15 minutes, while an operator has turned it on
+with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every
+verified account that already has a live top-level photo or video (About me
+or a living-room post), so the gift still goes out when the photo post and
+verification happened in either order. A process starts with the sweep off,
+so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
 `GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
 The welcome gift is once per account, not once per address: an account that
 already has a platform reply with the text `Welcome` under one of its notes

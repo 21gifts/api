@@ -288,8 +288,9 @@ platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid 
 external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification, is not pinged again; becoming
 verified and saving About me while verified also welcome-ping; while an operator has turned
-the welcome sweep on (`PUT /debug/welcome-sweep`; off on every boot), boot and a
-15-minute timer welcome-ping every verified account that already has a photo or video post;
+the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at
+boot pings nobody), a 15-minute timer welcome-pings every verified account that already has a
+photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
