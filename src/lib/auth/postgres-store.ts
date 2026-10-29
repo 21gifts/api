@@ -744,6 +744,20 @@ LIMIT $2`,
     await this.#sql.execute('DELETE FROM account WHERE id = $1', [id]);
   }
 
+  /**
+   * Lower-cased local part of every non-blank legacy `lightning_address`.
+   *
+   * @returns Handle per account id.
+   */
+  async listLegacyPayoutHandles(): Promise<Map<string, string>> {
+    const rows = await this.#sql.query<{ id: string; handle: string }>(
+      `SELECT id::text AS id, lower(btrim(split_part(btrim(lightning_address), '@', 1))) AS handle
+       FROM account
+       WHERE lightning_address IS NOT NULL AND btrim(lightning_address) <> ''`,
+    );
+    return new Map(rows.filter((row) => row.handle !== '').map((row) => [row.id, row.handle]));
+  }
+
   async listAccounts(): Promise<Account[]> {
     const rows = await this.#sql.query<AccountRow>(
       `SELECT ${ACCOUNT_SELECT_COLUMNS}

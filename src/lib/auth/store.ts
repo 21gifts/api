@@ -672,6 +672,12 @@ export interface AuthStore {
    * (GET `/debug/accounts/:id` and dump table `auth_session` do).
    */
   listAccounts(): Promise<Account[]>;
+  /**
+   * Lower-cased local part of each account's legacy external payout address
+   * (`account.lightning_address`), keyed by account id. Accounts without one
+   * are left out. Omitted on stores that never hold a legacy address.
+   */
+  listLegacyPayoutHandles?(): Promise<Map<string, string>>;
   /** Every stored passkey credential (operator dump / account detail). */
   listPasskeyCredentials(): Promise<PasskeyCredential[]>;
   /** Every stored session (operator dump / account detail). */

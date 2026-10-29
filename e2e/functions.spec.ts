@@ -1417,6 +1417,17 @@ test('Function: debugPaymentsRoutes — GET /debug/invoices without bearer is 40
   expect(spendPing.status()).toBe(401);
 });
 
+test('Function: replayPayoutWindow — POST /debug/spend-ping window without spend ping is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/spend-ping', {
+    headers: DEBUG,
+    data: { from: '2026-10-29T23:00:00.000Z', to: '2026-10-30T00:00:00.000Z', dryRun: true },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Spend ping is not configured' });
+});
+
 test('Function: settleInvoiceManually — POST /debug/invoices/settle without bearer is 401', async ({
   request,
 }) => {

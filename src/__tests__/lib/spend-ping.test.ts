@@ -1171,6 +1171,34 @@ describe('HttpSpendPing', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
 
+  it('pingOnDay books a moderator stipend on the argument day without the welcome check', async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = vi.fn<FetchFn>(async (_input, init) => {
+      seenInit = init;
+      return new Response(null, { status: 202 });
+    });
+    const listOutbound = vi.fn(async () => []);
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
+      gifts: { listOutbound },
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19', undefined, 'moderator');
+    expect(outcome).toEqual({ status: 'accepted' });
+    expect(listOutbound).not.toHaveBeenCalled();
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        kind: 'moderator',
+        groupMessageId: MESSAGE_ID,
+        amountUsd: 5,
+        comment: '21gifts moderator',
+        day: '2026-09-19',
+      }),
+    );
+  });
+
   it('pingOnDay skips when the welcome gift was paid on the argument day', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const welcomeOnDay: GiftRow = {
