@@ -4,7 +4,7 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { unsignedConversationDefaults } from '@/lib/conversation';
 import { replayPayoutWindow, type ReplayDeps } from '@/lib/cutover-replay';
 import type { FundingGrant } from '@/lib/funding';
-import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryFundingStore, loadGrantEffective } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
@@ -344,6 +344,47 @@ describe('replayPayoutWindow', () => {
     ]);
   });
 
+  it('still reports a /trial of the previous day once a read stored it as pending', async () => {
+    const h = await harness({
+      grants: [
+        {
+          accountId: ADA,
+          status: 'trial',
+          appliedAt: 1,
+          decidedAt: Date.parse('2026-10-29T23:40:00.000Z'),
+          decidedBy: PLATFORM,
+          trialUtcDate: DAY,
+          admittedAt: null,
+          note: null,
+        },
+      ],
+    });
+    await h.member(ADA, 'ada', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T23:45:00.000Z');
+    const read = await loadGrantEffective(h.deps.funding, ADA, NOW);
+    expect(read).toMatchObject({ status: 'pending', trialUtcDate: null });
+
+    const result = await h.run();
+    expect(result.events).toEqual([
+      expect.objectContaining({
+        trigger: 'trial',
+        eventId: ADA,
+        username: 'ada',
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'trial_day_passed',
+      }),
+      expect.objectContaining({
+        trigger: 'post',
+        eventId: id(1),
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'trial_day_passed',
+      }),
+    ]);
+    expect(h.spend.pingOnDay).not.toHaveBeenCalled();
+  });
+
   it('pays a same-day /trial and skips a decision without a media post that day', async () => {
     const trial: FundingGrant = {
       accountId: ADA,
@@ -359,7 +400,7 @@ describe('replayPayoutWindow', () => {
       grants: [
         trial,
         { ...admitted(BOB), decidedAt: Date.parse('2026-10-29T23:20:00.000Z') },
-        { ...trial, accountId: id(9), status: 'pending', decidedAt: FROM + 1 },
+        { ...trial, accountId: id(9), status: 'rejected', decidedAt: FROM + 1 },
         { ...trial, accountId: id(8), decidedAt: null },
       ],
     });

@@ -174,15 +174,24 @@ async function windowGroupMessages(
   }
 }
 
+/**
+ * Whether `grant` is a trial that expired and was stored as `pending` by
+ * `expiredTrialAsPending`, the only writer of a pending row with a decision.
+ */
+function isExpiredTrial(grant: FundingGrant): boolean {
+  return grant.status === 'pending' && grant.decidedAt !== null;
+}
+
 function grantTrigger(grant: FundingGrant, fromMs: number, toMs: number): Trigger | null {
   if (grant.decidedAt === null || !inWindow(grant.decidedAt, fromMs, toMs)) {
     return null;
   }
-  if (grant.status !== 'trial' && grant.status !== 'admitted') {
+  const trial = grant.status === 'trial' || isExpiredTrial(grant);
+  if (!trial && grant.status !== 'admitted') {
     return null;
   }
   return {
-    trigger: grant.status === 'trial' ? 'trial' : 'admit',
+    trigger: trial ? 'trial' : 'admit',
     eventId: grant.accountId,
     atMs: grant.decidedAt,
     accountId: grant.accountId,
@@ -258,9 +267,11 @@ function notEligibleDetail(
   }
   if (
     account.role !== 'basis' &&
-    grant?.status === 'trial' &&
-    grant.trialUtcDate !== null &&
-    grant.trialUtcDate < utcDayKey(nowMs)
+    grant !== undefined &&
+    (isExpiredTrial(grant) ||
+      (grant.status === 'trial' &&
+        grant.trialUtcDate !== null &&
+        grant.trialUtcDate < utcDayKey(nowMs)))
   ) {
     return 'trial_day_passed';
   }
@@ -271,8 +282,8 @@ function notEligibleDetail(
  * Replay every payout trigger in `[fromMs, toMs)`.
  *
  * Each event is paid only when the account has a verified wallet now, is
- * eligible now (a `trial` grant of an earlier UTC day is reported as
- * `not_eligible` / `trial_day_passed`, except for a `basis` account, which is
+ * eligible now (a `trial` grant of an earlier UTC day, also once it was
+ * stored as `pending`, is reported as `not_eligible` / `trial_day_passed`, except for a `basis` account, which is
  * never eligible and is reported as `grant`), and has no payout of that kind on the
  * event's UTC day: neither in the gift ledger under its username or its legacy
  * external address, nor earlier in this run. Daily and moderator payouts go
