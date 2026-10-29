@@ -1,5 +1,6 @@
 -- Web Push subscriptions (per account) and outbox for the push worker.
--- Endpoint is the primary key so a device rebinding on login moves ownership.
+-- Endpoint is the primary key so a device rebinding on login moves ownership
+-- and the session it belongs to.
 -- Outbox rows are claimed with a lease (same idea as message.claimed_until).
 
 CREATE TABLE IF NOT EXISTS push_subscription (
@@ -10,6 +11,10 @@ CREATE TABLE IF NOT EXISTS push_subscription (
   created_at timestamptz NOT NULL
 );
 CREATE INDEX IF NOT EXISTS push_subscription_account_id_idx ON push_subscription (account_id);
+-- Session that last registered the endpoint. NULL on rows stored before this
+-- column existed: the worker never sends to them and the sweep deletes them;
+-- a device that is still logged in registers again on its next app start.
+ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text;
 
 CREATE TABLE IF NOT EXISTS push_outbox (
   id uuid PRIMARY KEY,
@@ -27,6 +32,9 @@ CREATE TABLE IF NOT EXISTS push_outbox (
 CREATE INDEX IF NOT EXISTS push_outbox_pending_idx ON push_outbox (created_at, id) WHERE status = 'pending';
 ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS delivered_endpoints text NOT NULL DEFAULT '[]';
 ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS skip_endpoints text NOT NULL DEFAULT '[]';
+-- When the row became sent or failed. NULL while pending; rows finished before
+-- this column existed age from created_at for retention.
+ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz;
 DO $push_outbox_type$
 BEGIN
   ALTER TABLE push_outbox DROP CONSTRAINT IF EXISTS push_outbox_type_check;

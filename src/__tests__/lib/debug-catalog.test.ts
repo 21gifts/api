@@ -359,6 +359,7 @@ describe('loadDebugTables', () => {
       p256dh: 'p256',
       auth: 'auth',
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      sessionToken: null,
     });
     await push.upsertSubscription({
       endpoint: 'https://push.example/2',
@@ -366,6 +367,7 @@ describe('loadDebugTables', () => {
       p256dh: 'p256b',
       auth: 'authb',
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
+      sessionToken: null,
     });
     await push.upsertSubscription({
       endpoint: 'https://push.example/0',
@@ -373,6 +375,7 @@ describe('loadDebugTables', () => {
       p256dh: 'p256c',
       auth: 'authc',
       createdAt: new Date('2026-09-02T00:00:00.000Z'),
+      sessionToken: 'tok-dump',
     });
     await push.enqueue({
       id: 'outbox-1',
@@ -383,6 +386,7 @@ describe('loadDebugTables', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: new Date('2026-09-01T00:30:00.000Z'),
+      finishedAt: null,
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
       deliveredEndpoints: ['https://push.example/sent'],
       skipEndpoints: ['https://push.example/skip'],
@@ -396,6 +400,7 @@ describe('loadDebugTables', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date('2026-09-01T00:00:00.000Z'),
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -409,6 +414,7 @@ describe('loadDebugTables', () => {
       status: 'sent',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: new Date('2026-09-01T04:00:05.000Z'),
       createdAt: new Date('2026-09-01T04:00:00.000Z'),
       deliveredEndpoints: [],
       skipEndpoints: [],
@@ -587,14 +593,22 @@ describe('loadDebugTables', () => {
     );
     expect(tables.trust_edge[0]).toEqual(expect.objectContaining({ id: 'edge-0' }));
     expect(tables.push_subscription).toHaveLength(3);
+    expect(tables.push_subscription).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ endpoint: 'https://push.example/0', sessionToken: 'tok-dump' }),
+        expect.objectContaining({ endpoint: 'https://push.example/1', sessionToken: null }),
+      ]),
+    );
     expect(tables.push_outbox).toHaveLength(3);
     expect(tables.push_outbox).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
           id: 'outbox-1',
+          finishedAt: null,
           deliveredEndpoints: ['https://push.example/sent'],
           skipEndpoints: ['https://push.example/skip'],
         }),
+        expect.objectContaining({ id: 'outbox-3', finishedAt: '2026-09-01T04:00:05.000Z' }),
       ]),
     );
     expect(tables.trust_edge).toHaveLength(3);

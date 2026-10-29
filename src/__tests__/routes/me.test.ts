@@ -1567,6 +1567,7 @@ describe('POST /me/name', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(store, {
       messages,

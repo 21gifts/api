@@ -60,7 +60,7 @@ stays in the browser; the spend-worker path is the exception
 
 | Layer       | Choice                          |
 | ----------- | ------------------------------- |
-| Runtime     | [Bun](https://bun.sh) ≥ 1.3     |
+| Runtime     | [Bun](https://bun.sh) ≥ 1.4.4   |
 | Language    | TypeScript (strict)             |
 | Framework   | [Hono](https://hono.dev)        |
 | Test runner | Vitest + `@vitest/coverage-v8`  |

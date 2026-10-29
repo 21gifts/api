@@ -92,6 +92,7 @@ async function subscribePush(pushStore: InMemoryPushStore, accountId: string): P
     p256dh: 'p',
     auth: 'a',
     createdAt: new Date(now()),
+    sessionToken: null,
   });
 }
 

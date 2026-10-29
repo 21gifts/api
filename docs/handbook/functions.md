@@ -332,7 +332,7 @@
 
 ## Function: migratePushSchema
 
-- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order (`CREATE TABLE IF NOT EXISTS` for `push_subscription` and `push_outbox` with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`, supporting indexes, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`).
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS push_subscription` and its account index, `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text` (null on rows stored before it; those rows are never sent to and the sweep deletes them), `CREATE TABLE IF NOT EXISTS push_outbox` (with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`) and its pending index, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz` (null on rows finished before it; retention ages them from `created_at`), then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
@@ -362,7 +362,7 @@
 
 - **Purpose:** Ordered idempotent SQL that creates the append-only `db_change` log, secret-redacting helpers, immutability guard (including a one-time live `view_key` rewrite in that same `DO`), and per-table `trg_db_change` triggers on every public table except `db_change`. On UPDATE, every bytea column (found via `pg_attribute` on `TG_RELID`) whose value is unchanged and was not hashed by `db_change_redact` is stored in both `before` and `after` as an object with `unchanged` true, `sha256` as the hex digest of the column text, and `bytes` as the `octet_length` of that text; INSERT, DELETE and the UPDATE that changes the bytes keep the full value, so any row state is reconstructable by chaining to the latest earlier full image; secret columns keep their sha256 hash; the no-op comparison still happens on the raw images before redaction.
 - **Inputs:** None (readonly string array constant).
-- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, and `skip_endpoints` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext except unchanged bytea columns on UPDATE. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
+- **Returns / side effects:** Statement texts only; executed by `migrateDbChangeSchema`. Secrets `token`, `challenge`, `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` become SHA-256 hex in logged JSON; other columns including `name` stay plaintext except unchanged bytea columns on UPDATE. The guard `DO` hashes JSON `view_key` that still equals a live `account.view_key` and leaves other rows unchanged.
 - **Used by:** `migrateDbChangeSchema`; documented mirror in `docs/schema/db_change.sql`.
 
 ## Function: InMemoryBtcUsdStore
@@ -604,7 +604,7 @@
 - **Purpose:** Resolve self-hosted Web Push VAPID credentials from an environment slice without failing boot when keys are missing or unusable.
 - **Inputs:** `env` record (`VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, optional `VAPID_SUBJECT`).
 - **Returns / side effects:** `{ publicKey, privateKey, subject }` when both keys decode (URL-safe base64) to 65-byte uncompressed P-256 public and 32-byte private, and `subject` is `https:` or `mailto:` (default `https://21.gifts`). Otherwise `null`. Never logs the private key. `src/index.ts` still try/catches `WebPushSender` construction so a library throw cannot kill listen.
-- **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender + worker gate).
+- **Used by:** `createApp` (public key for HTTP), `src/index.ts` (sender; the push worker starts on every boot, with or without VAPID).
 
 ## Function: UnconfiguredPushSender
 
@@ -630,7 +630,7 @@
 ## Function: InMemoryPushStore
 
 - **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
-- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict; `claimPending` leases oldest pending; `markFailed` fails at 8 attempts; `recordDelivered` unions unique endpoint URLs onto the outbox row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
 
@@ -644,7 +644,7 @@
 ## Function: PostgresPushStore
 
 - **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -699,17 +699,24 @@
 
 ## Function: runPushWorkerTick
 
-- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. When every subscription is skipped, or none remain, the row is `markSent`.
-- **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`). Batch size and lease from module constants.
-- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them; logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
+- **Purpose:** Claim a batch of pending outbox rows and deliver each payload to every subscription for the recipient account except endpoints listed in `skipEndpoints`. A skipped endpoint is not sent and is not recorded as delivered. Before each send the subscription's `sessionToken` must still pass `resolveSession` for the subscription's account (known, not past `SESSION_TTL_MS`, account not session-refused); otherwise the subscription is deleted (`deleteStaleSubscription`, so a concurrent rebind survives) and not sent to, so a device whose login ended stops receiving notification text. When every subscription is skipped, or none remain, the row is `markSent`.
+- **Inputs:** `PushWorkerDeps` (`store`, `sender`, `now`, `authStore`). Batch size and lease from module constants.
+- **Returns / side effects:** No-op when `sender.isConfigured()` is false. Records successful endpoints via `recordDelivered` and does not resend them on retry; deletes gone subscriptions without recording them (`deleteStaleSubscription`, so an endpoint rebound to another session meanwhile stays); logs `push.send.failed` with optional numeric `status` (HTTP status from the sender) and no endpoint/keys/payload, then `markFailed` on fail after recording successes, except a failed send is `markSent` (not `markFailed`) when the same claim includes a dismiss whose tags include that row's payload tag for the same account; `markSent` when remaining sends succeed / all gone / no subs left to try.
 - **Used by:** `startPushWorker` interval; unit tests.
 
 ## Function: startPushWorker
 
-- **Purpose:** Start a periodic `setInterval` that runs `runPushWorkerTick` until stopped.
+- **Purpose:** Start a periodic `setInterval` that runs `runPushWorkerTick` until stopped, and run `sweepPushStore` once at start and then every `PUSH_SWEEP_INTERVAL_MS` (1 hour).
 - **Inputs:** `PushWorkerDeps` and optional `intervalMs` (default `PUSH_WORKER_INTERVAL_MS` = 2s).
-- **Returns / side effects:** `{ stop }` clears the interval. Does not throw on tick failures inside the timer callback.
-- **Used by:** `src/index.ts` when VAPID resolves.
+- **Returns / side effects:** `{ stop }` clears both intervals. A tick still running skips the next interval. A rejected tick logs `push.tick.failed` with `errorLogFields` only (a tick queries by session token, and an unhandled rejection would reach the process handler, which prints the raw error and exits); the next tick still runs. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
+- **Used by:** `src/index.ts` on every boot. Without VAPID the ticks send nothing, but the sweep still runs.
+
+## Function: sweepPushStore
+
+- **Purpose:** Delete every push subscription whose session no longer authenticates its account (unknown or removed session, past `SESSION_TTL_MS`, session-refused account, a session of another account, or a row stored without a session), then every `sent` or `failed` outbox row that finished more than `PUSH_OUTBOX_RETENTION_MS` (7 days) ago. Pending rows are never deleted.
+- **Inputs:** `store`, `authStore`, and `now` from `PushWorkerDeps`; the sender is not used.
+- **Returns / side effects:** `{ subscriptions, outbox }` deleted counts. Logs `push.sweep` with those counts when either is above zero; no endpoint, token, or payload is logged. Deletes use `deleteStaleSubscription`, so a subscription that another caller removed first, or that a re-POST rebound to a new session after the scan read it, is neither deleted nor counted.
+- **Used by:** `startPushWorker`; unit tests.
 
 ## Function: parsePushSubscription
 
@@ -764,7 +771,7 @@
 
 - **Purpose:** Member Web Push HTTP: public VAPID key plus subscription upsert/delete for the signed-in account.
 - **Inputs:** `PushRouteDeps` (`authStore`, `pushStore`, `now`, optional `vapidPublicKey`).
-- **Returns / side effects:** Hono app with full path literals `/push/vapid-public` and `/me/push-subscriptions`. Session 401 before unconfigured 503.
+- **Returns / side effects:** Hono app with full path literals `/push/vapid-public` and `/me/push-subscriptions`. Session 401 before unconfigured 503. `POST /me/push-subscriptions` stores the bearer token of the request as the subscription's `sessionToken`; a re-POST from another session rebinds the endpoint to it. The push worker sends only while that session resolves for the account and deletes the subscription once it does not.
 - **Used by:** `createApp` mounted at `/`.
 
 ## Function: debugPushRoutes
@@ -1185,7 +1192,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), and `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`).
 
 ## Function: meRoutes
 
@@ -1487,13 +1494,13 @@
 
 ## Function: repaymentStartMs
 
-- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-01. A credit that filled on or before 2026-10-31 starts on 2026-11-01. A credit that filled later starts the next UTC day. Every due date and due-day count uses this start.
+- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-10. A credit that filled on or before 2026-11-09 starts on 2026-11-10. A credit that filled later starts the next UTC day. Every due date and due-day count uses this start.
 - **Inputs:** Epoch milliseconds when the credit filled.
 - **Returns / side effects:** That midnight in epoch milliseconds. No I/O.
 
 ## Function: dueDayCount
 
-- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-01.
+- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-10.
 - **Inputs:** Funded time, now, term days.
 - **Returns / side effects:** A count from 0 through the term. No I/O.
 
@@ -1518,7 +1525,7 @@
 
 ## Function: repaymentDueDate
 
-- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-01.
+- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-10.
 - **Inputs:** Funded time in epoch milliseconds, and the zero-based day.
 - **Returns / side effects:** `YYYY-MM-DD`. No I/O.
 
@@ -2233,7 +2240,7 @@
 
 ## Function: loadDebugTables
 
-- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No media payloads; missing photo is `null` / `0` / `[]`. A `push_outbox` dump row includes `deliveredEndpoints` and `skipEndpoints`; `shop_identity` rows carry the key metadata (`messageId`, `nostrPubkey`, `nostrKekId`, `nostrKeyCustody`, `nostrKeyCreatedAt`, `profileName`) and every outbox field, read with `ShopIdentityStore.listDebug(200)` (the first 200 identities in the `listAll()` order, `LIMIT $1` on Postgres); the encrypted secret is never dumped.
+- **Purpose:** Load operator dump rows for one table or every allowlisted table (cap 200). The forum `message` dump includes stored still metadata as lengths/MIME only (`photoContentType`, `photoBytes`, nested `extraPhotos: [{ idx, photoContentType, bytes, photoTakenAt }]`). The `conversation_message` dump uses that length/MIME shape without `photoTakenAt`. No media payloads; missing photo is `null` / `0` / `[]`. A `push_subscription` dump row includes `sessionToken` (string or null, like the `auth_session` token in the same dump); the `push_outbox` dump row includes `finishedAt` (ISO or null), `deliveredEndpoints`, and `skipEndpoints`; `shop_identity` rows carry the key metadata (`messageId`, `nostrPubkey`, `nostrKekId`, `nostrKeyCustody`, `nostrKeyCreatedAt`, `profileName`) and every outbox field, read with `ShopIdentityStore.listDebug(200)` (the first 200 identities in the `listAll()` order, `LIMIT $1` on Postgres); the encrypted secret is never dumped.
 - **Inputs:** `DebugCatalogDeps` (including optional shop identities) and optional table name.
 - **Returns / side effects:** `Record<DebugCatalogTable, unknown[]>`. Missing optional stores dump as `[]`.
 - **Used by:** `debugCatalogRoutes`.

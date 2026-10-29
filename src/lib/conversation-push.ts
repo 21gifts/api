@@ -134,6 +134,7 @@ export async function notifyConversationMessage(args: {
         status: 'pending',
         attempts: 0,
         claimedUntil: null,
+        finishedAt: null,
         createdAt,
         deliveredEndpoints: [],
         skipEndpoints: [],

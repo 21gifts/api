@@ -6261,6 +6261,7 @@ describe('indexOpenZapReceipts', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     const querier = new RecordingQuerier();
     querier.events = [
@@ -6341,6 +6342,7 @@ describe('indexOpenZapReceipts', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/payer',
@@ -6348,6 +6350,7 @@ describe('indexOpenZapReceipts', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     const querier = new RecordingQuerier();
     querier.events = [
@@ -6766,6 +6769,7 @@ describe('indexOpenZapReceipts', () => {
       p256dh: 'p256dh',
       auth: 'authkey',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     const querier = new RecordingQuerier();
     querier.events = [
@@ -8668,6 +8672,7 @@ describe('indexOpenZapReceipts', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1),
+      sessionToken: null,
     });
     const querier = new RecordingQuerier();
     querier.events = [

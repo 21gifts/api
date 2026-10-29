@@ -189,6 +189,7 @@ describe('POST /contact', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(
       await namedStoreWithPlatform('Ada'),

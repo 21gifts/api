@@ -302,6 +302,7 @@ describe('PUT /me/about', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(store, { messages, pushStore, notificationStore }).request(
       '/me/about',
@@ -357,6 +358,7 @@ describe('PUT /me/about', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(store, { messages, pushStore, notificationStore }).request(
       '/me/about',
@@ -415,6 +417,7 @@ describe('PUT /me/about', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     vi.spyOn(pushStore, 'enqueue').mockRejectedValueOnce(new Error('fail'));
     const res = await mount(store, { messages, pushStore }).request('/me/about', {
@@ -442,6 +445,7 @@ describe('PUT /me/about', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const res = await mount(store, { messages, pushStore, notificationStore }).request(
       '/me/about',

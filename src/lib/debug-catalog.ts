@@ -355,6 +355,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         p256dh: row.p256dh,
         auth: row.auth,
         createdAt: row.createdAt.toISOString(),
+        sessionToken: row.sessionToken,
       }));
     }
     case 'push_outbox': {
@@ -369,6 +370,7 @@ async function loadTable(deps: DebugCatalogDeps, table: DebugCatalogTable): Prom
         attempts: row.attempts,
         claimedUntil: iso(row.claimedUntil),
         createdAt: row.createdAt.toISOString(),
+        finishedAt: iso(row.finishedAt),
         deliveredEndpoints: row.deliveredEndpoints,
         skipEndpoints: row.skipEndpoints,
       }));

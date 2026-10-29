@@ -70,6 +70,7 @@ async function subscribe(push: InMemoryPushStore, accountId: string): Promise<vo
     p256dh: 'p',
     auth: 'a',
     createdAt: NOW,
+    sessionToken: null,
   });
 }
 
