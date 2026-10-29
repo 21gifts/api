@@ -3323,6 +3323,11 @@ describe('InMemoryAuthStore social recovery', () => {
       expect(await store.dropPreviousWallet('acc', OLD)).toBe(false);
       expect(await store.getPreviousWalletBySparkPubkey(OLD)).toBeUndefined();
       expect(await store.dropPreviousWallet('acc', NEW)).toBe(true);
+      await forwarded(store, 'acc', 'ada', fourth, OLD, 'cred-4');
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: OLD, now: NOW + 6 }),
+      ).toBe('committed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
     });
 
     it('orders previous wallets of the same commit time by key whatever the commit order', async () => {
