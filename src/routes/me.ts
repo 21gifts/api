@@ -209,7 +209,7 @@ const RECOVERY_SHARE_BODY_ERROR = 'Expected a JSON body with sparkPubkey and a r
 /** 503 copy when the share cannot be stored (no `RECOVERY_SHARE_KEK`, or a store or crypto failure). */
 const RECOVERY_SHARE_UNAVAILABLE = 'Social recovery is unavailable';
 
-/** 503 copy of the previous-wallet routes, shared with `POST /wallet/report`. */
+/** 503 copy of the previous-wallet routes, shared with `POST /me/wallet/report` (src/routes/wallet-report.ts). */
 const WALLET_DATA_UNAVAILABLE = 'Wallet data is unavailable';
 
 /** Body schema for skipping a wizard step (`lightning-address` is the receiving-wallet step). */

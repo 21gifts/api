@@ -152,7 +152,7 @@ UTC day, social recovery is a payout condition.
   requires the grant for every payout. Without a share the account is not
   eligible, with the same answers as for a missing grant, so the payout worker
   skips the trigger as it does today. Storing the share pings that UTC day's
-  newest media post, as `pingTodayMedia` (`src/routes/funding.ts`) does when
+  newest media post, as `pingTodayMedia` (`src/lib/funding-ping.ts`) does when
   staff admit a grant, and later triggers that day pay as usual. A day that
   ends without a share is not paid, except by an operator replay, which checks
   eligibility when it runs.
