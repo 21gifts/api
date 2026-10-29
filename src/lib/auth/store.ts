@@ -213,7 +213,8 @@ export interface Account {
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and
-   * first-passkey claim set true; seed finish sets true; replace does not.
+   * first-passkey claim set true; seed finish sets true; a social recovery
+   * commit (`commitRecovery`) sets true; replace does not.
    */
   walletRequired?: boolean;
   /**
@@ -225,7 +226,12 @@ export interface Account {
   walletBackupSeenAt?: number | null;
   /** Identity public key of the member's wallet (66 lower-case hex), or null/omitted. */
   sparkPubkey?: string | null;
-  /** Epoch ms when the LNURL server accepted a registration signed by that key, or null/omitted. */
+  /**
+   * Epoch ms of the account's first wallet verification (the LNURL server
+   * accepted a registration signed by its wallet key), or null/omitted. A
+   * social recovery commit (`commitRecovery`) keeps it when it replaces
+   * `sparkPubkey`.
+   */
   sparkPubkeyVerifiedAt?: number | null;
 }
 
