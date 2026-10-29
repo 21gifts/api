@@ -1104,6 +1104,21 @@ test('Function: debugPushBroadcastRoutes — dry run counts recipients, a bad li
   expect(bad.status()).toBe(400);
 });
 
+test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live subscription on a fresh boot', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', usernames: ['nobody-here'], dryRun: true },
+  });
+  expect(res.status()).toBe(400);
+  const all = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', dryRun: true },
+  });
+  expect(await all.json()).toEqual({ dryRun: true, recipients: 0 });
+});
+
 test('Function: enqueueBroadcastPush — a send without VAPID is 503 and queues nothing', async ({
   request,
 }) => {

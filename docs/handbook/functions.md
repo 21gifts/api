@@ -905,6 +905,13 @@
 - **Returns / side effects:** `{ stop }` clears both intervals. A tick still running skips the next interval. A rejected tick logs `push.tick.failed` with `errorLogFields` only (a tick queries by session token, and an unhandled rejection would reach the process handler, which prints the raw error and exits); the next tick still runs. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
 - **Used by:** `src/index.ts` on every boot. Without VAPID the ticks send nothing, but the sweep still runs.
 
+## Function: listAccountIdsWithLiveSubscriptions
+
+- **Purpose:** Account ids the push worker would send to: each account with at least one subscription whose session still authenticates it (same rule as `runPushWorkerTick` and `sweepPushStore`: a session token, not expired, account not refused, same account).
+- **Inputs:** `PushStore`, `AuthStore`, `nowMs` (session expiry clock).
+- **Returns / side effects:** Distinct account ids. Read-only: stale subscriptions stay until the worker or `sweepPushStore` removes them.
+- **Used by:** `debugPushBroadcastRoutes` (recipient selection and dry run of `POST /debug/push-broadcast`).
+
 ## Function: sweepPushStore
 
 - **Purpose:** Delete every push subscription whose session no longer authenticates its account (unknown or removed session, past `SESSION_TTL_MS`, session-refused account, a session of another account, or a row stored without a session), then every `sent` or `failed` outbox row that finished more than `PUSH_OUTBOX_RETENTION_MS` (7 days) ago. Pending rows are never deleted.
@@ -984,9 +991,9 @@
 
 ## Function: debugPushBroadcastRoutes
 
-- **Purpose:** Operator Web Push broadcast via `DEBUG_TOKEN` (not an end-user session): `POST /` queues a title, body, and same-site link for every account with a push subscription or for listed usernames; `GET /:id` reports the delivery counts.
+- **Purpose:** Operator Web Push broadcast via `DEBUG_TOKEN` (not an end-user session): `POST /` queues a title, body, and same-site link for every account with a live push subscription or for listed usernames; `GET /:id` reports the delivery counts.
 - **Inputs:** `DebugPushBroadcastRouteDeps` (`authStore`, `pushStore`, `now`, `debugToken`, `vapidPublicKey`). Body `{ title, body, link?, usernames?, dryRun? }` (strict keys; title 1-64 and body 1-240 characters (code points) after trim, no control characters except a newline in the body; link up to 200 characters, one leading `/`, no `//`, backslash, or whitespace; 1-200 usernames).
-- **Returns / side effects:** Hono app mounted at `/debug/push-broadcast`. Debug 503/401 before JSON. Accounts with notification level `none` and listed accounts without a subscription are counted, not queued. A dry run answers `{ dryRun: true, recipients }` and writes nothing; a send needs VAPID (else 503), calls `enqueueBroadcastPush`, logs `debug.push.broadcast`, and answers 202 `{ id, targeted, queued, optedOut, noSubscription }`. `GET /:id` answers `countOutboxByMessageId` or 404.
+- **Returns / side effects:** Hono app mounted at `/debug/push-broadcast`. Debug 503/401 before JSON. Accounts with notification level `none` and listed accounts without a live subscription (`listAccountIdsWithLiveSubscriptions`) are counted, not queued; a dry run counts the same live subscriptions. A dry run answers `{ dryRun: true, recipients }` and writes nothing; a send needs VAPID (else 503), calls `enqueueBroadcastPush`, logs `debug.push.broadcast`, and answers 202 `{ id, targeted, queued, optedOut, noSubscription }`. `GET /:id` answers `countOutboxByMessageId` or 404.
 - **Used by:** `createApp`.
 
 ## Function: resolveLoginsOpenDefault

@@ -25,6 +25,7 @@ import {
   enqueueForumPushes,
   enqueueReplyPush,
   enqueueZapPush,
+  listAccountIdsWithLiveSubscriptions,
   runPushWorkerTick,
   startPushWorker,
   sweepPushStore,
@@ -275,6 +276,33 @@ describe('enqueueBroadcastPush', () => {
       dropped: 1,
       failed: 0,
     });
+  });
+});
+
+describe('listAccountIdsWithLiveSubscriptions', () => {
+  it('returns each account once when a subscription session still authenticates it', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription({ ...SUB_A, endpoint: 'https://push.example/a2' });
+    await store.upsertSubscription(SUB_B);
+    await store.upsertSubscription({ ...SUB_C, sessionToken: null });
+    await store.upsertSubscription({
+      ...SUB_C,
+      endpoint: 'https://push.example/c2',
+      sessionToken: 'tok-author',
+    });
+    const auth = await authWithSessions(['author', 'other', 'third'], ['other']);
+    expect(await listAccountIdsWithLiveSubscriptions(store, auth, 1)).toEqual(['author']);
+    expect(await store.listAllSubscriptions()).toHaveLength(5);
+  });
+
+  it('drops a session once it has expired', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    const auth = await authWithSessions(['author']);
+    expect(
+      await listAccountIdsWithLiveSubscriptions(store, auth, SESSION_AT + SESSION_TTL_MS + 1),
+    ).toEqual([]);
   });
 });
 

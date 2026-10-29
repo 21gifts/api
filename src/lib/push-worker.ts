@@ -306,6 +306,32 @@ async function subscriptionSessionLive(
   return account !== null && account.id === sub.accountId;
 }
 
+/**
+ * Account ids with at least one subscription whose session still
+ * authenticates its account: the accounts {@link runPushWorkerTick} would
+ * send to. Does not delete stale subscriptions; the worker and
+ * {@link sweepPushStore} do.
+ *
+ * @param store - Push store.
+ * @param authStore - Auth store whose sessions the subscriptions are bound to.
+ * @param nowMs - Clock for session expiry.
+ * @returns Distinct account ids.
+ * @throws If a push store or auth store read rejects.
+ */
+export async function listAccountIdsWithLiveSubscriptions(
+  store: PushStore,
+  authStore: AuthStore,
+  nowMs: number,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const sub of await store.listAllSubscriptions()) {
+    if (!ids.has(sub.accountId) && (await subscriptionSessionLive(authStore, nowMs, sub))) {
+      ids.add(sub.accountId);
+    }
+  }
+  return [...ids];
+}
+
 function payloadTag(payload: string): string | undefined {
   try {
     const parsed: unknown = JSON.parse(payload);

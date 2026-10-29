@@ -34,7 +34,13 @@ function mount(args: {
 async function addAccount(
   authStore: InMemoryAuthStore,
   pushStore: InMemoryPushStore,
-  args: { n: number; username: string; level?: NotificationLevel; subscribed: boolean },
+  args: {
+    n: number;
+    username: string;
+    level?: NotificationLevel;
+    subscribed: boolean;
+    sessionEnded?: boolean;
+  },
 ): Promise<string> {
   const id = `00000000-0000-4000-8000-00000000000${args.n}`;
   await authStore.createAccount({
@@ -51,13 +57,17 @@ async function addAccount(
     rulesAgreedAt: null,
   });
   if (args.subscribed) {
+    const token = `tok-${args.n}`;
+    if (args.sessionEnded !== true) {
+      await authStore.createSession({ token, accountId: id, createdAt: now() });
+    }
     await pushStore.upsertSubscription({
       endpoint: `https://push.example/${args.n}`,
       accountId: id,
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1_000_000),
-      sessionToken: null,
+      sessionToken: token,
     });
   }
   return id;
@@ -178,6 +188,30 @@ describe('POST /debug/push-broadcast', () => {
     const rows = await pushStore.claimPending(10, now(), 1000);
     expect(rows.map((row) => row.accountId)).toEqual([ids[0]]);
     expect(JSON.parse(rows[0]?.payload ?? '{}')).toMatchObject({ url: '/welcome' });
+  });
+
+  it('leaves out subscriptions whose session has ended, like the worker', async () => {
+    const { authStore, pushStore, ids } = await seeded();
+    const stale = await addAccount(authStore, pushStore, {
+      n: 5,
+      username: 'echo',
+      subscribed: true,
+      sessionEnded: true,
+    });
+    const app = mount({ authStore, pushStore });
+    const all = await post(app, { title: 'Hi', body: 'Hello', dryRun: true });
+    expect(await all.json()).toEqual({ dryRun: true, recipients: 2 });
+    const listed = await post(app, { title: 'Hi', body: 'Hello', usernames: ['alpha', 'echo'] });
+    expect(await listed.json()).toMatchObject({
+      targeted: 2,
+      queued: 1,
+      optedOut: 0,
+      noSubscription: 1,
+    });
+    const rows = await pushStore.claimPending(10, now(), 1000);
+    expect(rows.map((row) => row.accountId)).toEqual([ids[0]]);
+    expect(rows.map((row) => row.accountId)).not.toContain(stale);
+    expect(await pushStore.listByAccount(stale)).toHaveLength(1);
   });
 
   it('dry run returns the recipient count and queues nothing, even without VAPID', async () => {

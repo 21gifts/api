@@ -5647,12 +5647,15 @@ matching `DEBUG_TOKEN` (not an end-user session). JSON body (no other keys):
 - `link` (optional, default `/welcome`): a same-site path of at most 200
   characters: one leading `/`, not `//`, no backslash or whitespace.
 - `usernames` (optional): 1-200 usernames. Without it the broadcast targets
-  every account with a push subscription.
+  every account with a live push subscription.
 - `dryRun` (optional): `true` counts the recipients and queues nothing.
 
 Accounts whose notification level is `none` are not queued (`optedOut`).
-Listed accounts without a push subscription are not queued
-(`noSubscription`). Each recipient gets one `push_outbox` row whose
+A push subscription is live while the session that registered it still
+authenticates its account, the same rule the push worker sends by. Listed
+accounts without a live subscription are not queued (`noSubscription`), and a
+dry run counts only live subscriptions. After every session has ended, a
+broadcast reaches no one until members sign in again. Each recipient gets one `push_outbox` row whose
 `message_id` is the broadcast id; the push worker delivers it with the same
 batch, lease, and retry rules as every other notification. The payload is
 `{ "type": "zap", "title", "body", "url": link, "tag": "broadcast:<id>" }`.

@@ -1,6 +1,6 @@
 /**
- * Operator Web Push broadcast to every subscribed account or to listed
- * usernames, queued on the push outbox. Authenticated by `DEBUG_TOKEN`
+ * Operator Web Push broadcast to every account with a live subscription or
+ * to listed usernames, queued on the push outbox. Authenticated by `DEBUG_TOKEN`
  * (Bearer), not by an end-user session.
  */
 
@@ -12,7 +12,7 @@ import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import { parseNotificationLevel } from '@/lib/notification';
 import type { PushStore } from '@/lib/push-store';
-import { enqueueBroadcastPush } from '@/lib/push-worker';
+import { enqueueBroadcastPush, listAccountIdsWithLiveSubscriptions } from '@/lib/push-worker';
 import { normalizeUsername } from '@/lib/username';
 import { normalizeUuid } from '@/lib/uuid';
 
@@ -114,7 +114,7 @@ interface BroadcastTargets {
 
 /**
  * Split the selected accounts into recipients, opted-out accounts (level
- * `none`), and accounts without a push subscription.
+ * `none`), and accounts without a subscription whose session is live.
  */
 function splitTargets(
   accounts: readonly Account[],
@@ -161,7 +161,9 @@ export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hon
       if (!dryRun && (deps.vapidPublicKey === undefined || deps.vapidPublicKey.trim() === '')) {
         return c.json({ error: 'Push is not configured' }, 503);
       }
-      const subscribed = new Set(await deps.pushStore.listAccountIdsWithSubscriptions());
+      const subscribed = new Set(
+        await listAccountIdsWithLiveSubscriptions(deps.pushStore, deps.authStore, deps.now()),
+      );
       let selected: Account[];
       if (input.usernames === undefined) {
         selected = (await deps.authStore.listAccounts()).filter((account) =>
