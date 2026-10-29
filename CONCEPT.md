@@ -593,8 +593,8 @@ Encryption: AES-GCM 256, with two key-derivation paths:
 - Passkey endpoints: register/authenticate/replace begin and finish, session issuance; `POST /me/wallet-backup-seen`
 - Social recovery ([`docs/social-recovery.md`](./docs/social-recovery.md)):
   `POST /auth/passkey/recovery/begin` and `/finish`, the address transfer
-  `POST /lnurlpay/:pubkey/transfer`, `PUT /me/recovery-share`, and
-  `GET` / `DELETE /me/previous-wallets`
+  `POST /lnurlpay/:pubkey/transfer`, `PUT /me/recovery-share`,
+  `GET /me/previous-wallets`, and `DELETE /me/previous-wallets/:sparkPubkey`
 - Spend-worker invoice HTTP: `POST /invoices` / `POST /invoices/proof`
   (paying and LNDHub stay in the external worker)
 - Receiving address: verified in-app wallet only

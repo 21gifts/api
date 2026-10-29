@@ -975,7 +975,7 @@
 
 ## Function: resolveRequiredAppBuild
 
-- **Purpose:** Reads `APP_BUILD_REQUIRED`, the app build id every session-creating request must carry in `X-App-Build`.
+- **Purpose:** Reads `APP_BUILD_REQUIRED`, the app build id that register, authenticate, and social recovery begin and finish must carry in `X-App-Build`.
 - **Inputs:** Environment record.
 - **Returns / side effects:** The trimmed value, or `null` when unset or blank (no build check, so staging and local keep working). Pure.
 - **Used by:** `createApp`.
@@ -985,7 +985,7 @@
 - **Purpose:** Decides whether a request passes the build check.
 - **Inputs:** Required build (`string | null`) and the raw `X-App-Build` header (`string | undefined`).
 - **Returns / side effects:** `true` when no build is required or the trimmed header equals the required build exactly (case-sensitive); `false` for a missing or different header. Pure.
-- **Used by:** `authRoutes` build check on register and authenticate begin and finish.
+- **Used by:** `authRoutes` build check on register, authenticate, and social recovery begin and finish.
 
 ## Function: LoginGate
 

@@ -10,9 +10,10 @@ what must be true on release day for that to hold.
 - **Where do payouts go after the release?** Every daily grant payout and
   every moderator stipend goes only to the member's own in-app wallet
   `<username>@21.gifts`. Nothing is paid to Wallet of Satoshi any more.
-- **Does anyone lose a payout?** No. All 58 people paid from 2026-10-13 to
-  2026-10-15 keep being paid without a gap on every day they are eligible for
-  a grant, when these five conditions hold:
+- **Does anyone lose a payout?** Only a member in the grant program who has
+  not set up social recovery once it is on `main`. All 58 people paid from
+  2026-10-13 to 2026-10-15 keep being paid without a gap on every day they are
+  eligible for a grant, when these six conditions hold:
   1. The API release includes the roster move at boot, so listed amounts and
      moderator stipends keep matching.
   2. The API and the app go live together.
@@ -27,9 +28,16 @@ what must be true on release day for that to hold.
      repository every production deploy run has completed, and the one that
      finished last succeeded on the release merge commit (see
      [Check again before release](#check-again-before-release)).
+  6. Once social recovery ([docs/social-recovery.md](social-recovery.md)) is
+     on `main`, possibly in the same release: the member has stored the 21.gifts
+     recovery share of their current verified wallet. A member in the grant
+     program without it is not paid until they set up social recovery (see
+     [Result](#result)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
+  Once social recovery is on `main`, a member in the grant program also sets
+  it up once (**Mein Konto absichern**) to be paid.
 - **How does it ship?** The API change and the app change each go through the
   release pull requests `staging → develop` and `develop → main` of their
   repository, and both go live together.
@@ -274,7 +282,8 @@ rows and deletes 1 recipient row.
 
 ## Result
 
-The release does not change who is eligible. `eligibleToday`
+The wallet change does not change who is eligible; social recovery adds one
+condition (below). `eligibleToday`
 (`src/lib/funding.ts`) was identical on `main` and `staging` on 2026-10-16: a
 payout needs a role other than `basis`, and an `admitted` grant or a `trial`
 grant on the current UTC day. The grant requirement has applied since
@@ -287,7 +296,9 @@ Since social recovery ([docs/social-recovery.md](social-recovery.md)),
 `eligibleToday` also needs a stored 21.gifts recovery share for the member's
 current verified wallet, on the same days as the grant and with no start
 date of its own: wherever that code runs, on staging once merged there and
-on production once released to `main`. A member in the grant program without
+on production once released to `main`. When social recovery reaches `main` in
+the same `develop → main` release as the wallet change, the condition starts
+on release day. A member in the grant program without
 that share is not paid that day, with the same answers as for a missing
 grant; the staff trial and admit pings are skipped too. Storing the first
 share of the current wallet pings that UTC day's newest media post, so later
@@ -323,6 +334,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    before it waits for the deploy, so a later run that failed or was
    cancelled may already have moved `latest`, and a re-run of an older run
    keeps its creation time but pushes `latest` again.
+6. Once social recovery is on `main`: the member has stored the 21.gifts
+   recovery share of their current verified wallet. A member in the grant
+   program without it is not paid until they set up social recovery; storing
+   the first share pings that UTC day's newest media post.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -352,7 +367,11 @@ except rows that belong to no account (on 2026-10-16 one recipient), which the
 roster move deletes. Read `gifts-debug db daily_roster`: both `payments_enabled` and `moderator_payments_enabled` must be `true`, and `comment` must not be `Welcome`.
 Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
-(role not `basis`, and `admitted`, or `trial` for that UTC day).
+(role not `basis`, and `admitted`, or `trial` for that UTC day). Once social
+recovery is on `main`, also read `gifts-debug db recovery_share`: an eligible
+member additionally needs a row whose `spark_pubkey` equals the account's
+`spark_pubkey`, on an account whose `spark_pubkey_verified_at` is set, as
+`loadPayoutEligibility` reads it.
 Check the three settings in the production deployment configuration.
 After both `develop → main` merges, list every production deploy of each
 repository:

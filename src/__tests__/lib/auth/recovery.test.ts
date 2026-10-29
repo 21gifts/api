@@ -166,6 +166,29 @@ describe('forwardRecoveryLookup', () => {
     ]);
   });
 
+  it('sends the lookup with LNURL_SERVER_TIMEOUT_MS, the bound its sentAt is settled under', async () => {
+    const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+    try {
+      const scripted = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+      let seen: AbortSignal | null | undefined;
+      await forwardRecoveryLookup(
+        LNURL_SERVER,
+        (input, init) => {
+          seen = init?.signal;
+          return scripted.fetchImpl(input, init);
+        },
+        () => T0,
+        PINNED.oldSparkPubkey,
+        { signature: 'ab'.repeat(36), timestamp: 1 },
+      );
+      expect(scripted.calls).toHaveLength(1);
+      expect(timeoutSpy.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+      expect(seen).toBe(timeoutSpy.mock.results[0]?.value);
+    } finally {
+      timeoutSpy.mockRestore();
+    }
+  });
+
   it('logs an unreachable server and reads it as unverified', async () => {
     const result = await forwardRecoveryLookup(
       LNURL_SERVER,

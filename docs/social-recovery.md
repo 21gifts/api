@@ -367,8 +367,12 @@ that build is not available there.
 
 **In the repository (CI).**
 
-- `callLnurlServer` aborts the forward after `LNURL_SERVER_TIMEOUT_MS` and
-  reports it unreachable (`src/__tests__/lib/lnurl-server.test.ts`).
+- The transfer route sends its forward with `LNURL_SERVER_TIMEOUT_MS`, and so
+  do the recover route and the lookup of recovery begin
+  (`src/__tests__/routes/lnurl-server.test.ts`,
+  `src/__tests__/lib/auth/recovery.test.ts`). `callLnurlServer` aborts a
+  forward after the `timeoutMs` it is given and reports it unreachable
+  (`src/__tests__/lib/lnurl-server.test.ts`).
 - The transfer route then answers 503 and commits nothing, and the pending
   recovery stays forwarded (`src/__tests__/routes/lnurl-server.test.ts`).
 - Nothing settles it within `RECOVERY_SETTLE_AFTER_MS` after the forward;

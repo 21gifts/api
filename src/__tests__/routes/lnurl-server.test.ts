@@ -6,7 +6,7 @@ import { CHALLENGE_TTL_MS } from '@/lib/config';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { encodeSparkAddress } from '@/lib/spark-address';
 import type { LnurlServerConfig } from '@/lib/config';
-import { LNURL_BODY_LIMIT_BYTES } from '@/lib/lnurl-server';
+import { LNURL_BODY_LIMIT_BYTES, LNURL_SERVER_TIMEOUT_MS } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
@@ -697,6 +697,27 @@ describe('lnurlServerRoutes', () => {
       expect(calls[0]?.url).toBe(`http://lnurl.test/lnurlpay/${PUBKEY}/recover`);
     });
 
+    it('sends the lookup with LNURL_SERVER_TIMEOUT_MS, the bound its send time is settled under', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      try {
+        const store = new InMemoryAuthStore();
+        await seedWallet(store, { id: 'acc', username: 'ada' });
+        const { fetchImpl, calls } = recordingFetch(
+          async () => new Response('ok', { status: 200 }),
+        );
+        const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}/recover`, {
+          method: 'POST',
+          body: '{}',
+        });
+        expect(res.status).toBe(200);
+        expect(timeoutSpy.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.init?.signal).toBe(timeoutSpy.mock.results[0]?.value);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+    });
+
     it('returns 404 when the key is unknown or invalid', async () => {
       const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
       const app = mount(new InMemoryAuthStore(), fetchImpl);
@@ -1138,6 +1159,29 @@ describe('lnurlServerRoutes', () => {
       expect(
         events('lnurl_server.unreachable').filter((e) => e['route'] === 'transfer'),
       ).toHaveLength(3);
+    });
+
+    it('sends the forward with LNURL_SERVER_TIMEOUT_MS, the bound the settle window counts on', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      try {
+        const store = await pendingStore();
+        const scripted = scriptedLnurlFetch({
+          transfer: () => transferAccepted(RECOVERY_USERNAME),
+        });
+        const signals: Array<AbortSignal | null | undefined> = [];
+        const fetchImpl: FetchFn = (input, init) => {
+          signals.push(init?.signal);
+          return scripted.fetchImpl(input, init);
+        };
+        expect((await transfer(mount(store, fetchImpl), signedBody())).status).toBe(200);
+        expect(scripted.calls.map((call) => call.route)).toEqual(['transfer']);
+        expect(timeoutSpy.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+        expect(signals).toHaveLength(1);
+        expect(signals[0]).toBe(timeoutSpy.mock.results[0]?.value);
+        expect(RECOVERY_SETTLE_AFTER_MS).toBe(2 * LNURL_SERVER_TIMEOUT_MS);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
     });
 
     it('answers 503 when the store throws at admission and contacts no upstream', async () => {
