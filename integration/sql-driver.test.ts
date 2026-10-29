@@ -623,6 +623,38 @@ describe('daily roster keyed by account', () => {
     }
   });
 
+  test('leaves a row unlinked when its legacy and in-app matches name different accounts', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;
+    let ids: string[] = [];
+    try {
+      await reset(client);
+      const { ada, bea } = await seedAccounts(client, stamp);
+      ids = [ada, bea];
+      const shared = `bea_${stamp}@gifts.example`;
+      await client.execute('UPDATE account SET lightning_address = $1 WHERE id = $2', [
+        shared,
+        ada,
+      ]);
+      await client.execute(
+        `INSERT INTO daily_roster_entry (address, amount_usd, bucket) VALUES ($1, 2, 'daily')`,
+        [shared],
+      );
+      expect(await linkDailyRosterAccounts(client, 'gifts.example')).toEqual({
+        linked: 0,
+        unlinked: 1,
+      });
+      const report = await new PostgresDailyRosterStore(client, 'gifts.example').linkReport();
+      expect(report.unlinked).toEqual([{ bucket: 'daily', address: shared, amountUsd: 2 }]);
+    } finally {
+      await client.execute('DELETE FROM daily_roster_entry');
+      await client.execute('DELETE FROM account WHERE id = ANY($1::uuid[])', [
+        postgresTextArrayLiteral(ids),
+      ]);
+      await closeIfPossible(sql);
+    }
+  });
+
   test('edits rows by account, imports once with the link, and keeps one row per bucket', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     const stamp = `${Date.now()}${Math.random().toString(16).slice(2, 8)}`;

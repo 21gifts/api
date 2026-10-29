@@ -265,7 +265,8 @@ no address before.
 - A row without an account whose address equals an account's legacy
   `lightning_address` (trimmed, case-insensitive) is linked to that account.
   With the LNURL server configured, an address `<username>@<host>` links to
-  that username's account too.
+  that username's account too. A row whose two matches name different
+  accounts links to neither and stays without an account.
 - Per account and bucket one row is linked (the oldest); a bucket that
   already holds the account links none.
 - Amounts, buckets, and addresses do not change, and no row is deleted. A row

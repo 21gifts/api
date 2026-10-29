@@ -566,6 +566,28 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
+  it('returns 400 Invalid person or amount and does not call spend when the body names an account id and a username', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const res = await post(
+      mount(
+        authStore,
+        fakeStore({
+          addRecipient: async () => {
+            called = true;
+            return DOCUMENT;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: VERIFIED, username: 'other', amountUsd: 5 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    expect(called).toBe(false);
+  });
+
   it('returns 400 Invalid person or amount and does not call spend when the amount is a numeric string', async () => {
     let called = false;
     const authStore = await seeded();
@@ -617,7 +639,6 @@ describe('daily payout roster routes', () => {
       { username: 'Hide-Me' },
       { address: ' HIDE-ME@example.test ' },
       { address: VERIFIED },
-      { username: 'hide-me', address: 'other@example.test' },
     ]) {
       expect(
         (
@@ -639,9 +660,20 @@ describe('daily payout roster routes', () => {
       `delete:${memberId}`,
       `update:${VERIFIED}:8`,
       `delete:${VERIFIED}`,
-      `update:${memberId}:8`,
-      `delete:${memberId}`,
     ]);
+    const both = { username: 'hide-me', address: 'hide-me@example.test' };
+    for (const [path, body, error] of [
+      [
+        '/funding/daily-roster/recipients/update',
+        { ...both, amountUsd: 8 },
+        'Invalid address or amount',
+      ],
+      ['/funding/daily-roster/recipients/delete', both, 'Unknown address'],
+    ] as const) {
+      const res = await post(app, path, 'founder', body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
+    }
     for (const key of [
       { username: 'nobody' },
       { address: 'hide-me@elsewhere.example' },
@@ -658,7 +690,7 @@ describe('daily payout roster routes', () => {
         expect(await res.json()).toEqual({ error: 'Unknown address' });
       }
     }
-    expect(calls).toHaveLength(9);
+    expect(calls).toHaveLength(7);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain('hide-me');
   });
 

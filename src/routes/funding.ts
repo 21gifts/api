@@ -132,16 +132,20 @@ const rosterDeleteBody = z.object({
 });
 
 /**
- * The row key of a keyed roster body: `username`, else `address`.
+ * The row key of a keyed roster body: its `username` or its `address`.
  *
  * @param body - Parsed body.
- * @returns The key, or `undefined` when neither is given.
+ * @returns The key, or `undefined` when neither or both are given.
  */
 function rosterKey(body: {
   username?: string | undefined;
   address?: string | undefined;
 }): string | undefined {
-  return body.username ?? body.address;
+  return body.username === undefined
+    ? body.address
+    : body.address === undefined
+      ? body.username
+      : undefined;
 }
 
 /**
@@ -177,11 +181,11 @@ async function accountByUsername(
 
 /**
  * The account lookup of a session add body: by `accountId` (which must be a
- * UUID), else by `username`.
+ * UUID) or by `username`.
  *
  * @param deps - Route collaborators.
  * @param body - Parsed add body.
- * @returns The lookup, or `undefined` when the body names no account.
+ * @returns The lookup, or `undefined` when the body names no account or gives both keys.
  */
 function rosterAddLookup(
   deps: FundingRouteDeps,
@@ -189,7 +193,9 @@ function rosterAddLookup(
 ): (() => Promise<Account | undefined>) | undefined {
   const { accountId, username } = body;
   if (accountId !== undefined) {
-    return MESSAGE_ID_RE.test(accountId) ? () => deps.authStore.getAccount(accountId) : undefined;
+    return MESSAGE_ID_RE.test(accountId) && username === undefined
+      ? () => deps.authStore.getAccount(accountId)
+      : undefined;
   }
   return username === undefined ? undefined : () => accountByUsername(deps, username);
 }

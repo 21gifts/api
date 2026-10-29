@@ -196,16 +196,19 @@ export async function migrateDailyRosterSchema(sql: SqlClient): Promise<void> {
  * The UPDATE runs as one statement, so `trg_db_change` records each row.
  */
 export const DAILY_ROSTER_ACCOUNT_LINK_SQL = `WITH matched AS (
-  SELECT e.id, e.bucket,
-         COALESCE(
-           (SELECT a.id FROM account a
-             WHERE lower(btrim(a.lightning_address)) = lower(btrim(e.address))),
-           (SELECT a.id FROM account a
-             WHERE $1::text IS NOT NULL AND btrim(coalesce(a.username, '')) <> ''
-               AND lower(btrim(a.username)) || '@' || $1::text = lower(btrim(e.address)))
-         ) AS account_id
-    FROM daily_roster_entry e
-   WHERE e.account_id IS NULL AND e.address IS NOT NULL
+  SELECT c.id, c.bucket,
+         CASE WHEN c.legacy_id IS NULL OR c.legacy_id = c.wallet_id THEN c.wallet_id
+              WHEN c.wallet_id IS NULL THEN c.legacy_id END AS account_id
+    FROM (
+      SELECT e.id, e.bucket,
+             (SELECT a.id FROM account a
+               WHERE lower(btrim(a.lightning_address)) = lower(btrim(e.address))) AS legacy_id,
+             (SELECT a.id FROM account a
+               WHERE $1::text IS NOT NULL AND btrim(coalesce(a.username, '')) <> ''
+                 AND lower(btrim(a.username)) || '@' || $1::text = lower(btrim(e.address))) AS wallet_id
+        FROM daily_roster_entry e
+       WHERE e.account_id IS NULL AND e.address IS NOT NULL
+    ) c
 ),
 ranked AS (
   SELECT m.id, m.account_id,
@@ -241,7 +244,8 @@ export interface DailyRosterAccountLink {
  *
  * A row's trimmed address is compared case-insensitively with the legacy
  * `account.lightning_address` (unique per account), and, when `host` is
- * given, with `<username>@<host>`; the legacy address wins. Per account and
+ * given, with `<username>@<host>`. A row whose two matches name different
+ * accounts is linked to neither. Per account and
  * bucket only one row is linked: none when the bucket already holds a row of
  * that account, else the lowest `id`. Rows that match no account keep a null
  * `account_id`, are left out of every document, and are never paid. Amounts,
