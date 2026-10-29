@@ -93,7 +93,8 @@ export interface MeRouteDeps {
    */
   fiatRates?: FiatRateBook;
   /**
-   * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
+   * Funding grants for owner JSON and for the daily ping after the first
+   * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
   /**

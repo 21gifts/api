@@ -75,9 +75,9 @@ export interface AccountResponse {
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
  * `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
  * `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`,
- * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and
+ * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
  * `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
- * failed renew is `prfUnsupported`).
+ * failed renew is `prfUnsupported`), and `socialRecoverySetUp`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
