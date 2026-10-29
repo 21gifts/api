@@ -3902,7 +3902,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Effective funding-grant status after lazy trial expiry. A stored `trial` whose `trialUtcDate` is a string strictly before today UTC (`utcDayKey`) becomes `'pending'`. Today's and future trial dates stay `'trial'`. A trial with `trialUtcDate === null` is not expired via the date comparison. Missing grant is `'none'`. Non-trial statuses return `grant.status`.
 - **Inputs:** `grant` (`FundingGrant | undefined`) and `nowMs` epoch milliseconds.
 - **Returns / side effects:** `EffectiveFundingStatus`. No I/O.
-- **Used by:** `serializeOwnerFunding`, `fundingReviewedAt`, `loadGrantEffective`, `invoiceRoutes` `GET /eligible`.
+- **Used by:** `serializeOwnerFunding`, `fundingReviewedAt`, `loadGrantEffective`, `invoiceRoutes` `GET /eligible`, `replayPayoutWindow` (grant status of a replayed daily payout).
 
 ## Function: fundingGrantRequired
 
