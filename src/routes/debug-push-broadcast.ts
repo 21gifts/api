@@ -78,7 +78,7 @@ function charCount(text: string): number {
   return Array.from(text).length;
 }
 
-/** One leading `/`, not `//`, no backslash, whitespace, or control character. */
+/** One leading `/`, not `//`, no backslash, whitespace, C0 control, or DEL. */
 function isSameSitePath(link: string): boolean {
   return /^\/(?!\/)[^\\\s]*$/.test(link) && !hasControl(link, false);
 }
@@ -226,7 +226,7 @@ export function debugPushBroadcastRoutes(deps: DebugPushBroadcastRouteDeps): Hon
       if (id === null) {
         return c.json({ error: 'Not found' }, 404);
       }
-      const counts = await deps.pushStore.countOutboxByMessageId(id);
+      const counts = await deps.pushStore.countBroadcastOutbox(id);
       if (counts.queued === 0) {
         return c.json({ error: 'Not found' }, 404);
       }

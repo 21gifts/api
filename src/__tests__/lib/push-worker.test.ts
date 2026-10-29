@@ -269,7 +269,7 @@ describe('enqueueBroadcastPush', () => {
     const auth = await authWithSessions(['author', 'other']);
     await runPushWorkerTick({ store, sender, now: () => 10, authStore: auth });
     expect(sender.calls).toHaveLength(2);
-    expect(await store.countOutboxByMessageId(MESSAGE.broadcastId)).toEqual({
+    expect(await store.countBroadcastOutbox(MESSAGE.broadcastId)).toEqual({
       queued: 3,
       pending: 1,
       delivered: 1,

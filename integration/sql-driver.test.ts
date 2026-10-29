@@ -2268,7 +2268,7 @@ describe('PostgresAuthStore getAccounts', () => {
   });
 });
 
-describe('PostgresPushStore countOutboxByMessageId', () => {
+describe('PostgresPushStore countBroadcastOutbox', () => {
   test('counts one broadcast id by status and delivered endpoints', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {
@@ -2290,12 +2290,12 @@ describe('PostgresPushStore countOutboxByMessageId', () => {
       });
       const store = new PostgresPushStore(client);
       const broadcastId = crypto.randomUUID();
-      const row = (messageId: string): PushOutboxRow => ({
+      const row = (messageId: string, tag = `broadcast:${messageId}`): PushOutboxRow => ({
         id: crypto.randomUUID(),
         accountId,
         type: 'zap',
         messageId,
-        payload: '{}',
+        payload: JSON.stringify({ tag }),
         status: 'pending',
         attempts: 0,
         claimedUntil: null,
@@ -2311,7 +2311,8 @@ describe('PostgresPushStore countOutboxByMessageId', () => {
         row(broadcastId),
         row(broadcastId),
       ];
-      for (const item of [...rows, row(crypto.randomUUID())]) {
+      const forumRow = { ...row(broadcastId, `zap:${broadcastId}`), status: 'sent' as const };
+      for (const item of [...rows, row(crypto.randomUUID()), forumRow]) {
         await store.enqueue(item);
       }
       const [delivered, dropped, failed, partial] = rows;
@@ -2323,14 +2324,14 @@ describe('PostgresPushStore countOutboxByMessageId', () => {
         await store.markFailed(failed?.id ?? '', Date.now());
         await store.markFailed(partial?.id ?? '', Date.now());
       }
-      expect(await store.countOutboxByMessageId(broadcastId)).toEqual({
+      expect(await store.countBroadcastOutbox(broadcastId)).toEqual({
         queued: 5,
         pending: 1,
         delivered: 2,
         dropped: 1,
         failed: 1,
       });
-      expect(await store.countOutboxByMessageId(crypto.randomUUID())).toEqual({
+      expect(await store.countBroadcastOutbox(crypto.randomUUID())).toEqual({
         queued: 0,
         pending: 0,
         delivered: 0,

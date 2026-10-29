@@ -175,15 +175,18 @@ export interface PushStore {
   recordDelivered(id: string, endpoints: readonly string[]): Promise<void>;
 
   /**
-   * Count the outbox rows of one `messageId` by delivery outcome.
+   * Count the outbox rows of one operator broadcast by delivery outcome:
+   * rows whose `messageId` is the broadcast id and whose payload tag is
+   * `broadcast:<broadcastId>`. Rows of a forum or conversation message with
+   * the same id are not counted.
    *
-   * @param messageId - Outbox `messageId` (an operator broadcast id).
-   * @returns Row counts; all zero when no row has this id.
+   * @param broadcastId - Broadcast id (UUID).
+   * @returns Row counts; all zero when no broadcast row has this id.
    */
-  countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts>;
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts>;
 }
 
-/** Outbox rows of one `messageId` by delivery outcome. */
+/** Outbox rows of one operator broadcast by delivery outcome. */
 export interface PushOutboxCounts {
   /** Every row with this id. */
   queued: number;
@@ -290,6 +293,18 @@ function unionDeliveredEndpoints(
     out.push(endpoint);
   }
   return out;
+}
+
+/** The `tag` of a JSON outbox payload, or `undefined` when it has none. */
+function payloadTagOf(payload: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed !== null && typeof parsed === 'object'
+      ? (parsed as { tag?: unknown }).tag
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Copy a subscription so callers cannot mutate store state. */
@@ -571,15 +586,16 @@ export class InMemoryPushStore implements PushStore {
   }
 
   /**
-   * Count in-memory outbox rows of one `messageId` by delivery outcome.
+   * Count in-memory outbox rows of one broadcast by delivery outcome.
    *
-   * @param messageId - Outbox `messageId`.
+   * @param broadcastId - Broadcast id.
    * @returns Row counts.
    */
-  countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts> {
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
     const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    const tag = `broadcast:${broadcastId}`;
     for (const row of this.#outbox) {
-      if (row.messageId !== messageId) {
+      if (row.messageId !== broadcastId || payloadTagOf(row.payload) !== tag) {
         continue;
       }
       counts.queued += 1;
@@ -926,20 +942,22 @@ export class PostgresPushStore implements PushStore {
   }
 
   /**
-   * Count outbox rows of one `messageId` by status; a finished (sent or
+   * Count outbox rows of one broadcast (`message_id` and payload tag) by
+   * status; a finished (sent or
    * failed) row counts as delivered when its `delivered_endpoints` list is
    * not empty.
    *
-   * @param messageId - Outbox `messageId` (UUID).
+   * @param broadcastId - Broadcast id (UUID).
    * @returns Row counts.
    */
-  async countOutboxByMessageId(messageId: string): Promise<PushOutboxCounts> {
+  async countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
     const rows = await this.#sql.query<{ status: string; n: number; reached: number }>(
       `SELECT status, count(*)::int AS n,
          count(*) FILTER (WHERE delivered_endpoints <> '[]')::int AS reached
-       FROM push_outbox WHERE message_id = $1
+       FROM push_outbox
+       WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2
        GROUP BY status`,
-      [messageId],
+      [broadcastId, `broadcast:${broadcastId}`],
     );
     const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
     for (const row of rows) {

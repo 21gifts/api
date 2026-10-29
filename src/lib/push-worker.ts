@@ -233,8 +233,8 @@ export interface BroadcastPushMessage {
 
 /**
  * Enqueue one operator broadcast row per account. Each row carries the
- * broadcast id as outbox `messageId`, so {@link PushStore.countOutboxByMessageId}
- * reports its delivery. The payload uses the debug ping's `zap` type.
+ * broadcast id as outbox `messageId` and the payload tag `broadcast:<id>`, so
+ * {@link PushStore.countBroadcastOutbox} reports its delivery. The payload uses the debug ping's `zap` type.
  *
  * @param store - Push store.
  * @param accountIds - Recipient account ids (each enqueued once).

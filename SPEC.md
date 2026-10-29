@@ -5642,8 +5642,9 @@ matching `DEBUG_TOKEN` (not an end-user session). JSON body (no other keys):
 }
 ```
 
-- `title`: 1-64 characters after trim, no control characters.
-- `body`: 1-240 characters after trim, no control characters except a newline.
+- `title`: 1-64 characters after trim, no C0 control character or DEL.
+- `body`: 1-240 characters after trim, no C0 control character other than a
+  newline, and no DEL.
 - `link` (optional, default `/welcome`): a same-site path of at most 200
   characters: one leading `/`, not `//`, no backslash or whitespace.
 - `usernames` (optional): 1-200 usernames. Without it the broadcast targets
@@ -5689,9 +5690,12 @@ Send → **Response** `202`:
 
 ### `GET /debug/push-broadcast/:id`
 
-Operator delivery report of one broadcast, read from its `push_outbox` rows.
-Same auth errors as `POST /debug/push-broadcast`. An id that is not a UUID,
-or that no row carries (also a broadcast that queued nothing) → **404**
+Operator delivery report of one broadcast, read from its `push_outbox` rows:
+the rows whose `message_id` is the broadcast id and whose payload tag is
+`broadcast:<id>`. Rows of a forum or conversation message with the same id
+are not counted. Same auth errors as `POST /debug/push-broadcast`. An id that
+is not a UUID, or that no broadcast row carries (also a broadcast that queued
+nothing, or one whose rows the retention removed) → **404**
 `{ "error": "Not found" }`.
 
 **Response** `200`:

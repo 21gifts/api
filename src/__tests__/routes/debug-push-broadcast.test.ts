@@ -346,6 +346,32 @@ describe('GET /debug/push-broadcast/:id', () => {
     });
   });
 
+  it('returns 404 for the id of a forum or conversation message in the outbox', async () => {
+    const { authStore, pushStore } = await seeded();
+    const messageId = '0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f';
+    await pushStore.enqueue({
+      id: crypto.randomUUID(),
+      accountId: 'acc',
+      type: 'conversation',
+      messageId,
+      payload: JSON.stringify({ type: 'conversation', tag: `conversation:${messageId}` }),
+      status: 'sent',
+      attempts: 0,
+      claimedUntil: null,
+      createdAt: new Date(now()),
+      finishedAt: new Date(now()),
+      deliveredEndpoints: ['https://push.example/1'],
+      skipEndpoints: [],
+    });
+    const res = await mount({ authStore, pushStore }).request(
+      `/debug/push-broadcast/${messageId}`,
+      {
+        headers: AUTH,
+      },
+    );
+    expect(res.status).toBe(404);
+  });
+
   it('returns 404 for a malformed or unknown id', async () => {
     const { authStore, pushStore } = await seeded();
     const app = mount({ authStore, pushStore });
