@@ -381,14 +381,15 @@ export async function replayPayoutWindow(
       skip('not_eligible', ineligible);
       continue;
     }
-    const posts = (await dayPosts(day)).filter(
-      (row) => row.accountId === account.id && row.id !== (account.profileMessageId ?? null),
-    );
+    const posts = (await dayPosts(day)).filter((row) => row.accountId === account.id);
     if (payout === 'moderator' && !isModeratorGroupMember(account)) {
       skip('not_eligible', 'not_moderator');
       continue;
     }
-    if (payout === 'moderator' && posts.length === 0) {
+    if (
+      payout === 'moderator' &&
+      !posts.some((row) => row.id !== (account.profileMessageId ?? null))
+    ) {
       skip('not_eligible', 'no_public_post');
       continue;
     }

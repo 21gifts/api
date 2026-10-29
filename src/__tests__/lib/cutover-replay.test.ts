@@ -387,6 +387,19 @@ describe('replayPayoutWindow', () => {
     ]);
   });
 
+  it('pays an /admit for the About-me media of that day, as the live decision does', async () => {
+    const h = await harness({
+      grants: [{ ...admitted(ADA), decidedAt: Date.parse('2026-10-29T23:30:00.000Z') }],
+    });
+    await h.member(ADA, 'ada', 'moderator', true, { profileMessageId: id(1) });
+    await h.post(id(1), ADA, '2026-10-29T08:00:00.000Z');
+
+    const result = await h.run();
+    expect(result.events).toEqual([
+      expect.objectContaining({ trigger: 'admit', messageId: id(1), status: 'paid' }),
+    ]);
+  });
+
   it('replays moderator-group messages as moderator payouts on their day', async () => {
     const h = await harness({
       grants: [admitted(ADA), admitted(BOB), admitted(id(7))],
