@@ -1,10 +1,8 @@
 # Securing the account
 
-Status: **concept only**. Decided 2026-10-27, the keeping of the 21.gifts
-share and the coupling to grant payouts 2026-10-28. Not implemented. No HTTP
-path in this document is reserved. A later change that builds this adds its
-routes to `SPEC.md` in that same change. Nothing here changes runtime
-behaviour.
+Status: **Implemented.** Decided 2026-10-27 and 2026-10-28 (owner decisions
+in [CONCEPT.md](../CONCEPT.md), 2026-10-28). The routes are in
+[SPEC.md](../SPEC.md).
 
 This replaces the design of 2026-09-29 and 2026-09-30 (two required people, a
 48-hour wait, a server-side bind key, a seed wrap, a moderator suggested as
@@ -32,7 +30,7 @@ Nothing stores them.
 This is the only path that gives an account a different recovery phrase.
 `POST /auth/passkey/replace/begin` and `/finish` keep refusing with 409, and
 the rule "A recovery phrase is never replaced" in [FLOWS.md](../FLOWS.md)
-gains this one exception when recovery is built.
+has this one exception.
 
 ## Who holds what
 
@@ -41,13 +39,15 @@ threshold 1, member count 3, member threshold 2, empty passphrase. Any two
 shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 12 words. One share gives nothing.
 
-| Share | Held by                  | How it travels                        |
-| ----- | ------------------------ | ------------------------------------- |
-| 1     | Person 1, on their phone | QR code, phone to phone               |
-| 2     | Person 2, on their phone | QR code, phone to phone               |
-| 3     | 21.gifts, as a backup    | To the api at setup, stored encrypted |
+| Share | Held by                                           | How it travels                                                                            |
+| ----- | ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
+| 1     | Person 1, signed in to their own 21.gifts account | QR code, phone to phone, kept in the app's browser storage under the holder's own account |
+| 2     | Person 2, signed in to their own 21.gifts account | QR code, phone to phone, kept in the app's browser storage under the holder's own account |
+| 3     | 21.gifts, as a backup                             | To the api at setup (`PUT /me/recovery-share`), stored encrypted                          |
 
-- Person 1 and person 2 are two different people with two different phones.
+- Person 1 and person 2 are two different people with two different phones,
+  each with their own 21.gifts account. They hold a share only while signed
+  in. There is no public holder page.
 - A person's share never reaches the 21.gifts server, sealed or not. The
   server stores nothing about who protects whom.
 - The 21.gifts share is a backup only. The api stores it encrypted and never
@@ -84,18 +84,20 @@ Setup may happen remotely, for example with the QR code shown in a video call.
    `spark_pubkey`, setup stops.
 2. The phone splits the 16 bytes into three shares. Before any share leaves
    the phone, it checks that each of the three pairs gives the same 16 bytes.
-3. The owner's phone shows share 1 as a QR code. Person 1 scans it in the
-   21.gifts app, which keeps it on that phone under the owner's account id and
-   the share's SLIP-39 identifier.
-4. The same for share 2 and person 2. A phone that already holds a share for
-   the same owner with the same identifier refuses the new one, so one phone
-   never holds two shares of one set. The identifier is a random 15-bit value;
-   if a new set happens to draw the identifier of an old set a person still
-   holds, that phone refuses it too, and setup starts again with a new split.
+3. The owner's phone shows share 1 as a QR code. Person 1 scans it in their
+   signed-in 21.gifts app (**Anteile, die ich für andere aufbewahre**), which
+   keeps it in that browser under the holder's own account id, the owner's
+   account id and the share's SLIP-39 identifier.
+4. The same for share 2 and person 2. A browser that already holds a share
+   with the same owner and identifier, under any account, refuses it, so one
+   phone never holds two shares of one set. A share of the holder's own
+   account is refused too. The identifier is a random 15-bit value; if a new
+   set happens to draw the identifier of an old set a person still holds,
+   that browser refuses it too, and setup starts again with a new split.
 5. Last, once both people hold their share, the owner's phone, signed in,
-   sends share 3 to the api, which stores it as described under
-   [The 21.gifts share](#the-21gifts-share). The stored share for the current
-   wallet is what marks social recovery as set up.
+   sends share 3 to the api (`PUT /me/recovery-share`), which stores it as
+   described under [The 21.gifts share](#the-21gifts-share). The stored share
+   for the current wallet is what marks social recovery as set up.
 
 Remotely, both shares are never shown over the same call or service, and the
 call is not recorded: anyone who captures two shares can recover the account.
@@ -103,35 +105,42 @@ call is not recorded: anyone who captures two shares can recover the account.
 Choosing other people later means a new setup with three new shares. A new
 setup does not revoke the old set, because the 12 words stay the same: any two
 old shares still rebuild them. The api replaces its stored share of that
-wallet with the new one. Holders delete an old share by hand in their app when the owner asks. The
-app warns the owner that a removed person's share stays usable together with
-any other old share.
+wallet with the new one. Holders delete an old share by hand in their app when
+the owner asks. The app warns the owner that a removed person's share stays
+usable together with any other old share.
 
 ## The 21.gifts share
 
 - **Storage.** The api encrypts share 3 in the request that brings it and
-  stores only the ciphertext, under the account and its verified
-  `spark_pubkey` at that time, one per wallet. It uses AES-GCM under its own
-  32-byte key, not `NOSTR_NSEC_KEK`, with the account id as additional data,
-  in the envelope layout of `nostr_nsec_ciphertext` (`encryptNostrSecret` in
-  `src/lib/nostr/keys.ts`). The key comes from the deployment environment as 64
-  lowercase hex characters and is checked at boot like `NOSTR_NSEC_KEK`
-  (`parseNostrKek` in `src/lib/nostr/kek.ts`). 21.gifts also keeps it in its
-  password vault.
-- **Secret column.** The share's column is a secret column like
-  `nostr_nsec_ciphertext`: `db_change` keeps only its SHA-256
-  (`db_change_redact` in `src/lib/db-change.ts`), and `GET /debug/db` redacts
-  it (`DEBUG_DB_SECRET_COLUMNS` in `src/lib/debug-db.ts`). A replaced or
-  deleted share therefore leaves no copy. The change that builds this adds the
-  column to the lists of secret columns in CONTRIBUTING.md and CONCEPT.md.
+  stores only the ciphertext (`recovery_share`), under the account and its
+  verified `spark_pubkey` at that time, one per wallet. It uses AES-256-GCM
+  under its own 32-byte key `RECOVERY_SHARE_KEK`, which must differ from
+  `NOSTR_NSEC_KEK`, with the account id as additional data, in the envelope
+  layout of `nostr_nsec_ciphertext` (`sealAesGcmEnvelope` in
+  `src/lib/aes-gcm-envelope.ts`, which `encryptNostrSecret` in
+  `src/lib/nostr/keys.ts` uses too). The key comes from the deployment
+  environment as 64 lowercase hex characters and is checked at boot like
+  `NOSTR_NSEC_KEK` (`parseRecoveryShareKek` in
+  `src/lib/auth/recovery-share.ts`, through `parseKekHex` in
+  `src/lib/nostr/kek.ts`): with `DATABASE_URL` set, a missing or malformed
+  key, or one equal to `NOSTR_NSEC_KEK`, stops the boot. 21.gifts also keeps
+  it in its password vault.
+- **Secret column.** The share's column `recovery_share_ciphertext` is a
+  secret column like `nostr_nsec_ciphertext`: `db_change` keeps only its
+  SHA-256 (`db_change_redact` in `src/lib/db-change.ts`), and `GET /debug/db`
+  shows only its length (`DEBUG_DB_SECRET_COLUMNS` in `src/lib/debug-db.ts`).
+  A replaced or deleted share therefore leaves no copy. The column is in the
+  lists of secret columns in CONTRIBUTING.md and CONCEPT.md.
 - **Previous wallets.** After a recovery, the share of the previous wallet
-  stays until the owner drops that wallet.
+  stays until the owner drops that wallet; the drop deletes both in one
+  statement.
 - **A leak.** The database alone gives no share. The database together with
   the environment gives every stored 21.gifts share. This is accepted: one
   share alone rebuilds nothing.
 - **No use of its content.** No route returns the share, nothing in the api
-  decrypts it, and no log contains it. The api only checks whether one is
-  stored for the current wallet, see [Grant payouts](#grant-payouts).
+  decrypts it (there is no decrypt function), and no log contains it. The api
+  only checks whether one is stored for the current wallet, see
+  [Grant payouts](#grant-payouts).
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.
@@ -146,26 +155,28 @@ UTC day, social recovery is a payout condition.
   so after a recovery the condition is open again until the owner sets up
   shares for the new words. The api reads only whether such a share is stored,
   never its content.
-- **Payouts.** From a start date of its own, set when this is built,
-  `eligibleToday` (`src/lib/funding.ts`) also requires it.
-  `FUNDING_REQUIRED_FROM_UTC` stays the grant's date. That function already
-  requires the grant for every payout. Without a share the account is not
-  eligible, with the same answers as for a missing grant, so the payout worker
-  skips the trigger as it does today. Storing the share pings that UTC day's
-  newest media post, as `pingTodayMedia` (`src/lib/funding-ping.ts`) does when
-  staff admit a grant, and later triggers that day pay as usual. A day that
-  ends without a share is not paid, except by an operator replay, which checks
-  eligibility when it runs.
-- **Owner field.** The owner account JSON carries whether social recovery is
-  set up, with no grant or date check, and that start date, so the app keeps
-  no date of its own. The settings entry shows the fact, and the dialog and
-  the payouts use it.
+- **Payouts.** `eligibleToday` (`src/lib/funding.ts`) also requires it
+  wherever this code runs. There is no start date of its own: the condition
+  holds on every day the grant is required (`FUNDING_REQUIRED_FROM_UTC`, the
+  grant's date). That function already requires the grant for every payout,
+  and `loadPayoutEligibility` (`src/lib/payout-eligibility.ts`) reads the
+  share for each payout path. Without a share the account is not eligible,
+  with the same answers as for a missing grant, so the payout worker skips the
+  trigger as it does today. Storing the first share of the current wallet
+  pings that UTC day's newest media post, as `pingTodayMedia`
+  (`src/lib/funding-ping.ts`) does when staff admit a grant, and later
+  triggers that day pay as usual. The staff trial and admit pings need the
+  share as well. A day that ends without a share is not paid, except by an
+  operator replay, which checks eligibility when it runs.
+- **Owner field.** The owner account JSON carries `socialRecoverySetUp`,
+  whether social recovery is set up, with no grant or date check. The
+  settings entry shows the fact, and the dialog and the payouts use it.
 - **Prompt.** From the release on, a member in the grant program whose owner
   field is false sees a dialog on `/welcome`, like **Stell dich vor**
   (`IntroduceYourselfOverlay` in the app). It says that grant payouts need
-  social recovery, names the start date while it lies ahead, and opens
-  **Mein Konto absichern**. Closing it hides it until the next visit to
-  `/welcome`. When both dialogs apply, **Stell dich vor** comes first.
+  social recovery and opens **Mein Konto absichern**. Closing it hides it
+  until the next visit to `/welcome`. When both dialogs apply, **Stell dich
+  vor** comes first.
 
 ## Recovery
 
@@ -175,34 +186,44 @@ new phone with the 21.gifts app.
 1. The owner taps **Account über Social Recovery wiederherstellen**.
 2. The new phone scans the QR codes of person 1 and person 2, or the owner
    types the old 12 words.
-3. The app rebuilds the old 12 words, opens the old wallet and starts a
-   recovery ceremony with the old wallet's identity key and its signed address
-   lookup (`POST /lnurlpay/<old key>/recover`), behind the same app build check
-   and login switch as the register and authenticate ceremonies. The server finds the
-   account whose verified `spark_pubkey` is that key, refuses an account with
-   `session_refused`, and returns WebAuthn creation options for a new passkey
-   on that account: as for a seed passkey, with a stored passkey challenge of
-   the new type `recovery` and the same `CHALLENGE_TTL_MS` window.
+3. The app rebuilds the old 12 words and opens the old wallet. It signs the
+   LNURL server's address lookup of the old key (`breez-lnurl:v2`, `recover`,
+   the app host, the key and a timestamp: the message the Breez SDK signs for
+   its own lookup) with the old wallet's identity key, and starts a recovery
+   ceremony with `POST /auth/passkey/recovery/begin`, sending the old key, the
+   DER signature and the timestamp. The api forwards the lookup to the LNURL
+   server as `POST /lnurlpay/<old key>/recover`. The ceremony sits behind the
+   same app build check and login switch as the register and authenticate
+   ceremonies. The server finds the account whose verified `spark_pubkey` is
+   that key, refuses an account with `session_refused`, and returns WebAuthn
+   creation options for a new passkey on that account: as for a seed passkey,
+   with a stored passkey challenge of the new type `recovery` and the same
+   `CHALLENGE_TTL_MS` window.
 4. The app creates the new passkey, derives the new 12 words from it and opens
    the new wallet. The new passkey is not linked to the account yet.
 5. One button, **Übertragen**, does the rest in this order:
    1. **Account.** The old wallet signs the recovery message (`signMessage`
       in the Breez SDK). The app finishes the ceremony with it and the new
-      passkey's attestation, and the server stores a **pending recovery**.
+      passkey's attestation (`POST /auth/passkey/recovery/finish`), and the
+      server stores a **pending recovery**.
    2. **Lightning address.** The old wallet authorizes the transfer of the
       address to the new wallet (`authorizeLightningAddressTransfer`), and the
       new wallet claims it (`claimLightningAddressTransfer`). The Breez SDK
-      sends the claim to `POST /lnurlpay/<new key>/transfer`, a new route
-      forwarded like `POST /lnurlpay/:pubkey`. When the LNURL server accepts
-      it, the server commits the account transfer.
+      sends the claim to `POST /lnurlpay/<new key>/transfer`, forwarded like
+      `POST /lnurlpay/:pubkey`. When the LNURL server accepts it, the server
+      commits the account transfer.
    3. **Balance.** After the commit, which the app confirms by signing in
       with the new passkey, the old wallet sends its whole balance to the new
       wallet, if it is above 0.
 
 The app signs in with the new passkey through the normal authenticate
-ceremony. Until the commit, nothing on the account changes. The QR codes use
-the app's existing `QrCode` and `QrScanner` components, and the new 12 words
-are shown on the existing phrase screen.
+ceremony. Until the commit, `POST /auth/passkey/authenticate/finish` answers
+409 `recovery_pending` (`Recovery is not finished`) for the new passkey
+instead of `Unknown credential`, so the app never has the authenticator
+delete a passkey that the commit may still make the account's only one.
+Until the commit, nothing on the account changes. The QR codes use the app's
+existing `QrCode` and `QrScanner` components, and the new 12 words are shown
+on the existing phrase screen.
 
 ### The recovery message
 
@@ -218,10 +239,14 @@ UTF-8, five lines, a newline between the lines, no trailing newline:
 
 The finish accepts it only when the public key returned by `signMessage` is
 the account's verified `spark_pubkey`, the signature verifies for this exact
-message as described under [The signature](#the-signature), the challenge is the account's unconsumed `recovery` challenge inside
-`CHALLENGE_TTL_MS`, and the new passkey's attestation verifies with that
-challenge and carries the credential id named in the message, as the seed
-passkey finish does for the rest. It mints no session.
+message as described under [The signature](#the-signature), the challenge is
+the account's unconsumed `recovery` challenge inside `CHALLENGE_TTL_MS`, and
+the new passkey's attestation verifies with that challenge and carries the
+credential id named in the message, as the seed passkey finish does for the
+rest. It mints no session. A repeat of the finish that stored the pending
+recovery, with the same challenge, credential id and new wallet key, answers
+200 again and changes nothing; any other use of a consumed challenge is
+refused (`Challenge already used`).
 
 ### The signature
 
@@ -260,13 +285,17 @@ The username stays. An old key never moves the account again.
 ### Rules for the implementation
 
 The account transfer depends on the LNURL server, which can answer late, not
-at all, or with an error after it already moved the name. An implementation
+at all, or with an error after it already moved the name. The implementation
 keeps these rules:
 
 1. **One at a time.** An account has at most one pending recovery. Begin, the
    finish and the transfer route's admission each run as one locked step per
    account. A finish consumes its challenge only when it stores the pending
-   recovery, and never replaces one that was forwarded.
+   recovery, and never replaces one that was forwarded. A repeat of the
+   finish that stored the pending recovery, with the same challenge,
+   credential id and new wallet key, answers 200 again and changes nothing;
+   any other use of a consumed challenge is refused
+   (`Challenge already used`).
 2. **Only the newest ceremony.** Begin consumes the account's earlier
    `recovery` challenges and drops a pending recovery that was not forwarded;
    one that was not forwarded also ends after `CHALLENGE_TTL_MS`. A new
@@ -299,40 +328,130 @@ keeps these rules:
    no pending recovery remains, begin refuses and the account needs an
    operator.
 
+### Routes
+
+The contracts are in [SPEC.md](../SPEC.md):
+
+- `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`:
+  the ceremony, behind the app build check and the login switch.
+- `POST /lnurlpay/:pubkey/transfer`: the address claim and the commit.
+- `PUT /me/recovery-share`: the 21.gifts share.
+- `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey`:
+  the previous wallets.
+- Changed: `POST /lnurlpay/:pubkey/recover` (rule 5),
+  `POST /auth/passkey/authenticate/finish` (409 `recovery_pending`), owner
+  JSON `socialRecoverySetUp`, and `POST /me/events` (`recovery_done`).
+
+The routes under `/lnurlpay` and `/me` are mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; without them, begin answers 503. The tables are `recovery_share`, `pending_recovery` and
+`previous_wallet` (`docs/schema/`).
+
 ### The LNURL server
 
 The self-hosted LNURL server in use accepts `POST /lnurlpay/:pubkey/transfer`.
 It checks both signatures and moves the name within the request, in one
 database transaction, with no background work. It sets no time limit of its
 own on the whole request: it waits up to 30 seconds for a pooled database
-connection and without limit for its locks. The settling window therefore holds only if the server drops a request whose
-connection the api closed, and only if the api reaches the server with no
-proxy in between that would keep an aborted forward running.
+connection and without limit for its locks. The settling window therefore
+holds only if the server drops a request whose connection the api closed, and
+only if the api reaches the server with no proxy in between that would keep
+an aborted forward running.
+
+### Verification against the LNURL server
+
+Whether the LNURL server build in use drops a forward that the api aborted
+while the server waited for a lock cannot be tested in this repository's CI:
+that build is not available there.
+
+**In the repository (CI).**
+
+- `callLnurlServer` aborts the forward after `LNURL_SERVER_TIMEOUT_MS` and
+  reports it unreachable (`src/__tests__/lib/lnurl-server.test.ts`).
+- The transfer route then answers 503 and commits nothing, and the pending
+  recovery stays forwarded (`src/__tests__/routes/lnurl-server.test.ts`).
+- Nothing settles it within `RECOVERY_SETTLE_AFTER_MS` after the forward;
+  after that, only the lookups of rule 5 settle it
+  (`src/__tests__/lib/auth/recovery.test.ts`).
+
+**By hand, against the deployed LNURL server image.** This is not a CI test.
+It runs before the implementing pull request leaves draft, and again when the
+deployed LNURL server build changes. The pull request records the commands,
+the outputs, and the image, named only by its digest.
+
+1. Run the deployed LNURL server image against a scratch Postgres 16 with one
+   served domain `d`. Generate two test keys, A (old) and B (new), with
+   `secp256k1.utils.randomSecretKey()` of `@noble/curves`. Register a
+   username `u` for A with `POST /lnurlpay/<A>` (`Host: d`) and the body
+   `{ username: u, description: 'Pay to u', timestamp, signature }`, where
+   `signature` is A's DER signature (`signDer` in
+   `src/__tests__/helpers/recovery.ts`) over
+   `breez-lnurl:v2\nregister\n<d>\n<u>\n<lowercase SHA-256 hex of the description>\n<timestamp>`.
+2. From `psql`, hold the server's registration lock for A. Compute its key as
+   the server does: the first 8 bytes of
+   `SHA-256("lnurl/registration/" ‖ d ‖ "\0" ‖ A)`, read as a signed
+   big-endian 64-bit integer. Run `BEGIN; SELECT pg_advisory_xact_lock(<key>);`
+   and keep that transaction open.
+3. From a temporary script outside the repository, run the api against that
+   server on a memory boot (`createApp`, `LNURL_SERVER_URL` pointing at the
+   server, `PUBLIC_BASE_URL` on host `d`, `LNURL_SERVER_TIMEOUT_MS`
+   unchanged). In that script:
+   - seed an account with username `u` and key A verified (as
+     `seedRecoverableAccount` does);
+   - store an unforwarded pending recovery A → B through
+     `startRecoveryChallenge` and `storePendingRecovery` on the in-memory
+     store;
+   - send `POST /lnurlpay/<B>/transfer` to the api with the Breez SDK body
+     (as `transferBody` builds it), signed by A over
+     `lnurlTransferFromMessage` and by B over `lnurlTransferToMessage` with
+     `signDer`, for domain `d` and the current timestamp.
+
+   The api must admit it (the pending recovery gets `forwardedAt`), answer
+   503 after 15 s, and leave the account on key A.
+
+4. Wait 5 s, then `COMMIT` the `psql` transaction, which releases the lock.
+   Wait 30 s.
+5. `SELECT pubkey FROM users WHERE domain = d AND name = u` must still give
+   A. A signed lookup of A returns `u`, and one of B returns
+   `"user not found"`.
+6. Negative control: repeat with a fresh pending recovery and without the
+   lock. The name moves to B, and the api commits.
+
+If step 5 gives B, the settling window does not hold with that build, and the
+feature must not be released with it. Separately, an operator confirms that
+`LNURL_SERVER_URL` of every environment reaches the LNURL server with no
+proxy in between.
 
 ### If not everything succeeds
 
 The button can be pressed again while the app still holds the old words; each
-press resumes at the first step not done. If the account did not move, recovery starts again,
-with the two QR codes or the old 12 words once the app was closed.
+press resumes at the first step not done. If the account did not move,
+recovery starts again, with the two QR codes or the old 12 words once the app
+was closed.
 
-If the balance did not move, the settings list each previous wallet with its
-balance and a button **Restguthaben übertragen**. It needs the two QR codes or
-the old 12 words of that wallet again and then sends the balance. The balance
-is read live from the public Spark explorer API by the wallet's
-`spark_address`, or shown as unknown. The app's existing **Move Bitcoin from
-another wallet** (`MoveFundsSheet`) cannot do this: it only shows an address
-for a send from a wallet app the member still runs. The owner drops a previous
-wallet once its balance is 0.
+If the balance did not move, the settings list each previous wallet
+(`GET /me/previous-wallets`) with its balance and open **Restguthaben
+übertragen** for it. That page needs the two QR codes or the old 12 words of
+that wallet again and then sends the balance. The api reads the listed
+balance from the public Spark explorer (Sparkscan), anonymously and by the
+wallet's `spark_address`, or shows it as unknown. It includes incoming
+transfers that are not claimed yet, and it is information only: the explorer
+can lag behind the wallet, so no action depends on it. The app's existing
+**Move Bitcoin from another wallet** (`MoveFundsSheet`) cannot do this: it
+only shows an address for a send from a wallet app the member still runs. The
+owner drops a previous wallet on its **Restguthaben übertragen** page once
+that wallet, opened with its words, reads 0
+(`DELETE /me/previous-wallets/:sparkPubkey`).
 
 ## After recovery
 
 The app shows the new 12 words and says that words written down earlier now
 open only the previous wallet. It asks the owner to set up new shares for the
 new words. For a member in the grant program, payouts wait for that, see
-[Grant payouts](#grant-payouts). The old shares stay on the people's phones,
-told apart by the owner's account id and the SLIP-39 identifier, until the
-owner drops the previous wallet and asks each person to delete their old share
-by hand.
+[Grant payouts](#grant-payouts). After the sign-in that ends a recovery, the
+app logs the one interaction event `recovery_done` (`POST /me/events`). The
+old shares stay with the holders, told apart by the owner's account id and
+the SLIP-39 identifier, until the owner drops the previous wallet and asks
+each person to delete their old share by hand.
 
 ## What the server stores
 
@@ -340,18 +459,20 @@ No 12 words, no 16 bytes, no person's share and no PRF output, in no row and
 no log, and the 21.gifts share in no log.
 
 - The 21.gifts share, encrypted, for the current wallet and for each previous
-  wallet until the owner drops it.
+  wallet until the owner drops it (`recovery_share`).
 - The new passkey credential, as for any passkey.
 - `spark_pubkey` and `spark_address` of the current wallet, and of each
-  previous wallet until the owner drops it.
+  previous wallet until the owner drops it (`previous_wallet`).
 - The recovery challenge, as a passkey challenge of type `recovery`.
-- At most one pending recovery per account, until it commits or is dropped.
+- At most one pending recovery per account, until it commits or is dropped
+  (`pending_recovery`). It holds the new passkey's public key, never a
+  secret.
 
 ## Security
 
 - **Two people together** can recover the account and move the wallet at
   once. The owner chooses them knowing this.
-- **One person** cannot. A single share reveals nothing, and a phone refuses
+- **One person** cannot. A single share reveals nothing, and a browser refuses
   a second share of the same set.
 - **Whoever holds the 12 words** can recover the account, with or without
   shares.
@@ -385,12 +506,12 @@ Later, not needed for a first version:
 - A confirmation code for remote setup.
 - NOSTR after v1, where new 12 words would mean a new npub.
 
-## Acceptance criteria for a later implementation
+## Acceptance criteria
 
 - Each pair of the three shares, or the typed old 12 words, rebuilds the
   original 12 words. One share does not.
 - Setup stops when the words do not open the account's verified wallet, and a
-  phone refuses a second share of the same set.
+  browser refuses a second share of the same set.
 - No person's share reaches the api. The api stores the 21.gifts share only
   encrypted under its own key, with the account id as additional data, and
   has no path that decrypts or returns it or uses its content; it only checks
@@ -403,7 +524,8 @@ Later, not needed for a first version:
   same signature with a high S does not.
 - Until the LNURL server accepts the address claim, the account is unchanged.
 - A forward that the api aborts while the LNURL server waits for a lock moves
-  no name, tested against the deployed LNURL server build.
+  no name, tested against the deployed LNURL server build (see
+  [Verification against the LNURL server](#verification-against-the-lnurl-server)).
 - After the commit: one passkey credential, no old session or push
   subscription, the new key as verified `spark_pubkey`, the old key among the
   previous wallets, the same username and Lightning address.
@@ -413,14 +535,13 @@ Later, not needed for a first version:
   a readable 21.gifts share, and no log contains any of them.
 - **Social Recovery** is reachable from the settings, and nothing but grant
   payouts needs it.
-- From the start date, no payout goes to a member in the grant program without
-  a 21.gifts share for the account's current verified `spark_pubkey`. From the
-  release on, such a member sees the dialog on each visit to `/welcome`,
-  unless they closed it during that visit or **Stell dich vor** is shown.
+- From the release on, no payout goes to a member in the grant program
+  without a 21.gifts share for the account's current verified `spark_pubkey`,
+  and such a member sees the dialog on each visit to `/welcome`, unless they
+  closed it during that visit or **Stell dich vor** is shown.
 
 ## Out of scope here
 
-- Any route, table, screen or migration.
 - Splitting the passkey private key.
 - On-chain multisig. This is Shamir secret sharing of the seed.
 - Requiring **Mein Konto absichern** for sign-up, login or any use other than
