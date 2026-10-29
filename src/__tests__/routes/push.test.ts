@@ -87,6 +87,13 @@ describe('POST /me/push-subscriptions', () => {
     ).toBe(401);
 
     const auth = await seededStore();
+    const unknownSession = await mount(auth).request('/me/push-subscriptions', {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
+      body: JSON.stringify(validBody),
+    });
+    expect(unknownSession.status).toBe(401);
+
     const unconfigured = await mount(auth, new InMemoryPushStore(), '  ').request(
       '/me/push-subscriptions',
       {
@@ -117,6 +124,27 @@ describe('POST /me/push-subscriptions', () => {
       createdAt: new Date(now()).toISOString(),
     });
     expect(await pushStore.listByAccount('acc')).toHaveLength(1);
+  });
+
+  it('binds the subscription to the posting session and rebinds on a re-POST from a new session', async () => {
+    const auth = await seededStore();
+    await auth.createSession({ token: 'tok-2', accountId: 'acc', createdAt: now() });
+    const pushStore = new InMemoryPushStore();
+    const app = mount(auth, pushStore);
+    const post = (token: string): Promise<Response> =>
+      Promise.resolve(
+        app.request('/me/push-subscriptions', {
+          method: 'POST',
+          headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+          body: JSON.stringify(validBody),
+        }),
+      );
+    expect((await post('tok')).status).toBe(200);
+    expect((await pushStore.listByAccount('acc')).map((sub) => sub.sessionToken)).toEqual(['tok']);
+    expect((await post('tok-2')).status).toBe(200);
+    expect((await pushStore.listByAccount('acc')).map((sub) => sub.sessionToken)).toEqual([
+      'tok-2',
+    ]);
   });
 });
 
@@ -170,6 +198,7 @@ describe('DELETE /me/push-subscriptions', () => {
       p256dh: validBody.keys.p256dh,
       auth: validBody.keys.auth,
       createdAt: new Date(now()),
+      sessionToken: null,
     });
     const ok = await mount(auth, pushStore).request('/me/push-subscriptions', {
       method: 'DELETE',

@@ -257,9 +257,9 @@ if (import.meta.main) {
     startOcpOutboxWorker({ identities: shopIdentities, messages: forumMessages, mapPush });
   }
   setInterval(welcomeCatchUp, 15 * 60 * 1000).unref();
-  if (sender.isConfigured()) {
-    startPushWorker({ store: pushStore, sender, now: Date.now }, PUSH_WORKER_INTERVAL_MS);
-  }
+  // Always started: ticks send nothing without VAPID, but the hourly sweep
+  // still drops subscriptions whose session ended and old outbox rows.
+  startPushWorker({ store: pushStore, sender, now: Date.now, authStore }, PUSH_WORKER_INTERVAL_MS);
   if (publisher !== undefined && nostrKek !== undefined && messageStore !== undefined) {
     startNostrWorker(
       {

@@ -2239,7 +2239,7 @@ process has no SQL client → **Response** `503`
 `nextCursor` when another page exists. Follow `nextCursor` until it is
 absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, `delivered_endpoints`, and `skip_endpoints` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
@@ -3367,7 +3367,11 @@ Success → **Response** `200`:
 ### `POST /me/push-subscriptions`
 
 Bearer session. Upserts a browser PushSubscription for the account
-(`endpoint` unique; rebinds if another account held it).
+(`endpoint` unique; rebinds if another account held it) and binds it to the
+bearer session of this request (a re-POST from another session rebinds it).
+Notifications reach the endpoint only while that session is valid. Once the
+session expires, is removed, or its account is refused sessions, the push
+worker deletes the subscription instead of sending to it.
 
 No/invalid session → **401** `{ "error": "Unauthorized" }`.
 VAPID not configured → **503** `{ "error": "Push is not configured" }`.

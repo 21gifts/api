@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { InMemoryAuthStore } from '@/lib/auth/store';
+import { SESSION_TTL_MS } from '@/lib/config';
 import type { PushSendResult, PushSender } from '@/lib/push-sender';
 import {
   InMemoryPushStore,
@@ -7,11 +9,14 @@ import {
 } from '@/lib/push-store';
 
 const logEvent = vi.fn();
-vi.mock('@/lib/log', () => ({
+vi.mock('@/lib/log', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/log')>()),
   logEvent: (...args: unknown[]) => logEvent(...args),
 }));
 
 import {
+  PUSH_OUTBOX_RETENTION_MS,
+  PUSH_SWEEP_INTERVAL_MS,
   PUSH_WORKER_BATCH,
   PUSH_WORKER_INTERVAL_MS,
   PUSH_WORKER_LEASE_MS,
@@ -21,6 +26,7 @@ import {
   enqueueZapPush,
   runPushWorkerTick,
   startPushWorker,
+  sweepPushStore,
 } from '@/lib/push-worker';
 
 class FakeSender implements PushSender {
@@ -50,6 +56,7 @@ const SUB_A: PushSubscriptionRecord = {
   p256dh: 'p',
   auth: 'a',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  sessionToken: 'tok-author',
 };
 
 const SUB_B: PushSubscriptionRecord = {
@@ -58,6 +65,7 @@ const SUB_B: PushSubscriptionRecord = {
   p256dh: 'p',
   auth: 'a',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  sessionToken: 'tok-other',
 };
 
 const SUB_C: PushSubscriptionRecord = {
@@ -66,13 +74,53 @@ const SUB_C: PushSubscriptionRecord = {
   p256dh: 'p',
   auth: 'a',
   createdAt: new Date('2026-08-01T00:00:00.000Z'),
+  sessionToken: 'tok-third',
 };
 
+/** Session clock origin; every seeded session is issued here. */
+const SESSION_AT = 0;
+
+/** Auth store with one live session `tok-<id>` per account id. */
+async function authWithSessions(
+  ids: readonly string[],
+  refused: readonly string[] = [],
+): Promise<InMemoryAuthStore> {
+  const auth = new InMemoryAuthStore();
+  for (const [index, id] of ids.entries()) {
+    await auth.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      lightningAddress: null,
+      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: index.toString(16).padStart(64, '0'),
+      createdAt: SESSION_AT,
+      rulesAgreedAt: null,
+      sessionRefused: refused.includes(id),
+    });
+    await auth.createSession({ token: `tok-${id}`, accountId: id, createdAt: SESSION_AT });
+  }
+  return auth;
+}
+
+let auth: InMemoryAuthStore;
+
+beforeEach(async () => {
+  logEvent.mockReset();
+  vi.restoreAllMocks();
+  auth = await authWithSessions(['author', 'other', 'third']);
+});
+
 describe('push worker constants', () => {
-  it('exports batch, lease, and interval numbers', () => {
+  it('exports batch, lease, interval, sweep, and retention numbers', () => {
     expect(PUSH_WORKER_BATCH).toBe(20);
     expect(PUSH_WORKER_LEASE_MS).toBe(60_000);
     expect(PUSH_WORKER_INTERVAL_MS).toBe(2_000);
+    expect(PUSH_SWEEP_INTERVAL_MS).toBe(3_600_000);
+    expect(PUSH_OUTBOX_RETENTION_MS).toBe(7 * 24 * 60 * 60 * 1000);
   });
 });
 
@@ -187,7 +235,7 @@ describe('runPushWorkerTick', () => {
     await store.upsertSubscription(SUB_B);
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(false);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(sender.calls).toEqual([]);
     expect(await store.claimPending(10, 1, 1000)).toHaveLength(1);
   });
@@ -203,13 +251,14 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(1),
       deliveredEndpoints: [],
       skipEndpoints: [],
     };
     await store.enqueue(row);
     const sender = new FakeSender(true);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
     expect((await store.listAllOutbox(10))[0]?.status).toBe('sent');
     expect(sender.calls).toEqual([]);
@@ -227,12 +276,13 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(1),
       deliveredEndpoints: [],
       skipEndpoints: [SUB_B.endpoint],
     });
     const sender = new FakeSender(true);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(sender.calls).toEqual([]);
     expect((await store.listAllOutbox(10))[0]).toMatchObject({
       status: 'sent',
@@ -260,12 +310,13 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(1),
       deliveredEndpoints: [],
       skipEndpoints: [skipped.endpoint],
     });
     const sender = new FakeSender(true);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(sender.calls).toEqual([{ endpoint: target.endpoint, payload }]);
     expect(sender.calls[0]?.payload).not.toContain(skipped.endpoint);
     expect((await store.listAllOutbox(10))[0]).toMatchObject({
@@ -274,12 +325,28 @@ describe('runPushWorkerTick', () => {
     });
   });
 
+  it('keeps a gone endpoint that a re-POST rebound to another session during the send', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true, [{ ok: false, reason: 'gone' }]);
+    const send = sender.send.bind(sender);
+    vi.spyOn(sender, 'send').mockImplementation(async (sub, payload) => {
+      await store.upsertSubscription({ ...SUB_B, sessionToken: 'tok-other-2' });
+      return send(sub, payload);
+    });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
+    expect((await store.listByAccount('other')).map((sub) => sub.sessionToken)).toEqual([
+      'tok-other-2',
+    ]);
+  });
+
   it('deletes gone subscriptions and marks sent when all gone', async () => {
     const store = new InMemoryPushStore();
     await store.upsertSubscription(SUB_B);
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: false, reason: 'gone' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(await store.listByAccount('other')).toEqual([]);
     expect(await store.claimPending(10, 1, 1000)).toEqual([]);
   });
@@ -289,7 +356,7 @@ describe('runPushWorkerTick', () => {
     await store.upsertSubscription(SUB_B);
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.attempts).toBe(1);
@@ -302,7 +369,7 @@ describe('runPushWorkerTick', () => {
     await store.upsertSubscription(SUB_B);
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail', status: 400 }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.attempts).toBe(1);
@@ -319,7 +386,7 @@ describe('runPushWorkerTick', () => {
     });
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'gone' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const remaining = await store.listByAccount('other');
     expect(remaining).toHaveLength(1);
     expect(remaining[0]?.endpoint).toBe('https://push.example/b');
@@ -331,7 +398,7 @@ describe('runPushWorkerTick', () => {
     await store.upsertSubscription(SUB_B);
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: false, reason: 'not_configured' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again[0]?.attempts).toBe(1);
   });
@@ -348,7 +415,7 @@ describe('runPushWorkerTick', () => {
     });
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(sender.calls).toHaveLength(2);
     const afterFail = await store.claimPending(10, 1, 1000);
     expect(afterFail).toHaveLength(1);
@@ -357,7 +424,7 @@ describe('runPushWorkerTick', () => {
 
     sender.results = [{ ok: true }];
     // Previous claimPending held a lease; advance past it so the retry can claim.
-    await runPushWorkerTick({ store, sender, now: () => 2_000 });
+    await runPushWorkerTick({ store, sender, now: () => 2_000, authStore: auth });
     expect(sender.calls).toHaveLength(3);
     expect(sender.calls[2]?.endpoint).toBe('https://push.example/b');
     expect(await store.claimPending(10, 2_000, 1000)).toEqual([]);
@@ -375,12 +442,12 @@ describe('runPushWorkerTick', () => {
     });
     await enqueueForumPushes(store, 'author', 'm', 1);
     const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(sender.calls).toHaveLength(2);
     await store.deleteSubscription('other', 'https://push.example/b');
     const callsBefore = sender.calls.length;
     sender.results = [{ ok: true }];
-    await runPushWorkerTick({ store, sender, now: () => 2 });
+    await runPushWorkerTick({ store, sender, now: () => 2, authStore: auth });
     expect(sender.calls).toHaveLength(callsBefore);
     expect(await store.claimPending(10, 2, 1000)).toEqual([]);
   });
@@ -400,19 +467,20 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(2),
       deliveredEndpoints: [],
       skipEndpoints: [],
     });
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     expect(await store.claimPending(10, 70_000, 1000)).toEqual([]);
     const listed = await store.listAllOutbox(10);
     expect(listed.find((row) => row.id === forumRow?.id)?.status).toBe('sent');
     expect(listed.find((row) => row.id === 'dismiss-same-claim-tag')?.status).toBe('sent');
     const forumPayload = forumRow?.payload;
     const callsAfterFirst = sender.calls.length;
-    await runPushWorkerTick({ store, sender, now: () => 70_000 });
+    await runPushWorkerTick({ store, sender, now: () => 70_000, authStore: auth });
     expect(sender.calls).toHaveLength(callsAfterFirst);
     expect(sender.calls.filter((call) => call.payload === forumPayload)).toHaveLength(1);
   });
@@ -432,12 +500,13 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(2),
       deliveredEndpoints: [],
       skipEndpoints: [],
     });
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.id).toBe(forumRow?.id);
@@ -464,12 +533,13 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(2),
       deliveredEndpoints: [],
       skipEndpoints: [],
     });
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.id).toBe(forumRow?.id);
@@ -490,6 +560,7 @@ describe('runPushWorkerTick', () => {
         status: 'pending',
         attempts: 0,
         claimedUntil: null,
+        finishedAt: null,
         createdAt: new Date(1),
         deliveredEndpoints: [],
         skipEndpoints: [],
@@ -503,12 +574,13 @@ describe('runPushWorkerTick', () => {
         status: 'pending',
         attempts: 0,
         claimedUntil: null,
+        finishedAt: null,
         createdAt: new Date(2),
         deliveredEndpoints: [],
         skipEndpoints: [],
       });
       const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
-      await runPushWorkerTick({ store, sender, now: () => 1 });
+      await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
       const again = await store.claimPending(10, 1, 1000);
       expect(again).toHaveLength(1);
       expect(again[0]?.id).toBe('content-bad-payload');
@@ -539,12 +611,13 @@ describe('runPushWorkerTick', () => {
       status: 'pending',
       attempts: 0,
       claimedUntil: null,
+      finishedAt: null,
       createdAt: new Date(2),
       deliveredEndpoints: [],
       skipEndpoints: [],
     });
     const sender = new FakeSender(true, [{ ok: false, reason: 'fail' }, { ok: true }]);
-    await runPushWorkerTick({ store, sender, now: () => 1 });
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
     const again = await store.claimPending(10, 1, 1000);
     expect(again).toHaveLength(1);
     expect(again[0]?.id).toBe(forumRow?.id);
@@ -559,9 +632,277 @@ describe('startPushWorker', () => {
     vi.useFakeTimers();
     const store = new InMemoryPushStore();
     const sender = new FakeSender(false);
-    const handle = startPushWorker({ store, sender, now: () => 1 }, 5_000);
+    const handle = startPushWorker({ store, sender, now: () => 1, authStore: auth }, 5_000);
     handle.stop();
     vi.advanceTimersByTime(10_000);
     vi.useRealTimers();
+  });
+
+  it('logs push.tick.failed without the error text and keeps ticking', async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryPushStore();
+    const claim = vi
+      .spyOn(store, 'claimPending')
+      .mockRejectedValueOnce(
+        Object.assign(new Error('token tok-secret in params'), { code: 'ERR_POSTGRES' }),
+      );
+    const handle = startPushWorker(
+      { store, sender: new FakeSender(true), now: () => 1, authStore: auth },
+      1_000,
+    );
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(logEvent).toHaveBeenCalledWith('push.tick.failed', {
+      name: 'Error',
+      code: 'ERR_POSTGRES',
+    });
+    expect(JSON.stringify(logEvent.mock.calls)).not.toContain('tok-secret');
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(claim).toHaveBeenCalledTimes(2);
+    handle.stop();
+    vi.useRealTimers();
+  });
+
+  it('skips a tick while the previous one is still running', async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryPushStore();
+    let release: () => void = () => undefined;
+    const claim = vi.spyOn(store, 'claimPending').mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () => resolve([]);
+        }),
+    );
+    const handle = startPushWorker(
+      { store, sender: new FakeSender(true), now: () => 1, authStore: auth },
+      1_000,
+    );
+    await vi.advanceTimersByTimeAsync(3_000);
+    expect(claim).toHaveBeenCalledTimes(1);
+    release();
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(claim).toHaveBeenCalledTimes(2);
+    handle.stop();
+    vi.useRealTimers();
+  });
+
+  it('sweeps once at start and again every PUSH_SWEEP_INTERVAL_MS until stopped', async () => {
+    vi.useFakeTimers();
+    const store = new InMemoryPushStore();
+    const sweepSpy = vi.spyOn(store, 'deleteFinishedOutbox');
+    const handle = startPushWorker(
+      { store, sender: new FakeSender(false), now: () => 1, authStore: auth },
+      PUSH_SWEEP_INTERVAL_MS * 2,
+    );
+    await vi.advanceTimersByTimeAsync(0);
+    expect(sweepSpy).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(PUSH_SWEEP_INTERVAL_MS);
+    expect(sweepSpy).toHaveBeenCalledTimes(2);
+    handle.stop();
+    await vi.advanceTimersByTimeAsync(PUSH_SWEEP_INTERVAL_MS * 3);
+    expect(sweepSpy).toHaveBeenCalledTimes(2);
+    vi.useRealTimers();
+  });
+
+  it.each([
+    [
+      Object.assign(new Error('token tok-secret in params'), { code: 'ERR_POSTGRES' }),
+      { name: 'Error', code: 'ERR_POSTGRES' },
+    ],
+    ['tok-secret', {}],
+  ])(
+    'logs push.sweep.failed without the error text when the sweep rejects with %j',
+    async (thrown, fields) => {
+      vi.useFakeTimers();
+      const store = new InMemoryPushStore();
+      vi.spyOn(store, 'listAllSubscriptions').mockRejectedValue(thrown);
+      const handle = startPushWorker(
+        { store, sender: new FakeSender(false), now: () => 1, authStore: auth },
+        PUSH_SWEEP_INTERVAL_MS * 2,
+      );
+      await vi.advanceTimersByTimeAsync(0);
+      expect(logEvent).toHaveBeenCalledWith('push.sweep.failed', fields);
+      expect(JSON.stringify(logEvent.mock.calls)).not.toContain('tok-secret');
+      handle.stop();
+      vi.useRealTimers();
+    },
+  );
+});
+
+describe('runPushWorkerTick session binding', () => {
+  it.each([
+    ['has no session (stored before binding)', { sessionToken: null }],
+    ['names an unknown session', { sessionToken: 'tok-unknown' }],
+    ['names a session of another account', { sessionToken: 'tok-author' }],
+  ])('deletes a subscription that %s instead of sending', async (_label, overrides) => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_B, ...overrides });
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
+    expect(sender.calls).toEqual([]);
+    expect(await store.listByAccount('other')).toEqual([]);
+    expect((await store.listAllOutbox(10))[0]?.status).toBe('sent');
+  });
+
+  it('deletes a subscription once its session expires and keeps sending before that', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    const sender = new FakeSender(true);
+    await enqueueForumPushes(store, 'author', 'm1', 1);
+    await runPushWorkerTick({
+      store,
+      sender,
+      now: () => SESSION_AT + SESSION_TTL_MS,
+      authStore: auth,
+    });
+    expect(sender.calls).toHaveLength(1);
+    await enqueueForumPushes(store, 'author', 'm2', 2);
+    await runPushWorkerTick({
+      store,
+      sender,
+      now: () => SESSION_AT + SESSION_TTL_MS + 1,
+      authStore: auth,
+    });
+    expect(sender.calls).toHaveLength(1);
+    expect(await store.listByAccount('other')).toEqual([]);
+  });
+
+  it('deletes a subscription whose account is refused sessions', async () => {
+    const refusedAuth = await authWithSessions(['other'], ['other']);
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: refusedAuth });
+    expect(sender.calls).toEqual([]);
+    expect(await store.listByAccount('other')).toEqual([]);
+  });
+
+  it('sends to a live device and drops a dead one of the same account in one row', async () => {
+    const store = new InMemoryPushStore();
+    const live = { ...SUB_B, endpoint: 'https://push.example/live' };
+    const dead = { ...SUB_B, endpoint: 'https://push.example/dead', sessionToken: 'tok-gone' };
+    await store.upsertSubscription(live);
+    await store.upsertSubscription(dead);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    const sender = new FakeSender(true);
+    await runPushWorkerTick({ store, sender, now: () => 1, authStore: auth });
+    expect(sender.calls.map((call) => call.endpoint)).toEqual([live.endpoint]);
+    expect((await store.listByAccount('other')).map((sub) => sub.endpoint)).toEqual([
+      live.endpoint,
+    ]);
+    expect((await store.listAllOutbox(10))[0]).toMatchObject({
+      status: 'sent',
+      deliveredEndpoints: [live.endpoint],
+    });
+  });
+
+  it('stamps finishedAt with the tick clock on sent and terminal failed rows', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_B);
+    await enqueueForumPushes(store, 'author', 'm', 1);
+    await runPushWorkerTick({
+      store,
+      sender: new FakeSender(true),
+      now: () => 42,
+      authStore: auth,
+    });
+    expect((await store.listAllOutbox(10))[0]?.finishedAt?.getTime()).toBe(42);
+  });
+});
+
+describe('sweepPushStore', () => {
+  it('deletes subscriptions whose session ended and keeps live ones', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription({ ...SUB_B, sessionToken: null });
+    await store.upsertSubscription({ ...SUB_C, sessionToken: 'tok-revoked' });
+    const result = await sweepPushStore({ store, now: () => 1, authStore: auth });
+    expect(result).toEqual({ subscriptions: 2, outbox: 0 });
+    expect((await store.listAllSubscriptions()).map((sub) => sub.endpoint)).toEqual([
+      SUB_A.endpoint,
+    ]);
+    expect(logEvent).toHaveBeenCalledWith('push.sweep', { subscriptions: 2, outbox: 0 });
+  });
+
+  it('deletes every subscription once all sessions expired', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription(SUB_B);
+    const result = await sweepPushStore({
+      store,
+      now: () => SESSION_AT + SESSION_TTL_MS + 1,
+      authStore: auth,
+    });
+    expect(result.subscriptions).toBe(2);
+    expect(await store.listAllSubscriptions()).toEqual([]);
+  });
+
+  it('does not count a subscription removed concurrently', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_B, sessionToken: null });
+    vi.spyOn(store, 'deleteStaleSubscription').mockResolvedValue(false);
+    expect(await sweepPushStore({ store, now: () => 1, authStore: auth })).toEqual({
+      subscriptions: 0,
+      outbox: 0,
+    });
+  });
+
+  it('keeps a subscription that was rebound to a live session after the scan read it', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_B, sessionToken: null });
+    const listAll = store.listAllSubscriptions.bind(store);
+    vi.spyOn(store, 'listAllSubscriptions').mockImplementation(async () => {
+      const snapshot = await listAll();
+      // The device re-registers from its live session between scan and delete.
+      await store.upsertSubscription(SUB_B);
+      return snapshot;
+    });
+    expect(await sweepPushStore({ store, now: () => 1, authStore: auth })).toEqual({
+      subscriptions: 0,
+      outbox: 0,
+    });
+    expect((await store.listByAccount('other')).map((sub) => sub.sessionToken)).toEqual([
+      'tok-other',
+    ]);
+  });
+
+  it('deletes only terminal outbox rows older than PUSH_OUTBOX_RETENTION_MS', async () => {
+    const store = new InMemoryPushStore();
+    const now = PUSH_OUTBOX_RETENTION_MS + 10_000;
+    const base: PushOutboxRow = {
+      id: '',
+      accountId: 'other',
+      type: 'forum',
+      messageId: 'm',
+      payload: '{}',
+      status: 'sent',
+      attempts: 0,
+      claimedUntil: null,
+      finishedAt: new Date(5_000),
+      createdAt: new Date(1_000),
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    };
+    await store.enqueue({ ...base, id: 'old-sent' });
+    await store.enqueue({ ...base, id: 'old-failed', status: 'failed', attempts: 8 });
+    await store.enqueue({ ...base, id: 'old-pending', status: 'pending', finishedAt: null });
+    await store.enqueue({ ...base, id: 'recent-sent', finishedAt: new Date(now - 1_000) });
+    const result = await sweepPushStore({ store, now: () => now, authStore: auth });
+    expect(result).toEqual({ subscriptions: 0, outbox: 2 });
+    expect((await store.listAllOutbox(10)).map((row) => row.id).sort()).toEqual([
+      'old-pending',
+      'recent-sent',
+    ]);
+  });
+
+  it('logs nothing when nothing was deleted', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    expect(await sweepPushStore({ store, now: () => 1, authStore: auth })).toEqual({
+      subscriptions: 0,
+      outbox: 0,
+    });
+    expect(logEvent).not.toHaveBeenCalledWith('push.sweep', expect.anything());
   });
 });

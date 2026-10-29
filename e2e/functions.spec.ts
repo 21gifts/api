@@ -1311,6 +1311,11 @@ test('Function: runPushWorkerTick — GET /healthz is ok', async ({ request }) =
 test('Function: startPushWorker — GET /healthz is ok', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: sweepPushStore — default boot sweeps at start and GET /healthz is ok', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
 test('Function: pushRoutes — GET /push/vapid-public without bearer is 401', async ({ request }) => {
   expect((await request.get('/push/vapid-public')).status()).toBe(401);
 });

@@ -123,7 +123,7 @@ api/
 │   │   ├── push.ts           # parsePushSubscription + English forum/zap/conversation payloads
 │   │   ├── push-store.ts     # PushStore port, memory + Postgres, PUSH_SCHEMA_SQL
 │   │   ├── push-sender.ts    # PushSender port, UnconfiguredPushSender, WebPushSender
-│   │   ├── push-worker.ts    # enqueue + outbox tick
+│   │   ├── push-worker.ts    # enqueue + outbox tick + session check + subscription/outbox sweep
 │   │   ├── lightning-address.ts  # LUD-16 shape check
 │   │   ├── invoice-payer.ts  # InvoicePayer port + UnconfiguredInvoicePayer
 │   │   ├── lnurlp.ts         # LUD-16 well-known metadata resolve (shared)
@@ -456,7 +456,7 @@ booted server (`bun src/index.ts`). Every exported function/class **must** have
 a Playwright `test('Function: <Name> …')` (or `"…"` / `` `…` ``) that hits the
 booted process over HTTP (not `app.request()`). If an export is unreachable on
 the default boot surface (today: `requestPayInvoice`, which needs a configured
-`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called from the nostr worker), `migrateAuthSchema`, `QueryGiftStore`,
+`InvoicePayer`; `PostgresAuthStore`, `isUniqueViolation`, `sqlState`, `errorLogFields` (only called on worker and outbox failure paths: the nostr worker, the OpenCryptoPay outbox and map activity ping, the push worker tick and sweep, and a closed SQL connection), `migrateAuthSchema`, `QueryGiftStore`,
 `mapGiftQueryRow`, `PostgresBtcUsdStore`, `migrateBtcUsdSchema`,
 `PostgresFiatStore`, `migrateFiatSchema`,
 `PostgresMessageStore`, `PostgresTranslationStore`, `backfillZapPayments`, `backfillExternalZappers`, `migrateMessageSchema`,
@@ -525,7 +525,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   still match a live `account.view_key`, then recreates it. Rows whose key no
   longer matches a live account are left unchanged.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
-  `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, and `skip_endpoints` are SHA-256 hex of the column text. All other columns, including
+  `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext except unchanged bytea columns on UPDATE, see below. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
 - On UPDATE, a bytea column whose value did not change (for example `message.photo`)

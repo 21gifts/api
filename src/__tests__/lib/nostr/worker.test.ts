@@ -3556,6 +3556,7 @@ describe('runNostrWorkerTick', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(0),
+      sessionToken: null,
     });
     const recipient = (await auth.getNostrPublicKey('acc')) as string;
     const senderCipher = (await auth.getNostrSecret('bob')) as Uint8Array;
@@ -5889,6 +5890,7 @@ describe('runNostrWorkerTick', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1_700_000_000_000),
+      sessionToken: null,
     });
     await inboundTick(
       auth,
@@ -5946,6 +5948,7 @@ describe('runNostrWorkerTick', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1_700_000_000_000),
+      sessionToken: null,
     });
     await pushStore.upsertSubscription({
       endpoint: 'https://push.example/bob',
@@ -5953,6 +5956,7 @@ describe('runNostrWorkerTick', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1_700_000_000_000),
+      sessionToken: null,
     });
     await inboundTick(
       auth,
@@ -6012,6 +6016,7 @@ describe('runNostrWorkerTick', () => {
       p256dh: 'p',
       auth: 'a',
       createdAt: new Date(1_700_000_000_000),
+      sessionToken: null,
     });
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     try {
