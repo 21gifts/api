@@ -1676,6 +1676,7 @@ describe('repayment from the in-app wallet', () => {
         waitingSats: 0,
         waitingAmount: null,
         waitingPeople: 0,
+        waitingShares: 0,
         behindDays: 0,
         lastPayment: false,
       },
@@ -1701,7 +1702,7 @@ describe('repayment from the in-app wallet', () => {
       termDays: 2,
       fundedAt: '2027-02-27T12:00:00.000Z',
       daysDue: 2,
-      daysPaid: 0,
+      daysPaid: 1,
       repaidSats: 150,
       totalSats: 800,
       due: {
@@ -1711,7 +1712,9 @@ describe('repayment from the in-app wallet', () => {
         waitingSats: 500,
         waitingAmount: null,
         waitingPeople: 1,
-        behindDays: 1,
+        waitingShares: 2,
+        // Day 0 is short only of the share that waits for a giver without a wallet.
+        behindDays: 0,
         lastPayment: false,
       },
       next: null,
@@ -1769,7 +1772,11 @@ describe('repayment from the in-app wallet', () => {
         paidAt: new Date(clock.now),
       });
     }
-    expect(await (await loans(app)).json()).toEqual({ sundayRest: false, loans: [] });
+    expect(await (await loans(app)).json()).toEqual({
+      sundayRest: false,
+      loans: [],
+      lenderWaiting: { shares: 0, loans: 0, sats: 0 },
+    });
   });
 
   it('counts the days behind after the term has ended', async () => {
@@ -1832,6 +1839,223 @@ describe('repayment from the in-app wallet', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+
+  function lenderInvoice(
+    id: string,
+    messageId: string,
+    payerAccountId: string,
+    description: string | null = null,
+  ): MessageInvoiceAttempt {
+    return {
+      id,
+      createdAt: new Date(Date.UTC(2027, 1, 22)),
+      messageId,
+      payerAccountId,
+      authorAccountId: AUTHOR,
+      amountSats: 500,
+      lightningAddress: 'ada@example.test',
+      zapRequest: { kind: 9734 },
+      result: 'ok',
+      httpStatus: 200,
+      pr: BOLT11,
+      paymentHash: null,
+      description,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    };
+  }
+
+  async function markPaid(
+    messages: InMemoryMessageStore,
+    accountId: string,
+    days: readonly number[],
+    dueSats: number,
+  ): Promise<void> {
+    for (const dayIndex of days) {
+      await messages.markRepaymentPaid({
+        messageId: CREDIT,
+        dayIndex,
+        recipientAccountId: accountId,
+        dueSats,
+        paidAt: new Date(MONDAY),
+      });
+    }
+  }
+
+  interface Ledger {
+    daysDue: number;
+    daysPaid: number;
+    waitingShares: number;
+    repayments: { dayIndex: number; accountId: string; status: string; waiting: boolean }[];
+    next: { dayIndex: number; recipientAccountId: string } | null;
+  }
+
+  it('keeps a share that waits for a giver without a wallet out of due and behind', async () => {
+    const { app, messages } = await loanSetup({ now: Date.UTC(2027, 2, 2, 12), termDays: 4 });
+    await markPaid(messages, WALLET_GIVER, [0, 1, 2], 75);
+    const ledger = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as Ledger;
+    expect(ledger.daysDue).toBe(3);
+    expect(ledger.daysPaid).toBe(3);
+    expect(ledger.waitingShares).toBe(3);
+    expect(
+      ledger.repayments.map((line) => [line.dayIndex, line.accountId, line.status, line.waiting]),
+    ).toEqual([
+      [0, NO_WALLET, 'due', true],
+      [0, WALLET_GIVER, 'paid', false],
+      [1, NO_WALLET, 'due', true],
+      [1, WALLET_GIVER, 'paid', false],
+      [2, NO_WALLET, 'due', true],
+      [2, WALLET_GIVER, 'paid', false],
+      [3, NO_WALLET, 'scheduled', false],
+      [3, WALLET_GIVER, 'scheduled', false],
+    ]);
+    expect(ledger.next).toBeNull();
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({
+      daysDue: 3,
+      daysPaid: 3,
+      due: { payableSats: 0, waitingSats: 375, waitingShares: 3, behindDays: 0 },
+    });
+  });
+
+  it('makes a waiting share payable once the wallet is verified, without days behind before it', async () => {
+    const { app, auth, messages, clock } = await loanSetup({ termDays: 5 });
+    await markPaid(messages, WALLET_GIVER, [0, 1, 2, 3], 60);
+    const key = `02${'7'.repeat(64)}`;
+    await auth.claimSparkPubkey(NO_WALLET, key);
+    // Verified on day 1 (2027-03-01): day 0 never counts as behind, day 1 onwards does.
+    expect(await auth.markSparkPubkeyVerified(NO_WALLET, key, 'giver1', clock.now)).toBe(true);
+    const sameDay = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as Ledger;
+    expect(sameDay).toMatchObject({ daysDue: 2, daysPaid: 1, waitingShares: 0 });
+    expect(sameDay.next).toMatchObject({ dayIndex: 0, recipientAccountId: NO_WALLET });
+    expect(sameDay.repayments.every((line) => !line.waiting)).toBe(true);
+    clock.now = Date.UTC(2027, 2, 3, 12);
+    const later = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as Ledger;
+    expect(later).toMatchObject({ daysDue: 4, daysPaid: 1, waitingShares: 0 });
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({
+      daysDue: 4,
+      daysPaid: 1,
+      due: { payableSats: 400, payablePeople: 1, waitingShares: 0, behindDays: 2 },
+    });
+  });
+
+  it('keeps the due figures of givers who all had a wallet before the start', async () => {
+    const { app } = await loanSetup({
+      givers: [
+        { id: WALLET_GIVER, sats: 300, wallet: true },
+        { id: NO_WALLET, sats: 500, wallet: true },
+      ],
+      now: Date.UTC(2027, 2, 3, 12),
+      termDays: 5,
+    });
+    const ledger = (await (await app.request(`/messages/${CREDIT}/repayment`)).json()) as Ledger;
+    expect(ledger).toMatchObject({ daysDue: 4, daysPaid: 0, waitingShares: 0 });
+    expect(ledger.repayments.every((line) => !line.waiting)).toBe(true);
+    const loan = ((await (await loans(app)).json()) as { loans: Record<string, unknown>[] })
+      .loans[0];
+    expect(loan).toMatchObject({
+      daysDue: 4,
+      daysPaid: 0,
+      due: { payableSats: 640, waitingShares: 0, behindDays: 3 },
+    });
+  });
+
+  it('tells a lender without a wallet how many repayments wait for them', async () => {
+    const { app, messages, auth } = await loanSetup({ termDays: 4 });
+    await auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
+    await auth.createSession({ token: WALLET_GIVER, accountId: WALLET_GIVER, createdAt: MONDAY });
+    const unfunded = '12121212-1212-4212-8212-121212121212';
+    const hidden = '13131313-1313-4313-8313-131313131313';
+    const gift = '14141414-1414-4414-8414-141414141414';
+    for (const [id, extra] of [
+      [unfunded, { goalRepayable: true, goalTermDays: 4 }],
+      [hidden, { goalRepayable: true, goalTermDays: 4, goalFundedAt: new Date(MONDAY) }],
+      [gift, {}],
+    ] as const) {
+      await messages.create({
+        id,
+        accountId: AUTHOR,
+        name: 'Ada',
+        text: 'other note',
+        createdAt: new Date(Date.UTC(2027, 1, 22)),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalSats: 1000,
+        ...extra,
+      });
+    }
+    await messages.markDeleted(hidden, new Date(MONDAY), AUTHOR);
+    for (const invoice of [
+      lenderInvoice('inv-credit', CREDIT, NO_WALLET),
+      lenderInvoice('inv-credit-again', CREDIT, NO_WALLET),
+      lenderInvoice('inv-repay', SECOND_CREDIT, NO_WALLET, `repay:0:${NO_WALLET}`),
+      lenderInvoice('inv-unfunded', unfunded, NO_WALLET),
+      lenderInvoice('inv-hidden', hidden, NO_WALLET),
+      lenderInvoice('inv-gift', gift, NO_WALLET),
+      lenderInvoice('inv-unknown', '15151515-1515-4515-8515-151515151515', NO_WALLET),
+      lenderInvoice('inv-wallet', CREDIT, WALLET_GIVER),
+    ]) {
+      await messages.recordInvoiceAttempt(invoice);
+    }
+    const lender = (token: string): Promise<Response> =>
+      Promise.resolve(app.request('/me/loans', { headers: { authorization: `Bearer ${token}` } }));
+    expect(await (await lender(NO_WALLET)).json()).toEqual({
+      sundayRest: false,
+      loans: [],
+      lenderWaiting: { shares: 2, loans: 1, sats: 250 },
+    });
+    await markPaid(messages, NO_WALLET, [0], 125);
+    expect(
+      ((await (await lender(NO_WALLET)).json()) as Record<string, unknown>)['lenderWaiting'],
+    ).toEqual({
+      shares: 1,
+      loans: 1,
+      sats: 125,
+    });
+    await markPaid(messages, NO_WALLET, [1], 125);
+    expect(
+      ((await (await lender(NO_WALLET)).json()) as Record<string, unknown>)['lenderWaiting'],
+    ).toEqual({
+      shares: 0,
+      loans: 0,
+      sats: 0,
+    });
+    const listed = vi.spyOn(messages, 'listInvoiceAttemptsForPayer');
+    expect(
+      ((await (await lender(WALLET_GIVER)).json()) as Record<string, unknown>)['lenderWaiting'],
+    ).toEqual({
+      shares: 0,
+      loans: 0,
+      sats: 0,
+    });
+    expect(listed).not.toHaveBeenCalled();
+  });
+
+  it('leaves the lender sum null without a rate and answers 503 when a lent loan cannot be computed', async () => {
+    const fiat = await loanSetup({ goalCurrency: 'USD', termDays: 4 });
+    await fiat.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
+    await fiat.messages.recordInvoiceAttempt(lenderInvoice('inv-fiat', CREDIT, NO_WALLET));
+    const request = (app: Hono): Promise<Response> =>
+      Promise.resolve(
+        app.request('/me/loans', { headers: { authorization: `Bearer ${NO_WALLET}` } }),
+      );
+    const unpriced = await request(fiat.app);
+    expect(((await unpriced.json()) as Record<string, unknown>)['lenderWaiting']).toEqual({
+      shares: 2,
+      loans: 1,
+      sats: null,
+    });
+    const broken = await loanSetup({ goalCurrency: 'USD', goalAmount: null, termDays: 4 });
+    await broken.auth.createSession({ token: NO_WALLET, accountId: NO_WALLET, createdAt: MONDAY });
+    await broken.messages.recordInvoiceAttempt(lenderInvoice('inv-broken', CREDIT, NO_WALLET));
+    const res = await request(broken.app);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Ask amount is unavailable' });
   });
 });
 
