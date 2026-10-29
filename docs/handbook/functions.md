@@ -1234,7 +1234,7 @@
 - **Purpose:** Tell spend a verified account is owed the one-time 1 USD welcome gift. The note is the newest live top-level photo or video, including About me. Pass one account after a top-level post, an About-me save, or a verification. Pass the auth store with no account to catch up every already verified account that has a live top-level photo or video, whether that note is About me or a living-room post. The process does that on boot and every 15 minutes. Omitted spend ping, a role other than `verified`, no receiving address (no verified wallet, or `lnurlServer` omitted), or no media is a no-op. The pinged address is the wallet-backed receiving address. The welcome gift is once per account: an account that already has a platform `Welcome` reply under one of its notes (`accountHasWelcomeGift`, live or hidden), or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification in `gifts`, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address it went to.
 - **Inputs:** `{ spendPing?, messages, auth, gifts?, account?, lnurlServer? }`. `auth` is always required (it finds the platform account); with `account` only that account is pinged, without it every verified account is caught up. A failing platform or gift lookup logs `spend.ping.failed` and pings nothing.
 - **Returns / side effects:** `Promise<void>`. May POST spend `kind: "welcome"`. Failures log `spend.ping.failed` and do not throw.
-- **Used by:** `POST /messages`, `PUT /me/about`, `POST /trust/verify`, and the process catch-up on boot and every 15 minutes.
+- **Used by:** `POST /messages`, `PUT /me/about`, `POST /trust/verify`, `replayPayoutWindow` (window body of `POST /debug/spend-ping`), and the process catch-up on boot and every 15 minutes.
 
 ## Function: resolveSpendPing
 
@@ -3684,7 +3684,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Whether an account belongs to the closed Moderators group: at least a moderator on the role hierarchy and not the platform account. The platform account is a house identity, not a person in the staff room, whatever role it carries.
 - **Inputs:** `{ role: AccountRole, isPlatform?: boolean }`.
 - **Returns / side effects:** boolean (`isPlatform !== true && roleAtLeast(role, 'moderator')`). No I/O.
-- **Used by:** `conversationRoutes` (`canAccess` on `moderator_group`, `GET /conversations/moderator-group`), `inboxUnreadCountFor` (group pin in the badge count), `notifyConversationMessage` (group push recipients).
+- **Used by:** `conversationRoutes` (`canAccess` on `moderator_group`, `GET /conversations/moderator-group`), `inboxUnreadCountFor` (group pin in the badge count), `notifyConversationMessage` (group push recipients), and `replayPayoutWindow` (moderator stipend replay, `not_moderator`).
 
 ## Function: isStaffRole
 
