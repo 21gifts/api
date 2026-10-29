@@ -1307,7 +1307,7 @@
 - **Purpose:** Link every `daily_roster_entry` row without an account to the account it names. A row's trimmed address is compared case-insensitively with the legacy `account.lightning_address` (unique per account) and, when `host` is given, with `<username>@<host>`; a row whose two matches name different accounts is linked to neither. Per account and bucket one row is linked: none when the bucket already holds a row of that account, else the lowest `id`. Rows that match no account keep a null `account_id`: they are in no document and are never paid. Amounts, buckets, and addresses are not changed and no row is deleted. A second run changes nothing.
 - **Inputs:** `sql` (`SqlClient`) and `host` (`LnurlServerConfig.host`, or `null` when the LNURL server is off).
 - **Returns / side effects:** Runs `DAILY_ROSTER_ACCOUNT_LINK_SQL` with the lower-cased host (or null) as `$1`: one UPDATE statement, so `db_change` records each linked row in one transaction. Returns `{ linked, unlinked }` (`DailyRosterAccountLink`): rows linked by this run and rows still without an account; zero for both when the statement returns no row.
-- **Used by:** `openBootStores` after `migrateDbChangeSchema` and `repairGiftKind` (logs `daily_roster.accounts_linked` with both counts, no addresses), and `PostgresDailyRosterStore.importDocument` after the first import.
+- **Used by:** `openBootStores` after `migrateDbChangeSchema` and `repairGiftKind` (logs `daily_roster.accounts_linked` with both counts, no addresses), and `PostgresDailyRosterStore.importDocument` on every call, including a retry after a failed link.
 
 ## Function: withRecipientIdentities
 
