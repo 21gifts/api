@@ -161,14 +161,16 @@ UTC day, social recovery is a payout condition.
   holds on every day the grant is required (`FUNDING_REQUIRED_FROM_UTC`, the
   grant's date). That function already requires the grant for every payout,
   and `loadPayoutEligibility` (`src/lib/payout-eligibility.ts`) reads the
-  share for each payout path. Without a share the account is not eligible,
-  with the same answers as for a missing grant, so the payout worker skips the
-  trigger as it does today. Storing the first share of the current wallet
-  pings that UTC day's newest media post, as `pingTodayMedia`
-  (`src/lib/funding-ping.ts`) does when staff admit a grant, and later
-  triggers that day pay as usual. The staff trial and admit pings need the
-  share as well. A day that ends without a share is not paid, except by an
-  operator replay, which checks eligibility when it runs.
+  share for each payout path, except two pings that follow a write (below).
+  Without a share the account is not eligible, with the same answers as for a
+  missing grant, so the payout worker skips the trigger as it does today.
+  Storing the first share of the current wallet pings that UTC day's newest
+  media post, as `pingTodayMedia` (`src/lib/funding-ping.ts`) does when staff
+  admit a grant, and later triggers that day pay as usual. That first-share
+  ping calls `eligibleToday` directly with the share just stored. The staff
+  trial and admit pings need the share as well; `pingTodayMedia` reads it
+  itself (`requireShare: true`). A day that ends without a share is not paid,
+  except by an operator replay, which checks eligibility when it runs.
 - **Owner field.** The owner account JSON carries `socialRecoverySetUp`,
   whether social recovery is set up, with no grant or date check. The
   settings entry shows the fact, and the dialog and the payouts use it.

@@ -2,7 +2,11 @@
  * The payout gate as one read: the funding grant plus, only when it can
  * change the answer, whether a 21.gifts recovery share is stored for the
  * account's current verified wallet. Every payout path calls this instead of
- * reading the grant and calling {@link eligibleToday} itself.
+ * reading the grant and calling {@link eligibleToday} itself, except two pings
+ * that follow a write. The staff trial and admit ping checks the share inside
+ * `pingTodayMedia` (`requireShare: true`). The first-share ping of
+ * `PUT /me/recovery-share` calls {@link eligibleToday} with `true` directly,
+ * because the share was just stored.
  */
 
 import type { Account, AuthStore } from '@/lib/auth/store';

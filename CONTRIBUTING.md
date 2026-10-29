@@ -148,7 +148,7 @@ api/
 │   │   ├── trust-store.ts    # TrustStore port, InMemoryTrustStore, PostgresTrustStore, TRUST_SCHEMA_SQL
 │   │   ├── funding.ts        # Funding-grant types, utcDayKey, FUNDING_REQUIRED_FROM_UTC, fundingGrantRequired, inGrantProgramToday, eligibleToday, dailyPayoutStoppedNotice, serializeOwnerFunding, fundingReviewedAt, expiredTrialAsPending
 │   │   ├── funding-store.ts  # FundingStore port, InMemoryFundingStore, PostgresFundingStore, FUNDING_SCHEMA_SQL, loadGrantEffective
-│   │   ├── payout-eligibility.ts # loadPayoutEligibility (grant plus the 21.gifts recovery share: the payout gate of every payout path)
+│   │   ├── payout-eligibility.ts # loadPayoutEligibility (grant plus the 21.gifts recovery share: the payout gate of every payout path except the staff trial/admit ping and the first-share ping, see pingTodayMedia)
 │   │   ├── funding-ping.ts   # pingTodayMedia (daily ping after a staff trial or admit, and after the first recovery share)
 │   │   ├── postgres-text-array.ts  # postgresTextArrayLiteral (one Postgres text-array literal; Bun SQL cannot bind a JavaScript array)
 │   │   ├── conversation.ts   # PN public JSON (optional counterpart/sender accountId; hasPhoto/photoCount; no eventId / npub / bytes)

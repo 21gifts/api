@@ -18,7 +18,9 @@ what must be true on release day for that to hold.
      moderator stipends keep matching.
   2. The API and the app go live together.
   3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
-     `NEXT_PUBLIC_BREEZ_API_KEY` (app) set.
+     `NEXT_PUBLIC_BREEZ_API_KEY` (app) set. Once social recovery is on
+     `main`, the API also has `RECOVERY_SHARE_KEK` (64 lowercase hex,
+     different from `NOSTR_NSEC_KEK`) set, or it does not boot.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
      live list counted below, both payment switches in `daily_roster` are
      on, and its comment is not `Welcome`. All three held on 2026-10-16;
@@ -54,8 +56,12 @@ The rest of this document is the evidence.
   through the release pull requests `staging → develop` and `develop → main`
   of their repository. After the `main` deploy of both, the switch is
   complete.
-- No manual step is part of the release. Anything that has to change in data
-  changes at boot (see [Roster move at boot](#roster-move-at-boot)).
+- No manual data step is part of the release. Anything that has to change in
+  data changes at boot (see [Roster move at boot](#roster-move-at-boot)).
+  The one manual step is a setting: when social recovery reaches `main` in
+  this release, an operator sets `RECOVERY_SHARE_KEK` in production before
+  the `develop → main` merge, because the API with social recovery does not
+  boot without it.
 
 ## How a payout is triggered
 
@@ -321,7 +327,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    block posting for everyone, because the old app cannot create a wallet.
 3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` set for the API and
    `NEXT_PUBLIC_BREEZ_API_KEY` set for the app. Without them no wallet can be
-   created or verified, and nobody can post.
+   created or verified, and nobody can post. Once social recovery is on
+   `main`, the API also has `RECOVERY_SHARE_KEK` (64 lowercase hex, different
+   from `NOSTR_NSEC_KEK`) set. Without it the API stops at boot
+   (`openBootStores`), so it keeps restarting and nobody is paid.
 4. The API roster (`daily_roster_entry`) holds the same addresses, amounts and
    buckets as spend's live list in [Daily roster](#daily-roster). Every legacy
    row then belongs to an account with a username, except the one recipient
@@ -372,7 +381,9 @@ recovery is on `main`, also read `gifts-debug db recovery_share`: an eligible
 member additionally needs a row whose `spark_pubkey` equals the account's
 `spark_pubkey`, on an account whose `spark_pubkey_verified_at` is set, as
 `loadPayoutEligibility` reads it.
-Check the three settings in the production deployment configuration.
+Check the three settings of condition 3 in the production deployment
+configuration, and the fourth, `RECOVERY_SHARE_KEK`, when the release brings
+social recovery to `main`.
 After both `develop → main` merges, list every production deploy of each
 repository:
 `gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 1000 --json headSha,status,conclusion,createdAt,updatedAt`
