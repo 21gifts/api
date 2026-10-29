@@ -395,8 +395,9 @@ export interface AuthStore {
   /**
    * Store `sparkPubkey` as the account's wallet key while the account has no verified wallet.
    * Writes only when the account has `walletRequired` true, a non-blank username, and
-   * `sparkPubkeyVerifiedAt` null. Other columns stay unchanged. An unverified value is not
-   * exclusive: two accounts may hold the same unverified key.
+   * `sparkPubkeyVerifiedAt` null. The Postgres adapter also stores `spark_address`
+   * (`encodeSparkAddress(sparkPubkey)`) in the same write. Other columns stay unchanged. An
+   * unverified value is not exclusive: two accounts may hold the same unverified key.
    * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
    */
   claimSparkPubkey(

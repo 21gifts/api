@@ -1034,7 +1034,7 @@ describe('GET /messages', () => {
         createdAt: new Date(now() + index),
         hasPhoto: false,
         ...unsignedNostrDefaults(),
-        place: { lat: pin.lat, lng: pin.lng, label: null },
+        place: { lat: pin.lat, lng: pin.lng, label: null, address: null },
       });
     }
     const app = mount(authStore, messageStore);
@@ -2135,7 +2135,87 @@ describe('POST /messages', () => {
     });
     expect(post.status).toBe(200);
     const body = (await post.json()) as { place?: { lat: number; lng: number; label: string } };
-    expect(body.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+    expect(body.place).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich', address: null });
+  });
+
+  it('posts a shop note without a pin', async () => {
+    const post = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'Shop #21GiftsShop' }),
+    });
+    expect(post.status).toBe(200);
+    expect(await post.json()).not.toHaveProperty('place');
+  });
+
+  it('returns 400 when a JSON shop pin is missing a name, address, or description', async () => {
+    const app = mount(await namedStore('Ada'));
+    const address = {
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    };
+    const unnamed = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        place: { lat: 47.3, lng: 8.5, label: null, address },
+      }),
+    });
+    expect(unnamed.status).toBe(400);
+    expect(await unnamed.json()).toEqual({ error: 'Shop name is required' });
+
+    const noAddress = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        place: { lat: 47.3, lng: 8.5, label: 'Stall' },
+      }),
+    });
+    expect(noAddress.status).toBe(400);
+    expect(await noAddress.json()).toEqual({ error: 'Shop address is required' });
+
+    const shortText = await app.request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Open #21GiftsShop',
+        place: { lat: 47.3, lng: 8.5, label: 'Stall', address },
+      }),
+    });
+    expect(shortText.status).toBe(400);
+    expect(await shortText.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+  });
+
+  it('posts a complete JSON shop pin', async () => {
+    const address = {
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
+    };
+    const post = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        place: { lat: 47.3, lng: 8.5, label: 'Stall', address },
+      }),
+    });
+    expect(post.status).toBe(200);
+    expect(((await post.json()) as { place: unknown }).place).toEqual({
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address,
+    });
   });
 
   it('omits place when JSON has no pin', async () => {
@@ -2542,7 +2622,7 @@ describe('POST /messages', () => {
       body: JSON.stringify({
         text: 'child',
         inReplyTo: parentId,
-        place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+        place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
       }),
     });
     expect(res.status).toBe(400);
@@ -6523,7 +6603,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 1, lng: 2, label: null },
+        place: { lat: 1, lng: 2, label: null, address: null },
       },
       {
         id: 'plain',
@@ -6547,7 +6627,7 @@ describe('GET /messages/places', () => {
         videoContentType: null,
         ...unsignedNostrDefaults(),
         parentId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-        place: { lat: 3, lng: 4, label: 'reply' },
+        place: { lat: 3, lng: 4, label: 'reply', address: null },
       },
       {
         id: 'hidden',
@@ -6561,7 +6641,7 @@ describe('GET /messages/places', () => {
         ...unsignedNostrDefaults(),
         deletedAt: hiddenAt,
         deletedBy: 'staff',
-        place: { lat: 5, lng: 6, label: 'hid' },
+        place: { lat: 5, lng: 6, label: 'hid', address: null },
       },
       {
         id: 'za',
@@ -6573,7 +6653,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 7, lng: 8, label: 'A' },
+        place: { lat: 7, lng: 8, label: 'A', address: null },
       },
       {
         id: 'zb',
@@ -6585,7 +6665,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 9, lng: 10, label: 'B' },
+        place: { lat: 9, lng: 10, label: 'B', address: null },
       },
     ]);
     const res = await mount(await namedStore('Ada'), store).request('/messages/places', {
@@ -6615,6 +6695,7 @@ describe('GET /messages/places', () => {
       lat: 9,
       lng: 10,
       label: 'B',
+      address: null,
       accountId: 'acc',
       shop: true,
       countryCode: 'NG',
@@ -6655,7 +6736,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 1, lng: 2, label: null },
+        place: { lat: 1, lng: 2, label: null, address: null },
       },
       {
         id: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
@@ -6667,7 +6748,7 @@ describe('GET /messages/places', () => {
         hasVideo: false,
         videoContentType: null,
         ...unsignedNostrDefaults(),
-        place: { lat: 47.3, lng: 8.5, label: 'Zürich' },
+        place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: null },
       },
     ]);
     const res = await mount(await namedStore('Ada'), store).request('/messages/places?limit=1', {
@@ -9445,7 +9526,127 @@ describe('forum video', () => {
     expect(res.status).toBe(200);
     expect(
       ((await res.json()) as { place?: { lat: number; lng: number; label: string } }).place,
-    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich' });
+    ).toEqual({ lat: 47.3, lng: 8.5, label: 'Zürich', address: null });
+  });
+
+  it('posts a multipart shop pin with a complete address', async () => {
+    const form = new FormData();
+    form.set('text', 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop');
+    form.set('placeLat', '47.3');
+    form.set('placeLng', '8.5');
+    form.set('placeLabel', 'Stall');
+    form.set('placeStreet', 'Bahnhofstrasse');
+    form.set('placeHouseNumber', '1');
+    form.set('placePostalCode', '8001');
+    form.set('placeCity', 'Zürich');
+    form.set('placeCountry', 'CH');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { place: unknown }).place).toEqual({
+      lat: 47.3,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
+  });
+
+  it('returns 400 when a multipart shop pin is missing the address or the description', async () => {
+    const noAddress = new FormData();
+    noAddress.set(
+      'text',
+      'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+    );
+    noAddress.set('placeLat', '47.3');
+    noAddress.set('placeLng', '8.5');
+    noAddress.set('placeLabel', 'Stall');
+    const noAddressRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: noAddress,
+    });
+    expect(noAddressRes.status).toBe(400);
+    expect(await noAddressRes.json()).toEqual({ error: 'Shop address is required' });
+
+    const shortText = new FormData();
+    shortText.set('text', 'Open #21GiftsShop');
+    shortText.set('placeLat', '47.3');
+    shortText.set('placeLng', '8.5');
+    shortText.set('placeLabel', 'Stall');
+    shortText.set('placeStreet', 'Bahnhofstrasse');
+    shortText.set('placeHouseNumber', '1');
+    shortText.set('placePostalCode', '8001');
+    shortText.set('placeCity', 'Zürich');
+    shortText.set('placeCountry', 'CH');
+    const shortTextRes = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: shortText,
+    });
+    expect(shortTextRes.status).toBe(400);
+    expect(await shortTextRes.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+  });
+
+  it('returns 400 when one multipart address field is set without the rest', async () => {
+    const form = new FormData();
+    form.set('text', 'pin');
+    form.set('placeLat', '47.3');
+    form.set('placeLng', '8.5');
+    form.set('placeStreet', 'Bahnhofstrasse');
+    const res = await mount(await namedStore('Ada')).request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: form,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Place address is invalid' });
+  });
+
+  it('returns 400 when a multipart address is sent without coordinates', async () => {
+    const auth = await namedStore('Ada');
+    const messages = new InMemoryMessageStore();
+    const app = mount(auth, messages);
+    const streetOnly = new FormData();
+    streetOnly.set('text', 'pin');
+    streetOnly.set('placeStreet', 'Bahnhofstrasse');
+    const streetOnlyRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: streetOnly,
+    });
+    expect(streetOnlyRes.status).toBe(400);
+    expect(await streetOnlyRes.json()).toEqual({
+      error: 'Place must be a latitude and longitude',
+    });
+
+    const fullAddress = new FormData();
+    fullAddress.set('text', 'pin');
+    fullAddress.set('placeStreet', 'Bahnhofstrasse');
+    fullAddress.set('placeHouseNumber', '1');
+    fullAddress.set('placePostalCode', '8001');
+    fullAddress.set('placeCity', 'Zürich');
+    fullAddress.set('placeCountry', 'CH');
+    const fullAddressRes = await app.request('/messages', {
+      method: 'POST',
+      headers: AUTH,
+      body: fullAddress,
+    });
+    expect(fullAddressRes.status).toBe(400);
+    expect(await fullAddressRes.json()).toEqual({
+      error: 'Place must be a latitude and longitude',
+    });
+    expect(await messages.listLatest(10)).toHaveLength(0);
   });
 
   it('returns 400 when multipart place is incomplete or out of range', async () => {
@@ -9579,7 +9780,7 @@ describe('forum video', () => {
     expect(res.status).toBe(200);
     expect(
       ((await res.json()) as { place?: { lat: number; lng: number; label: string | null } }).place,
-    ).toEqual({ lat: 47.3, lng: 8.5, label: null });
+    ).toEqual({ lat: 47.3, lng: 8.5, label: null, address: null });
   });
 
   it('maps an empty multipart placeLabel to null', async () => {
@@ -11091,8 +11292,18 @@ describe('PATCH /messages/:id/place', () => {
   const REPLY_ID = '33333333-3333-4333-8333-333333333333';
   const DAMUS_ID = '44444444-4444-4444-8444-444444444444';
   const GHOST_ID = '55555555-5555-4555-8555-555555555555';
-  const PIN = { lat: 47.1234567, lng: 8.5, label: 'Cafe' };
-  const STORED = { lat: 47.123457, lng: 8.5, label: 'Cafe' };
+  const ADDRESS = {
+    street: 'Bahnhofstrasse',
+    houseNumber: '1',
+    postalCode: '8001',
+    city: 'Zürich',
+    country: 'CH',
+  };
+  const PIN = { lat: 47.1234567, lng: 8.5, label: 'Cafe', address: ADDRESS };
+  const STORED = { lat: 47.123457, lng: 8.5, label: 'Cafe', address: ADDRESS };
+  const SHOP_TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
+  const DESCRIPTION_ERROR =
+    'Shop description must be 20 to 1000 characters and longer than the shop name';
 
   it('returns 401 without a session', async () => {
     const res = await mount(await seededStore()).request('/messages/' + SHOP_ID + '/place', {
@@ -11156,7 +11367,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11204,7 +11415,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11223,7 +11434,7 @@ describe('PATCH /messages/:id/place', () => {
     expect(json).toHaveProperty('replyCount');
     const stored = await messages.getById(SHOP_ID);
     expect(stored?.eventId).toBe('ee'.repeat(32));
-    expect(stored?.text).toBe('Shop #21GiftsShop');
+    expect(stored?.text).toBe(SHOP_TEXT);
     expect((await messages.listPlaces(10)).map((row) => row.id)).toContain(SHOP_ID);
     const publicRes = await mount(new InMemoryAuthStore(), messages).request(
       '/messages/' + SHOP_ID,
@@ -11242,12 +11453,12 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
-    await messages.setPlace(SHOP_ID, { lat: 46.1, lng: 7.1, label: 'Old' });
+    await messages.setPlace(SHOP_ID, { lat: 46.1, lng: 7.1, label: 'Old', address: null });
     const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
@@ -11282,7 +11493,7 @@ describe('PATCH /messages/:id/place', () => {
     expect((await messages.listPlaces(10)).map((row) => row.id)).not.toContain(SHOP_ID);
   });
 
-  it('returns 200 for an unlabeled pin', async () => {
+  it('returns 400 for an unlabeled pin', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
     await messages.create({
@@ -11299,8 +11510,151 @@ describe('PATCH /messages/:id/place', () => {
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ place: { lat: 47.1, lng: 8.5, label: null } }),
     });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Shop name is required' });
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
+  it('returns 400 when a shop pin has no address', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: { lat: 47.1, lng: 8.5, label: 'Cafe' } }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Shop address is required' });
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
+  it('returns 400 when the shop name contains the street', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        place: { lat: 47.1, lng: 8.5, label: 'Cafe Bahnhofstrasse', address: ADDRESS },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Shop name must not contain the address' });
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
+  it('returns 400 when a complete pin name is not shorter than the stored description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Coffee roasted on site.\n\n#21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const existing = { lat: 46.1, lng: 7.1, label: 'Old', address: null };
+    await messages.setPlace(SHOP_ID, existing);
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        place: {
+          lat: 47.1,
+          lng: 8.5,
+          label: 'Neighborhood Espresso House',
+          address: ADDRESS,
+        },
+      }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: DESCRIPTION_ERROR });
+    expect((await messages.getById(SHOP_ID))?.place).toEqual(existing);
+  });
+
+  it('returns 400 when a complete pin is set on a shop whose description is under 20 characters', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: PIN }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: DESCRIPTION_ERROR });
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
+  });
+
+  it('returns 200 when a complete pin is set on a shop with a valid stored description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: SHOP_TEXT,
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: PIN }),
+    });
     expect(res.status).toBe(200);
-    expect(((await res.json()) as { place: { label: string | null } }).place.label).toBeNull();
+    expect(((await res.json()) as { place: unknown }).place).toEqual(STORED);
+  });
+
+  it('returns 200 when place null clears a shop with a short description', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: SHOP_ID,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'Shop #21GiftsShop',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    await messages.setPlace(SHOP_ID, STORED);
+    const res = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ place: null }),
+    });
+    expect(res.status).toBe(200);
+    expect((await messages.getById(SHOP_ID))?.place ?? null).toBeNull();
   });
 
   it('returns 200 when the text is #21giftsshop', async () => {
@@ -11310,7 +11664,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: '#21giftsshop',
+      text: 'Coffee roasted on site and served at the bar every morning.\n\n#21giftsshop',
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11508,7 +11862,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11545,7 +11899,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11576,7 +11930,7 @@ describe('PATCH /messages/:id/place', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11615,7 +11969,7 @@ describe('PATCH /messages/:id/place', () => {
       id: DAMUS_ID,
       accountId: null,
       name: 'aabbccdd…8899',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       hasVideo: false,
@@ -11642,7 +11996,7 @@ describe('PATCH /messages/:id/place', () => {
       id: GHOST_ID,
       accountId: 'gone',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -11738,7 +12092,7 @@ describe('PATCH /messages/:id/shop-account', () => {
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin' });
+    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin', address: null });
     warn.mockClear();
     const res = await patchShop(auth, SHOP_ID, { username: '  @ShopKeep  ' }, messages);
     expect(res.status).toBe(200);
@@ -11751,7 +12105,7 @@ describe('PATCH /messages/:id/shop-account', () => {
     expect(stored?.shopAccount).toEqual(SHOP_ACCOUNT);
     expect(stored?.eventId).toBe('ee'.repeat(32));
     expect(stored?.text).toBe('Shop #21GiftsShop');
-    expect(stored?.place).toEqual({ lat: 47.1, lng: 8.5, label: 'Pin' });
+    expect(stored?.place).toEqual({ lat: 47.1, lng: 8.5, label: 'Pin', address: null });
     const logged = parsedEvents(warn).find((e) => e['event'] === 'messages.shop_account.updated');
     expect(logged).toMatchObject({
       messageId: SHOP_ID,
@@ -11801,14 +12155,19 @@ describe('PATCH /messages/:id/shop-account', () => {
       hasPhoto: false,
       ...unsignedNostrDefaults(),
     });
-    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin' });
+    await messages.setPlace(SHOP_ID, { lat: 47.1, lng: 8.5, label: 'Pin', address: null });
     await messages.setShopAccount(SHOP_ID, SHOP_ACCOUNT);
     const res = await patchShop(auth, SHOP_ID, { username: null }, messages);
     expect(res.status).toBe(200);
     const json = (await res.json()) as Record<string, unknown>;
     expect(json).not.toHaveProperty('shopAccount');
     expect((await messages.getById(SHOP_ID))?.shopAccount).toBeNull();
-    expect((await messages.getById(SHOP_ID))?.place).toEqual({ lat: 47.1, lng: 8.5, label: 'Pin' });
+    expect((await messages.getById(SHOP_ID))?.place).toEqual({
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Pin',
+      address: null,
+    });
     expect((await messages.getById(SHOP_ID))?.text).toBe('Shop #21GiftsShop');
   });
 
@@ -12252,7 +12611,15 @@ function recordingMap(): {
 
 describe('shop OCP place hook', () => {
   const SHOP_ID = '66666666-6666-4666-8666-666666666666';
-  const PIN = { lat: 47.3, lng: 8.5, label: 'Stall' };
+  const ADDRESS = {
+    street: 'Bahnhofstrasse',
+    houseNumber: '1',
+    postalCode: '8001',
+    city: 'Zürich',
+    country: 'CH',
+  };
+  const PIN = { lat: 47.3, lng: 8.5, label: 'Stall', address: ADDRESS };
+  const SHOP_TEXT = 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop';
   const SHOP_ACCOUNT = { id: 'shop-acc', username: 'shopkeep', name: 'Shop Name' };
 
   async function addShopkeep(auth: InMemoryAuthStore): Promise<void> {
@@ -12278,7 +12645,7 @@ describe('shop OCP place hook', () => {
       id: SHOP_ID,
       accountId: 'acc',
       name: 'Ada',
-      text: 'Shop #21GiftsShop',
+      text: SHOP_TEXT,
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
@@ -12295,7 +12662,7 @@ describe('shop OCP place hook', () => {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({
-        text: 'Open #21GiftsShop',
+        text: SHOP_TEXT,
         place: PIN,
       }),
     });
@@ -12309,11 +12676,18 @@ describe('shop OCP place hook', () => {
       origin: '21gifts',
       externalId: body.id,
       name: 'Stall',
+      description: 'Coffee roasted on site and served at the bar every morning.',
       lat: 47.3,
       lon: 8.5,
       category: 'shopping',
       paymentMethods: 'lightning',
       techProvider: '21.gifts',
+      shopType: 'Others',
+      street: 'Bahnhofstrasse',
+      houseNumber: '1',
+      postalCode: '8001',
+      city: 'Zürich',
+      country: 'CH',
     });
   });
 
@@ -12347,7 +12721,7 @@ describe('shop OCP place hook', () => {
     const replace = await app.request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ place: { lat: 1, lng: 2, label: 'New' } }),
+      body: JSON.stringify({ place: { lat: 1, lng: 2, label: 'New', address: ADDRESS } }),
     });
     expect(replace.status).toBe(200);
     expect(calls).toHaveLength(2);
@@ -12463,7 +12837,7 @@ describe('shop OCP place hook', () => {
     const { mapPush, calls, meta } = recordingMap();
     const app = mount(await namedStore('Ada'), new InMemoryMessageStore(), { mapPush });
     const body = JSON.stringify({
-      text: 'Open #21GiftsShop',
+      text: SHOP_TEXT,
       place: PIN,
       photo: { contentType: 'image/jpeg', data: JPEG_B64 },
     });
@@ -12695,6 +13069,126 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { text: string }).text).toBe('Cafe\n\n#21GiftsShop');
     expect(await messages.listEdits(SHOP_ID)).toEqual([]);
+  });
+
+  it('returns 400 when a pinned shop description is too short', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+  });
+
+  it('lets a short shop text stay when the note has no pin', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
+  });
+
+  it('lets a short shop text stay when the stored place is incomplete', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Neighborhood Espresso House',
+      address: null,
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Cafe Sol' }, messages);
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { text: string }).text).toBe('Cafe Sol\n\n#21GiftsShop');
+  });
+
+  it('returns 400 when a pinned shop description is not longer than the name', async () => {
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Neighborhood Espresso House',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
+    const res = await patchText(auth, SHOP_ID, { text: 'Coffee roasted on site.' }, messages);
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Shop description must be 20 to 1000 characters and longer than the shop name',
+    });
+    expect((await messages.getById(SHOP_ID))?.text).toBe('Cafe\n\n#21GiftsShop');
+  });
+
+  it('puts the map pin after a real shop text write', async () => {
+    const { mapPush, calls, meta } = recordingMap();
+    const auth = await staffStore('Ada');
+    const messages = new InMemoryMessageStore();
+    await shopNote(messages);
+    await messages.setPlace(SHOP_ID, {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    });
+    const res = await mount(auth, messages, { mapPush }).request('/messages/' + SHOP_ID + '/text', {
+      method: 'PATCH',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'Coffee roasted on site and served at the bar every morning.',
+      }),
+    });
+    expect(res.status).toBe(200);
+    expect(calls).toHaveLength(1);
+    expect(meta[0]?.method).toBe('PUT');
+    expect(JSON.parse(calls[0] ?? '{}')).toMatchObject({
+      origin: '21gifts',
+      externalId: SHOP_ID,
+      name: 'Stall',
+      description: 'Coffee roasted on site and served at the bar every morning.',
+      shopType: 'Others',
+    });
+    const again = await mount(auth, messages, { mapPush }).request(
+      '/messages/' + SHOP_ID + '/text',
+      {
+        method: 'PATCH',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          text: 'Coffee roasted on site and served at the bar every morning.',
+        }),
+      },
+    );
+    expect(again.status).toBe(200);
+    expect(calls).toHaveLength(1);
   });
 
   it('edits an external shop note and a note whose author account is gone', async () => {
@@ -13111,8 +13605,21 @@ describe('PATCH /messages/:id/text and GET /messages/:id/edits', () => {
   it('records a place or shop-account change once and skips an identical save', async () => {
     const auth = await staffStore('Ada');
     const messages = new InMemoryMessageStore();
-    await shopNote(messages);
-    const pin = { lat: 47.1, lng: 8.5, label: 'Stall' };
+    await shopNote(messages, {
+      text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+    });
+    const pin = {
+      lat: 47.1,
+      lng: 8.5,
+      label: 'Stall',
+      address: {
+        street: 'Bahnhofstrasse',
+        houseNumber: '1',
+        postalCode: '8001',
+        city: 'Zürich',
+        country: 'CH',
+      },
+    };
     const setPlace = await mount(auth, messages).request('/messages/' + SHOP_ID + '/place', {
       method: 'PATCH',
       headers: { ...AUTH, 'content-type': 'application/json' },

@@ -71,8 +71,19 @@ describe('createApp map push when the code switch is on', () => {
       method: 'POST',
       headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
       body: JSON.stringify({
-        text: 'Open #21GiftsShop',
-        place: { lat: 47.3, lng: 8.5, label: 'Stall' },
+        text: 'Coffee roasted on site and served at the bar every morning.\n\n#21GiftsShop',
+        place: {
+          lat: 47.3,
+          lng: 8.5,
+          label: 'Stall',
+          address: {
+            street: 'Bahnhofstrasse',
+            houseNumber: '1',
+            postalCode: '8001',
+            city: 'Zürich',
+            country: 'CH',
+          },
+        },
       }),
     });
     expect(res.status).toBe(200);

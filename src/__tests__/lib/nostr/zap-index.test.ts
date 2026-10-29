@@ -2822,7 +2822,9 @@ describe('indexZapReceipt', () => {
       });
   }
 
-  it('freezes spot crosses onto the zapped note and the ingest row', async () => {
+  it('the omitted snapshot stays null on the zapped note and the ingest row', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-spot',
@@ -2839,20 +2841,32 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-spot', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: spotFetch('100000'),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
+      fiatRates: {
+        ensureDays: async () => {
+          rateCalls += 1;
+          return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+        },
+      },
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
-    expect((await store.getById(row.id))?.amountChf).toBe('0.80');
-    expect((await store.listZapIngests(5))[0]?.amountUsd).toBe('1.00');
-    expect((await store.listZapIngests(5))[0]?.amountChf).toBe('0.80');
+    expect((await store.getById(row.id))?.amountUsd).toBeNull();
+    expect((await store.getById(row.id))?.amountChf).toBeNull();
+    expect((await store.getById(row.id))?.amountEur).toBeNull();
+    expect((await store.getById(row.id))?.amountPhp).toBeNull();
+    expect((await store.listZapIngests(5))[0]?.amountUsd).toBeNull();
+    expect((await store.listZapIngests(5))[0]?.amountChf).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
-  it('freezes USD with empty crosses when the rate book has no day', async () => {
+  it('the omitted snapshot stays null when the rate book has no day', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-empty-cross',
@@ -2869,16 +2883,28 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-empty-cross', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: spotFetch('100000'),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: new InMemoryFiatStore(),
+      fiatRates: {
+        ensureDays: async () => {
+          rateCalls += 1;
+          return new Map();
+        },
+      },
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountUsd).toBeNull();
     expect((await store.getById(row.id))?.amountChf).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
-  it('still freezes USD when ensureDays throws', async () => {
+  it('the omitted snapshot stays null when ensureDays throws', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryMessageStore();
     const row = await store.create({
       id: 'm-fx-down',
@@ -2895,16 +2921,22 @@ describe('indexZapReceipt', () => {
       receipt: { id: 'r-fx-down', pubkey: PROVIDER_PUBKEY, tags: [] },
       providerPubkey: PROVIDER_PUBKEY,
       amountSats: 1000,
-      fetchImpl: spotFetch('100000'),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
       fiatRates: {
         ensureDays: async () => {
+          rateCalls += 1;
           throw new Error('frankfurter down');
         },
       },
     });
     expect(ok).toBe(true);
-    expect((await store.getById(row.id))?.amountUsd).toBe('1.00');
+    expect((await store.getById(row.id))?.amountUsd).toBeNull();
     expect((await store.getById(row.id))?.amountChf).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
   it('indexes the zap with null fiat when the spot text cannot be priced', async () => {

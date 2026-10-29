@@ -1,7 +1,7 @@
-/** Decode Spark addresses and invoices into the wallet identity fields used by the api. */
+/** Encode Spark addresses, and decode Spark addresses and invoices into the wallet identity fields used by the api. */
 
 import { bech32m, hex } from '@scure/base';
-import { decodeProto, type ProtoField } from '@/lib/protobuf';
+import { decodeProto, protoBytesField, type ProtoField } from '@/lib/protobuf';
 
 const SPARK_HRPS = new Set([
   'spark',
@@ -26,6 +26,25 @@ export interface DecodedSparkAddress {
 
 /** A length-delimited protobuf field. */
 type BytesField = Extract<ProtoField, { wire: 2 }>;
+
+/**
+ * Encode a wallet identity public key as its mainnet Spark address.
+ *
+ * The address is bech32m (prefix `spark`) over a protobuf
+ * `SparkAddress { 1: identity_public_key }` with no invoice fields and no
+ * signature, so it is a pure function of the key.
+ *
+ * @param identityPublicKey - Compressed Spark identity public key as 66 hex characters.
+ * @returns `spark1…` address (68 characters).
+ * @throws Error when the key is not 33 bytes of hex.
+ */
+export function encodeSparkAddress(identityPublicKey: string): string {
+  const identity = hex.decode(identityPublicKey);
+  if (identity.byteLength !== 33) {
+    throw new Error('Spark identity public key must be 33 bytes');
+  }
+  return bech32m.encode('spark', bech32m.toWords(protoBytesField(1, identity)), false);
+}
 
 /**
  * Decode a Spark address or invoice without throwing on malformed input.

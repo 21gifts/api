@@ -25,8 +25,10 @@ import {
   type Session,
   type SetUsernameResult,
 } from '@/lib/auth/store';
+import { logEvent } from '@/lib/log';
 import { parseNotificationLevel } from '@/lib/notification';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 /** Row shape of `account`. */
 interface AccountRow {
@@ -105,6 +107,37 @@ export async function migrateAuthSchema(sql: SqlClient): Promise<void> {
   for (const statement of AUTH_SCHEMA_SQL) {
     await sql.execute(statement);
   }
+}
+
+/**
+ * Store the Spark address of every account that has a wallet key.
+ *
+ * Encodes each stored `spark_pubkey` with {@link encodeSparkAddress} and
+ * writes `spark_address` where it is missing or differs. The UPDATE also
+ * matches the key that was read, so a key claimed in the meantime keeps the
+ * address its claim wrote. A second run writes nothing.
+ *
+ * @param sql - Parameter-bound SQL client (auth schema already migrated).
+ * @returns The number of accounts updated.
+ */
+export async function backfillSparkAddresses(sql: SqlClient): Promise<number> {
+  const rows = await sql.query<{ id: string; spark_pubkey: string; spark_address: string | null }>(
+    `SELECT id, spark_pubkey, spark_address FROM account WHERE spark_pubkey IS NOT NULL`,
+  );
+  let count = 0;
+  for (const row of rows) {
+    const address = encodeSparkAddress(row.spark_pubkey);
+    if (row.spark_address === address) {
+      continue;
+    }
+    const updated = await sql.query<{ id: string }>(
+      `UPDATE account SET spark_address = $3 WHERE id = $1 AND spark_pubkey = $2 RETURNING id`,
+      [row.id, row.spark_pubkey, address],
+    );
+    count += updated.length;
+  }
+  logEvent('account.spark_address.backfill', { count });
+  return count;
 }
 
 /**
@@ -198,9 +231,9 @@ export class PostgresAuthStore implements AuthStore {
     sparkPubkey: string,
   ): Promise<{ account: Account; wrote: boolean } | undefined> {
     const written = await this.#sql.query<AccountRow>(
-      `UPDATE account SET spark_pubkey = $2 WHERE id = $1 AND spark_pubkey_verified_at IS NULL
+      `UPDATE account SET spark_pubkey = $2, spark_address = $3 WHERE id = $1 AND spark_pubkey_verified_at IS NULL
   AND wallet_required IS TRUE AND username IS NOT NULL AND trim(username) <> '' RETURNING ${ACCOUNT_SELECT_COLUMNS}`,
-      [accountId, sparkPubkey],
+      [accountId, sparkPubkey, encodeSparkAddress(sparkPubkey)],
     );
     const wroteRow = written[0];
     if (wroteRow !== undefined) {

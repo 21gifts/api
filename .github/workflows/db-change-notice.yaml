@@ -1,0 +1,141 @@
+# Fails a pull request when the diff touches the database and the description
+# does not carry the required marker in the visible text. `edited` is a
+# trigger because editing the PR text must re-run this check. `ready_for_review`
+# is omitted: a Ready trigger would re-run a required check after the guard
+# sets Ready.
+name: Database change notice
+
+on:
+  pull_request:
+    types: [opened, edited, synchronize, reopened]
+    branches: [develop, staging]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: db-change-notice-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  notice:
+    name: Database change notice
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      # No pull request source code runs in this job: TypeScript files are read only as text, the
+      # tests of the notice script run in ci.yaml, and the decision is made by the base branch's
+      # copy of db-change-notice.mjs in notice-base, so a pull request cannot turn its own check
+      # green by editing the script. This workflow file itself is covered by the A38 guard, which
+      # requires a maintainer approval for any workflow change. The pull request copy lives in
+      # notice-head and is used only while the base does not have the script yet.
+      - name: Checkout base
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: notice-base
+          sparse-checkout: |
+            scripts
+            src
+
+      - name: Checkout pull request
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+          path: notice-head
+          sparse-checkout: |
+            scripts
+            src
+
+      - name: Evaluate database change notice
+        uses: actions/github-script@v7
+        with:
+          script: |
+            // auto-release-pr.yaml opens the release pull request staging -> develop. It only bundles pull
+            // requests that already passed this check on staging, so it does not need the marker again.
+            const release = context.payload.pull_request;
+            const sameRepository = release.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`;
+            if (sameRepository && release.head.ref === 'staging' && release.base.ref === 'develop') {
+              core.info('Release pull request staging -> develop: its pull requests passed this check on staging.');
+              return;
+            }
+            const { existsSync, readFileSync } = require('node:fs');
+            // Pull request files are data: a symbolic link, anything that is not a regular file, a path
+            // that resolves outside the workspace, or a file over 1 MB is not read; the patch rules decide.
+            const { lstatSync, realpathSync } = require('node:fs');
+            const workspace = realpathSync(process.env.GITHUB_WORKSPACE);
+            const isReadableSource = (name) => {
+              try {
+                const stat = lstatSync(name);
+                return stat.isFile() && stat.size <= 1_000_000 && realpathSync(name).startsWith(`${workspace}/`);
+              } catch {
+                return false;
+              }
+            };
+            const { pathToFileURL } = require('node:url');
+            const basePath = `${process.env.GITHUB_WORKSPACE}/notice-base/scripts/db-change-notice.mjs`;
+            const headPath = `${process.env.GITHUB_WORKSPACE}/notice-head/scripts/db-change-notice.mjs`;
+            const bootstrap = !existsSync(basePath);
+            const { evaluate, MARKER } = await import(
+              pathToFileURL(bootstrap ? headPath : basePath).href
+            );
+            const body = context.payload.pull_request.body ?? '';
+            const files = await github.paginate(github.rest.pulls.listFiles, {
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.payload.pull_request.number,
+              per_page: 100,
+            });
+            // The files endpoint stops at 3000 entries without saying so. A list of 3000 or one shorter than the
+            // pull request's changed_files may hide triggers, so the notice is then required: an
+            // entry without a patch is the fail-closed trigger the script already knows.
+            const truncated =
+              files.length >= 3000 || files.length < context.payload.pull_request.changed_files;
+            const listed = truncated
+              ? [...files, { filename: 'src/(file list truncated by the GitHub API).ts' }]
+              : files;
+            const isSourceTypeScript = (filename) =>
+              filename.startsWith('src/') && filename.endsWith('.ts');
+            const filesWithContent = listed.map((file) => {
+              // The old name counts too: a database file moved out of src/ is read from the base.
+              if (!isSourceTypeScript(file.filename) && !isSourceTypeScript(file.previous_filename ?? '')) {
+                return file;
+              }
+              const baseFilename = file.previous_filename ?? file.filename;
+              const headFile = `${process.env.GITHUB_WORKSPACE}/notice-head/${file.filename}`;
+              const baseFile = `${process.env.GITHUB_WORKSPACE}/notice-base/${baseFilename}`;
+              // Head and base text together: removing the only database import is a change to access too.
+              try {
+                const texts = [headFile, baseFile]
+                  .filter((name) => isReadableSource(name))
+                  .map((name) => readFileSync(name, 'utf8'));
+                return texts.length > 0 ? { ...file, content: texts.join('\n') } : file;
+              } catch {
+                return file;
+              }
+            });
+            const { required, ok, triggers } = evaluate({ body, files: filesWithContent });
+            const triggerList =
+              triggers.length === 0
+                ? '(none)'
+                : triggers.map((file) => `- ${file}`).join('\n');
+            core.summary
+              .addHeading('Database change notice')
+              .addRaw(
+                `Required: ${required ? 'yes' : 'no'}\n\nRules from: ${bootstrap ? 'this pull request (base has no script yet)' : 'base branch'}\n\nTrigger files:\n\n${triggerList}\n`,
+              );
+            await core.summary.write();
+            if (required && !ok) {
+              const shown = triggers.slice(0, 20);
+              const rest = triggers.length - shown.length;
+              const more = rest > 0 ? ` and ${rest} more` : '';
+              core.setFailed(
+                [
+                  MARKER,
+                  'Put the marker line in the visible part of the PR description, not inside <details>.',
+                  `Trigger files: ${shown.join(', ')}${more}`,
+                ].join('\n'),
+              );
+            }

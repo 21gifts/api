@@ -7,12 +7,10 @@
 [docs/fiat-amounts.md](docs/fiat-amounts.md) is binding for every amount. A committed
 amount keeps the fiat figures fixed when it was created. A typed amount is that
 exact decimal string. A missing string stays null. A daily close, a later spot,
-or a round trip through sats does not fill or replace it. Where this file
-describes a backfill or a read that fills or replaces a committed figure from
-a daily close, a later spot, or sats, that description is the code that breaks
-the rule. It is not permission to keep doing so.
+or a round trip through sats does not fill or replace it. This file does not
+describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment.
+**Status**: living document. Last revised 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waits at most until 8 s after its fetch arrived; the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
 
 ---
 
@@ -32,15 +30,15 @@ also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
 (that stored value is what is returned). A USD stipend keeps the USD amount
 that was sent. A SQL row stores those four amounts as text or SQL NULL.
 SQL NULL is JSON `null` on read: it is not recomputed from the day's close
-and it is not **503**. Writing a historical close onto a null row at migrate
-time breaks [docs/fiat-amounts.md](docs/fiat-amounts.md). A null row stays null. An in-memory
-gift row that omits the field entirely (`undefined`, not SQL NULL) is the same
-missing string. It stays null. Filling that omission from the UTC-calendar-day
-BTC-USD close in `btc_usd_daily`, or building CHF, EUR, or PHP as USD times
-that day's rate in `usd_fiat_daily`, breaks [docs/fiat-amounts.md](docs/fiat-amounts.md).
-The read that still does that fill, including a **503** when the day's BTC-USD
-rate is missing, is existing code that breaks the rule. It is not the contract.
-A missing CHF, EUR, or PHP string stays null.
+and it is not **503**. The migrate does not write a historical close onto a
+null row. A null row stays null. An in-memory gift row that omits the field
+entirely (`undefined`, not SQL NULL) is the same missing string. It stays null.
+The read does not fill that omission from the UTC-calendar-day BTC-USD close
+in `btc_usd_daily`, and it does not build CHF, EUR, or PHP from `usd_fiat_daily`.
+A missing currency stays null. A missing USD does not discard a stored CHF, EUR,
+or PHP on that row. One null does not null the day, the other currencies, or a
+later cumulative. A day where every row lacks that currency is null. A gap day
+stays `"0.00"` and does not change a running cumulative.
 
 A member receives only on their in-app wallet, at the wallet-backed
 `<username>@<host of PUBLIC_BASE_URL>` (`receivingAddress`). There is no route
@@ -92,15 +90,21 @@ Public base URLs used in examples:
 | ------ | ---------------------------------------------------- | -------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | GET    | `/healthz`                                           | none                                         | Liveness                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
 | GET    | `/info`                                              | none                                         | Service identity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
-| GET    | `/.well-known/lnurlp/:username`                      | none                                         | LUD-16 payRequest served from the LNURL server for a verified wallet (needs `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`); anything else is 404; an open till charge pins both sendable bounds                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/.well-known/lnurlp/:username`                      | none                                         | LUD-16 payRequest served from the LNURL server for a verified wallet (needs `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`); anything else is 404; an open till charge pins both sendable bounds; an open shop payment answers the OpenCryptoPay pay request; `timeout` waits up to 10 s, then 404 with the OpenCryptoPay body                                                                                                                                                                                                                                                                                       |
 | PUT    | `/me/wallet`                                         | Bearer                                       | Bind wallet identity pubkey while unverified (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/lnurlpay/:pubkey`                                  | none                                         | Forward wallet name registration (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/lnurlpay/:pubkey/recover`                          | none                                         | Forward signed recover (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/lnurlpay/:pubkey/metadata`                         | none                                         | Forward signed payment metadata (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/lnurlp/:username/invoice`                          | none                                         | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/verify/:paymentHash`                               | none                                         | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
-| GET    | `/pay/:username`                                     | none                                         | Public pay-link card: display name and satoshi bounds                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/pay/charges/:id`                                   | none                                         | Public till receipt. `serializePosCharge`. No `accountId` and no `sparkInvoice`. 404 when missing. A paid charge is returned                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/pay/:username/charges/:id`                         | none                                         | Same receipt when that charge belongs to `:username`. 404 when missing or owned by someone else                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| GET    | `/lnurlp/cb/:username`                               | none                                         | Shop payment callback: the BOLT11 of the open amount, or the detail of one offered method and asset (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| GET    | `/lnurlp/tx/:username`                               | none                                         | Shop payment proof: `tx` or `hex` of a stablecoin transfer, checked on chain and submitted to Orchestra (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| GET    | `/lnurlp/wait/:payment`                              | none                                         | Shop payment status for the payment page, held up to 25 s with `since` (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| GET    | `/pay/:username`                                     | none                                         | Public pay-link card: display name, satoshi bounds, and the open charge (`id`, `amountSats`, `expiresAt`, and the six fiat fields) or `charge: null`                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | POST   | `/pay/:username/invoice`                             | none                                         | One BOLT11 invoice for an exact satoshi amount on the member's receiving address, plus `sparkInvoice` (or `null`) when free in-app payments are on: the open till's, or one for the posted amount                                                                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/pay/:username/payment`                             | none                                         | Open a shop payment for an amount the payer entered (USDT and USDC through Orchestra, or its BOLT11); 404 unless `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | POST   | `/lnurl/pay-request`                                 | Bearer                                       | Fetch and check the LNURL pay request of an address on another host                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/lnurl/invoice`                                     | Bearer                                       | Fetch and check a BOLT11 from an address on another host for an exact amount                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | GET    | `/favicon.ico`                                       | none                                         | Brand mark (favicon)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -212,9 +216,9 @@ Public base URLs used in examples:
 | POST   | `/messages/:id/repayment`                            | Bearer                                       | Author pays the next giver share from their own wallet. A repeat for that unpaid share returns the outstanding invoice. Includes `sparkInvoice` (or `null`).                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/messages/:id/repayment/due`                        | Bearer                                       | Author gets every payable repayment bill of the loan at once (at most 60), plus the due shares that wait for a giver who cannot receive                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/contact`                                           | Bearer                                       | Send private in-app contact `{ text }`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| GET    | `/pos`                                               | Bearer                                       | Open till charge or null, plus up to 20 history rows                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
-| POST   | `/pos`                                               | Bearer                                       | Pin one whole-sat amount for five minutes                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
-| DELETE | `/pos`                                               | Bearer                                       | Cancel every unexpired pending till charge                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| GET    | `/pos`                                               | Bearer                                       | Open till charge or null, plus up to 20 history rows; `charge.shopPayment` when the LNURL server resolves                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                      |
+| POST   | `/pos`                                               | Bearer                                       | Pin one whole-sat amount for five minutes; ends the account's open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| DELETE | `/pos`                                               | Bearer                                       | Cancel every unexpired pending till charge and its open shop payment                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/conversations`                                     | Bearer                                       | List visible private threads (per-row `unreadMessageCount`; envelope `unreadCount` is thread count)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/conversations/moderator-group`                     | Bearer (moderator+)                          | Open/ensure closed moderator-group tool                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/conversations`                                     | Bearer                                       | Open thread from a forum note (`forumMessageId`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
@@ -238,6 +242,7 @@ Public base URLs used in examples:
 | PATCH  | `/debug/accounts/:id`                                | `Authorization: Bearer`                      | Operator set `role` / `platform` / `sessionRefused`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/debug/accounts/:id/session`                        | `Authorization: Bearer`                      | Operator mint of a member bearer (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/debug/accounts/merge`                              | `Authorization: Bearer`                      | Operator merge of one account into another (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
+| POST   | `/debug/shop-proofs/:id/retry`                       | `Authorization: Bearer`                      | Operator retry of a `stuck` shop payment proof (`DEBUG_TOKEN`; mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/debug/api-log`                                     | `Authorization: Bearer`                      | Operator HTTP audit log (`DEBUG_TOKEN`); follow `before`/`beforeId`; no query string, body, or Authorization stored                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | GET    | `/debug/diagnostics`                                 | `Authorization: Bearer`                      | Operator diagnostic log (`DEBUG_TOKEN`); newest 200; no secrets                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/debug/db`                                          | `Authorization: Bearer`                      | Operator page through every public table (`DEBUG_TOKEN`); follow `nextCursor`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
@@ -393,43 +398,213 @@ verified wallet key (`sparkPubkeyVerifiedAt` is a number), the pay request
 comes from the self-hosted LNURL server (`GET /.well-known/lnurlp/<username>`,
 5 s timeout, fixed `Host`, 120 requests per minute per client address); it is
 returned only when `walletPayRequest` accepts it with callback
-`<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`. While an unexpired pending
-`pos_charge` exists, both `minSendable` and `maxSendable` become
-`amountSats * 1000`. There is no pass-through to any other provider.
+`<PUBLIC_BASE_URL>/lnurlp/<username>/invoice`. There is no pass-through to
+any other provider. The LNURL server is asked first on every request, also
+when the answer below is the OpenCryptoPay pay request of a shop payment;
+its `metadata` is the metadata of that pay request.
 
 CORS origin and methods match `/.well-known/nostr.json`
 (`Access-Control-Allow-Origin: *`, methods `GET` / `OPTIONS`).
 The pay request itself is `Cache-Control: no-store`. `public, max-age=60`
 stays on `GET /.well-known/nostr.json` only.
 
+Every error body on this route has the five fields of the shop payment
+error body ([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)):
+`statusCode`, `message`, `error`, `status` (`ERROR`), and `reason`, the
+last four except `status` carrying the same text. The one exception is the
+404 for no pending payment (under `timeout` below): it adds the shop's
+OpenCryptoPay fields, and its `error` is `Not Found` while `message` and
+`reason` are `No pending payment found`, as in the standard's example.
+
 Username invalid (`normalizeUsername` returns null), unknown
 (`getAccountByUsername` undefined), an account without a verified wallet,
 or the LNURL server not configured → **Response** `404`:
 
 ```json
-{ "error": "Not found" }
+{
+  "statusCode": 404,
+  "message": "Not found",
+  "error": "Not found",
+  "status": "ERROR",
+  "reason": "Not found"
+}
 ```
 
 For a verified wallet key, an upstream 404 → **Response** `404` with the
 same body.
 
-The store throws → **Response** `502`:
+The store throws → **Response** `502` with the text
+`Lightning Address could not be resolved`.
 
-```json
-{ "error": "Lightning Address could not be resolved" }
-```
-
-For a verified wallet key, over the limit → **Response** `429`
-`{ "error": "Too many requests" }`.
+For a verified wallet key, over the limit → **Response** `429` with the
+text `Too many requests`.
 
 For a verified wallet key, the LNURL server being unreachable, another
 non-2xx status, unparsable JSON, or a document `walletPayRequest` rejects
-→ **Response** `503`
-`{ "error": "Lightning Address could not be resolved" }`.
+→ **Response** `503` with the text `Lightning Address could not be resolved`.
 
-Success → **Response** `200` with the provider payRequest JSON. Callback
-and metadata are not rewritten. An unexpired pending till charge rewrites
-only `minSendable` and `maxSendable`, both to that amount in millisats.
+Success → **Response** `200`. When the LNURL server is not configured, the
+route is the 404 above. When it resolves, the shop payment rules below
+decide between today's pay request and the OpenCryptoPay pay request.
+
+**Today's pay request.** The provider payRequest JSON. Callback and
+metadata are not rewritten. A waiting charge rewrites only `minSendable`
+and `maxSendable`, both to the charge amount in millisats. A waiting charge
+is an unexpired pending till charge with no shop payment, or whose shop
+payment is `ended`. A charge whose shop payment is `open` is answered as
+the open amount below. A pending charge whose shop payment is `accepted` or `paid` does not pin, so
+the response is the unpinned pay request, and any LNURL wallet can still
+pay the sticker.
+
+**Open amount.** The account's open amount is its shop payment whose
+status is `open` while `now` is before its `window_ends_at`. An account has
+at most one. While it exists, the response is the OpenCryptoPay pay request
+for it, with or without `timeout`, written with `Content-Type:
+application/json`, CORS `*`, methods `GET, OPTIONS`, and
+`Cache-Control: no-store`. The table is the complete body:
+
+| Field               | Value                                                                                                                    |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
+| `id`                | the username                                                                                                             |
+| `tag`               | `payRequest`                                                                                                             |
+| `callback`          | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`                                                                                 |
+| `minSendable`       | the payment's sats times 1000                                                                                            |
+| `maxSendable`       | the same value                                                                                                           |
+| `metadata`          | the metadata of today's pay request, unchanged                                                                           |
+| `displayName`       | the trimmed account name, or the username when it is blank (as `GET /pay/:username`)                                     |
+| `standard`          | `OpenCryptoPay`                                                                                                          |
+| `possibleStandards` | `["OpenCryptoPay"]`                                                                                                      |
+| `displayQr`         | `false`                                                                                                                  |
+| `recipient`         | `{ "name": <the same shop name> }`                                                                                       |
+| `quote`             | `{ "id": <current quote id>, "expiration": <quote expiry>, "payment": <shop payment id> }`                               |
+| `requestedAmount`   | `{ "asset": "BTC", "amount": <sats / 100000000> }`, a JSON number in plain notation (never `1e-8`)                       |
+| `transferAmounts`   | the stored array of the current quote: Lightning first, then each offered method in method-table order, USDT before USDC |
+
+A `transferAmounts` entry is
+`{ "method", "minFee", "assets": [{ "asset", "amount" }], "available": true }`.
+Lightning has `minFee` 0 and one asset `BTC` whose `amount` is the sats
+divided by `SATS_PER_BTC` (`satsToBtcString`, put through the canonical
+form). A stablecoin method has `minFee` in wei as a JSON
+number and one asset per offer, whose `amount` is the offer's `amountIn`
+divided by 10 to the power of its decimals. Every `amount` string has no
+exponent, no trailing zero after the point, and no point for a whole
+number (`0.00001`, `1.5`, `12`): the canonical decimal form of
+`canonicalDecimal` (`src/lib/decimal.ts`), which `canonicalGoalAmount`
+uses with eight decimals and the stablecoin amounts with 6 or 18.
+Timestamps are `toISOString` output.
+
+A fetch returns the current quote unchanged unless it is replaced. A quote
+is replaced when it has a stablecoin entry, less than 45 s remain before
+its expiry, at least 45 s remain before `window_ends_at`, the payment has
+had fewer than 4 replacements, and stablecoin rows are on for the
+username. The replacement runs under the account's creation lock, within
+4 s: route list, Orchestra quotes, and offer checks for the same sats and
+the same BOLT11. Its external calls (route list, gas prices, quotes) end
+`SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before those 4 s, so the
+transaction below normally commits inside a fetch's 4 s wait. Under the
+account row lock it then reads the payment's
+newest quote: when that is no longer the quote the replacement started
+from (a fetch's Lightning-only row, or another container's replacement,
+came first), it inserts nothing and answers with that newest quote.
+Otherwise it increments `shop_payment.replacements` with one
+conditional update (`status` `open`, `replacements` unchanged, at least
+45 s left in the window) and inserts the new quote only when that update
+changed the row; otherwise it answers with the quote that is current then.
+A replacement that sent no quote request (no route list, no candidate
+pair, no fresh spot, or no quote budget) runs the same conditional update
+without the increment and inserts its Lightning-only row, because a
+Lightning-only row made without an Orchestra call is not a replacement.
+The replacement and the Lightning-only fallback read the clock after the
+account row lock.
+A second fetch in the same process joins the running replacement. A fetch
+waits for the replacement at most until the earlier of 4 s after it
+arrived and 4 s after the replacement took the lock; a replacement still
+queued behind a creation or a stalled lock holder therefore costs the
+fetch at most 4 s. After that wait the fetch answers from the state then
+(the current quote while it is valid, else the Lightning-only row below),
+and the replacement finishes in the background; when its transaction lands
+after that Lightning-only row, it inserts nothing.
+When no new offer passes, the new quote is Lightning-only (its expiry is
+`window_ends_at`); a Lightning-only quote is never replaced. A current quote
+whose expiry has passed and that is not replaced gets a new Lightning-only
+quote row, which is not a replacement. `quote.payment` never changes for a
+payment. When the payment stops being `open` between these steps, the api
+reads the account's state again. When another payment is the open amount
+now (a new payer amount replaced it, or a charge's creation inserted one),
+the request answers that open amount as above, once per request. Otherwise,
+and when that payment also stops being `open` before it is answered, it
+answers as without an open amount from the state: a charge that is still
+waiting keeps today's pinned pay request, and anything else gets today's
+unpinned one (or, with `timeout` or `method`, the 404 for no pending
+payment).
+
+**Waiting for a pending charge.** A pending charge with no shop payment
+first starts or joins the creation procedure when stablecoin rows are on
+for the username, and waits for it at most until 8 s after the fetch
+arrived (`SHOP_PAY_LINK_CREATION_WAIT_MS`, as long as the procedure's 8 s
+budget and separate from it), with or without `timeout`, whatever the
+creation is still waiting for, lock waits and the wallet's own pay request
+included. The arrival is taken as the route's first statement. A charge
+has at most one creation in flight, from the moment it is queued until it
+ends: requests for the same charge (and the creation `POST /pos` starts)
+share it instead of queueing another run, and a joining request's wait
+still ends 8 s after its own arrival. A creation that outlasts the wait
+goes on in the background. A creation that ends earlier (it re-reads and
+stops at once because the charge already has a payment or is no longer
+pending, or it fails) ends the wait right away, and the next request starts
+a new one. Whatever the outcome (a payment, a skipped or failed creation, a
+charge cancelled, paid, or expired meanwhile, or the wait used up), the api
+then reads the account's state again and answers from it: the open-amount
+pay request when the payment is open by then, today's pinned pay request
+while the charge is still waiting, and otherwise today's unpinned one. A
+request with `timeout` that reaches this point only 8 s or more after it
+arrived (after its `timeout` wait) still starts or joins the creation, but
+does not wait for it and answers today's pinned pay request; the creation
+goes on in the background.
+
+**`timeout`.** When the query has `timeout` (any value, also empty), the
+value is a whole number of seconds: only digits count, values above 10
+count as 10, and anything else counts as 0. Until the time is up the api
+re-reads every `WAIT_SATS_POLL_MS` (250 ms) until it finds an open amount
+or a pending charge whose shop payment is missing or `open`. At most 50
+requests per process wait at the same time; a further request checks once
+and answers at once. With an open amount or such a charge the answer is as
+without `timeout`. With neither (a pending charge whose shop payment is
+`accepted`, `paid`, or `ended` counts as nothing waiting) →
+**Response** `404`:
+
+```json
+{
+  "id": "<username>",
+  "displayName": "<shop name>",
+  "standard": "OpenCryptoPay",
+  "possibleStandards": ["OpenCryptoPay"],
+  "displayQr": false,
+  "recipient": { "name": "<shop name>" },
+  "statusCode": 404,
+  "message": "No pending payment found",
+  "error": "Not Found",
+  "status": "ERROR",
+  "reason": "No pending payment found"
+}
+```
+
+**Simplified flow.** A request with `method` first applies the rules
+above, including `timeout` and replacement. With an open amount it then
+answers exactly as `GET /lnurlp/cb/:username` with that `method`, the
+request's `asset`, and the current quote id; a repeated `quote`,
+`method`, or `asset` key is the callback's 400. When the payment stops
+being `open` after its current quote was read and before that answer
+reads the account's state (for example, a new payer amount replaced it),
+the request reads the state again as under **Open amount** above:
+another open amount is answered the same way, once per request, and
+otherwise it is the 404 above, never the callback's 404 `Quote expired`.
+Without an open amount it is the 404 above.
+
+Usernames `invoice` and `cb`, and any username that ends in `.`, never get
+stablecoin rows: no shop payment is created for them, and they keep
+today's pay request, pinned while a till charge is pending, also with
+`timeout`, `method`, or `asset` (no wait and no 404).
 
 ### `PUT /me/wallet`
 
@@ -550,8 +725,15 @@ recover. Upstream may return HTTP 200 with
 The account's pending point-of-sale charge is read before the upstream
 call. After an upstream 2xx whose JSON `pr` decodes to exactly
 `amountSats * 1000` of that charge, the payment hash is recorded against that charge for
-[paid detection](#point-of-sale-paid-detection). The response is unchanged;
-a store failure logs `pos.invoice.record_failed`.
+[paid detection](#point-of-sale-paid-detection), under the payment hash
+claim (see Creation). When another charge's invoice row or another shop
+payment already holds that hash (`recordInvoice` returns
+`other_payment`), the BOLT11 is not handed out: the route logs
+`shop.alert.duplicate_invoice` (`chargeId`, `holderChargeId`, and
+`paymentId` only when a shop payment holds it) and answers **503**
+`{ "error": "Lightning address service is unavailable" }`. Otherwise the
+response is unchanged; a store failure logs `pos.invoice.record_failed`
+and the invoice is still handed out.
 
 ### `GET /verify/:paymentHash`
 
@@ -567,6 +749,519 @@ server is not contacted. Upstream `GET /verify/<paymentHash>` (15 s) with
 the segment joined as-is (no percent-encoding). Status mapping as recover
 for reachable outcomes; network / timeout / redirect / body-read failure →
 503 as above.
+
+### Shop payment in USDT and USDC
+
+Implements [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md).
+A payer settles a shop payment in USDT or USDC. Orchestra takes the coin
+and pays one BOLT11 for the shop's sats, minted on the shop's verified
+in-app wallet by the mint `POST /pay/:username/invoice` uses
+(`requestGiftInvoice`). The shop receives an ordinary bitcoin payment and
+never holds USDT or USDC.
+
+The routes `POST /pay/:username/payment` (answers 404 otherwise),
+`GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`,
+`GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are
+mounted, and the shop payment cases of `GET /.well-known/lnurlp/:username`
+and `/pos` apply, only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`
+resolve. Stablecoin rows are offered only when `resolveShopPaymentConfig`
+also resolves all four of `ORCHESTRA_BASE_URL` (absolute `https` origin
+without path, query, or user info), `ORCHESTRA_API_KEY` (a server key
+`fn_…`; a client key `fnp_…` is refused), `SHOP_EVM_RPC` (a non-empty JSON
+object from decimal chain id to an absolute `https` URL), and
+`SHOP_REFUND_ADDRESS` (`0x` and 40 hexadecimal characters). An invalid
+value turns the stablecoin rows off and the process still boots. Without
+them no shop payment is created, so the pay link answers today's pay
+request (or, with `timeout` and nothing waiting, the 404 for no pending
+payment), and `POST /pay/:username/payment` answers 503
+`stablecoin_unavailable`.
+Rows live in `shop_payment`, `shop_quote`, `shop_offer`, `shop_proof`, and
+`shop_proof_lookup` (`docs/schema/shop_payment.sql`) when `DATABASE_URL` is
+set, and in memory otherwise.
+
+**Methods.** `Ethereum` (1), `Arbitrum` (42161), `Optimism` (10),
+`Polygon` (137), `Base` (8453), and `BinanceSmartChain` (56), each with
+USDT and USDC at the contracts and decimals of the contract's method
+table. Pairs are requested in this order: USDT on `Ethereum`,
+`Arbitrum`, and `Polygon`, then the remaining pairs in table order, USDT
+before USDC. A pair is a candidate only when Orchestra's route list
+(`GET /v2/orchestration/routes`, 1 s timeout, reused only until its
+`validForMs` has passed since the request started; at most 25 fetches per
+minute per process, `ORCHESTRA_ROUTES_PER_MINUTE`) names it with `exactOutTo` admitting `lightning:BTC`, its
+contract and decimals equal the table (otherwise `shop.route.mismatch`),
+and `SHOP_EVM_RPC` has an endpoint for the chain. Request matching of
+method and asset ignores case; responses write the table names.
+
+**Creation.** A till charge (after `POST /pos`, or the first pay-link
+fetch) or `POST /pay/:username/payment` runs one procedure under the
+account's in-process creation lock; a second caller for the same account
+waits for the first:
+
+1. In one transaction, end a lapsed `open` payment of the account with
+   `end_reason` `window`. For a charge, stop with its existing shop
+   payment, or when the charge is no longer pending or has expired. For a
+   payer, stop with 409 `payment_open` when a charge is pending. The
+   transaction first takes the account row lock (`SELECT … FOR UPDATE`),
+   then the charge row lock for a charge, or for a payer the account's
+   overdue pending charges, which it expires, and only then ends the lapsed
+   payment, the order the settlement step and the charge watch take.
+2. Stop unless stablecoin rows are on for the username, unless the
+   account's 60 s no-pair wait has passed, and unless the api-wide counter
+   (60 creations per minute) and then the account counter (10 per minute)
+   allow it. The counters are per process.
+3. Read the route list and select the candidate pairs. A failed route-list
+   fetch, or one the route-list budget refuses → stop (no stablecoin until
+   a fetch succeeds; the next creation fetches again). No candidate pair → stop and start the account's 60 s
+   no-pair wait.
+4. Mint one BOLT11 for the sats with one 4 s deadline for both LNURL calls.
+   A failed mint or a BOLT11 of another amount stops the procedure as a
+   failed mint. A payment hash that another charge's or a payer's shop
+   payment already holds stops it the same way and logs
+   `shop.alert.duplicate_invoice`; when the charge's own shop payment holds
+   it, that payment is used and the procedure ends. Its expiry is the
+   request time plus the `expiry` tag, or plus 3600 s without one
+   (`bolt11ExpiresAtMs`). For a charge, the hash is then recorded against
+   the charge with `recordInvoice`, which runs as its own claim transaction
+   and returns `recorded`, `this_charge`, `other_payment`, or `not_open`:
+   `other_payment` stops as a failed mint with the alert, `not_open` stops
+   quietly, and the other two go on. When `recordInvoice` fails with an
+   error, `pos.invoice.record_failed` is logged and nothing is written, so
+   a fetch answers today's pinned Lightning request. A payer creation never
+   records against a charge; it reads `findChargeForPayment({ paymentHash })`
+   instead: a hit stops as a failed mint with the alert, and an error writes
+   nothing and answers order 9.
+5. Within 3 s, read `eth_gasPrice` per chain and request one Orchestra
+   exact-out quote per candidate pair in parallel, for as many pairs as the
+   quote budget (240 per minute) allows. Each quote pays the BOLT11, is
+   tagged with the payment id, and sends `SHOP_REFUND_ADDRESS`. Without a
+   stored spot quote whose USD rate has an `asOf` younger than 10 minutes
+   (the creation never waits for a spot fetch), no gas price or quote is
+   requested and each of those pairs logs `shop.offer.rejected` with
+   `check` `price`.
+6. Keep each quote that passes the offer checks: `targetAmountOut` equals
+   the sats; `amountIn` is a positive integer within `requiredAmountIn` and
+   `maxAcceptedAmountIn` when present; the transaction's chain id and token
+   contract equal the table; its value is zero; its data is exactly the
+   ERC-20 `transfer(depositAddress, amountIn)`; the deposit address is not
+   used by another offer of the batch; `expiresAt` minus 30 s is at least
+   45 s ahead; the BOLT11 expires at least 600 s after `expiresAt`; and
+   the stored BTC spot quote has a USD rate with an `asOf` younger than 10
+   minutes, and `amountIn` in USD is at most 5 % above the sats' value at
+   it: the rate is parsed with `parseUsdPerBtc` (USD per BTC times 10^8),
+   and the check runs in BigInt with no rounding,
+   `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105`. Without a
+   fresh rate the check fails. A quote whose chain's gas price
+   could not be read is not kept either. A failed check logs
+   `shop.offer.rejected` with the check name. A quote that failed logs it
+   too: `check` `body` for an HTTP 200 whose body does not parse, `http`
+   for a request sent without an HTTP 200 answer (another 2xx included),
+   and `budget` when no request could be sent.
+7. None kept → stop and start the 60 s no-pair wait.
+8. In one transaction that first takes the payment hash claim
+   (`SELECT pg_advisory_xact_lock($1, $2)`: a fixed namespace and the first
+   32 bits of the hash as a signed integer; an in-process map shared with
+   the charge store on a memory boot), then the account row lock
+   (`SELECT … FOR UPDATE`), and for a charge then the charge row lock.
+   Holding them, it writes nothing and answers order 9 when its request
+   arrived 16 s ago or longer (`SHOP_CREATION_INSERT_LIMIT_MS`; the
+   arrival of `POST /pay/:username/payment`, of the `POST /pos` that started
+   the charge's creation, or of the pay-link fetch that started it) or,
+   for a payer, when the client disconnected (the request's abort signal is
+   set). A `pos_charge_invoice` row of another charge for the hash stops it
+   before anything is ended or inserted, as a failed mint with
+   `shop.alert.duplicate_invoice`. A charge that is no longer
+   pending or has expired gets nothing; a payer with a pending charge gets
+   409 `payment_open`. When the account's `open` payment is this charge's
+   own payment, it is used and nothing is inserted. Before anything is
+   ended, the payment that holds the BOLT11's payment hash is read: this
+   charge's own payment is used; any other holder rolls the whole
+   transaction back, logs `shop.alert.duplicate_invoice`, deletes the
+   charge invoice row only when step 4 of this attempt inserted it, and
+   ends as a failed mint, so nothing else is written and an `open` payment
+   stays `open`. Otherwise an `open` payment of the account ends (`window`
+   when its window passed, else `superseded` for a charge or `replaced` for
+   a payer), then the payment is inserted with its first quote and offers.
+   The window ends at the charge's `expiresAt`, or five minutes after
+   creation for a payer. An offer whose deposit address another offer holds
+   is dropped (`shop.alert.shared_deposit_address`) and the quote holds only
+   the inserted offers. A lost insert on the payment hash that the charge's
+   own payment holds uses that payment; a holder that appeared after the
+   check rolls back as above, including the end of the `open` payment.
+
+Every external call runs outside a database transaction. The quote expiry
+(`quote.expiration`) is the earliest of `window_ends_at` and every offer's
+`expiresAt` minus 30 s; a Lightning-only quote ends at `window_ends_at`.
+
+**States.** `shop_payment.status` is `open`, `accepted`, `paid`, or
+`ended`; every change is one conditional update. `open` → `ended` when the
+window ends, `POST /pos` supersedes it, a new payer amount replaces it, the
+charge is cancelled, or the charge is paid by another invoice
+(`charge_paid`). `open` or `ended` (not closed) → `accepted` when one of
+its proofs is accepted. `open`, `ended`, or `accepted` (not closed) →
+`paid` when its BOLT11 settles. `accepted` → `ended` when the accepted
+proof is refunded, fails, or is refused without another proof taking its
+place (`orchestra_refunded`, `orchestra_failed`, `proof_refused`), or when
+the final settlement read finds the BOLT11 unpaid (`expired_unpaid`). The
+final settlement read, 10 minutes after the BOLT11 expiry, sets
+`closed_at` on a payment that is not paid; a paid or closed payment never
+changes again.
+
+**Error body.** Every error on the callback, the proof, and the wait route,
+and every error on the pay link, is:
+
+```json
+{
+  "statusCode": 400,
+  "message": "<text>",
+  "error": "<text>",
+  "status": "ERROR",
+  "reason": "<text>"
+}
+```
+
+`POST /pay/:username/payment` uses `{ "error", "code" }` instead.
+
+### `GET /lnurlp/cb/:username`
+
+Shop payment callback. No auth. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve. Registered after `GET /lnurlp/:username/invoice`,
+so `GET /lnurlp/cb/invoice` stays the invoice forward of the username
+`cb`. CORS `*`, methods `GET, OPTIONS`, `Cache-Control: no-store`. A `HEAD`
+request is answered 404. Rate limit 120/min/client; over it →
+**Response** `503` with the text `Too many requests` (not 429, because
+Tether Wallet reads a 4xx here as final). All errors use the shop payment
+error body. A store or service failure → **Response** `503` `Lightning
+address service is unavailable` (logs `lnurl_server.failed` with `route`
+`callback`).
+
+Invalid username, the username `invoice`, unknown account, or no verified
+wallet → **Response** `404` `Not found`.
+
+**LNURL amount path** (no `method`): when the account has an open amount
+and `amount` equals its sats times 1000 → **Response** `200`
+`{ "pr": "<bolt11>", "routes": [] }` with the payment's BOLT11. Otherwise
+→ **Response** `400` `Amount does not match this payment`. This path never
+mints.
+
+**Detail** (with `method`), checked in this order:
+
+| Order | Condition                                                                                                                                    | Response                                 |
+| ----- | -------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------- |
+| 1     | `quote` or `asset` is missing, or `quote`, `method`, `asset`, or `amount` is repeated.                                                       | **400** `That payment is not offered`    |
+| 2     | No open amount, `quote` is not a UUID or (in lowercase) neither the current nor the previous quote of the open amount, or its expiry passed. | **404** `Quote expired`                  |
+| 3     | `method` `Lightning` and `asset` `BTC` (any case).                                                                                           | **200** `{ "pr": "<bolt11>" }`           |
+| 4     | A stablecoin method and asset that the quote offers with `available` true.                                                                   | **200** with the stablecoin detail below |
+| 5     | Anything else.                                                                                                                               | **400** `That payment is not offered`    |
+
+Stablecoin detail:
+
+```json
+{
+  "expiryDate": "<quote expiry>",
+  "blockchain": "<method>",
+  "uri": "ethereum:<token>@<chainId>/transfer?address=<deposit address>&uint256=<amountIn>",
+  "hint": "Pay this URI. Then send the transaction hash as tx, or the signed raw transaction as hex, with quote and method, to <PUBLIC_BASE_URL>/lnurlp/tx/<username>"
+}
+```
+
+The URI carries the lowercase contract, the decimal chain id (also 56 for
+`BinanceSmartChain`), the lowercase deposit address, and `amountIn` in
+decimal. The first detail of an offer sets `shop_offer.detail_issued_at`
+and, when the payment has none yet, `shop_payment.next_history_at` 10 s
+ahead, which starts the watcher's order reads. A repeat returns the same
+detail while the quote is valid.
+
+### `GET /lnurlp/tx/:username`
+
+Shop payment proof. No auth. Mounted only when `LNURL_SERVER_URL` and
+`PUBLIC_BASE_URL` resolve. CORS `*`, methods `GET, OPTIONS`,
+`Cache-Control: no-store`. A `HEAD` request is answered 404. Rate limit
+120/min/client. All errors use the shop payment error body. A store or
+service failure → **Response** `503` `Payment is being confirmed` (logs
+`lnurl_server.failed` with `route` `proof`), so the wallet repeats the
+proof as after any 5xx.
+
+Invalid username, the username `invoice`, unknown account, or no verified
+wallet → **Response** `404` `Quote expired`, because no quote of a shop
+payment of that username exists.
+
+Query: `quote`, `method`, an optional `asset`, and exactly one of `tx` or
+`hex`; unknown keys are ignored. Checked in this order: a repeated
+`quote`, `method`, `asset`, `tx`, or `hex` → **Response** `400`
+`Payment was not accepted`; `quote` that is not a UUID or not a quote of a
+shop payment of this username (current or earlier, any status) →
+**Response** `404` `Quote expired`; a missing or unknown `method`
+(matched without case), neither or both of `tx` and `hex`, or a malformed
+value → **Response** `400` `Payment was not accepted`. A request over the
+rate limit gets **Response** `503` `Too many requests` for every case
+above and for a proof that is not stored yet; a stored proof is answered
+from its row as it stands. Without the stablecoin configuration or without
+an RPC endpoint for the method's chain, a stored proof is answered as it
+stands and a new one → **Response** `503` `Payment is being confirmed`,
+with nothing stored or sent: the quote is this username's, only its
+verification cannot run now, and the wallet retries. 404 `Quote expired`
+stays bound to quote membership.
+
+The whole request stays within 18 s; each RPC call times out after 3 s and
+Orchestra gets at most 10 s. A step the budget no longer allows is left to
+the watcher, and the stored row answers (**503** while unresolved).
+
+- `tx`: 64 hexadecimal characters with or without `0x`, stored as `0x`
+  plus the lowercase hash (`normalizeHex32`). The hash of a published
+  transaction or of an ERC-4337 user operation.
+- `hex`: optional `0x`, then an even number of 100 to 4096 hexadecimal
+  characters: a signed EVM transaction the wallet did not publish.
+
+**Repeat.** Before any chain read, a stored proof of this quote's offers
+whose `tx_hash` or `user_op_hash` equals the `tx`, or whose `tx_hash`
+equals the hash of `hex`, answers from that row (the `accepted` row first,
+then the row of the request's `asset`, then the oldest). Within the budget
+a row without a log index reads its receipt once, a `hex` row that was
+never sent is sent, and an unresolved row with a log index whose last
+submit is empty or at least 2 s old is submitted again (at most 5 times per
+minute per proof).
+A hash only proofs of other quotes hold is not a repeat.
+
+**Verification of `tx`.** `eth_getTransactionReceipt`, else
+`eth_getUserOperationReceipt` with the same hash; a failed RPC call counts
+as not found. Neither found → a lookup row (at most 4 rows per quote, done
+ones included, counted under the quote's row lock) and **Response** `503`
+`Transfer not found yet`; the watcher keeps looking. A receipt that did not succeed (`status` not
+`0x1`, or a user operation whose `success` is not `true`) → **Response**
+`400` `Payment was not accepted`. The ERC-20 `Transfer` logs to an offer's
+deposit address from that offer's contract (only offers of `asset` when it
+is given) select the offer, a log with the offer's `amountIn` first. No
+such log → **Response** `400` `Payment was not accepted`, or
+`Transaction already used` when every such log belongs to a proof of
+another quote. One proof is one log (`chain_id`, `tx_hash`, `log_index`);
+its value is stored, and a different amount is still submitted.
+
+**Verification of `hex`.** A legacy (EIP-155), EIP-2930, or EIP-1559
+transaction whose chain id is the method's, whose `to` is an offer
+contract of this quote and method (of `asset` when given), whose value is
+zero, whose data equals that offer's transfer data byte for byte, and
+whose fee reaches the offer's `minFee` (`hexFeeReaches`; for EIP-1559 the
+current `eth_gasPrice` is read). A failed check → **Response** `400`
+`Payment was not accepted`, nothing stored or sent. A gas price that cannot
+be read → **Response** `503` `Payment is being confirmed`, nothing stored.
+Otherwise the proof is stored with `raw_hex` and sent with
+`eth_sendRawTransaction`. `already known` or `nonce too low` counts as
+sent when `eth_getTransactionByHash` finds the hash; `insufficient funds`,
+`invalid`, or `intrinsic gas` records the proof `refused` and answers 400;
+any other error answers 503 and the watcher sends it again. Within the
+budget the request then reads the receipt once. A `hex` proof is submitted
+only once its receipt with status `0x1` is found and has filled the log
+index, so that Orchestra can see the deposit (a `xchain_deposit_mismatch`
+is then definitive for it too); without a receipt yet the request answers
+**503** `Payment is being confirmed`, the receipts duty reads and sends the
+transaction again, and the submits duty submits it after the fill. A
+receipt with another status records the proof `refused`. A transaction
+the node still does not know keeps the proof unresolved until its
+`give_up_at`, after which it becomes `stuck` like any unresolved proof.
+
+**Submit.** Every verified proof with a log index is submitted to Orchestra
+(`POST /v1/orchestration/submit` with `{ quoteId, txHash }`), also when the
+payment is `ended`, `paid`, or already `accepted`, and after the quote
+expired. An order makes the proof follow its status; `400
+xchain_deposit_mismatch` refuses it; `409 quote_expired` makes it `late`;
+anything else leaves it unresolved for the watcher.
+
+Responses by stored result:
+
+| Stored result                | Response                                                                                             |
+| ---------------------------- | ---------------------------------------------------------------------------------------------------- |
+| `accepted`                   | **200** `{ "txId": "<tx_hash>" }`                                                                    |
+| `superseded`                 | **400** `Another transfer is paying this payment`                                                    |
+| `late`                       | **400** `Invoice expired`                                                                            |
+| `refunded`                   | **400** `The transfer was refunded`                                                                  |
+| `failed`                     | **400** `The transfer was not completed`                                                             |
+| `refused`                    | **400** `Transaction already used` when `refusal` is `tx_used`, otherwise `Payment was not accepted` |
+| unresolved, held, or `stuck` | **503** `Payment is being confirmed`                                                                 |
+
+A proof becomes `accepted` when its Orchestra order is progressing
+(`processing`, `confirming`, `awaiting_approval`, `swapping`, `bridging`,
+`delivering`) and its transferred value lies within the offer's
+`requiredAmountIn` (or `amountIn`) and `maxAcceptedAmountIn` (or
+`amountIn`), while the payment is neither paid nor closed and no other
+proof of it is `accepted` (otherwise `superseded`; a `superseded` proof
+whose order resumed is accepted the same way once no proof is `accepted`),
+or when its order `completed`. A proof whose amount is unknown or outside those bounds, whose
+order is `refunding`, `unfulfilled`, or unknown, or whose payment is
+already paid, is held and answers 503 until its order is final. Acceptance
+moves the payment to `accepted`, so it stops being the open amount and the
+next pay-link poll with `timeout` is the 404 for no pending payment.
+`txId` is the transaction hash; Orchestra's order id is never sent.
+
+A `completed` order makes its proof `accepted` (from unresolved,
+`superseded`, `late`, `refused`, or `stuck`) and, in the same transaction,
+makes the proof that was accepted first `superseded`. The other final
+statuses map as follows: `refunded` → `refunded`, `failed` and
+`fallback_delivered` → `failed` (`shop.alert.order_failed`), and `expired`
+→ `refused` with `refusal` `expired_order`; each moves only from the
+results the States table allows. A progressing order of a proof whose
+payment is already closed makes the proof `late`
+(`shop.alert.late_deposit`). When the proof that was `accepted` becomes
+`refunded`, `failed`, or `refused` while the payment is neither paid nor
+closed, the oldest `superseded` proof of the payment (earliest
+`created_at`, then `id`) whose order is progressing and whose amount is
+known and within the bounds becomes `accepted` in the same transaction and
+the payment stays `accepted`; only when none qualifies does the payment end
+(`orchestra_refunded`, `orchestra_failed`, or `proof_refused`).
+
+**Locks.** Every transaction that changes a proof's result, the merge of
+two rows of one deposit, the order-status duty's step for a replaced
+order, and the orders duty's `next_history_at` decision first lock the
+payment's `shop_payment` row, then every proof row of the payment with one
+`SELECT … FOR UPDATE` ordered by id (`lockPaymentForProofs`); none of them
+locks an account row. A submit answer whose order a row of another payment
+holds (step 3 below) reads that row's payment without a lock first, then
+locks both `shop_payment` rows in the order of their ids, then the proof
+rows of both payments with one `SELECT … FOR UPDATE` ordered by id
+(`lockPaymentsForProofs`), and reads the holder again under the locks; a
+holder that moved to a payment not locked applies the answer once more in
+a new transaction. The two statements that write several existing
+`shop_payment` rows take them in the order of their ids too: the
+watcher's lapsed-window end (`endLapsedWindows`, `SELECT … ORDER BY id
+FOR UPDATE`, then one `UPDATE` of the locked ids) and
+`POST /debug/accounts/merge`, which locks the merged account's payment
+rows (`SELECT … ORDER BY id FOR UPDATE`) after both account rows and all
+its charge rows and before it moves them. Every other transaction locks or
+writes at most one existing `shop_payment` row. The settlement step locks the account,
+`pos_charge`, and `shop_payment` rows (a payer's payment only its
+`shop_payment` row) and no proof row, so no two of these wait for each
+other in opposite order. Every transaction that locks or writes both
+`pos_charge` and `shop_payment` rows takes the account row lock first, then
+the `pos_charge` rows, then the `shop_payment` rows: the settlement step,
+the charge watch, `POST /pos`, `DELETE /pos`, the creation's step 1
+re-check and its step 8 insert (after the payment hash claim), and the
+merge (both account rows, then all of the merged account's charge rows in
+the order of their ids, then its payment rows, before it deletes or moves
+any of them). The amount of a `hex` proof is the amount in its
+verified transfer `data`; a `tx` or `detected` proof's is the value of its
+`Transfer` log.
+
+**One deposit, two rows.** Every path that stores a proof (the route, the
+lookup duty, and the order duty) first reuses a stored row of the same
+offer and transaction, which takes a missing log index, value,
+user-operation hash, or order. An order goes only to a row that has none:
+a second order of the same transaction and offer gets its own row, and
+while an unlogged row of that offer and transaction still exists, the
+order is stored on a later history read, once that row has its log index.
+When a submit or a filled-in log index or order shows that two rows hold
+one deposit, rows of the same offer merge in one transaction: the
+`accepted` row is kept, else the row that holds an order, else the older
+one; it takes the log index,
+value, and order of the other row that it lacks, and the order's status
+travels with `provider_order`. Two rows that hold different orders are
+never merged: a row whose only matching transfer log another row of the
+same offer and transaction holds with another order (a successor or
+recovered order paid by the same transaction) keeps no log index, stays
+its own proof, and is no longer read. When the other row belongs to another offer, the
+row whose log index or order is being filled in (the later fill) is
+recorded `refused` with `refusal` `tx_used` when the collision comes from
+storing a proof (step 4); when it comes from a submit or a status read
+that returned an order another row holds (step 3), the newer of the two
+rows (later `created_at`, then the greater id) is, from any result the
+States table allows for `refused`; an `accepted` one included, which lets
+a `superseded` proof take its place or ends the payment with
+`proof_refused`. A proof refused as `tx_used` keeps its order but is no
+longer followed: its submits, receipt reads, and status reads stop, and a
+status read already in flight when it is refused applies nothing. When
+step 3 refuses the row that held the order (it is the newer one), the
+order moves in the same transaction to the submitted proof, the older row
+that survives: the refused row gives up `provider_order` and
+`order_status`, the survivor records the order (its submits stop and the
+status duty reads it) with the refused row's `order_found_at`, so the fast
+reads and the 24 h status limit do not restart, and with a final status the
+refused row stored rather than the submit's answer, and is evaluated. An
+`accepted` refused row hands its place to a survivor of the same payment
+only when that evaluation accepts it (a progressing order or `completed`,
+as the States table states); otherwise, and always when the survivor
+belongs to another payment (it is evaluated on its own payment), the
+oldest qualifying `superseded` proof of the refused row's payment takes
+the place, or that payment ends with `proof_refused`. While the order is
+`refunding`, `unfulfilled`, or an unknown status the survivor is held, is
+not `accepted`, and answers 503 until the States table accepts it (a later
+`completed` moves it to `accepted` and an `ended` payment that is not
+closed back to `accepted`) or its order is final. The newer row that holds
+the order may belong to another payment: it is refused and hands the order
+over the same way, under both payment rows' locks, and every change to
+that payment (its proof's refusal, `shop.proof.refused`, and the loss of
+its accepted proof) happens under its row lock. When the newer row that
+holds the order was already ended by that order (`refunded`, `failed`,
+`refused` with `expired_order`, or a stored final status), it cannot be
+refused and keeps the order (Orchestra counted the deposit on its offer);
+the submitted row is then recorded `refused` with `tx_used` instead, and
+its submits stop. A newer row already `refused` for another reason
+(`mismatch`, `hex_rejected`) whose order is not final keeps its result and
+hands the order to the survivor as above.
+
+**Replaced orders.** A status read that answers `unfulfilled` with a
+`supersededByOperationId` of another order does not move the proof: it
+keeps its order with the `unfulfilled` status (held, or still `accepted`),
+its status reads stop without `shop.alert.order_stuck`, the successor's id
+is stored as its `superseded_by_order`, and the payment's
+`successor_wait_until` moves 24 h ahead (`SHOP_SUCCESSOR_WAIT_MS`) when it
+is empty or earlier and its `next_history_at` is set to now when it is
+empty. The orders duty then stores the successor order, which carries its
+own `sourceTxHash`, as its own `detected` proof, so every row keeps its own
+transaction and order; an order recovered from an order a proof holds is
+stored the same way. A replaced proof that was never accepted answers a
+repeat with 503.
+
+**Log fields.** Each shop event is one `logEvent` line with `paymentId`,
+and with `quoteId`, `offerId`, `proofId`, `providerRef` (Orchestra's quote
+id), or `orderId` where it applies: the proof events carry the proof's
+offer, quote, provider reference, and order (`shop.alert.proof_stuck`,
+`shop.alert.order_stuck`, and `shop.proof.retried` included); the
+Orchestra client's
+`shop.orchestra.error`, `shop.orchestra.rate_limited`,
+`shop.orchestra.budget_exhausted`, and `shop.alert.orchestra_request`
+carry the ids of the payment or proof the call is for. The creation picks
+the payment's id before its route-list read, so `shop.route.mismatch`,
+`shop.mint.failed`, and `shop.alert.duplicate_invoice` carry it too.
+`shop.alert.duplicate_invoice` of a creation carries that `paymentId`, and
+`holderPaymentId` and `holderChargeId` when they are known (a payer's
+`findChargeForPayment` hit and a `pos_charge_invoice` row of another charge
+in step 8 carry only `holderChargeId`); from the invoice routes it carries
+`chargeId` (the pending charge), `holderChargeId` when a charge holds the
+hash, and `paymentId` (the holding payment) only when a shop payment holds
+it. `shop.creation.failed` is logged once by a charge's creation that
+throws, whether `POST /pos` or a pay-link fetch started or joined it, with
+`accountId`, `chargeId`, and the error's `name`, `code`, and `errno`, and
+once by a quote replacement that throws, with `accountId` and
+`paymentId`; the fetch is answered from the state.
+
+### `GET /lnurlp/wait/:payment`
+
+Shop payment status for the payment page. No auth. Mounted only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. CORS `*`,
+`Cache-Control: no-store`. A `HEAD` request is answered 404. Rate limit
+120/min/client; over it → **Response** `429` `Too many requests` with the
+shop payment error body. A store failure → **Response** `503` `Lightning
+address service is unavailable` with that body (logs `lnurl_server.failed`
+with `route` `wait`).
+
+`:payment` that is not a UUID (`normalizeUuid`; any letter case, looked up
+in lowercase) or no shop payment → **Response** `404` `Not found` with the
+shop payment error body.
+
+**Response** `200`:
+
+```json
+{ "status": "Pending", "paymentStatus": "accepted", "invoiceExpiresAt": "2026-10-17T12:20:00.000Z" }
+```
+
+`paymentStatus` is the stored status. `status` is DFX's
+`PaymentLinkPaymentStatus`: `Completed` when `paid`; for an `ended`
+payment with `closed_at` set, `Cancelled` when `end_reason` is
+`superseded`, `replaced`, or `cancelled` and `Expired` otherwise; else
+`Pending`. `invoiceExpiresAt` is the BOLT11 expiry. Without `since`, or
+when `status` is not `Pending`, the answer is immediate. With
+`?since=<paymentStatus>`, the request waits while the stored status still
+equals `since` and `status` is `Pending`, re-reading every
+`WAIT_SATS_POLL_MS` (250 ms) for up to `WAIT_SATS_TIMEOUT_MS` (25 s), both
+from `src/lib/message.ts`, then answers with the state on hand.
 
 ### Point-of-sale paid detection
 
@@ -600,6 +1295,124 @@ zap receipt, gift, or message is written for a till payment. Logs:
 `pos.paid` (account id only), `pos.spark.query_failed`,
 `pos.verify.failed` (count only), `pos.worker.tick.failed`.
 
+**Shop payment of the charge.** With the LNURL server resolved, marking a
+charge paid runs in one transaction together with its shop payment
+([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)), locking
+the account row, then the `pos_charge` row, then the `shop_payment` row.
+The account is the charge's current one: the charge is read again after
+the account lock, and when an account merge moved it meanwhile, the
+account it moved to is locked instead (at most two account locks; a
+charge gone or still moving changes nothing and is read again on the next
+tick). When the settled hash is the shop payment's `payment_hash`, the shop
+payment moves to `paid`; when the charge was already paid by another
+invoice before, that logs `shop.alert.double_settled`, and when it was
+cancelled before, `shop.alert.cancelled_settled` (the charge stays
+cancelled). When the Spark invoice or another BOLT11 settled,
+an `open` shop payment ends with `end_reason` `charge_paid`. The shop
+payment's BOLT11 is recorded against the charge, so Orchestra paying it is
+one of the BOLT11s above.
+
+**Shop payment tick.** `startPosPaidWorker` also starts a second tick
+(`startShopPaymentWorker`) for the shop payment duties, every 2 s, without
+overlap, separate from the charge watch's tick so that a slow Orchestra or
+RPC call never delays a till confirmation. Its duties run in this order,
+each with its own call budget per tick and a 5 s timeout per call, taking
+rows by their own next-try column, oldest first:
+
+1. **End lapsed windows:** `open` payments whose `window_ends_at` passed
+   end with `window`.
+2. **Settlement:** the LUD-21 `GET /verify/<paymentHash>` read of the
+   charge watch (`verifyLightningPayment`) for payments that are neither
+   paid nor closed, `accepted` and charge-backed payments first, every 5 s
+   for 15 minutes after creation, then every 30 s, and a final read 10
+   minutes after the BOLT11 expiry. Each read is applied under the lock of
+   locks of a charge-backed payment: the account row, then the
+   `pos_charge` row, then the `shop_payment` row; when an account merge
+   moved the payment between the unlocked read and the lock, the account
+   it moved to is locked instead (`lockAccountOf`, at most two locks; a
+   payment still moving is left for the next tick). A payer's payment locks
+   only its `shop_payment` row. Settled → `paid`, and `markPaid` for its
+   charge (a charge already paid by another invoice logs
+   `shop.alert.double_settled`; a cancelled charge logs
+   `shop.alert.cancelled_settled` and stays cancelled). Only a successful
+   final read that reports the invoice unpaid closes the payment; an
+   `accepted` payment then ends with `expired_unpaid` and logs
+   `shop.alert.accepted_unpaid`, an `open` one ends with `window`, and
+   both log `shop.payment.ended` with the reason. The duty waits until
+   every read of the tick and its write have ended before it rethrows the
+   first failure. A payment `accepted` for more than one
+   hour logs `shop.alert.accepted_long` once per process.
+3. **Orders** (odd ticks): Orchestra history by the payment's BOLT11 every
+   10 s, one page per read, from the first issued detail until 30 minutes
+   after its last offer's `expiresAt`, also after the payment is paid or
+   closed. An order no proof holds is stored as a `detected` proof, an
+   order recovered from one a proof holds included. A failed read keeps
+   the offset. The offers alone decide whether that watch has ended: while
+   it runs, or while a full page is read on, the next read is after 10 s;
+   once it has ended, every read, a failed one included, decides the next
+   one under the payment row and its proof rows: while some proof's
+   `superseded_by_order` is held by no proof and `successor_wait_until` has
+   not passed, the payment is read every 60 s
+   (`SHOP_SUCCESSOR_HISTORY_INTERVAL_MS`) instead; when the wait passes
+   first, the duty logs `shop.alert.successor_missing` and clears
+   `next_history_at` and `successor_wait_until` together.
+4. **Lookups:** `tx` hashes not yet found, after 10 s, 30 s, and 60 s, then
+   every 2 min for one hour (`shop.proof.lookup_expired`).
+5. **Receipts:** `hex` proofs without a receipt and `detected` proofs
+   without a log index, after 30 s, then every 2 min, until `give_up_at`
+   (24 h after it was stored, or after an operator retry; a `detected`
+   proof's is never moved), and a `hex` proof only while it has neither a
+   result nor an order. A `hex` transaction without a receipt is sent
+   again, however long the node does not know it, so a transaction mined
+   late is still submitted. A receipt that fills the log index of a `hex`
+   proof sets its `next_submit_at` to 10 s after the fill when none is
+   scheduled and the proof may still be submitted (no result, no order).
+6. **Submits:** unresolved proofs that may still be submitted and have a
+   log index. A proof stored with its log index is first due 10 s after it
+   was stored, and a proof whose log index is filled later 10 s after the
+   fill; each watcher submit schedules the next one 20 s, then 30 s later,
+   then every 5 min, so either is submitted after 10 s, 30 s, and 60 s,
+   then every 5 min. A retried proof is submitted at its retry, then about
+   20 s and 50 s later, then every 5 min.
+7. **Stuck proofs:** an unresolved proof past its `give_up_at` (24 h after
+   it was stored, or after an operator retry) becomes `stuck`
+   (`shop.alert.proof_stuck`); `POST /debug/shop-proofs/:id/retry` moves it
+   back.
+8. **Order status** (even ticks): Orchestra status by order id every 10 s
+   for 10 minutes, then every 60 s, until a final status or 24 h after the
+   order was found (`shop.alert.order_stuck`), or an `unfulfilled` status
+   with `supersededByOperationId` (see Replaced orders; no alert). A proof
+   refused as `tx_used` is not read. The stop at a stored final status and
+   the 24 h stop clear `next_status_at` only while the proof, read again
+   under its payment row and proof rows, still holds the order, status,
+   and `next_status_at` the duty selected; the alert is logged once, by the
+   container whose transaction cleared it, with fields read in that
+   transaction. A status read is applied only while the proof, read again
+   under its payment row and proof rows, still holds that order and the
+   duty still follows it: it has an order and a set `next_status_at` and
+   is not refused as `tx_used`, the selection's own conditions. A proof
+   the duty stopped during the call (a final status, the 24 h stop, a
+   replaced order, a `tx_used` refusal) keeps its result, refusal,
+   status, and schedule, its payment does not change, and nothing is
+   logged. A status read sets the next read only while `next_status_at`
+   is still the one the duty selected, so a row another container's read
+   rescheduled meanwhile keeps that schedule; the status is still
+   applied, unless the proof holds a final status of that order by then.
+   A final status is terminal: no later write of the same order replaces
+   it (a status in progress or another final one), re-evaluates the
+   proof, or restarts the reads, as the same-offer merge keeps a final
+   status.
+
+A rejecting tick logs `shop.worker.tick.failed`.
+
+Orchestra calls also count against the in-process budgets per minute:
+quotes 240, submits 30 (proof requests at most 20), status and history
+reads 50 together, route-list fetches 25. An HTTP 429 pauses only the endpoint that answered it,
+until its `Retry-After` (seconds) or else its `X-RateLimit-Reset` (epoch
+ms): status and history pause separately although they share one budget.
+A quote that got the 429 sends its one retry once that pause ends, when it
+ends inside the step's time; otherwise the retry is not sent.
+
 ### `GET /pos`
 
 Bearer session. Returns the signed-in member's open point-of-sale charge,
@@ -616,13 +1429,33 @@ than 60 s ago, so the till can show the confirmation after a late poll.
 `history` includes paid rows. A paid charge no longer pins the LNURL-pay
 bounds.
 
+When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, `charge` also
+carries `shopPayment`: `{ "id": "<uuid>", "status": "open" | "accepted" | "paid" | "ended" }`
+for the charge's shop payment, or `null` when it has none. The till shows
+`accepted` as "on its way" and the charge as paid only when the charge is
+`paid`. `history` rows never carry it, and without the LNURL server the key
+is absent.
+
+The currency the operator typed and that exact decimal string are stored on
+the charge at creation. This response returns that string to the shop.
+`GET /pay/:username` returns the same string to the payer. Both show it.
+Typing 12.00 stores 12.00. Both sides show 12.00, never 12.01 or 11.99.
+Paying in bitcoin does not replace it. The payer's own display currency does
+not replace it. A body that carries only `amountSats` is valid. It stores
+`amountCurrency`, `amount`, `amountUsd`, `amountChf`, `amountEur`, and
+`amountPhp` as null. It does not price those sats from a spot or a daily close.
+
 **Response** `200`:
 
 ```json
 { "charge": null, "history": [] }
 ```
 
-**Response** `200` (paid 10 s ago):
+Every charge object carries `id`, `amountSats`, `status`, `createdAt`,
+`expiresAt`, `paidAt`, and the six fiat fields `amountCurrency`, `amount`,
+`amountUsd`, `amountChf`, `amountEur`, and `amountPhp`.
+
+**Response** `200` (paid 10 s ago, sats-only):
 
 ```json
 {
@@ -632,7 +1465,13 @@ bounds.
     "status": "paid",
     "createdAt": "2026-10-04T12:00:00.000Z",
     "expiresAt": "2026-10-04T12:05:00.000Z",
-    "paidAt": "2026-10-04T12:01:00.000Z"
+    "paidAt": "2026-10-04T12:01:00.000Z",
+    "amountCurrency": null,
+    "amount": null,
+    "amountUsd": null,
+    "amountChf": null,
+    "amountEur": null,
+    "amountPhp": null
   },
   "history": [
     {
@@ -641,7 +1480,13 @@ bounds.
       "status": "paid",
       "createdAt": "2026-10-04T12:00:00.000Z",
       "expiresAt": "2026-10-04T12:05:00.000Z",
-      "paidAt": "2026-10-04T12:01:00.000Z"
+      "paidAt": "2026-10-04T12:01:00.000Z",
+      "amountCurrency": null,
+      "amount": null,
+      "amountUsd": null,
+      "amountChf": null,
+      "amountEur": null,
+      "amountPhp": null
     }
   ]
 }
@@ -651,7 +1496,23 @@ bounds.
 
 ### `POST /pos`
 
-Bearer session. Body `{ "amountSats" }` integer ≥ 1. Requires a username
+Bearer session. `{ "amountSats" }` alone, an integer ≥ 1, is 201. `amountCurrency`,
+`amount`, `amountUsd`, `amountChf`, `amountEur`, and `amountPhp` are null.
+`amountCurrency` without `amount`, or `amount` without `amountCurrency`, is
+400 `{ "error": "Expected amountCurrency and amount together" }`. A bad amount
+or a bad currency is 400 `{ "error": "Expected a typed fiat amount" }`. A fiat
+body is `{ "amountSats", "amountCurrency", "amount" }`. `amountSats` is the
+integer the client sent. It is not recomputed from the string. `amount` is that
+string after trim and one comma-to-dot, with the fraction kept (`"12.00"` stays
+`"12.00"`). The typed currency's numeric column stays null. JSON `amount` and
+the matching `amountXxx` are that string. The other three are the frozen
+two-decimal strings, or null when that spot leg is missing or cannot be parsed.
+The freeze is `other = typedAmount * (spot[other] / spot[typed])`, half-up to
+cents, from the spot quote `GET /fx/spot` serves. It is never taken from
+`amountSats` and never from a daily table. A throw while pricing one other
+currency stays inside the freeze and leaves that currency null. A missing quote
+or a spot read that throws does not fail the charge. The typed string is still
+stored. Requires a username
 and a receiving address (see [Receiving address](#receiving-address); the
 error for none is `Set up your wallet first`). Resolves
 that address and rejects
@@ -662,7 +1523,19 @@ append), so a second request that already passed the earlier read is still 409. 
 pending, `GET /.well-known/lnurlp/:username` keeps the wallet pay request's
 callback and metadata and sets both sendable bounds to that millisat amount.
 
+When `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, the charge is
+inserted, and the account's `open` shop payment ended (`end_reason`
+`superseded`, or `window` when its window already passed), in one
+transaction that first locks the account row (`SELECT … FOR UPDATE`).
+It does not wait for the in-process creation lock. After that transaction,
+when stablecoin rows are on for the username, the creation procedure of
+[Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc) starts in
+the background for the charge; its failure logs `shop.creation.failed` and
+never changes the response. A shop payment never makes this route answer 409.
+
 **Response** `400`: `{ "error": "Expected a JSON body with an integer \"amountSats\"" }`,
+`{ "error": "Expected amountCurrency and amount together" }`,
+`{ "error": "Expected a typed fiat amount" }`,
 `{ "error": "Set a username first" }`,
 `{ "error": "Set up your wallet first", "code": "wallet_required" }`, or
 `{ "error": "Amount is outside the wallet range" }`.
@@ -674,7 +1547,11 @@ callback and metadata and sets both sendable bounds to that millisat amount.
 ### `DELETE /pos`
 
 Bearer session. Cancels every unexpired pending charge for the account,
-not only the newest. An already expired row is not cancelled.
+not only the newest. An already expired row is not cancelled. When
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, the cancel and the end of
+the charge's `open` shop payment (`end_reason` `cancelled`) run in one
+transaction that first locks the account row. A shop payment never makes
+this route answer 409.
 
 **Response** `200`: `{ "charge": null }` when at least one row was cancelled.
 
@@ -687,10 +1564,13 @@ and returns the trimmed display name (or the normalised username when the
 name is blank) plus `minSats`, `maxSats`, and `charge` from the member's
 receiving address (see [Receiving address](#receiving-address)). No open charge → `charge` is `null` and the bounds stay
 the wallet sat range. An unexpired pending point-of-sale charge → both
-bounds equal that amount and `charge` is `{ amountSats, expiresAt }` only
-(`expiresAt` is ISO-8601). A bad wallet window is still 502 before any pin.
-`currentPending` throwing is the existing 502. Does not return the
-callback, the address, or provider metadata.
+bounds equal that amount and `charge` carries `id`, `amountSats`, `expiresAt`
+(ISO-8601), and the six fiat fields from
+[docs/fiat-amounts.md](docs/fiat-amounts.md). The shop and the payer both show
+that typed string. Typing 12.00 shows 12.00 on both sides, never 12.01 or 11.99.
+A sats-only charge carries those six fields as null. A bad wallet window is
+still 502 before any pin. `currentPending` throwing is the existing 502. Does
+not return the callback, the address, or provider metadata.
 
 **Response** `200` (no open charge):
 
@@ -706,7 +1586,17 @@ callback, the address, or provider metadata.
   "username": "ada",
   "minSats": 21,
   "maxSats": 21,
-  "charge": { "amountSats": 21, "expiresAt": "2026-09-01T12:05:00.000Z" }
+  "charge": {
+    "id": "0b6f…",
+    "amountSats": 21,
+    "expiresAt": "2026-09-01T12:05:00.000Z",
+    "amountCurrency": null,
+    "amount": null,
+    "amountUsd": null,
+    "amountChf": null,
+    "amountEur": null,
+    "amountPhp": null
+  }
 }
 ```
 
@@ -717,6 +1607,20 @@ wallet, or the LNURL server not configured) →
 The LNURL server is unreachable, the store throws, `currentPending` throws, `minSendable` or `maxSendable`
 is not a safe integer, or `maxSats < minSats` → **Response** `502`
 `{ "error": "Lightning Address could not be resolved" }`.
+
+### `GET /pay/charges/:id`
+
+Public till receipt. No auth. Returns `serializePosCharge` and nothing secret:
+`id`, `amountSats`, `status`, `createdAt`, `expiresAt`, `paidAt`, and the six
+fiat fields. `accountId` and `sparkInvoice` are omitted. A paid charge is
+returned. Missing → **Response** `404` `{ "error": "Not found" }`.
+
+### `GET /pay/:username/charges/:id`
+
+Same receipt when the charge belongs to the normalised username. Registered
+before `/:username`. Unknown username, a missing charge, or a charge owned by
+someone else → **Response** `404` `{ "error": "Not found" }`. A paid charge is
+returned. The body is `serializePosCharge` and nothing secret.
 
 ### `POST /pay/:username/invoice`
 
@@ -742,7 +1646,13 @@ The `pr` is returned only when it decodes to exactly `amountSats * 1000`
 millisatoshis.
 
 While a point-of-sale charge is pending, the payment hash of `pr` is
-recorded against that charge. While that charge is pending,
+recorded against that charge, under the payment hash claim (see
+Creation). When another charge's invoice row or another shop payment
+already holds that hash (`recordInvoice` returns `other_payment`), the
+BOLT11 is not handed out: the route logs `shop.alert.duplicate_invoice`
+(`chargeId`, `holderChargeId`, and `paymentId` only when a shop payment
+holds it) and answers **502**
+`{ "error": "Lightning Address could not be resolved" }`. While that charge is pending,
 `sparkInvoice` is non-null when `amountSats` equals its amount (the till
 pin already enforces that) and free in-app payments are on (the same
 condition that issues Spark invoices for gifts). It is then a `spark1…`
@@ -750,7 +1660,8 @@ invoice for exactly `amountSats` to the shop's verified wallet key with
 memo `pos:<chargeId>`; one per charge, so a repeat call returns the stored
 string. A 21.gifts in-app wallet pays it without a fee. A store failure
 while recording or issuing is logged (`pos.invoice.record_failed`,
-`pos.spark_invoice.issue_failed`) and does not fail the response. While
+`pos.spark_invoice.issue_failed`) and does not fail the response: the
+invoice is still handed out. While
 a charge is open, `comment` is ignored.
 
 Without a pending charge, `sparkInvoice` is non-null when free in-app
@@ -771,6 +1682,55 @@ amount outside the window → **Response** `400`
 empty or non-safe-integer window, a failed invoice fetch, or a BOLT11 that
 is missing, not a safe integer amount, or not the requested amount →
 **Response** `502` `{ "error": "Lightning Address could not be resolved" }`.
+
+### `POST /pay/:username/payment`
+
+Opens a shop payment for an amount the payer entered on the payment page
+([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)). No auth,
+no spend token. CORS is the allow-list of the other `/pay` routes. The
+route group is always mounted; it opens a payment only when
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Body
+`{ "amountSats": <integer> }` (a `comment` key is accepted and ignored).
+Same account lookup as `GET /pay/:username`. Checks run in this order:
+
+| Order | Condition                                                                                                                                                                                                                            | Response                                                                                     |
+| ----- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------- |
+| 1     | Invalid username, unknown account, or no receiving address (no verified wallet, or the LNURL server not configured).                                                                                                                 | **404** `{ "error": "Not found" }`                                                           |
+| 2     | The wallet's pay request cannot be resolved, the store throws, or its window is empty or not a safe integer.                                                                                                                         | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 3     | Missing or invalid JSON, or `amountSats` is not an integer of at least 1.                                                                                                                                                            | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 4     | A till charge is pending.                                                                                                                                                                                                            | **409** `{ "error": "A payment is already open", "code": "payment_open" }`                   |
+| 5     | The amount is outside the pay request's sat range or millisatoshi window.                                                                                                                                                            | **400** `{ "error": "Enter a whole number of sats" }`                                        |
+| 6     | The username is `invoice`, `cb`, or ends in `.`, or `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, or `SHOP_REFUND_ADDRESS` does not resolve.                                                                            | **503** `{ "error": "Stablecoin payment is unavailable", "code": "stablecoin_unavailable" }` |
+| 7     | The account's 60 s no-pair wait is running, or the api started 60 creations in the last minute, or this account started 10 (per process).                                                                                            | **503** `stablecoin_unavailable` as in order 6                                               |
+| 8     | The mint fails, the BOLT11 is for another amount, or its payment hash is already held by a shop payment or recorded against a charge (logs `pay.invoice_failed`).                                                                    | **502** `{ "error": "Lightning Address could not be resolved" }`                             |
+| 9     | The route list cannot be read or names no candidate pair, no Orchestra quote passes the offer checks, `findChargeForPayment` fails with an error, or the insert step finds the request at least 16 s old or its client disconnected. | **503** `stablecoin_unavailable` as in order 6                                               |
+
+Orders 4 and 6 run again under the account's creation lock (order 4 also
+inside the insert transaction); order 7 runs only there, once per creation.
+A store failure during the creation → **Response** `502` `{ "error":
+"Lightning Address could not be resolved" }` (logs `pay.failed`), the
+answer of order 2: the page cannot tell whether a payment opened, so it
+repeats the request as after any other 5xx.
+The route list is read before the mint, so an unreadable route list or one
+without a candidate pair answers order 9 before order 8 can apply; "no
+Orchestra quote passes the offer checks", a `findChargeForPayment` error,
+the insert step at 16 s or later, and a disconnected client come after the
+mint.
+The api-wide counter is asked first and the account counter only when it
+allows. Orders 7 and 9 do not depend on the client address.
+
+An `open` payer-opened payment of the account is always replaced: it ends
+with `end_reason` `replaced` and the new payment is created. Its window
+ends five minutes after creation.
+
+**Response** `200`:
+
+```json
+{ "payment": "<uuid>", "expiresAt": "2026-10-17T12:05:00.000Z" }
+```
+
+`expiresAt` is the payment's `window_ends_at`. The page then fetches the
+pay link and checks that `quote.payment` is this id.
 
 ### `POST /lnurl/pay-request`
 
@@ -1248,7 +2208,7 @@ Missing or invalid bearer → **Response** `401`:
 { "error": "Unauthorized" }
 ```
 
-Store throw or missing BTC-USD day (a donation day or a loan movement day) → **Response** `503`:
+Store throw → **Response** `503`:
 
 ```json
 { "error": "Gift stats are unavailable" }
@@ -1275,9 +2235,9 @@ Store throw or missing BTC-USD day (a donation day or a loan movement day) → *
 }
 ```
 
-`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503 (`account.activity.fiat_failed` still 200). Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
+`donatedOverTime` / `receivedOverTime` reuse the `spendOverTime` day objects from `GET /gifts/stats`, including additive CHF/EUR/PHP. The stored payment-time USD/CHF/EUR/PHP is what is returned. Missing fiat is JSON `null`, never 503. Empty activity is 200 zeros with USD-only `fx.quotes` (no Coinbase / Frankfurter). Given = confirmed forum zaps this account paid on notes that are not loans, excluding repay: repayment invoices, plus outbound house gifts of kind daily and welcome when isPlatform is true. Moderator stipends (kind === 'moderator') are omitted. Received = indexed zaps on authored notes that are not loans (including hidden notes and replies), plus message.sats remainder on top-level non-loan notes only (a loan note is omitted entirely, including a hidden one; gift-as-reply sats are not Received), plus house gifts of kind daily and welcome to the account's recipient handle (its username, matched only once the wallet is verified; the stored external address is not used). A loan is a note with goalRepayable === true. An unknown note (getById undefined) still counts as a donation. Forum zaps are not mixed into GET /gifts/stats.
 
-`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; loan days are priced from the outstanding balance at that UTC day's BTC-USD rate; missing BTC-USD is 503; missing CHF/EUR/PHP is JSON null; loans stay out of `donatedSats` and `receivedSats`.
+`owedSats` is what this account still owes; `creditSats` is what others still owe this account; series are SpendDay rows only on days with a movement; `cumulativeSats` is the outstanding balance and may fall; `sats` is that day's net change; an identified credit is a payer receipt on a goalRepayable note that counts toward the plan; anonymous receipts are neither; a repayment subtracts `due_sats`; balances are not clamped; a loan movement stores no fiat figure, so every USD/CHF/EUR/PHP field of the loan series is JSON null and no rate book is read; loans stay out of `donatedSats` and `receivedSats`.
 
 ### `GET /me/loans`
 
@@ -1506,8 +2466,7 @@ A session has the same auth and 401 / 409 / 404 as `GET /members/:accountId`.
 An operator token skips the session and `forum.read` gate; 404 still
 applies. Success is the
 same JSON as `GET /me/activity` for **that** member. 503 `{ "error": "Gift
-stats are unavailable" }` on a store throw or a missing BTC-USD day (a donation
-day or a loan movement day).
+stats are unavailable" }` when the gift store throws.
 
 Operator access: `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` as Bearer returns the same body without a session or role check. A bearer that matches neither token falls through to the session rules above.
 
@@ -2078,8 +3037,7 @@ profile-note read → **503** `{ "error": "Messages are unavailable" }`
 
 Public. Same 404 as `GET /view/:viewKey` for a bad or unknown key. Success is
 the same JSON as `GET /me/activity` for the account behind the key. 503
-`{ "error": "Gift stats are unavailable" }` on a store throw or a missing BTC-USD
-day (a donation day or a loan movement day).
+`{ "error": "Gift stats are unavailable" }` when the gift store throws.
 
 ### `POST /me/name`
 
@@ -2726,7 +3684,8 @@ Environment:
 
 Operator detail of one account via `serializeDebugAccountDetail`: the account
 columns except the retained legacy `lightning_address` and
-`lightning_address_verified`, plus nested `passkeys`, `sessions`, and matching
+`lightning_address_verified` and the derived `spark_address` (it follows from
+`sparkPubkey`), plus nested `passkeys`, `sessions`, and matching
 `passkeyChallenges`. `lightningAddress` is the receiving address (verified
 wallet) when the LNURL server is configured. Session tokens are plaintext. nsec is
 envelope hex, never decrypted. Unknown or non-UUID id → **Response** `404`.
@@ -2916,7 +3875,27 @@ before the database is required. The same id is **409**
 account is **404** `{ "error": "Not found" }`. The platform account
 is **409** `{ "error": "Cannot merge the platform account" }`. Two
 funding grants are **409**
-`{ "error": "Both accounts have a funding grant" }`. A database that
+`{ "error": "Both accounts have a funding grant" }`. A source account
+with a shop payment that is neither `paid` nor closed is **409**
+`{ "error": "A payment is already open" }` and nothing changes, because
+that payment's BOLT11 still pays the source account's wallet, which the
+merge does not carry over; the merge can be repeated after the final
+settlement read, 10 minutes after the BOLT11 expired. A source with an
+unexpired pending till charge while the survivor has an `open` shop
+payment and no unexpired pending till charge of its own is the same
+**409** and nothing changes, so a till charge never lands next to another
+payment's open amount. Both refusals are checked under the locks of both
+account rows, before any write. When the survivor has a pending till
+charge (expired or not), the source's pending charges are deleted (below)
+and the merge goes on. The source's paid and closed shop payments move like
+every other row. All of the source's charge rows are locked first in the
+order of their ids (`SELECT id … ORDER BY id FOR UPDATE`), the pending
+charges among them are read, the source's shop payment rows are locked the
+same way, and then their `pos_charge_invoice` rows and the charges are
+deleted by those ids; a concurrent
+`recordInvoice` for such a charge waits on the lock and then fails, which
+the invoice routes log as `pos.invoice.record_failed`, and a later one
+records nothing (`not_open`). A database that
 cannot run the merge, and any thrown write, is **503**
 `{ "error": "Merge is unavailable" }`. The same 503/401 debug-token
 gate as the other debug account routes applies. Success logs
@@ -2924,6 +3903,30 @@ gate as the other debug account routes applies. Success logs
 Failure logs `debug.accounts.merge_failed` with the two ids and the
 SQLSTATE when the driver reported one. The text of a message, a
 token, an nsec, and a view key are not logged.
+
+### `POST /debug/shop-proofs/:id/retry`
+
+Operator retry of a shop payment proof that is `stuck`
+([Shop payment in USDT and USDC](#shop-payment-in-usdt-and-usdc)).
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve;
+otherwise Hono's default 404. Authenticated with `Authorization: Bearer`
+matching `DEBUG_TOKEN`. No body.
+
+The proof moves from `stuck` back to unresolved, `give_up_at` is set 24 h
+ahead, and `shop.proof.retried` is logged. A `hex` proof without a log
+index gets `next_receipt_at` now, so the receipts duty reads and sends its
+transaction again and the submits duty submits it once the receipt filled
+the log index; any other proof gets `next_submit_at` now and the watcher
+submits it again. It runs under the payment's `shop_payment` row and its
+proof rows.
+
+**Response** `200`: `{ "id": "<uuid>", "result": null }`.
+
+`DEBUG_TOKEN` unset or blank → **Response** `503`
+`{ "error": "Debug is not configured" }`. Bearer mismatch →
+**Response** `401` `{ "error": "Unauthorized" }`. `:id` not a UUID, or no
+such proof → **Response** `404` `{ "error": "Not found" }`. A proof that is
+not `stuck` → **Response** `409` `{ "error": "The proof is not stuck" }`.
 
 ### `GET /debug/trust-edges`
 
@@ -3532,8 +4535,9 @@ the stored column is true (omitted when null; never false), `goalTermDays`
 only when the stored column is not null (omitted when null), `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots when `goalCurrency` is
 stored (omitted on a legacy row; a snapshot may be null), and always-present
-`placeLat`, `placeLng`, `placeLabel`, and `shopAccountId` (JSON `null` when
-unset). Never
+`placeLat`, `placeLng`, `placeLabel`, `placeStreet`, `placeHouseNumber`,
+`placePostalCode`, `placeCity`, `placeCountry`, and `shopAccountId`
+(JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 `DEBUG_TOKEN` unset or blank → **Response** `503`:
@@ -3570,8 +4574,9 @@ MIME/byte lengths, stored `goalSats` (JSON `null` when unset),
 never false), `goalTermDays` only when the stored column is not null (omitted
 when null), `goalCurrency`, `goalAmount`, and the four `goalAmount*`
 snapshots when `goalCurrency` is stored (omitted on a legacy row; a snapshot
-may be null), and always-present `placeLat`, `placeLng`, `placeLabel`, and
-`shopAccountId` (JSON `null` when unset). Never
+may be null), and always-present `placeLat`, `placeLng`, `placeLabel`,
+`placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
+`placeCountry`, and `shopAccountId` (JSON `null` when unset). Never
 includes nsec or photo/video payloads.
 
 Store throw → **Response** `503`:
@@ -4111,12 +5116,12 @@ When `DATABASE_URL` is unset the in-memory gift store is empty — **200** with
 zeros (`totalUsd` / `totalChf` / `totalEur` / `totalPhp` `"0.00"`), `gifts: []`,
 and `fx` with USD-only `quotes` (no Coinbase / Frankfurter). When gifts exist
 for that day, the stored payment-time USD/CHF/EUR/PHP is what is returned.
-A SQL NULL snapshot is JSON `null` and does not fetch a close. The api ensures
-a BTC-USD close for that UTC day only for an in-memory gift that omits the
-field (`undefined`). An empty matching set is
-200 without Coinbase or Frankfurter. A query failure is **503**. A still-missing
-BTC-USD rate is **503** only for that omitted-field row. A missing stored amount
-or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, never 503.
+A SQL NULL snapshot is JSON `null` and does not fetch a close. The read does
+not price an omitted field from a BTC-USD close. An empty matching set is
+200 without Coinbase or Frankfurter. A query failure is **503**. A missing
+stored amount is never 503. Each currency is summed from its own stored string.
+A missing USD does not discard a stored CHF, EUR, or PHP. One null does not
+null the day's other currencies. A currency every listed gift lacks stays null.
 
 **Response** `200` (empty day):
 
@@ -4140,7 +5145,7 @@ or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, n
 }
 ```
 
-**Response** `200` (one gift; 1000 sats at BTC-USD 100000 and CHF 0.80 / EUR 0.90 / PHP 50):
+**Response** `200` (one gift whose stored amounts are those strings):
 
 ```json
 {
@@ -4168,28 +5173,25 @@ or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, n
     "quote": "BTC-USD",
     "dayBasis": "utc",
     "source": "coinbase-exchange-daily-close",
-    "quotes": [
-      { "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" },
-      { "code": "CHF", "pair": "USD-CHF", "source": "frankfurter-ecb" },
-      { "code": "EUR", "pair": "USD-EUR", "source": "frankfurter-ecb" },
-      { "code": "PHP", "pair": "USD-PHP", "source": "frankfurter-ecb" }
-    ]
+    "quotes": [{ "code": "USD", "pair": "BTC-USD", "source": "coinbase-exchange-daily-close" }]
   }
 }
 ```
 
-| Field       | Type                                                                                         | Meaning                                                                                                   |
-| ----------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
-| `day`       | string                                                                                       | UTC `YYYY-MM-DD` of the query                                                                             |
-| `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                              |
-| `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                 |
-| `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                    |
-| `totalUsd`  | string or null                                                                               | Sum of stored payment-time USD (`"1.00"`); `"0.00"` when empty; `null` if any gift lacks stored USD       |
-| `totalChf`  | string or null                                                                               | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                  |
-| `totalEur`  | string or null                                                                               | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                  |
-| `totalPhp`  | string or null                                                                               | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                  |
-| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                           |
-| `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when that day has the cross |
+`fx.quotes` on this route stays USD-only. The fiat book is not the amount.
+
+| Field       | Type                                                                                         | Meaning                                                                                                                   |
+| ----------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `day`       | string                                                                                       | UTC `YYYY-MM-DD` of the query                                                                                             |
+| `giftCount` | number                                                                                       | Number of gifts that UTC day                                                                                              |
+| `totalSats` | number                                                                                       | Sum of gift amounts (sats; fees excluded)                                                                                 |
+| `totalBtc`  | string                                                                                       | `totalSats` as BTC with eight decimals                                                                                    |
+| `totalUsd`  | string or null                                                                               | Sum of stored USD strings (`"1.00"`); `"0.00"` when the day is empty; `null` only when every listed gift lacks stored USD |
+| `totalChf`  | string or null                                                                               | Sum of stored CHF strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored CHF            |
+| `totalEur`  | string or null                                                                               | Sum of stored EUR strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored EUR            |
+| `totalPhp`  | string or null                                                                               | Sum of stored PHP strings; `"0.00"` when the day is empty; `null` only when every listed gift lacks stored PHP            |
+| `gifts`     | `{ paidAt, amountSats, amountBtc, amountUsd, amountChf, amountEur, amountPhp, recipient }[]` | Ordered by `paidAt` ascending, then `recipient`                                                                           |
+| `fx`        | `{ quote, dayBasis, source, quotes }`                                                        | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                  |
 
 `gifts[]` item:
 
@@ -4204,13 +5206,13 @@ or CHF/EUR/PHP cross is JSON `null` on the matching total and per-gift amount, n
 | `amountPhp`  | string or null | Stored payment-time PHP, or `null` when missing |
 | `recipient`  | string         | Recipient handle (`recipient_wos_user`)         |
 
-**Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure or missing BTC-USD only; missing fiat is never 503).
+**Response** `503`: `{ "error": "Gift stats are unavailable" }` (store failure only; a missing stored amount is never 503).
 
 ### `GET /fx/spot`
 
 Public current price of 1 BTC in USD, CHF, EUR, and PHP. No auth. It is
-independent of gifts: it does not read `gift` and does not change how
-`GET /gifts/stats` prices its days (those keep their daily rates).
+independent of gifts: it does not read `gift`.
+`GET /gifts/stats`. Gift stats are stored strings and do not read the daily rate books.
 
 A background worker fetches one Coinbase response with every pair
 (`BTC_FIAT_SPOT_URL`, default
@@ -4270,17 +5272,15 @@ When `DATABASE_URL` is unset the in-memory gift and FX stores are empty —
 queries the `gift` table (`paid_at`, `amount_sats`, `recipient_wos_user`,
 and the stored payment-time fiat columns) and returns that stored
 USD/CHF/EUR/PHP (not recomputed from the day's close). A SQL NULL snapshot
-is JSON `null` and does not fetch a close. It ensures a BTC-USD
-daily close only for an in-memory gift that omits the field (`undefined`)
-(from `btc_usd_daily`, fetching Coinbase only for missing days /
-stale UTC-today / after-midnight finalize of an intraday print). A gift that
-lacks a stored amount returns that currency as
-JSON `null`; a running total goes `null` if any selected gift lacks that
-currency. Gap days in `spendOverTime` are zero `giftCount`/sats/BTC/USD and `"0.00"` fiat
-and need no rate. Gap months in `byMonth` are zero sats/BTC/USD and
-`"0.00"` fiat and need no rate.
-A query failure is **503**. A still-missing BTC-USD rate is **503** only for
-an omitted-field row. A missing stored amount is never 503.
+is JSON `null` and does not fetch a close. The read does not price an omitted
+field from `btc_usd_daily` or `usd_fiat_daily`. Each currency is summed from
+its own stored string. A missing USD does not discard a stored CHF, EUR, or
+PHP. One null does not null the day, the other currencies, or a later
+cumulative. A day where every row lacks that currency is null. Gap days in
+`spendOverTime` are zero `giftCount`/sats/BTC and `"0.00"` fiat, and they do
+not change a running cumulative. Gap months in `byMonth` are zero sats/BTC and
+`"0.00"` fiat. An empty selection stays zeros.
+A query failure is **503**. A missing stored amount is never 503.
 
 Optional query `recipient` filters to one recipient handle (the local part
 of the receiving address)
@@ -4289,8 +5289,7 @@ contains `@` after the first character, the local-part before `@` is used;
 otherwise the whole trimmed string is the handle. Missing or blank
 (after trim) `recipient` is unfiltered.
 An unknown handle is empty **200** (zeros, USD-only `fx.quotes`) without a
-Coinbase or Frankfurter call. Rates are ensured only for the selected
-gifts' UTC days.
+Coinbase or Frankfurter call. The rate books are not read.
 
 **Response** `200`:
 
@@ -4318,22 +5317,22 @@ gifts' UTC days.
 }
 ```
 
-| Field            | Type                                                                                                                                             | Meaning                                                                                                                      |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                    |
-| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                       |
-| `totalUsd`       | string or null                                                                                                                                   | Sum of stored payment-time USD (`"1234.56"`); `"0.00"` when empty; `null` if any gift lacks stored USD                       |
-| `totalChf`       | string or null                                                                                                                                   | Sum of stored payment-time CHF; `"0.00"` when empty; `null` if any gift lacks stored CHF                                     |
-| `totalEur`       | string or null                                                                                                                                   | Sum of stored payment-time EUR; `"0.00"` when empty; `null` if any gift lacks stored EUR                                     |
-| `totalPhp`       | string or null                                                                                                                                   | Sum of stored payment-time PHP; `"0.00"` when empty; `null` if any gift lacks stored PHP                                     |
-| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                     |
-| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                   |
-| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                |
-| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                  |
-| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat |
-| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; fiat `null` if any gift to that recipient lacks the cross                              |
-| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                            |
-| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` lists USD always and CHF/EUR/PHP when any selected gift day has that cross      |
+| Field            | Type                                                                                                                                             | Meaning                                                                                                                               |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `totalSats`      | number                                                                                                                                           | Sum of gift amounts (sats; fees excluded)                                                                                             |
+| `totalBtc`       | string                                                                                                                                           | `totalSats` as BTC with eight decimals                                                                                                |
+| `totalUsd`       | string or null                                                                                                                                   | Sum of stored USD strings (`"1234.56"`); `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored USD  |
+| `totalChf`       | string or null                                                                                                                                   | Sum of stored CHF strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored CHF                |
+| `totalEur`       | string or null                                                                                                                                   | Sum of stored EUR strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored EUR                |
+| `totalPhp`       | string or null                                                                                                                                   | Sum of stored PHP strings; `"0.00"` when the selection is empty; `null` only when every selected gift lacks stored PHP                |
+| `giftCount`      | number                                                                                                                                           | Number of outbound gifts                                                                                                              |
+| `recipientCount` | number                                                                                                                                           | Distinct recipient handles                                                                                                            |
+| `firstPaidAt`    | string or null                                                                                                                                   | ISO-8601 of the earliest gift                                                                                                         |
+| `lastPaidAt`     | string or null                                                                                                                                   | ISO-8601 of the latest gift                                                                                                           |
+| `spendOverTime`  | `{ day, giftCount, sats, cumulativeSats, btc, cumulativeBtc, usd, cumulativeUsd, chf, cumulativeChf, eur, cumulativeEur, php, cumulativePhp }[]` | UTC days from first through last; `giftCount` is outbound gifts that day; gaps are zero count/sats/BTC/USD and `"0.00"` fiat          |
+| `byRecipient`    | `{ recipient, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                      | Sorted by sats descending, then name; each fiat field sums stored strings and is `null` only when no gift to that recipient stored it |
+| `byMonth`        | `{ month, giftCount, sats, btc, usd, chf, eur, php }[]`                                                                                          | UTC YYYY-MM from first through last; gaps are zero sats/BTC/USD and `"0.00"` fiat                                                     |
+| `fx`             | `{ quote, dayBasis, source, quotes }`                                                                                                            | Always present; `quote` is BTC-USD; `quotes` is USD only                                                                              |
 
 **Response** `503`:
 
@@ -4341,7 +5340,7 @@ gifts' UTC days.
 { "error": "Gift stats are unavailable" }
 ```
 
-503 is store failure or missing BTC-USD only. Missing CHF/EUR/PHP is JSON
+503 is a store failure only. A missing stored amount is JSON
 `null`, never 503.
 
 ### `GET /invoices/passkey`
@@ -4478,7 +5477,7 @@ Moderator stipend form (never together with `messageId`):
 two fractional digits and at most 100000, normalized to two decimals (`"5"`
 becomes `"5.00"`) and stored as that payment's USD. A present value that
 cannot be normalized is the same **400** as a bad body. An absent key stays
-unset and proof may use the spot. `comment` is optional and at most 255 characters. `amountMsat` must be an
+unset and proof stores null for USD, CHF, EUR, and PHP. `comment` is optional and at most 255 characters. `amountMsat` must be an
 integer in `1000..10000000000`. `messageId` is optional (current spend without
 the field still works). `groupMessageId` is optional and mutually exclusive
 with `messageId` (both set → **400**). Invalid UUID on either field → **400**
@@ -4703,7 +5702,8 @@ column is not null (omitted when null), and when `goalCurrency` is stored also
 `goalCurrency`, `goalAmount`, and `goalAmountUsd` / `goalAmountChf` /
 `goalAmountEur` / `goalAmountPhp` (a snapshot may be null; a legacy row omits
 those keys),
-optional `place` (`{ lat, lng, label }` when a pin is stored;
+optional `place` (`{ lat, lng, label, address }` when a pin is stored;
+`address` is the structured postal address or JSON `null`;
 the key is omitted when unset),
 `payable` (true when the note has a non-empty signed `eventId` and the author
 has a receiving address (see [Receiving address](#receiving-address)); null or empty `eventId` is not payable),
@@ -4930,13 +5930,14 @@ Bearer session required. After auth, the same `forum.read` gate as
 `GET /messages` (401 without a session; 409 `missing_requirements` when
 rules are missing). Query `limit` is an integer 1..1000 (default **1000**);
 otherwise **400** `{ "error": "Invalid limit" }`. Body
-`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "shop", "countryCode", "accountId?" }] }`.
+`{ "places": [{ "id", "name", "createdAt", "lat", "lng", "label", "address", "shop", "countryCode", "accountId?" }] }`.
 `shop` is true when the note text contains the shop tag. `countryCode` is the
 ISO 3166-1 alpha-2 code of the country or territory that contains the pin,
 read from its coordinates on every request (never stored, so existing pins need
 no backfill), or `null` for a pin in the open sea. The app counts the shops per
 `countryCode` for the Shops country filter and passes the same code to
 `GET /messages?country=`. `accountId` is set for a 21gifts author and omitted for an external pin.
+`address` is `{ "street", "houseNumber", "postalCode", "city", "country" }` or JSON `null`.
 `createdAt` is ISO-8601. Newest first (`created_at` desc, `id` desc). Only
 live top-level rows with both coordinates. Replies and hidden notes are
 excluded.
@@ -5054,14 +6055,24 @@ then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
 no goal. Multipart accepts `goalSats` as a decimal digit string. A positive
 `goalSats` together with `inReplyTo` → **400** `{ "error": "A reply cannot ask for a goal" }`.
-Optional `place` is `{ lat, lng, label? }`. Omitted or null stores no pin
-and the 200 JSON omits `place`. Invalid place is 400 with `Place must be a
-latitude and longitude` or `Place label must be at most 80 characters`.
+Optional `place` is `{ lat, lng, label?, address? }`. Omitted or null stores no pin
+and the 200 JSON omits `place`. `address` omitted or null stores `address: null`.
+Invalid place is 400 with `Place must be a latitude and longitude`,
+`Place label must be at most 80 characters`, or `Place address is invalid`.
 `inReplyTo` together with a non-null place is 400
 `{ "error": "A reply cannot include a place" }`. Multipart fields are
-`placeLat`, `placeLng`, and optional `placeLabel` (always top-level). Both
-coordinates empty means no pin. Exactly one of them set is 400
-`Place must be a latitude and longitude`.
+`placeLat`, `placeLng`, optional `placeLabel`, and optional
+`placeStreet`, `placeHouseNumber`, `placePostalCode`, `placeCity`,
+`placeCountry` (always top-level). Both coordinates empty means no pin.
+Any of those address fields set while both coordinates are missing is 400
+`Place must be a latitude and longitude` and nothing is stored. A missing
+or blank label without coordinates still stores no pin. Exactly one
+coordinate set is 400 `Place must be a latitude and longitude`.
+All five address fields blank means no address; any present field requires
+all five (same `Place address is invalid`). A top-level note whose text has
+`#21GiftsShop` and that carries a pin must pass `shopPlaceProblem` then
+`shopTextProblem`; otherwise **400** with that shop error and nothing is
+stored. A shop note without a pin stays allowed.
 An invalid multipart `goalSats` → **400** `{ "error": "Goal must be a positive whole-sat amount" }`.
 A post sends either legacy `goalSats` alone, or both `goalCurrency` (`BTC`, `USD`, `CHF`, `EUR`, or `PHP`) and `goalAmount` (trimmed decimal string, comma or dot, at most eight fractional digits). Both styles together, only one of the new pair, a non-string `goalAmount`, or a string that fails that grammar → **400** `{ "error": "Send either goalSats or both goalCurrency and goalAmount" }`. A reply that sends `goalSats`, `goalCurrency`, `goalAmount`, `goalRepayable`, or `goalTermDays` → **400** `{ "error": "A reply cannot ask for a goal" }`. Optional `goalRepayable` (JSON boolean or multipart string) marks a top-level ask as repayable. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. JSON `true` or multipart `"true"` stores `true` only when this create also stores an ask (`goalSats`, or both `goalCurrency` and `goalAmount`) and a term; the 200 JSON then includes `goalRepayable: true`. JSON `false`, any other type, or any other string → **400** `{ "error": "Ask obligation must be true" }`. `true` without an ask → **400** `{ "error": "A repayment obligation needs an ask" }`. Stored values are SQL NULL or TRUE, never `false`. Optional `goalTermDays` (JSON number or multipart digits) is the agreed repayment term in whole days. Absent, JSON `null`, or a missing/empty multipart field stores SQL NULL and the 200 JSON omits the key. A whole number from 1 to 3650 stores that integer only when this create also stores `goalRepayable: true` and an ask; the 200 JSON then includes `goalTermDays` as that integer. Anything else, including 0, 3651, a fraction, or a string that is not an integer → **400** `{ "error": "Ask term must be a whole number of days from 1 to 3650" }`. A term without `goalRepayable: true` → **400** `{ "error": "A repayment term needs a repayable ask" }`. `goalRepayable: true` without a term → **400** `{ "error": "A repayable ask needs a term in days" }`. Interest is not stored. When collected sats first reach `goal_sats`, `goal_funded_at` is set. Repayment is due each UTC day starting the day after that, but never before 2026-11-01, for `goal_term_days` days. A credit that filled on or before 2026-10-31 starts on 2026-11-01. `GET /messages/:id/repayment` returns that first day as `startsOn`. Each giver is repaid exactly what they paid: their sats on a bitcoin ask, or the cents of the goal currency recorded on their payments on a fiat ask. A fraction below one sat or one cent carries to a later day until it is one whole unit, so a gift of 1 sat or 1 cent comes back in full. The shares of one day add up to that day's split of the total, with the remainder on the last day. The author pays the next unpaid share at that giver's Lightning address. A fiat share is priced in bitcoin at the rate of the day it is paid. A paid zap whose invoice description is `repay:<day>:<accountId>` is stored in `message_repayment` and does not increase the ask. `GET /messages/:id/repayment` is public on a live repayable ask and lists every giver and every Lightning repayment (who, how much, which UTC day, and whether it is paid, due, or still scheduled). Dates are omitted until the credit is fully given. Sats with no 21.gifts payer are reported separately and are not repaid. The flag and term are not written into Nostr event content or the note text. The canonical stored `goalAmount` uses a dot, no exponent, no leading zeros, and no trailing fractional zeros (`10.` and `10.0` are `10`). `goal_sats` is that integer for `BTC` (1..10_000_000; a missing gift-day does not reject it) or `Math.round(amount * day.sats / dayFiat)` for fiat, with a rounded 0 raised to 1. Fiat needs a usable latest gift-day (`GET /gifts/stats` `spendOverTime`, last day with `sats > 0`) and a result in 1..10_000_000; otherwise **400** `{ "error": "Ask amount is unavailable" }`. If that loader throws for a fiat ask → **503** `{ "error": "Messages are unavailable" }`. A BTC ask still stores the typed sats when the loader throws. Frozen columns `goal_currency`, `goal_amount`, and `goal_fiat_usd` / `goal_fiat_chf` / `goal_fiat_eur` / `goal_fiat_php` are null when there is no currency ask. Legacy rows keep `goal_sats` and leave the new columns null (no backfill). Public, debug, and hidden JSON include `goalRepayable: true` only when the column is true and omit the key when null (never emit `false`). Public and debug JSON omit the currency-ask keys when `goal_currency` is null. When it is set they include `goalCurrency`, `goalAmount` (the typed canonical string, not the two-decimal snapshot), `goalSats`, and `goalAmountUsd` / `goalAmountChf` / `goalAmountEur` / `goalAmountPhp` (two-decimal string or null). Payment progress fiat stays the sum of per-payment gift-day snapshots. A null component on a later payment does not wipe a stored total; a null stored column is assigned the next non-null snapshot and is not rebuilt. One-time and Daily are still not stored. Settlement is not moved onto Coinbase spot.
 JSON type/range errors keep **400** `{ "error": "Expected a JSON body with text and/or photo" }`.
@@ -5798,7 +6809,8 @@ when the stored column is true (omitted when null; never false), optional
 `goalTermDays` when the stored column is not null (omitted when null), and when
 `goalCurrency` is stored also `goalCurrency`, `goalAmount`, and the four
 `goalAmount*` snapshots — a snapshot may be null, a legacy row omits those
-keys — optional `place` when a pin is stored and omitted when unset,
+keys — optional `place` (`{ lat, lng, label, address }` when a pin is stored;
+`address` is the structured postal address or JSON `null`; omitted when unset),
 optional `shopAccount` (`{ id, username, name }`) when a shop account is
 stored and omitted when unset, even when `accountId` is omitted,
 `payable`, `authorCanReceive`, `hasPhoto`, `photoCount`
@@ -5955,17 +6967,26 @@ the hidden-row count, never the pubkey. On store throw it logs
 
 ### `PATCH /messages/:id/place`
 
-Staff map pin on a live top-level shop note (`#21GiftsShop`). Bearer
-session required. Live role must be at least `moderator`. No rules
-gate. `:id` must match `MESSAGE_ID_RE` or the response is **404**.
-Body is JSON via `c.req.json()`; a non-JSON body or an object with no
-`place` key is **400** `{ "error": "Invalid body" }`. `normalizePlace`
-accepts a pin or `null` (clears). A bad coordinate is **400**
-`{ "error": "Place must be a latitude and longitude" }`. A label over
-80 characters is **400** `{ "error": "Place label must be at most 80 characters" }`.
-Missing or hidden row → **404** and no write. A reply → **400**
-`{ "error": "A reply cannot include a place" }`. A non-shop top-level
-note → **400** `{ "error": "Only a shop note can set a place" }`.
+Staff map pin on a live top-level shop note (`#21GiftsShop`). No rules
+gate. Checks run in this order: Bearer session required (**401**
+`{ "error": "Unauthorized" }`); live role must be at least `moderator`
+(**403** `{ "error": "Forbidden" }`); `:id` must match `MESSAGE_ID_RE` or
+the response is **404**; body is JSON via `c.req.json()` and a non-JSON
+body or an object with no `place` key is **400**
+`{ "error": "Invalid body" }`; `normalizePlace` accepts a pin or `null`
+(clears) — a bad coordinate is **400**
+`{ "error": "Place must be a latitude and longitude" }`, a label over 80
+characters is **400** `{ "error": "Place label must be at most 80 characters" }`,
+an invalid structured address is **400**
+`{ "error": "Place address is invalid" }`; a missing or hidden row is
+**404** `{ "error": "Not found" }` and no write; a reply is **400**
+`{ "error": "A reply cannot include a place" }`; a non-shop top-level
+note is **400** `{ "error": "Only a shop note can set a place" }`; for a
+non-null pin `shopPlaceProblem` is **400** with `Shop name is required`,
+`Shop address is required`, or `Shop name must not contain the address`
+and nothing is stored; then `shopTextProblem` against the stored text is
+**400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }`
+and nothing is stored. Clearing with `null` skips both shop checks.
 `setPlace` false → **404**. Store throw → **503**
 `{ "error": "Messages are unavailable" }` and `messages.place.failed`.
 
@@ -6004,7 +7025,7 @@ unchanged. The write stores only `shop_account_id`. A real change appends `messa
 
 ### `PATCH /messages/:id/text`
 
-Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. An unchanged body is **200** without `message_edit`. A real change writes the body and `message_edit` together and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
+Staff replacement of the body of a live top-level shop note (`#21GiftsShop`). Bearer session required. Live role must be at least `moderator`. Checks run in this order: `:id` must match `MESSAGE_ID_RE` or the response is **404**; a non-object body or a missing string `text` is **400** `{ "error": "Invalid body" }`; text outside 1–8000 characters is **400** before the row is read; a missing or hidden row is **404** `{ "error": "Not found" }`; a reply is **400** `{ "error": "A reply cannot be edited" }`; a non-shop note is **400** `{ "error": "Only a shop note can be edited" }`; empty text on a note with no photo and no video is **400** `{ "error": "Text must be 1–8000 characters or include a photo" }`. The shop tag is kept or restored, and if that makes the text longer than 8000 characters the response is **400** `{ "error": "Text must be 1–8000 characters" }`. When the note already has a complete pin (it passes `shopPlaceProblem`), `shopTextProblem` on the new text is **400** `{ "error": "Shop description must be 20 to 1000 characters and longer than the shop name" }` before the identical-body short-circuit; name and address are not re-checked here. An unchanged body is **200** without `message_edit` and without a map call. A real change writes the body and `message_edit` together, then PUT the current complete shop pin to `/map/places` when `mapPush` is set (an incomplete existing shop is not sent), and is **200** public message JSON. Store throw → **503** `{ "error": "Messages are unavailable" }` and leaves the previous body with no new history row.
 
 ### `PATCH /messages/:id/photos`
 
@@ -6041,8 +7062,9 @@ top-level note; omitted when unset/null/0 or on a reply), optional
 never false), optional `goalTermDays` when the stored column is not null
 (omitted when null), and when `goalCurrency` is stored also `goalCurrency`,
 `goalAmount`, and the four `goalAmount*` snapshots (a snapshot may be null;
-a legacy row omits those keys), optional `place`
-when a pin is stored (omitted when unset), optional `shopAccount`
+a legacy row omits those keys), optional `place` (`{ lat, lng, label, address }`
+when a pin is stored; `address` is the structured postal address or JSON `null`;
+omitted when unset), optional `shopAccount`
 (`{ id, username, name }`) when a shop account is stored (omitted when
 unset), always-present `parentId` (JSON `null`
 on top-level), optional `via: "nostr"` exactly when `accountId === null &&
@@ -6893,8 +7915,7 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
-- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required. An owner who continues chooses two people. It only opens the account on a new device and restores the same 12 words. No path in that document is reserved.
-- Shop payment in USDT or USDC ([docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md)). Specified there. Not mounted. Not in the table above.
+- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required, except for grant payouts from a start date set when it is built. An owner who continues chooses two people; 21.gifts keeps a backup share. Recovery keeps the account, gives it a new passkey with new 12 words and moves the wallet to it. No path in that document is reserved.
 - Shop identity ([docs/shop-identity.md](docs/shop-identity.md)). Not a v1 route. A shop's own NOSTR key, its page `/{npub}`, `GET /shops/:npub` and `shopNpub` are not built. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.

@@ -23,6 +23,7 @@ import {
   type FiatRateBook,
 } from '@/lib/usd-fiat-store';
 import { listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import { migrateShopPaymentSchema } from '@/lib/shop-payment-store';
 import {
   InMemoryFxSpotStore,
   PostgresFxSpotStore,
@@ -326,7 +327,8 @@ export interface BootFxOptions {
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional network, URL, timeout, and clock overrides for tests.
  * @param transactions - Optional transaction port; the SQL funding store uses
- *   it for the locked admission count (`admitWithinPlaces`).
+ *   it for the locked admission count (`admitWithinPlaces`), and the SQL
+ *   point-of-sale store for the payment hash claim of `recordInvoice`.
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
  *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
@@ -397,6 +399,7 @@ export async function openBootStores(
   };
   await migrateMemberHabitSchema(habitSql);
   await migratePosSchema(sqlClient);
+  await migrateShopPaymentSchema(sqlClient);
   await migrateConversationSchema(sqlClient);
   await migratePushSchema(sqlClient);
   await migrateNotificationSchema(sqlClient);
@@ -570,7 +573,7 @@ export async function openBootStores(
       return undefined;
     },
   });
-  const posStore = new PostgresPosStore(sqlClient);
+  const posStore = new PostgresPosStore(sqlClient, transactions);
   const apiLogStore = new PostgresApiLogStore(sqlClient);
   const conversationStore = new PostgresConversationStore(sqlClient, { fetchImpl, fiatRates, now });
   const pushStore = new PostgresPushStore(sqlClient);

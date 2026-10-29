@@ -405,6 +405,14 @@ test('Function: normalizeSparkPubkey — PUT /me/wallet is 404 when LNURL server
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('Function: encodeSparkAddress — PUT /me/wallet is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('Function: IpRateLimiter — POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({
   request,
 }) => {
@@ -459,6 +467,11 @@ test('Function: usernameFromDisplayName — POST /me/name without bearer is 401'
 test('Function: backfillAccountUsernames — GET /healthz is ok after boot backfill', async ({
   request,
 }) => {
+  const res = await request.get('/healthz');
+  expect(res.status()).toBe(200);
+});
+
+test('Function: backfillSparkAddresses — default boot has no DATABASE_URL', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);
 });
@@ -849,6 +862,21 @@ test('Function: bindGoalRateDay — a bitcoin ask is 409 without a verified wall
 });
 
 // Posting needs a verified wallet, which needs LNURL_SERVER_URL (blank here).
+test('Function: canonicalDecimal — an ask with a decimal goalAmount is 409 without a verified wallet', async ({
+  request,
+}) => {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', {
+    headers: auth,
+    data: { text: 'ask', goalCurrency: 'USD', goalAmount: '00010,50' },
+  });
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
+});
+
 test('Function: canonicalGoalAmount — an ask is 409 without a verified wallet', async ({
   request,
 }) => {
@@ -1049,6 +1077,23 @@ test('Function: InMemoryPosStore — POST /pos without bearer is 401', async ({ 
 
 test('Function: PostgresPosStore — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: PaymentHashClaims — POST /pos without bearer is 401 on the memory boot', async ({
+  request,
+}) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: paymentHashLockKey — default boot has no DATABASE_URL', async ({ request }) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+
+test('Function: duplicateInvoiceLogFields — POST /pay/:username/invoice is 404 for an unknown username', async ({
+  request,
+}) => {
+  const res = await request.post('/pay/nobody-e2e-dup/invoice', { data: { amountSats: 21 } });
+  expect(res.status()).toBe(404);
 });
 
 test('Function: contactRoutes — POST /contact without bearer is 401', async ({ request }) => {
@@ -2227,10 +2272,22 @@ test('Function: protoBytesField — free in-app payments are off on the default 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
-test('Function: decodeProto — free in-app payments are off on the default boot', async ({
+test('Function: decodeProto — a wallet report with a Spark address invoice is acknowledged', async ({
   request,
 }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: walletReport([
+      walletPayment({
+        id: 'spark-address',
+        invoice: 'spark1pgssyzwt0544600n5zkya7rvlnaz98l622mg04uhyaxgv6wt6534anx4kc986w',
+        method: 'spark',
+      }),
+    ]),
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['spark-address'] });
 });
 test('Function: encodeSparkInvoice — free in-app payments are off on the default boot', async ({
   request,
@@ -3116,10 +3173,19 @@ test('Function: normalizePlace — PATCH /messages/:id/place refuses a bad place
   expect(await bad.json()).toEqual({ error: 'Place must be a latitude and longitude' });
   const pinned = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
-    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+    data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: ZURICH_SHOP_ADDRESS } },
   });
   expect(pinned.status()).toBe(200);
 });
+
+/** A complete shop address for pins in Zürich; a shop pin needs one. */
+const ZURICH_SHOP_ADDRESS = {
+  street: 'Bahnhofstrasse',
+  houseNumber: '1',
+  postalCode: '8001',
+  city: 'Zürich',
+  country: 'CH',
+};
 
 /**
  * A moderator whose About-me note is a shop note (`#21GiftsShop`). Saving About
@@ -3136,7 +3202,7 @@ async function moderatorShopNote(
   const { auth, id } = await pinSession(request, stamp, 'moderator');
   const saved = await request.put('/me/about', {
     headers: auth,
-    data: { text: 'My shop #21GiftsShop' },
+    data: { text: 'My shop sells coffee and bread for sats #21GiftsShop' },
   });
   expect(saved.status()).toBe(200);
   const listed = await request.get('/debug/accounts', { headers: DEBUG });
@@ -3200,7 +3266,7 @@ test('Function: placesMatch — PATCH /messages/:id/place with the same place tw
   for (let attempt = 0; attempt < 2; attempt++) {
     const res = await request.patch(`/messages/${noteId}/place`, {
       headers: auth,
-      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich' } },
+      data: { place: { lat: 47.3, lng: 8.5, label: 'Zürich', address: ZURICH_SHOP_ADDRESS } },
     });
     expect(res.status()).toBe(200);
   }
@@ -3220,7 +3286,20 @@ test('Function: placeCountryCode — a shop pinned in Manila is PH on the map an
   const { auth, noteId } = await moderatorShopNote(request, stamp);
   const pinned = await request.patch(`/messages/${noteId}/place`, {
     headers: auth,
-    data: { place: { lat: 14.5995, lng: 120.9842, label: 'Kenya Street' } },
+    data: {
+      place: {
+        lat: 14.5995,
+        lng: 120.9842,
+        label: 'Kenya Street',
+        address: {
+          street: 'Roxas Boulevard',
+          houseNumber: '1',
+          postalCode: '1000',
+          city: 'Manila',
+          country: 'PH',
+        },
+      },
+    },
   });
   expect(pinned.status()).toBe(200);
   const places = await request.get('/messages/places', { headers: auth });
@@ -3896,4 +3975,530 @@ test('Function: migrateWalletSchema — needs DATABASE_URL; default boot stores 
   });
   expect(res.status()).toBe(200);
   expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});
+
+// Shop payment in USDT and USDC (docs/shop-stablecoin-payment.md). The default boot
+// leaves LNURL_SERVER_URL, ORCHESTRA_BASE_URL, ORCHESTRA_API_KEY, SHOP_EVM_RPC, and
+// SHOP_REFUND_ADDRESS blank, so the shop payment service is not built and its routes are
+// not mounted; each test asserts that default-boot outcome. The `shop-payment` project
+// (e2e/shop-payment/) runs these exports against stand-ins.
+
+/** `GET /.well-known/lnurlp/:username` for a username with no verified wallet: `shopErrorBody(404, 'Not found')`. */
+const UNKNOWN_PAY_LINK = {
+  statusCode: 404,
+  message: 'Not found',
+  error: 'Not found',
+  status: 'ERROR',
+  reason: 'Not found',
+};
+
+async function proofRouteOff(request: APIRequestContext): Promise<void> {
+  const res = await request.get(
+    '/lnurlp/tx/e2e-shop?quote=00000000-0000-4000-8000-000000000000&method=Polygon&tx=0x00',
+  );
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+}
+
+async function callbackRouteOff(request: APIRequestContext): Promise<void> {
+  const res = await request.get(
+    '/lnurlp/cb/e2e-shop?quote=00000000-0000-4000-8000-000000000000&method=Polygon&asset=USDT',
+  );
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+}
+
+async function payLinkOff(request: APIRequestContext): Promise<void> {
+  const res = await request.get('/.well-known/lnurlp/e2e-shop?timeout=0');
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual(UNKNOWN_PAY_LINK);
+}
+
+async function payerPaymentOff(request: APIRequestContext): Promise<void> {
+  const res = await request.post('/pay/e2e-shop/payment', { data: { amountSats: 1000 } });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+}
+
+async function waitRouteOff(request: APIRequestContext): Promise<void> {
+  const res = await request.get('/lnurlp/wait/00000000-0000-4000-8000-000000000000');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+}
+
+async function retryRouteOff(request: APIRequestContext): Promise<void> {
+  const res = await request.post('/debug/shop-proofs/00000000-0000-4000-8000-000000000000/retry', {
+    headers: DEBUG,
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+}
+
+/** A loan is a post, and posting is 409 without a verified wallet (default boot). */
+async function loanPostNeedsWallet(request: APIRequestContext): Promise<void> {
+  const auth = await verifiedAskSession(request);
+  const res = await request.post('/messages', { headers: auth, data: { text: 'loan' } });
+  expect(res.status()).toBe(409);
+  expect(await res.json()).toEqual({
+    error: 'missing_requirements',
+    missing: ['lightning-address'],
+  });
+}
+
+async function noDatabase(request: APIRequestContext): Promise<void> {
+  expect((await request.get('/healthz')).status()).toBe(200);
+}
+
+test('Function: handleShopProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: shopProofContext — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: verifyTxProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: verifyHexProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: sendHexProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: refuseHexProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: refuseProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: storeProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: submitProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: submitProofAttempt — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: proofResponse — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: readProofReceipt — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: applyProofOrder — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: lockPaymentForProofs — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: lockPaymentsForProofs — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: recordProofOrder — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: followsOrderStatus — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: evaluateProof — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: proofWithinBounds — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: decodeSignedEvmTransaction — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: hexFeeReaches — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: decodeTransferLog — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: parseErc20TransferData — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: normalizeEvmAddress — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: evmGetTransactionReceipt — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: evmGetUserOperationReceipt — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: evmGetTransactionByHash — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: evmSendRawTransaction — GET /lnurlp/tx/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await proofRouteOff(request);
+});
+
+test('Function: offerDetail — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: offerUri — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: proofUrl — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: shopError — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: shopErrorBody — GET /.well-known/lnurlp/:username for an unknown username is the full 404 body', async ({
+  request,
+}) => {
+  const res = await request.get('/.well-known/lnurlp/e2e-unknown-shop');
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual(UNKNOWN_PAY_LINK);
+});
+
+test('Function: shopJson — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: shopResponse — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: isExcludedShopUsername — GET /lnurlp/cb/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await callbackRouteOff(request);
+});
+
+test('Function: shopPayRequest — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: transferAmountsFor — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: lightningTransferAmount — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: quoteExpiration — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: btcAmount — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: decimalAmount — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: PlainJsonNumber — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: noPendingPaymentBody — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: shopName — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: candidatePairs — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: shopPairOrder — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: shopMethodByName — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: checkOffer — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: erc20TransferData — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: recommendedMinFee — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: evmGasPrice — GET /.well-known/lnurlp/:username is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await payLinkOff(request);
+});
+
+test('Function: ShopPayments — POST /pay/:username/payment is 404 without the LNURL server', async ({
+  request,
+}) => {
+  await payerPaymentOff(request);
+});
+
+test('Function: OrchestraClient — POST /pay/:username/payment is 404 without the LNURL server', async ({
+  request,
+}) => {
+  await payerPaymentOff(request);
+});
+
+test('Function: InMemoryShopPaymentStore — POST /pay/:username/payment is 404 without the LNURL server', async ({
+  request,
+}) => {
+  await payerPaymentOff(request);
+});
+
+test('Function: resolveShopPaymentConfig — POST /pay/:username/payment is 404 without the LNURL server', async ({
+  request,
+}) => {
+  await payerPaymentOff(request);
+});
+
+test('Function: waitBody — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: dfxPaymentStatus — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: normalizeUuid — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: runShopPaymentTick — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: startShopPaymentWorker — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: verifyLightningPayment — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: markPaymentPaid — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: endPayment — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: lockAccountOf — GET /lnurlp/wait/:payment is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await waitRouteOff(request);
+});
+
+test('Function: debugShopProofsRoutes — POST /debug/shop-proofs/:id/retry is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await retryRouteOff(request);
+});
+
+test('Function: retryStuckProof — POST /debug/shop-proofs/:id/retry is 404 when the LNURL server is off', async ({
+  request,
+}) => {
+  await retryRouteOff(request);
+});
+
+test('Function: bolt11ExpiresAtMs — a loan post is 409 without a verified wallet', async ({
+  request,
+}) => {
+  await loanPostNeedsWallet(request);
+});
+
+test('Function: invoiceStillOpen — a loan post is 409 without a verified wallet', async ({
+  request,
+}) => {
+  await loanPostNeedsWallet(request);
+});
+
+test('Function: PostgresShopPaymentStore — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  await noDatabase(request);
+});
+
+test('Function: migrateShopPaymentSchema — default boot has no DATABASE_URL', async ({
+  request,
+}) => {
+  await noDatabase(request);
+});
+
+test('Function: parseTypedFiatAmount — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: isPosFiatCode — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: freezePosFiatCrosses — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: serializePosFiat — POST /pos without bearer is 401', async ({ request }) => {
+  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+});
+
+test('Function: payRoutes — GET /pay/charges/:id is 404 when missing', async ({ request }) => {
+  expect((await request.get('/pay/charges/:id')).status()).toBe(404);
+});
+
+test('Function: payRoutes — GET /pay/:username/charges/:id is 404 when missing', async ({
+  request,
+}) => {
+  expect((await request.get('/pay/:username/charges/:id')).status()).toBe(404);
 });

@@ -26,6 +26,26 @@ A missing frozen string stays missing. It is JSON `null`. It is not filled from
 the current spot, and it is not filled later from a daily close, a migration,
 or another row. The amount remains without that currency.
 
+## A till charge returns the typed figure to the shop and to the payer
+
+The shop operator types the till amount. When that amount is typed in one
+currency, that exact decimal string is stored on the charge when the charge
+is created. The shop's till read and the payer's read of that same charge
+both return that string. The payer pays in bitcoin. That payment does not
+change the string.
+
+Typing 12.00 pesos stores 12.00. Both sides receive 12.00 and both show
+12.00. Neither side receives or shows 12.01 or 11.99. The same holds when
+the typed currency is the dollar, the franc, or the euro. No currency is
+special.
+
+Neither side derives that string from the sats, from the rate that turned the
+typed digits into sats, from a later spot, or from a daily close. The payer's
+own display currency does not replace it. The string stays on the open
+charge, on the paid charge, and on the history both sides keep of that
+payment. A response that carries only the sat count, so either side prices
+those sats, breaks this rule.
+
 ## What may use the rate of now
 
 The current spot, served for what a holding is worth right now, is not a

@@ -30,6 +30,12 @@ export const MESSAGE_INBOUND_REPLY_MAX_LENGTH = 8192;
 /** Cap for `listLatest` / GET `/messages` (top-level notes only). Default and max `listFeed` page size. */
 export const MESSAGE_LIST_LIMIT = 200;
 
+/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
+export const WAIT_SATS_TIMEOUT_MS = 25_000;
+
+/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
+export const WAIT_SATS_POLL_MS = 250;
+
 /** Server-side forum feed filter for GET `/messages`. */
 export type ForumFeedMode = 'all' | 'active' | 'unpaid' | 'popular';
 
@@ -296,6 +302,7 @@ export interface PublicMessage {
   /**
    * Optional map pin. Included only when stored; omitted when unset (same
    * omit rule as `parentId`). `label` is a string or JSON `null`.
+   * `address` is the structured postal address or JSON `null`.
    */
   place?: ForumPlace;
   /**
@@ -463,7 +470,12 @@ function publicPlace(row: MessageRow): ForumPlace | undefined {
   if (place === undefined || place === null) {
     return undefined;
   }
-  return { lat: place.lat, lng: place.lng, label: place.label };
+  return {
+    lat: place.lat,
+    lng: place.lng,
+    label: place.label,
+    address: place.address ?? null,
+  };
 }
 
 /**
@@ -838,8 +850,10 @@ export interface DebugMessagePhotoMeta {
  *   when null; never false). `goalTermDays` is included only when the stored
  *   column is not null (omitted when null). Currency-ask keys are included only when
  *   `goalCurrency` is stored. Always includes `placeLat` / `placeLng` /
- *   `placeLabel` (JSON `null` when unset). Always includes `shopAccountId`
- *   (`null` when unset). Does not include the shop username or name.
+ *   `placeLabel` / `placeStreet` / `placeHouseNumber` / `placePostalCode` /
+ *   `placeCity` / `placeCountry` (JSON `null` when unset). Always includes
+ *   `shopAccountId` (`null` when unset). Does not include the shop username
+ *   or name.
  * @throws RangeError (or Error) when `createdAt` or `deletedAt` is invalid.
  */
 export function serializeDebugMessage(
@@ -896,6 +910,11 @@ export function serializeDebugMessage(
     placeLat: row.place === undefined || row.place === null ? null : row.place.lat,
     placeLng: row.place === undefined || row.place === null ? null : row.place.lng,
     placeLabel: row.place === undefined || row.place === null ? null : row.place.label,
+    placeStreet: row.place?.address?.street ?? null,
+    placeHouseNumber: row.place?.address?.houseNumber ?? null,
+    placePostalCode: row.place?.address?.postalCode ?? null,
+    placeCity: row.place?.address?.city ?? null,
+    placeCountry: row.place?.address?.country ?? null,
     shopAccountId:
       row.shopAccount === undefined || row.shopAccount === null ? null : row.shopAccount.id,
     photoContentType: photo?.photoContentType ?? null,

@@ -7,7 +7,18 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
+import { shopError, shopErrorBody, waitBody, type ShopPayments } from '@/lib/shop-payment';
+import * as shopProof from '@/lib/shop-proof';
 import { lnurlServerRoutes } from '@/routes/lnurl-server';
+import { WAIT_SATS_TIMEOUT_MS } from '@/lib/message';
+import {
+  PAYMENT_ID,
+  QUOTE_ID,
+  getPayment,
+  harness,
+  seed,
+  txHash,
+} from '@/__tests__/helpers/shop-proof-fixture';
 
 const PUBKEY = `02${'a'.repeat(64)}`;
 const PUBKEY_OTHER = `03${'b'.repeat(64)}`;
@@ -916,6 +927,12 @@ describe('lnurlServerRoutes', () => {
           expiresAt: new Date(NOW + 60_000),
           paidAt: null,
           sparkInvoice: null,
+          amountCurrency: null,
+          amountText: null,
+          fiatUsd: null,
+          fiatChf: null,
+          fiatEur: null,
+          fiatPhp: null,
         };
       }
 
@@ -980,6 +997,34 @@ describe('lnurlServerRoutes', () => {
         );
         expect(res.status).toBe(200);
         expect(await recorded(posStore)).toEqual([]);
+      });
+
+      it('answers 503 without the BOLT11 when another payment holds its hash', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        posStore.paymentHashClaims.claimShop(HASH, 'sp-other', 'c9');
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(503);
+        const text = await res.text();
+        expect(JSON.parse(text)).toEqual({ error: 'Lightning address service is unavailable' });
+        expect(text).not.toContain(TILL_PR);
+        expect(
+          parsedEvents(warn).filter((event) => event['event'] === 'shop.alert.duplicate_invoice'),
+        ).toEqual([
+          expect.objectContaining({ chargeId: 'c1', holderChargeId: 'c9', paymentId: 'sp-other' }),
+        ]);
+        expect(await recorded(posStore)).toEqual([]);
+      });
+
+      it('forwards the BOLT11 when the hash is already this charge (this_charge)', async () => {
+        const posStore = new InMemoryPosStore();
+        await posStore.create(charge(250_000));
+        posStore.paymentHashClaims.claimShop(HASH, 'sp-own', 'c1');
+        const res = await forward(posStore, JSON.stringify({ pr: TILL_PR }));
+        expect(res.status).toBe(200);
+        expect(
+          parsedEvents(warn).some((event) => event['event'] === 'shop.alert.duplicate_invoice'),
+        ).toBe(false);
       });
 
       it('logs when recording the hash fails and still forwards the invoice', async () => {
@@ -1232,5 +1277,354 @@ describe('lnurlServerRoutes', () => {
         expect(await down.json()).toEqual({ error: 'Lightning address service is unavailable' });
       });
     }
+  });
+});
+
+describe('shop payment routes', () => {
+  const ACCOUNT_ID = '00000000-0000-4000-8000-0000000000c1';
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+    vi.restoreAllMocks();
+  });
+
+  async function shopApp(
+    shop: ShopPayments,
+    options: { fetchImpl?: FetchFn; waitTimeoutMs?: number } = {},
+  ): Promise<{ app: Hono; store: InMemoryAuthStore }> {
+    const store = new InMemoryAuthStore();
+    await seedWallet(store, { id: ACCOUNT_ID, username: 'ada', verified: true });
+    await seedWallet(store, {
+      id: '00000000-0000-4000-8000-0000000000c2',
+      username: 'bob',
+      pubkey: PUBKEY_OTHER,
+      viewKey: `${'e'.repeat(8)}${'c'.repeat(56)}`,
+    });
+    const fetchImpl =
+      options.fetchImpl ??
+      (async () => {
+        throw new Error('fetch must not be called');
+      });
+    const app = new Hono().route(
+      '/',
+      lnurlServerRoutes({
+        auth: store,
+        config: CONFIG,
+        fetchImpl,
+        now: () => NOW,
+        posStore: new InMemoryPosStore(),
+        shopPayments: shop,
+        ...(options.waitTimeoutMs === undefined ? {} : { waitTimeoutMs: options.waitTimeoutMs }),
+      }),
+    );
+    return { app, store };
+  }
+
+  async function expectStoreFailure(
+    res: Response,
+    warnSpy: ReturnType<typeof vi.spyOn>,
+    route: string,
+    text: string,
+  ): Promise<void> {
+    expect(res.status).toBe(503);
+    expect(res.headers.get('Cache-Control')).toBe('no-store');
+    expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+    expect(await res.json()).toEqual(shopErrorBody(503, text));
+    expect(parsedEvents(warnSpy)).toContainEqual(
+      expect.objectContaining({
+        event: 'lnurl_server.failed',
+        route,
+        name: 'Error',
+        code: '57P01',
+      }),
+    );
+  }
+
+  function storeError(): Error {
+    return Object.assign(new Error('terminating connection'), { code: '57P01' });
+  }
+
+  it('does not mount the shop routes without the service', async () => {
+    const store = new InMemoryAuthStore();
+    await seedWallet(store, { id: ACCOUNT_ID, username: 'ada', verified: true });
+    const app = mount(store, async () => {
+      throw new Error('fetch must not be called');
+    });
+    for (const path of ['/lnurlp/cb/ada', '/lnurlp/tx/ada', `/lnurlp/wait/${PAYMENT_ID}`]) {
+      const res = await app.request(path);
+      expect(res.status).toBe(404);
+      expect(await res.text()).toBe('404 Not Found');
+    }
+  });
+
+  it('keeps /lnurlp/cb|tx|wait/invoice as the invoice forward of users cb, tx, and wait', async () => {
+    const h = harness();
+    const callback = vi.spyOn(h.shop, 'callback');
+    const wait = vi.spyOn(h.shop, 'wait');
+    const proof = vi.spyOn(shopProof, 'handleShopProof');
+    const { fetchImpl, calls } = recordingFetch(async () => Response.json({ pr: 'lnbc1' }));
+    const { app, store } = await shopApp(h.shop, { fetchImpl });
+    let n = 0;
+    for (const username of ['cb', 'tx', 'wait']) {
+      n += 1;
+      await seedWallet(store, {
+        id: `00000000-0000-4000-8000-00000000000${n}`,
+        username,
+        pubkey: `02${String(n).repeat(64)}`,
+        viewKey: `${String(n).repeat(8)}${'d'.repeat(56)}`,
+        verified: true,
+      });
+      const res = await app.request(`/lnurlp/${username}/invoice?amount=1000`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({ pr: 'lnbc1' });
+      expect(calls.at(-1)?.url).toBe(`http://lnurl.test/lnurlp/${username}/invoice?amount=1000`);
+    }
+    expect(calls).toHaveLength(3);
+    expect(callback).not.toHaveBeenCalled();
+    expect(wait).not.toHaveBeenCalled();
+    expect(proof).not.toHaveBeenCalled();
+  });
+
+  describe('GET /lnurlp/cb/:username', () => {
+    it('answers 503 with the shared body and logs when the service throws', async () => {
+      const h = harness();
+      vi.spyOn(h.shop, 'callback').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request('/lnurlp/cb/ada?amount=1000'),
+        warn,
+        'callback',
+        'Lightning address service is unavailable',
+      );
+    });
+
+    it('answers the LNURL amount path from the real service', async () => {
+      const h = harness();
+      const { app } = await shopApp(h.shop);
+      const res = await app.request('/lnurlp/cb/Ada?amount=1000');
+      expect(res.status).toBe(400);
+      expect(res.headers.get('Access-Control-Allow-Origin')).toBe('*');
+      expect(await res.json()).toEqual(shopErrorBody(400, 'Amount does not match this payment'));
+    });
+
+    it('passes the query and the repeated keys to the service', async () => {
+      const h = harness();
+      const callback = vi
+        .spyOn(h.shop, 'callback')
+        .mockImplementation(async () => new Response('ok', { status: 200 }));
+      const { app } = await shopApp(h.shop);
+      expect((await app.request('/lnurlp/cb/ada')).status).toBe(200);
+      expect(callback).toHaveBeenLastCalledWith(
+        expect.objectContaining({ id: ACCOUNT_ID }),
+        'ada',
+        { amount: null, quote: null, method: null, asset: null, repeated: false },
+      );
+      await app.request('/lnurlp/cb/ada?amount=1&quote=q&method=Polygon&asset=USDT');
+      expect(callback.mock.lastCall?.[2]).toEqual({
+        amount: '1',
+        quote: 'q',
+        method: 'Polygon',
+        asset: 'USDT',
+        repeated: false,
+      });
+      for (const key of ['quote', 'method', 'asset', 'amount']) {
+        await app.request(`/lnurlp/cb/ada?${key}=1&${key}=2`);
+        expect(callback.mock.lastCall?.[2]).toMatchObject({ repeated: true });
+      }
+    });
+
+    it('answers 404 for an invalid, reserved, unknown, or unverified username', async () => {
+      const h = harness();
+      const callback = vi.spyOn(h.shop, 'callback');
+      const { app } = await shopApp(h.shop);
+      for (const username of ['_', 'Invoice', 'missing', 'bob']) {
+        const res = await app.request(`/lnurlp/cb/${username}`);
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual(shopErrorBody(404, 'Not found'));
+      }
+      expect(callback).not.toHaveBeenCalled();
+    });
+
+    it('answers 503 over 120 requests per minute per client address', async () => {
+      const { app } = await shopApp(harness().shop);
+      const headers = { 'cf-connecting-ip': '203.0.113.90' };
+      for (let i = 0; i < 120; i += 1) {
+        expect((await app.request('/lnurlp/cb/missing', { headers })).status).toBe(404);
+      }
+      const limited = await app.request('/lnurlp/cb/missing', { headers });
+      expect(limited.status).toBe(503);
+      expect(await limited.json()).toEqual(shopErrorBody(503, 'Too many requests'));
+    });
+
+    it('returns 404 for HEAD', async () => {
+      const { app } = await shopApp(harness().shop);
+      expect((await app.request('/lnurlp/cb/ada', { method: 'HEAD' })).status).toBe(404);
+    });
+  });
+
+  describe('GET /lnurlp/tx/:username', () => {
+    it('answers 503 Payment is being confirmed and logs when the proof handler throws', async () => {
+      const h = harness();
+      vi.spyOn(shopProof, 'handleShopProof').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request(`/lnurlp/tx/ada?quote=${QUOTE_ID}&method=Polygon&tx=${txHash('a1')}`),
+        warn,
+        'proof',
+        'Payment is being confirmed',
+      );
+    });
+
+    it('answers 404 Quote expired for a quote this username does not have', async () => {
+      const h = harness();
+      await seed(h);
+      const { app } = await shopApp(h.shop);
+      const res = await app.request(
+        `/lnurlp/tx/ada?quote=${QUOTE_ID}&method=Polygon&tx=${txHash('a1')}`,
+      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual(shopErrorBody(404, 'Quote expired'));
+    });
+
+    it('passes the query, the repeated keys, and the limit to the proof handler', async () => {
+      const h = harness();
+      const proof = vi
+        .spyOn(shopProof, 'handleShopProof')
+        .mockImplementation(async () => new Response('ok', { status: 200 }));
+      const { app } = await shopApp(h.shop);
+      await app.request('/lnurlp/tx/Ada?quote=q&method=Polygon&asset=USDT&tx=t&hex=h');
+      expect(proof).toHaveBeenLastCalledWith(
+        h.shop,
+        expect.objectContaining({ id: ACCOUNT_ID }),
+        'ada',
+        { quote: 'q', method: 'Polygon', asset: 'USDT', tx: 't', hex: 'h', repeated: false },
+        false,
+      );
+      await app.request('/lnurlp/tx/ada');
+      expect(proof.mock.lastCall?.[3]).toEqual({
+        quote: null,
+        method: null,
+        asset: null,
+        tx: null,
+        hex: null,
+        repeated: false,
+      });
+      for (const key of ['quote', 'method', 'asset', 'tx', 'hex']) {
+        await app.request(`/lnurlp/tx/ada?${key}=1&${key}=2`);
+        expect(proof.mock.lastCall?.[3]).toMatchObject({ repeated: true });
+      }
+    });
+
+    it('answers 404 for an unknown username, and 503 once over the limit', async () => {
+      const h = harness();
+      const proof = vi
+        .spyOn(shopProof, 'handleShopProof')
+        .mockImplementation(async () => new Response('ok', { status: 200 }));
+      const { app } = await shopApp(h.shop);
+      const headers = { 'cf-connecting-ip': '203.0.113.91' };
+      for (let i = 0; i < 120; i += 1) {
+        const res = await app.request('/lnurlp/tx/missing', { headers });
+        expect(res.status).toBe(404);
+        // No quote of a shop payment of an unknown username exists.
+        expect(await res.json()).toEqual(shopErrorBody(404, 'Quote expired'));
+      }
+      const limited = await app.request('/lnurlp/tx/missing', { headers });
+      expect(limited.status).toBe(503);
+      expect(await limited.json()).toEqual(shopErrorBody(503, 'Too many requests'));
+      expect(proof).not.toHaveBeenCalled();
+      // A known username over the limit still reaches the handler, which may answer from a stored row.
+      await app.request('/lnurlp/tx/ada', { headers });
+      expect(proof.mock.lastCall?.[4]).toBe(true);
+    });
+
+    it('returns 404 for HEAD', async () => {
+      const { app } = await shopApp(harness().shop);
+      expect((await app.request('/lnurlp/tx/ada', { method: 'HEAD' })).status).toBe(404);
+    });
+  });
+
+  describe('GET /lnurlp/wait/:payment', () => {
+    it('answers 503 with the shared body and logs when the store throws', async () => {
+      const h = harness();
+      vi.spyOn(h.shop, 'wait').mockRejectedValue(storeError());
+      const { app } = await shopApp(h.shop);
+      await expectStoreFailure(
+        await app.request(`/lnurlp/wait/${PAYMENT_ID}`),
+        warn,
+        'wait',
+        'Lightning address service is unavailable',
+      );
+    });
+
+    it('answers the stored payment at once without since', async () => {
+      const h = harness();
+      await seed(h);
+      const { app } = await shopApp(h.shop);
+      const res = await app.request(`/lnurlp/wait/${PAYMENT_ID.toUpperCase()}`);
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      const payment = await getPayment(h);
+      expect(payment).not.toBeNull();
+      expect(await res.json()).toEqual(waitBody(payment as NonNullable<typeof payment>));
+    });
+
+    it('holds with since up to the injected limit', async () => {
+      const h = harness();
+      await seed(h);
+      const wait = vi.spyOn(h.shop, 'wait');
+      const { app } = await shopApp(h.shop, { waitTimeoutMs: 0 });
+      const res = await app.request(`/lnurlp/wait/${PAYMENT_ID}?since=open`);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ status: 'Pending', paymentStatus: 'open' });
+      expect(wait).toHaveBeenCalledWith(PAYMENT_ID, 'open', 0);
+    });
+
+    it('defaults the hold limit to WAIT_SATS_TIMEOUT_MS', async () => {
+      const h = harness();
+      const wait = vi.spyOn(h.shop, 'wait').mockResolvedValue(null);
+      const { app } = await shopApp(h.shop);
+      const res = await app.request(`/lnurlp/wait/${PAYMENT_ID}`);
+      expect(res.status).toBe(404);
+      expect(wait).toHaveBeenCalledWith(PAYMENT_ID, null, WAIT_SATS_TIMEOUT_MS);
+    });
+
+    it('answers 404 for a malformed or unknown id', async () => {
+      const h = harness();
+      const wait = vi.spyOn(h.shop, 'wait');
+      const { app } = await shopApp(h.shop);
+      const malformed = await app.request('/lnurlp/wait/not-a-uuid');
+      expect(malformed.status).toBe(404);
+      expect(await malformed.json()).toEqual(shopErrorBody(404, 'Not found'));
+      expect(wait).not.toHaveBeenCalled();
+      const unknown = await app.request(`/lnurlp/wait/${PAYMENT_ID}`);
+      expect(unknown.status).toBe(404);
+      expect(await unknown.json()).toEqual(shopErrorBody(404, 'Not found'));
+    });
+
+    it('answers 429 over 120 requests per minute per client address', async () => {
+      const { app } = await shopApp(harness().shop);
+      const headers = { 'cf-connecting-ip': '203.0.113.92' };
+      for (let i = 0; i < 120; i += 1) {
+        expect((await app.request('/lnurlp/wait/x', { headers })).status).toBe(404);
+      }
+      const limited = await app.request('/lnurlp/wait/x', { headers });
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual(shopErrorBody(429, 'Too many requests'));
+      expect(limited.headers.get('Content-Type')).toBe(
+        shopError(429, 'Too many requests').headers.get('Content-Type'),
+      );
+    });
+
+    it('returns 404 for HEAD', async () => {
+      const { app } = await shopApp(harness().shop);
+      expect((await app.request(`/lnurlp/wait/${PAYMENT_ID}`, { method: 'HEAD' })).status).toBe(
+        404,
+      );
+    });
   });
 });

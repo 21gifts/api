@@ -139,6 +139,12 @@ describe('debugCatalogRoutes', () => {
       expiresAt: new Date('2026-09-22T00:05:00.000Z'),
       paidAt: null,
       sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     const res = await new Hono()
       .route(
@@ -167,6 +173,12 @@ describe('debugCatalogRoutes', () => {
           expiresAt: '2026-09-22T00:05:00.000Z',
           paidAt: null,
           sparkInvoice: null,
+          amountCurrency: null,
+          amount: null,
+          amountUsd: null,
+          amountChf: null,
+          amountEur: null,
+          amountPhp: null,
         },
       ],
     });

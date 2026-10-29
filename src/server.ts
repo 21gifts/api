@@ -32,6 +32,10 @@ import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
 import { memberHabitRoutes } from '@/routes/member-habits';
 import { posRoutes } from '@/routes/pos';
+import { debugShopProofsRoutes } from '@/routes/debug-shop-proofs';
+import { OrchestraClient } from '@/lib/orchestra';
+import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { grantContinuationRoutes } from '@/routes/grant-continuation';
 import { shopActivityRoutes } from '@/routes/shop-activity';
 import { conversationRoutes } from '@/routes/conversations';
@@ -101,6 +105,7 @@ import {
   resolveAllowedOrigins,
   resolveFreePaymentsConfig,
   resolveLnurlServerConfig,
+  resolveShopPaymentConfig,
 } from '@/lib/config';
 import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
@@ -345,6 +350,13 @@ export interface AppDeps {
    */
   posStore?: PosStore;
   /**
+   * Shop payment service in USDT and USDC. Boot builds one per process and
+   * shares it with the paid watcher. Default when the LNURL server resolves:
+   * a service over an {@link InMemoryShopPaymentStore} on `posStore`, with
+   * Orchestra when {@link resolveShopPaymentConfig} resolves.
+   */
+  shopPayments?: ShopPayments;
+  /**
    * Private messaging threads (default: empty
    * {@link InMemoryConversationStore}). Boot injects
    * {@link PostgresConversationStore} when `DATABASE_URL` is set.
@@ -519,6 +531,31 @@ export function createApp(deps: AppDeps = {}): Hono {
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const memberHabitStore = deps.memberHabitStore ?? new InMemoryMemberHabitStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
+  const shopConfig = resolveShopPaymentConfig(env);
+  const shopPayments =
+    lnurlServer === null
+      ? undefined
+      : (deps.shopPayments ??
+        new ShopPayments({
+          store: new InMemoryShopPaymentStore(posStore),
+          posStore,
+          auth: store,
+          lnurlServer,
+          config: shopConfig,
+          orchestra:
+            shopConfig === null
+              ? null
+              : new OrchestraClient({
+                  baseUrl: shopConfig.orchestraBaseUrl,
+                  apiKey: shopConfig.orchestraApiKey,
+                  fetchImpl,
+                  now,
+                }),
+          fxSpot: fxSpotStore,
+          fetchImpl,
+          now,
+        }));
+  const shopDeps = shopPayments === undefined ? {} : { shopPayments };
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
   const walletStore = deps.walletStore ?? new InMemoryWalletStore();
@@ -662,12 +699,20 @@ export function createApp(deps: AppDeps = {}): Hono {
       posStore,
       now,
       ...(lnurlServer === null ? {} : { lnurlServer }),
+      ...shopDeps,
     }),
   );
   if (lnurlServer !== null) {
     app.route(
       '/',
-      lnurlServerRoutes({ auth: store, config: lnurlServer, fetchImpl, now, posStore }),
+      lnurlServerRoutes({
+        auth: store,
+        config: lnurlServer,
+        fetchImpl,
+        now,
+        posStore,
+        ...shopDeps,
+      }),
     );
   }
   app.route(
@@ -679,6 +724,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       now,
       ...receivingDeps,
       ...(sparkInvoices === undefined ? {} : { freePayments: true }),
+      ...shopDeps,
     }),
   );
   app.route('/lnurl', lnurlRoutes({ auth: store, fetchImpl, now, env }));
@@ -945,11 +991,16 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      spot: fxSpotStore,
       messageStore,
       ...(activity === undefined ? {} : { activity }),
       ...receivingDeps,
+      ...shopDeps,
     }),
   );
+  if (shopPayments !== undefined) {
+    app.route('/debug/shop-proofs', debugShopProofsRoutes({ shop: shopPayments, debugToken }));
+  }
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),

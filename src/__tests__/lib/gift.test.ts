@@ -225,7 +225,7 @@ describe('buildGiftStats', () => {
     const stats = buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], RATE_100K);
     expect(stats.totalSats).toBe(1000);
     expect(stats.totalBtc).toBe('0.00001000');
-    expect(stats.totalUsd).toBe('1.00');
+    expect(stats.totalUsd).toBeNull();
     expect(stats.totalChf).toBeNull();
     expect(stats.totalEur).toBeNull();
     expect(stats.totalPhp).toBeNull();
@@ -242,8 +242,8 @@ describe('buildGiftStats', () => {
         cumulativeSats: 1000,
         btc: '0.00001000',
         cumulativeBtc: '0.00001000',
-        usd: '1.00',
-        cumulativeUsd: '1.00',
+        usd: null,
+        cumulativeUsd: null,
         ...NULL_FIAT_DAY,
       },
     ]);
@@ -253,7 +253,7 @@ describe('buildGiftStats', () => {
         giftCount: 1,
         sats: 1000,
         btc: '0.00001000',
-        usd: '1.00',
+        usd: null,
         chf: null,
         eur: null,
         php: null,
@@ -265,7 +265,7 @@ describe('buildGiftStats', () => {
         giftCount: 1,
         sats: 1000,
         btc: '0.00001000',
-        usd: '1.00',
+        usd: null,
         chf: null,
         eur: null,
         php: null,
@@ -286,57 +286,42 @@ describe('buildGiftStats', () => {
     expect(stats.byMonth[0]?.chf).toBeNull();
   });
 
-  it('converts historical CHF/EUR/PHP from USD at that UTC day (worked example)', () => {
+  it('does not price a missing stored amount from the fiat book', () => {
     const stats = buildGiftStats(
       [row('2026-06-01T15:00:00.000Z', 1000, 'alice')],
       RATE_100K,
       FIAT_100K,
     );
-    expect(stats.totalUsd).toBe('1.00');
-    expect(stats.totalChf).toBe('0.80');
-    expect(stats.totalEur).toBe('0.90');
-    expect(stats.totalPhp).toBe('50.00');
-    expect(stats.spendOverTime).toEqual([
-      {
-        day: '2026-06-01',
-        giftCount: 1,
-        officialCount: 1,
-        sats: 1000,
-        cumulativeSats: 1000,
-        btc: '0.00001000',
-        cumulativeBtc: '0.00001000',
-        usd: '1.00',
-        cumulativeUsd: '1.00',
-        chf: '0.80',
-        cumulativeChf: '0.80',
-        eur: '0.90',
-        cumulativeEur: '0.90',
-        php: '50.00',
-        cumulativePhp: '50.00',
-      },
-    ]);
-    expect(stats.byRecipient).toEqual([
-      {
-        recipient: 'alice',
-        giftCount: 1,
-        sats: 1000,
-        btc: '0.00001000',
-        usd: '1.00',
-        chf: '0.80',
-        eur: '0.90',
-        php: '50.00',
-      },
-    ]);
+    expect(stats.totalUsd).toBeNull();
+    expect(stats.totalChf).toBeNull();
+    expect(stats.totalEur).toBeNull();
+    expect(stats.totalPhp).toBeNull();
+    expect(stats.spendOverTime[0]).toMatchObject({
+      day: '2026-06-01',
+      sats: 1000,
+      usd: null,
+      cumulativeUsd: null,
+      chf: null,
+      eur: null,
+      php: null,
+    });
+    expect(stats.byRecipient[0]).toMatchObject({
+      recipient: 'alice',
+      usd: null,
+      chf: null,
+      eur: null,
+      php: null,
+    });
     expect(stats.byMonth).toEqual([
       {
         month: '2026-06',
         giftCount: 1,
         sats: 1000,
         btc: '0.00001000',
-        usd: '1.00',
-        chf: '0.80',
-        eur: '0.90',
-        php: '50.00',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
       },
     ]);
     expect(stats.fx).toEqual(FIAT_FX);
@@ -366,23 +351,23 @@ describe('buildGiftStats', () => {
     };
     const stats = buildGiftStats([hole, sibling, earlier], new Map());
     expect(stats.totalUsd).toBe('5.00');
-    expect(stats.totalChf).toBe('4.13');
-    expect(stats.totalEur).toBe('4.47');
-    expect(stats.totalPhp).toBe('301.24');
+    expect(stats.totalChf).toBe('3.30');
+    expect(stats.totalEur).toBe('3.58');
+    expect(stats.totalPhp).toBe('238.43');
     expect(stats.spendOverTime[1]).toMatchObject({
       day: '2026-10-08',
-      chf: '3.33',
-      cumulativeChf: '4.13',
-      eur: '3.57',
-      cumulativeEur: '4.47',
-      php: '251.24',
-      cumulativePhp: '301.24',
+      chf: '2.50',
+      cumulativeChf: '3.30',
+      eur: '2.68',
+      cumulativeEur: '3.58',
+      php: '188.43',
+      cumulativePhp: '238.43',
     });
     const listed = buildGiftDay('2026-10-08', [hole, sibling], new Map());
-    expect(listed.gifts.map((gift) => gift.amountPhp)).toEqual(['62.81', '188.43']);
-    expect(listed.totalChf).toBe('3.33');
-    expect(listed.totalEur).toBe('3.57');
-    expect(listed.totalPhp).toBe('251.24');
+    expect(listed.gifts.map((gift) => gift.amountPhp)).toEqual([null, '188.43']);
+    expect(listed.totalChf).toBe('2.50');
+    expect(listed.totalEur).toBe('2.68');
+    expect(listed.totalPhp).toBe('188.43');
   });
 
   it('does not replace a stored cross and ignores a smaller same-day gift', () => {
@@ -410,11 +395,12 @@ describe('buildGiftStats', () => {
     const listed = buildGiftDay('2026-10-08', [hole, small, large], new Map());
     expect(listed.gifts[0]).toMatchObject({
       amountChf: '0.90',
-      amountEur: '0.89',
-      amountPhp: '62.81',
+      amountEur: null,
+      amountPhp: null,
     });
     expect(listed.totalChf).toBe('4.10');
-    expect(listed.totalPhp).toBe('311.24');
+    expect(listed.totalEur).toBe('3.48');
+    expect(listed.totalPhp).toBe('248.43');
   });
 
   it('leaves a stored hole null when no same-day gift has that cross', () => {
@@ -438,28 +424,29 @@ describe('buildGiftStats', () => {
     expect(stats.spendOverTime[0]?.php).toBeNull();
   });
 
-  it('does not scale a stored row that has no USD amount', () => {
-    const stats = buildGiftStats(
-      [
-        {
-          ...row('2026-10-08T00:08:39.982Z', 1201, 'ada'),
-          amountUsd: null,
-          amountChf: null,
-          amountEur: null,
-          amountPhp: null,
-        },
-        {
-          ...row('2026-10-08T00:16:05.934Z', 3603, 'bea'),
-          amountUsd: '3.00',
-          amountChf: '2.50',
-          amountEur: '2.68',
-          amountPhp: '188.43',
-        },
-      ],
-      new Map(),
-    );
-    expect(stats.totalPhp).toBeNull();
-    expect(stats.spendOverTime[0]?.php).toBeNull();
+  it('contributes a stored CHF when USD on that row is null', () => {
+    const hole = {
+      ...row('2026-10-08T00:08:39.982Z', 1201, 'ada'),
+      amountUsd: null,
+      amountChf: '1.25',
+      amountEur: null,
+      amountPhp: null,
+    };
+    const sibling = {
+      ...row('2026-10-08T00:16:05.934Z', 3603, 'bea'),
+      amountUsd: '3.00',
+      amountChf: '2.50',
+      amountEur: '2.68',
+      amountPhp: '188.43',
+    };
+    const stats = buildGiftStats([hole, sibling], new Map());
+    expect(stats.totalUsd).toBe('3.00');
+    expect(stats.totalChf).toBe('3.75');
+    expect(stats.totalPhp).toBe('188.43');
+    const listed = buildGiftDay('2026-10-08', [hole], new Map());
+    expect(listed.totalUsd).toBeNull();
+    expect(listed.totalChf).toBe('1.25');
+    expect(listed.gifts[0]).toMatchObject({ amountUsd: null, amountChf: '1.25' });
   });
 
   it('keeps a currency total null when any gift day lacks that cross, but still lists it on fx.quotes', () => {
@@ -470,25 +457,25 @@ describe('buildGiftStats', () => {
     const fiat = new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
     const stats = buildGiftStats(
       [
-        row('2026-06-01T12:00:00.000Z', 1000, 'alice'),
+        { ...row('2026-06-01T12:00:00.000Z', 1000, 'alice'), amountChf: '0.80' },
         row('2026-06-02T12:00:00.000Z', 1000, 'bob'),
       ],
       rates,
       fiat,
     );
-    expect(stats.totalChf).toBeNull();
+    expect(stats.totalChf).toBe('0.80');
     expect(stats.totalEur).toBeNull();
     expect(stats.totalPhp).toBeNull();
     expect(stats.spendOverTime[0]?.chf).toBe('0.80');
     expect(stats.spendOverTime[1]?.chf).toBeNull();
-    expect(stats.spendOverTime[1]?.cumulativeChf).toBeNull();
+    expect(stats.spendOverTime[1]?.cumulativeChf).toBe('0.80');
     expect(stats.fx.quotes.map((q) => q.code)).toEqual(['USD', 'CHF', 'EUR', 'PHP']);
   });
 
   it('lists only the crosses that appear on at least one gift day', () => {
     const fiat = new Map([['2026-06-01', { CHF: '0.80' }]]);
     const stats = buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], RATE_100K, fiat);
-    expect(stats.totalChf).toBe('0.80');
+    expect(stats.totalChf).toBeNull();
     expect(stats.totalEur).toBeNull();
     expect(stats.totalPhp).toBeNull();
     expect(stats.fx.quotes).toEqual([
@@ -498,13 +485,12 @@ describe('buildGiftStats', () => {
   });
 
   it('fills UTC gap days with zero spend without requiring a rate', () => {
-    const rates = new Map([
-      ['2026-06-01', '100000'],
-      ['2026-06-03', '200000'],
-    ]);
     const stats = buildGiftStats(
-      [row('2026-06-03T01:00:00.000Z', 30, 'bob'), row('2026-06-01T23:00:00.000Z', 10, 'alice')],
-      rates,
+      [
+        { ...row('2026-06-03T01:00:00.000Z', 30, 'bob'), amountUsd: '0.06' },
+        { ...row('2026-06-01T23:00:00.000Z', 10, 'alice'), amountUsd: '0.01' },
+      ],
+      new Map(),
     );
     expect(stats.spendOverTime).toEqual([
       {
@@ -555,21 +541,25 @@ describe('buildGiftStats', () => {
   });
 
   it('keeps running fiat on a zero-sats gap day when the running total is a number', () => {
-    const rates = new Map([
-      ['2026-06-01', '100000'],
-      ['2026-06-03', '100000'],
-    ]);
-    const fiat = new Map([
-      ['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }],
-      ['2026-06-03', { CHF: '0.80', EUR: '0.90', PHP: '50' }],
-    ]);
     const stats = buildGiftStats(
       [
-        row('2026-06-01T12:00:00.000Z', 1000, 'alice'),
-        row('2026-06-03T12:00:00.000Z', 1000, 'bob'),
+        {
+          ...row('2026-06-01T12:00:00.000Z', 1000, 'alice'),
+          amountUsd: '1.00',
+          amountChf: '0.80',
+          amountEur: '0.90',
+          amountPhp: '50.00',
+        },
+        {
+          ...row('2026-06-03T12:00:00.000Z', 1000, 'bob'),
+          amountUsd: '1.00',
+          amountChf: '0.80',
+          amountEur: '0.90',
+          amountPhp: '50.00',
+        },
       ],
-      rates,
-      fiat,
+      new Map(),
+      new Map(),
     );
     expect(stats.spendOverTime[1]).toEqual({
       day: '2026-06-02',
@@ -593,10 +583,52 @@ describe('buildGiftStats', () => {
     expect(stats.totalPhp).toBe('100.00');
   });
 
-  it('throws fx.rate.missing when a gift day has no rate', () => {
-    expect(() =>
-      buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map()),
-    ).toThrow('fx.rate.missing');
+  it('keeps fiat null when a gift row has no stored amount', () => {
+    const stats = buildGiftStats([row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map());
+    expect(stats.totalSats).toBe(1000);
+    expect(stats.totalBtc).toBe('0.00001000');
+    expect(stats.totalUsd).toBeNull();
+    expect(stats.totalChf).toBeNull();
+    expect(stats.totalEur).toBeNull();
+    expect(stats.totalPhp).toBeNull();
+    expect(stats.spendOverTime).toEqual([
+      {
+        day: '2026-06-01',
+        giftCount: 1,
+        officialCount: 1,
+        sats: 1000,
+        cumulativeSats: 1000,
+        btc: '0.00001000',
+        cumulativeBtc: '0.00001000',
+        usd: null,
+        cumulativeUsd: null,
+        ...NULL_FIAT_DAY,
+      },
+    ]);
+    expect(stats.byRecipient).toEqual([
+      {
+        recipient: 'alice',
+        giftCount: 1,
+        sats: 1000,
+        btc: '0.00001000',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
+    expect(stats.byMonth).toEqual([
+      {
+        month: '2026-06',
+        giftCount: 1,
+        sats: 1000,
+        btc: '0.00001000',
+        usd: null,
+        chf: null,
+        eur: null,
+        php: null,
+      },
+    ]);
   });
 
   it('sorts recipients by sats descending then name', () => {
@@ -615,7 +647,10 @@ describe('buildGiftStats', () => {
 
   it('counts two outbound gifts on the same UTC day', () => {
     const stats = buildGiftStats(
-      [row('2026-06-01T08:00:00.000Z', 1000, 'alice'), row('2026-06-01T20:00:00.000Z', 500, 'bob')],
+      [
+        { ...row('2026-06-01T08:00:00.000Z', 1000, 'alice'), amountUsd: '1.00' },
+        { ...row('2026-06-01T20:00:00.000Z', 500, 'bob'), amountUsd: '0.50' },
+      ],
       RATE_100K,
     );
     expect(stats.giftCount).toBe(2);
@@ -745,7 +780,10 @@ describe('buildGiftStats', () => {
       ['2026-07-02', '100000'],
     ]);
     const stats = buildGiftStats(
-      [row('2026-07-02T00:00:00.000Z', 5, 'a'), row('2026-06-30T00:00:00.000Z', 7, 'a')],
+      [
+        { ...row('2026-07-02T00:00:00.000Z', 5, 'a'), amountUsd: '0.01' },
+        { ...row('2026-06-30T00:00:00.000Z', 7, 'a'), amountUsd: '0.01' },
+      ],
       rates,
     );
     expect(stats.byMonth).toEqual([
@@ -773,16 +811,12 @@ describe('buildGiftStats', () => {
   });
 
   it('fills UTC gap months with zero spend without requiring a rate', () => {
-    const rates = new Map([
-      ['2026-01-27', '100000'],
-      ['2026-05-01', '100000'],
-    ]);
     const stats = buildGiftStats(
       [
-        row('2026-01-27T12:00:00.000Z', 1000, 'alice'),
-        row('2026-05-01T00:00:00.000Z', 2000, 'bob'),
+        { ...row('2026-01-27T12:00:00.000Z', 1000, 'alice'), amountUsd: '1.00' },
+        { ...row('2026-05-01T00:00:00.000Z', 2000, 'bob'), amountUsd: '2.00' },
       ],
-      rates,
+      new Map(),
     );
     expect(stats.byMonth).toEqual([
       {
@@ -879,9 +913,9 @@ describe('buildGiftDay', () => {
     const listed = buildGiftDay(
       '2026-06-01',
       [
-        row('2026-06-01T15:00:00.000Z', 1000, 'alice'),
+        { ...row('2026-06-01T15:00:00.000Z', 1000, 'alice'), amountUsd: '1.00' },
         row('2026-06-02T00:00:00.000Z', 50, 'skip'),
-        row('2026-06-01T08:00:00.000Z', 500, 'bob'),
+        { ...row('2026-06-01T08:00:00.000Z', 500, 'bob'), amountUsd: '0.50' },
       ],
       RATE_100K,
     );
@@ -906,10 +940,18 @@ describe('buildGiftDay', () => {
     expect(listed.fx).toEqual(FX);
   });
 
-  it('converts each gift at that UTC day CHF/EUR/PHP cross', () => {
+  it('returns the stored crosses and still lists the quote book', () => {
     const listed = buildGiftDay(
       '2026-06-01',
-      [row('2026-06-01T15:00:00.000Z', 1000, 'alice')],
+      [
+        {
+          ...row('2026-06-01T15:00:00.000Z', 1000, 'alice'),
+          amountUsd: '1.00',
+          amountChf: '0.80',
+          amountEur: '0.90',
+          amountPhp: '50.00',
+        },
+      ],
       RATE_100K,
       FIAT_100K,
     );
@@ -997,11 +1039,11 @@ describe('buildGiftDay', () => {
       ],
       new Map(),
     );
-    expect(stats.totalUsd).toBeNull();
-    expect(stats.spendOverTime[0]?.usd).toBeNull();
+    expect(stats.totalUsd).toBe('1.00');
+    expect(stats.spendOverTime[0]?.usd).toBe('1.00');
     expect(stats.spendOverTime[1]?.usd).toBe('0.00');
-    expect(stats.spendOverTime[0]?.cumulativeUsd).toBeNull();
-    expect(stats.byMonth[0]?.usd).toBeNull();
+    expect(stats.spendOverTime[0]?.cumulativeUsd).toBe('1.00');
+    expect(stats.byMonth[0]?.usd).toBe('1.00');
   });
 
   it('keeps a missing stored franc amount null', () => {
@@ -1040,9 +1082,29 @@ describe('buildGiftDay', () => {
     ).toThrow('invalid stored fiat amount');
   });
 
-  it('throws fx.rate.missing when a listed gift has no rate', () => {
-    expect(() =>
-      buildGiftDay('2026-06-01', [row('2026-06-01T15:00:00.000Z', 1000, 'alice')], new Map()),
-    ).toThrow('fx.rate.missing');
+  it('keeps listed fiat null when a gift row has no stored amount', () => {
+    const listed = buildGiftDay(
+      '2026-06-01',
+      [row('2026-06-01T15:00:00.000Z', 1000, 'alice')],
+      new Map(),
+    );
+    expect(listed.totalSats).toBe(1000);
+    expect(listed.totalBtc).toBe('0.00001000');
+    expect(listed.totalUsd).toBeNull();
+    expect(listed.totalChf).toBeNull();
+    expect(listed.totalEur).toBeNull();
+    expect(listed.totalPhp).toBeNull();
+    expect(listed.gifts).toEqual([
+      {
+        paidAt: '2026-06-01T15:00:00.000Z',
+        amountSats: 1000,
+        amountBtc: '0.00001000',
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        recipient: 'alice',
+      },
+    ]);
   });
 });

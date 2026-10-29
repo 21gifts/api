@@ -36,6 +36,8 @@ import {
   normalizeForumText,
   normalizePhotoTakenAt,
   truncatePubkeyDisplay,
+  WAIT_SATS_POLL_MS,
+  WAIT_SATS_TIMEOUT_MS,
   type ForumPhoto,
 } from '@/lib/message';
 import type {
@@ -61,7 +63,6 @@ import {
 } from '@/lib/translate-note';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { bearerToken } from '@/routes/me';
-import { WAIT_SATS_POLL_MS, WAIT_SATS_TIMEOUT_MS } from '@/routes/messages';
 
 /**
  * `/conversations` — signed-in private messaging (member↔member, member↔platform,

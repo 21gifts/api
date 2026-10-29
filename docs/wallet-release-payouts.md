@@ -88,7 +88,8 @@ verified. A member without a verified wallet cannot post, and without a post
 there is no daily payout.
 
 The wallet is verified when the app registers it: `PUT /me/wallet` stores the
-identity key, then the LNURL register call through `POST /lnurlpay/:pubkey`
+identity key and its Spark address (`spark_address`), then the LNURL register
+call through `POST /lnurlpay/:pubkey`
 succeeds and `markSparkPubkeyVerified` sets `spark_pubkey_verified_at`
 (`src/routes/lnurl-server.ts`).
 

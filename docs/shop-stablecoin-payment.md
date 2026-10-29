@@ -1,10 +1,12 @@
 # Shop payment in USDT and USDC
 
-Status: **specified, not implemented**. Decided 2026-10-01. Revised
+Status: **implemented** (2026-10-17). Decided 2026-10-01. Revised
 2026-10-14: this text replaces every earlier version of this document,
-which was `docs/shop-spark-payment.md`. Nothing here is mounted, and
-`SPEC.md` does not list these routes. Nothing here changes runtime
-behaviour.
+which was `docs/shop-spark-payment.md`. The routes and cases below are
+mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, and
+`SPEC.md` lists them. Stablecoin rows are offered only when
+`ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and
+`SHOP_REFUND_ADDRESS` resolve too.
 
 A payer settles a shop payment in USDT or USDC. Orchestra (Flashnet)
 takes the stablecoin and pays one BOLT11 for the shop's sats. That
@@ -527,10 +529,12 @@ the merge handles shop payments first, in the same transaction:
 - The merged account's other shop payments are `paid` or closed and
   never change again; they move with the account like every other row.
 - The merge deletes a pending charge of the merged account when the
-  surviving account has one. It first locks that charge's row
-  (`SELECT … FOR UPDATE`), as it already locks both accounts, then
-  deletes the charge's `pos_charge_invoice` rows, whose `charge_id` has
-  no cascade, and then the charge. A `recordInvoice` for that charge
+  surviving account has one. It first locks all of the merged
+  account's charge rows in the order of their ids
+  (`SELECT … ORDER BY id FOR UPDATE`), as it already locks both
+  accounts, then its payment rows. It then deletes the charge's
+  `pos_charge_invoice` rows, whose `charge_id` has no cascade, and
+  then the charge. A `recordInvoice` for that charge
   waits on the row lock in its foreign-key check and then fails, which
   the invoice routes log as `pos.invoice.record_failed`, as they do for
   any store error, so no row can appear between the two deletes. Any shop
@@ -1117,7 +1121,7 @@ the request has no `since` query. With `?since=<paymentStatus>`, the
 last `paymentStatus` the page saw, it waits while the stored
 `paymentStatus` still equals that value, as `GET /messages/:id?sinceSats=`
 waits while the sats have not passed the client's value: up to `WAIT_SATS_TIMEOUT_MS` (25 s) and checking every
-`WAIT_SATS_POLL_MS` (250 ms), both in `src/routes/messages.ts`. Then it
+`WAIT_SATS_POLL_MS` (250 ms), both in `src/lib/message.ts`. Then it
 answers with the state on hand.
 
 | `paymentStatus`              | `status` (DFX `PaymentLinkPaymentStatus`)                                                      |
@@ -1324,8 +1328,31 @@ a row can be read by both; their budgets together stay below
 Orchestra's limit, as [Calls](#calls) states. One order can then be read
 by both containers less than 3 s apart, against Orchestra's guidance that
 one order should be polled no faster than every 3 s; the api accepts
-that for the overlap of a deploy, because the per-IP limit still holds. `next_history_at` is set when the first
-detail of a payment is issued and cleared when the order watch of its
+that for the overlap of a deploy, because the per-IP limit still holds. A
+stop of duty 8 that costs no call (a stored final status, or 24 h after
+the order was found), like every `patchProof` schedule write of duties 5
+and 6 (not the first send of a `hex` proof, which writes `sent_at` and
+`next_receipt_at` without a lock while `sent_at` is empty), reads the
+proof again under its payment row and proof rows and writes only while
+what the duty decided on is unchanged, so both containers that selected
+one row log `shop.alert.order_stuck` once; its fields are read in the
+transaction that stops the row, and it is logged after that commit. A
+status read is applied only while the proof, read again under its
+payment row and proof rows, still holds that order and duty 8 still
+follows it (it has an order and a set `next_status_at` and is not
+refused as `tx_used`, as the duty selects): a proof the duty stopped
+during the call (a final status, the 24 h stop, a replaced order, a
+`tx_used` refusal) keeps its result, refusal, status, and schedule, its
+payment does not change, and nothing is logged. A status read sets the
+next read only while `next_status_at` is still the one the duty
+selected, so a row the other container's read rescheduled meanwhile
+keeps that schedule; the status itself is still applied, unless the
+proof holds a final status of that order by then. A final status is
+terminal: a status of the
+same order read before it, in progress or another final one, changes
+nothing, so the proof keeps its result and is not read again.
+`next_history_at` is
+set when the first detail of a payment is issued and cleared when the order watch of its
 last offer ends, except while some proof of the payment has a
 `superseded_by_order` that no proof holds as `provider_order` and
 `successor_wait_until` has not passed ([Calls](#calls)); a payment whose order watch has ended and that only this exception keeps is read every 60 s instead of every 10 s. When that time passes first, duty 3 logs `shop.alert.successor_missing` and clears `next_history_at` and
@@ -1781,8 +1808,9 @@ The implementing change adds:
   `other_payment`, and the in-process hash map that the two in-memory
   stores share on a memory boot;
 - the shop payment check in `mergeAccounts` with its `shop_payment_open`
-  result, and the lock (`SELECT … FOR UPDATE`) and delete of a deleted
-  charge's row and its `pos_charge_invoice` rows;
+  result, the lock of all of the merged account's charge rows and then
+  its payment rows (`SELECT … ORDER BY id FOR UPDATE`), and the delete
+  of a deleted charge's row and its `pos_charge_invoice` rows;
 - the trimming of `canonicalGoalAmount` moved to a shared helper for
   the canonical decimal form, with the decimals as a parameter;
 - the `UUID` pattern of `src/lib/pos-store.ts` moved to a shared helper
@@ -1850,6 +1878,17 @@ limits, `resolveLnurlServerConfig`, `startPosPaidWorker`, the LUD-21
 Only a live run can prove these facts. The stablecoin rows stay off in
 production until each one passes on staging. The person who runs them
 records each result in the pull request that turns the feature on.
+
+One staging payment on 2026-10-22, Polygon USDT from an externally owned
+account, is recorded in
+[2026-10-22-polygon-usdt.md](../scripts/shop-staging-e2e/records/2026-10-22-polygon-usdt.md).
+That run does not close this list. The sats from that payment were returned
+to the same account on 2026-10-23, recorded in
+[2026-10-23-polygon-usdt-return.md](../scripts/shop-staging-e2e/records/2026-10-23-polygon-usdt-return.md).
+A live cycle pays from an account and then returns the received sats to
+that account. The staging harness does both before a paid run finishes.
+Quote and network fees stay spent. The shop's sat balance returns to the
+amount it held before the payment.
 
 1. Tether Wallet 1.11.0 on a real Android phone, with a balance that
    covers the amount and the fee, pays a staging shop payment with USDT

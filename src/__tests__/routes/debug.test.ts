@@ -42,7 +42,7 @@ async function createMergeAccount(
  */
 function mergeDbForStore(
   store: InMemoryAuthStore,
-  options: { bothGrants?: boolean } = {},
+  options: { bothGrants?: boolean; shopPaymentOpen?: boolean } = {},
 ): MergeDb {
   return {
     async begin(run) {
@@ -79,6 +79,9 @@ function mergeDbForStore(
             return params
               .filter((id): id is string => typeof id === 'string')
               .map((account_id) => ({ account_id })) as T[];
+          }
+          if (text.includes('FROM shop_payment')) {
+            return (options.shopPaymentOpen === true ? [{ id: 'sp-1' }] : []) as T[];
           }
           if (text.includes('count(*)')) {
             return [{ n: 1 }] as T[];
@@ -1209,6 +1212,20 @@ describe('debugRoutes', () => {
     const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Both accounts have a funding grant' });
+  });
+
+  it('POST /debug/accounts/merge returns 409 while the merged account has an open shop payment', async () => {
+    const store = new InMemoryAuthStore();
+    await createMergeAccount(store, MERGE_FROM, 'a'.repeat(64));
+    await createMergeAccount(store, MERGE_INTO, 'b'.repeat(64));
+    const app = mountDebug(store, {
+      debugToken: 'debug-token',
+      mergeDb: mergeDbForStore(store, { shopPaymentOpen: true }),
+    });
+    const res = await postMerge(app, { from: MERGE_FROM, into: MERGE_INTO });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'A payment is already open' });
+    expect(await store.getAccount(MERGE_FROM)).toBeDefined();
   });
 
   it('POST /debug/accounts/merge returns the moved message count', async () => {

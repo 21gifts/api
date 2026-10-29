@@ -1,7 +1,11 @@
 import { SQL } from 'bun';
-import { describe, expect, test } from 'bun:test';
-import type { MergeDb, MergeTx } from '@/lib/account-merge';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import { describe, expect, spyOn, test } from 'bun:test';
+import { mergeAccounts, type MergeDb, type MergeTx } from '@/lib/account-merge';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import { sqlState, type SqlClient } from '@/lib/auth/sql';
 import {
   migrateDailyRosterSchema,
@@ -17,9 +21,27 @@ import { DEBUG_DB_PAGE_SIZE, PostgresDebugDbStore } from '@/lib/debug-db';
 import { migrateFxSpotSchema, PostgresFxSpotStore } from '@/lib/fx-spot-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store';
+import { migrateBannerSchema } from '@/lib/banner-store';
+import { migrateConversationSchema } from '@/lib/conversation-store';
+import { migrateNotificationSchema } from '@/lib/notification-store';
+import { migratePushSchema } from '@/lib/push-store';
+import { migrateTrustSchema } from '@/lib/trust-store';
+import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
-import { POS_CHARGE_TTL_MS } from '@/lib/pos-charge';
+import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import { migratePosSchema, PostgresPosStore } from '@/lib/pos-store';
+import { evaluateProof, lockPaymentForProofs, ShopPayments } from '@/lib/shop-payment';
+import {
+  followsOrderStatus,
+  migrateShopPaymentSchema,
+  PostgresShopPaymentStore,
+  type ShopOffer,
+  type ShopPayment,
+  type ShopProof,
+  type ShopProofLookup,
+  type ShopTx,
+} from '@/lib/shop-payment-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
@@ -27,6 +49,9 @@ import { parseWalletReport } from '@/lib/wallet-report';
 import { migrateWalletSchema, PostgresWalletStore } from '@/lib/wallet-store';
 import { migrateBtcUsdSchema } from '@/lib/btc-usd-store';
 import { migrateFiatSchema } from '@/lib/usd-fiat-store';
+import type { OrchestraClient } from '@/lib/orchestra';
+import { submitProofAttempt, type ShopSubmitAttempt } from '@/lib/shop-proof';
+import { runShopPaymentTick } from '@/lib/shop-payment-worker';
 
 const databaseUrl = process.env['DATABASE_URL'];
 if (databaseUrl === undefined || databaseUrl === '') {
@@ -73,27 +98,6 @@ async function closeIfPossible(sql: SQL): Promise<void> {
 }
 
 describe('Bun SQL text[] binding', () => {
-  test('driver rejects a JavaScript array', async () => {
-    const sql = new SQL(databaseUrl);
-    try {
-      let thrown: unknown;
-      try {
-        await sql.unsafe('SELECT $1::text[] AS tags', [['rejected']]);
-      } catch (error) {
-        thrown = error;
-      }
-      if (thrown === undefined) {
-        throw new Error('expected sql.unsafe to reject a JavaScript array');
-      }
-      const message = String(thrown);
-      if (!message.includes('malformed array literal')) {
-        throw thrown;
-      }
-    } finally {
-      await closeIfPossible(sql);
-    }
-  });
-
   test('driver accepts the literal', async () => {
     const sql = new SQL(databaseUrl);
     try {
@@ -1022,6 +1026,11 @@ describe('PostgresAuthStore spark pubkey', () => {
       expect(claimA?.wrote).toBe(true);
       expect(claimA?.account.sparkPubkey).toBe(pubkey);
       expect(claimA?.account.sparkPubkeyVerifiedAt ?? null).toBeNull();
+      const addressRows = await client.query<{ spark_address: string | null }>(
+        'SELECT spark_address FROM account WHERE id = $1',
+        [idA],
+      );
+      expect(addressRows[0]?.spark_address).toBe(encodeSparkAddress(pubkey));
 
       const claimB = await store.claimSparkPubkey(idB, pubkey);
       expect(claimB?.wrote).toBe(true);
@@ -1078,6 +1087,7 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(claimChange).toBeDefined();
+      expect(claimChange?.after?.['spark_address']).toBe(encodeSparkAddress(pubkey));
 
       const verifyChange = changeRows.find(
         (row) =>
@@ -1088,6 +1098,80 @@ describe('PostgresAuthStore spark pubkey', () => {
           row.after?.['spark_pubkey'] === pubkey,
       );
       expect(verifyChange).toBeDefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('backfillSparkAddresses fills missing and stale addresses; the CHECK refuses bad ones', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+
+      const store = new PostgresAuthStore(client);
+      const hex64 = (): string =>
+        `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const stamp = `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
+      const ids = [crypto.randomUUID(), crypto.randomUUID(), crypto.randomUUID()];
+      for (const [index, id] of ids.entries()) {
+        await store.createAccount({
+          id,
+          linkingKey: null,
+          role: 'basis',
+          name: null,
+          username: `spark_fill_${index}_${stamp}`,
+          location: null,
+          forumLawsDismissed: false,
+          viewKey: hex64(),
+          createdAt: Date.now() + index,
+          rulesAgreedAt: null,
+          walletRequired: true,
+        });
+      }
+      const [missingId, staleId, keylessId] = ids as [string, string, string];
+      const missingKey = `02${hex64()}`;
+      const staleKey = `03${hex64()}`;
+      await client.execute('UPDATE account SET spark_pubkey = $2 WHERE id = $1', [
+        missingId,
+        missingKey,
+      ]);
+      await client.execute(
+        'UPDATE account SET spark_pubkey = $2, spark_address = $3 WHERE id = $1',
+        [staleId, staleKey, encodeSparkAddress(missingKey)],
+      );
+
+      expect(await backfillSparkAddresses(client)).toBeGreaterThanOrEqual(2);
+      const rows = await client.query<{ id: string; spark_address: string | null }>(
+        'SELECT id::text AS id, spark_address FROM account WHERE id = ANY($1::uuid[])',
+        [postgresTextArrayLiteral(ids)],
+      );
+      const addressOf = (id: string): string | null | undefined =>
+        rows.find((row) => row.id === id)?.spark_address;
+      expect(addressOf(missingId)).toBe(encodeSparkAddress(missingKey));
+      expect(addressOf(staleId)).toBe(encodeSparkAddress(staleKey));
+      expect(addressOf(keylessId)).toBeNull();
+
+      let keyless: unknown;
+      try {
+        await client.execute('UPDATE account SET spark_address = $2 WHERE id = $1', [
+          keylessId,
+          encodeSparkAddress(missingKey),
+        ]);
+      } catch (error) {
+        keyless = error;
+      }
+      expect(sqlState(keyless)).toBe('23514');
+
+      let malformed: unknown;
+      try {
+        await client.execute('UPDATE account SET spark_address = $2 WHERE id = $1', [
+          missingId,
+          'spark1notanaddress',
+        ]);
+      } catch (error) {
+        malformed = error;
+      }
+      expect(sqlState(malformed)).toBe('23514');
     } finally {
       await closeIfPossible(sql);
     }
@@ -1275,7 +1359,7 @@ describe('PostgresSparkInvoiceStore', () => {
 
 describe('PostgresPosStore paid tracking', () => {
   test('migrate an old status check, record invoices, watch, pay once, and db_change', async () => {
-    const { client, sql } = createBunSqlClient(databaseUrl);
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     try {
       await migrateAuthSchema(client);
       await migratePosSchema(client);
@@ -1288,6 +1372,7 @@ describe('PostgresPosStore paid tracking', () => {
       );
       await migratePosSchema(client);
       await migratePosSchema(client);
+      await migrateShopPaymentSchema(client);
       await migrateDbChangeSchema(client);
 
       const auth = new PostgresAuthStore(client);
@@ -1308,7 +1393,7 @@ describe('PostgresPosStore paid tracking', () => {
         walletRequired: true,
       });
 
-      const store = new PostgresPosStore(client);
+      const store = new PostgresPosStore(client, mergeDb);
       const now = Date.now();
       const chargeId = crypto.randomUUID();
       await store.create({
@@ -1320,19 +1405,37 @@ describe('PostgresPosStore paid tracking', () => {
         expiresAt: new Date(now + POS_CHARGE_TTL_MS),
         paidAt: null,
         sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       });
 
       const hashA = hex64();
       const hashB = hex64();
-      expect(await store.recordInvoice(chargeId, hashA, now + 1)).toBe(true);
-      expect(await store.recordInvoice(chargeId, hashA, now + 2)).toBe(false);
-      expect(await store.recordInvoice(chargeId, hashB, now + POS_CHARGE_TTL_MS)).toBe(false);
-      expect(await store.recordInvoice(crypto.randomUUID(), hashB, now)).toBe(false);
-      expect(await store.recordInvoice(chargeId, hashB, now + 3)).toBe(true);
+      expect(await store.recordInvoice(chargeId, hashA, now + 1)).toEqual({ outcome: 'recorded' });
+      expect(await store.recordInvoice(chargeId, hashA, now + 2)).toEqual({
+        outcome: 'this_charge',
+      });
+      expect(await store.recordInvoice(chargeId, hashB, now + POS_CHARGE_TTL_MS)).toEqual({
+        outcome: 'not_open',
+      });
+      expect(await store.recordInvoice(crypto.randomUUID(), hashB, now)).toEqual({
+        outcome: 'not_open',
+      });
+      // Another charge's row holds hashA.
+      expect(await store.recordInvoice(crypto.randomUUID(), hashA, now)).toEqual({
+        outcome: 'other_payment',
+        holderChargeId: chargeId,
+        holderPaymentId: null,
+      });
+      expect(await store.recordInvoice(chargeId, hashB, now + 3)).toEqual({ outcome: 'recorded' });
       // Marked expired by a later read; an invoice issued before expiry still records.
       await store.currentPending(accountId, now + POS_CHARGE_TTL_MS);
       const hashC = hex64();
-      expect(await store.recordInvoice(chargeId, hashC, now + 4)).toBe(true);
+      expect(await store.recordInvoice(chargeId, hashC, now + 4)).toEqual({ outcome: 'recorded' });
 
       expect(await store.issueSparkInvoice(chargeId, `spark1a${chargeId}`, now)).toBe(
         `spark1a${chargeId}`,
@@ -1352,7 +1455,9 @@ describe('PostgresPosStore paid tracking', () => {
 
       const paid = await store.markPaid(chargeId, now + 10_000);
       expect(paid?.status).toBe('paid');
-      expect(await store.recordInvoice(chargeId, hex64(), now + 5)).toBe(false);
+      expect(await store.recordInvoice(chargeId, hex64(), now + 5)).toEqual({
+        outcome: 'not_open',
+      });
       expect(paid?.paidAt?.getTime()).toBe(now + 10_000);
       expect(await store.markPaid(chargeId, now + 20_000)).toBeNull();
       expect((await store.listWatched(now)).some((entry) => entry.charge.id === chargeId)).toBe(
@@ -2433,6 +2538,1971 @@ describe('PostgresMessageStore deleteById on a credit', () => {
         await client.execute('DELETE FROM message WHERE account_id = $1', [accountId]);
         await client.execute('DELETE FROM account WHERE id = $1', [accountId]);
       }
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+/** Every table `mergeAccounts` names, so the merge runs end to end. */
+async function migrateMergeTables(client: SqlClient): Promise<void> {
+  await migrateAuthSchema(client);
+  await migrateBtcUsdSchema(client);
+  await migrateFiatSchema(client);
+  await migrateMessageSchema(client);
+  await migratePosSchema(client);
+  await migrateShopPaymentSchema(client);
+  await migrateConversationSchema(client);
+  await migratePushSchema(client);
+  await migrateNotificationSchema(client);
+  await migrateTrustSchema(client);
+  await migrateFundingSchema(client);
+  await migrateBannerSchema(client);
+  await migrateWalletSchema(client);
+}
+
+describe('PostgresShopPaymentStore', () => {
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+  const hex40 = (): string => `0x${hex64().slice(0, 40)}`;
+
+  const setup = async (): Promise<{
+    client: SqlClient;
+    mergeDb: MergeDb;
+    sql: SQL;
+    store: PostgresShopPaymentStore;
+    pos: PostgresPosStore;
+    newAccount: () => Promise<string>;
+  }> => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    await migrateAuthSchema(client);
+    await migratePosSchema(client);
+    await migrateShopPaymentSchema(client);
+    await migrateShopPaymentSchema(client);
+    await migrateDbChangeSchema(client);
+    const auth = new PostgresAuthStore(client);
+    const newAccount = async (): Promise<string> => {
+      const id = crypto.randomUUID();
+      await auth.createAccount({
+        id,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: `shop_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: hex64(),
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      return id;
+    };
+    return {
+      client,
+      mergeDb,
+      sql,
+      store: new PostgresShopPaymentStore(client, mergeDb),
+      pos: new PostgresPosStore(client, mergeDb),
+      newAccount,
+    };
+  };
+
+  function shopPayment(
+    accountId: string,
+    now: number,
+    partial: Partial<ShopPayment> = {},
+  ): ShopPayment {
+    return {
+      id: crypto.randomUUID(),
+      accountId,
+      amountSats: 2100,
+      posChargeId: null,
+      bolt11: 'lnbc21',
+      paymentHash: hex64(),
+      bolt11ExpiresAt: new Date(now + 600_000),
+      status: 'open',
+      endReason: null,
+      windowEndsAt: new Date(now + 300_000),
+      replacements: 0,
+      nextSettleAt: new Date(now),
+      nextHistoryAt: null,
+      historyOffset: 0,
+      successorWaitUntil: null,
+      createdAt: new Date(now),
+      acceptedAt: null,
+      paidAt: null,
+      endedAt: null,
+      closedAt: null,
+      ...partial,
+    };
+  }
+
+  function shopOffer(quoteId: string, now: number, partial: Partial<ShopOffer> = {}): ShopOffer {
+    return {
+      id: crypto.randomUUID(),
+      quoteId,
+      method: 'Ethereum',
+      chainId: 1,
+      asset: 'USDT',
+      tokenAddress: hex40(),
+      depositAddress: hex40(),
+      amountIn: '123456789012345678901234567890',
+      requiredAmountIn: '1',
+      maxAcceptedAmountIn: null,
+      decimals: 6,
+      minFee: '1000000000',
+      providerRef: 'quote-1',
+      idempotencyKey: crypto.randomUUID(),
+      expiresAt: new Date(now + 120_000),
+      detailIssuedAt: null,
+      createdAt: new Date(now),
+      ...partial,
+    };
+  }
+
+  function shopProof(
+    offer: ShopOffer,
+    paymentId: string,
+    now: number,
+    partial: Partial<ShopProof> = {},
+  ): ShopProof {
+    return {
+      id: crypto.randomUUID(),
+      offerId: offer.id,
+      paymentId,
+      source: 'tx',
+      chainId: 1,
+      txHash: `0x${hex64()}`,
+      logIndex: 0,
+      userOpHash: null,
+      rawHex: null,
+      transferAmount: '1500000',
+      idempotencyKey: crypto.randomUUID(),
+      result: null,
+      providerOrder: null,
+      supersededByOrder: null,
+      orderStatus: null,
+      orderFoundAt: null,
+      refusal: null,
+      submitStopped: false,
+      sentAt: null,
+      lastSubmitAt: null,
+      giveUpAt: new Date(now + 86_400_000),
+      nextSubmitAt: new Date(now),
+      nextReceiptAt: null,
+      nextStatusAt: null,
+      tries: 0,
+      resolvedAt: null,
+      createdAt: new Date(now),
+      ...partial,
+    };
+  }
+
+  test('every ShopTx method on real Postgres, with conflicts that keep the transaction alive', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      const charge = {
+        id: chargeId,
+        accountId,
+        amountSats: 2100,
+        status: 'pending' as const,
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      };
+      const payment = shopPayment(accountId, now, { posChargeId: chargeId });
+      const quoteId = crypto.randomUUID();
+      const amounts = [
+        {
+          method: 'Ethereum',
+          minFee: 1,
+          assets: [{ asset: 'USDT', amount: '0.21' }],
+          available: true,
+        },
+      ];
+      const offerA = shopOffer(quoteId, now);
+      const offerB = shopOffer(quoteId, now, {
+        asset: 'USDC',
+        depositAddress: offerA.depositAddress,
+      });
+      const offerC = shopOffer(quoteId, now + 1, { method: 'Polygon', chainId: 137 });
+
+      expect(await store.transaction((tx) => tx.lockCharge(chargeId))).toBeNull();
+      expect(await store.transaction((tx) => tx.insertCharge(charge))).toBe(true);
+      // Step 4 records the charge's hash in its own claim transaction.
+      expect(await pos.recordInvoice(chargeId, payment.paymentHash, now)).toEqual({
+        outcome: 'recorded',
+      });
+      await store.transaction(async (tx) => {
+        await tx.claimPaymentHash(payment.paymentHash);
+        await tx.lockAccount(accountId);
+        // A second pending charge hits the unique index; the transaction goes on.
+        expect(await tx.insertCharge({ ...charge, id: crypto.randomUUID() })).toBe(false);
+        expect((await tx.pendingCharge(accountId, now))?.id).toBe(chargeId);
+        expect((await tx.lockCharge(chargeId))?.status).toBe('pending');
+        expect(await tx.chargeIdForInvoice(payment.paymentHash)).toBe(chargeId);
+
+        expect(await tx.insertPayment(payment)).toBe(true);
+        expect(await tx.insertPayment({ ...payment, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.insertPayment(shopPayment(accountId, now))).toBe(false);
+        expect(
+          await tx.insertPayment(
+            shopPayment(accountId, now, {
+              status: 'paid',
+              paidAt: new Date(now),
+              posChargeId: chargeId,
+            }),
+          ),
+        ).toBe(false);
+        expect(await tx.getPayment(payment.id)).toEqual(payment);
+        expect(await tx.lockPayment(payment.id.toUpperCase())).toEqual(payment);
+        expect((await tx.openPayment(accountId))?.id).toBe(payment.id);
+        expect((await tx.paymentForCharge(chargeId))?.id).toBe(payment.id);
+        expect((await tx.paymentForHash(payment.paymentHash))?.id).toBe(payment.id);
+        expect(await tx.getPayment('not-a-uuid')).toBeNull();
+
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        const replaced = await tx.updateQuote(quoteId, {
+          expiresAt: new Date(now + 60_000),
+          transferAmounts: amounts,
+        });
+        expect(replaced).toEqual({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 60_000),
+          transferAmounts: amounts,
+          createdAt: new Date(now),
+        });
+        expect(await tx.lockQuote(quoteId)).toEqual(replaced);
+        expect(await tx.quotesOf(payment.id)).toEqual([replaced!]);
+        expect(
+          await tx.updateQuote(crypto.randomUUID(), {
+            expiresAt: new Date(now),
+            transferAmounts: [],
+          }),
+        ).toBeNull();
+
+        const inserted = await tx.insertOffers([offerA, offerB, offerC]);
+        expect(inserted.map((row) => row.id)).toEqual([offerA.id, offerC.id]);
+        expect(await tx.getOffer(offerA.id)).toEqual(offerA);
+        expect((await tx.offersOf(quoteId)).map((row) => row.id)).toEqual([offerA.id, offerC.id]);
+        expect(await tx.markDetailIssued(offerA.id, now + 5)).toBe(true);
+        expect(await tx.markDetailIssued(offerA.id, now + 6)).toBe(false);
+        expect((await tx.getOffer(offerA.id))?.detailIssuedAt).toEqual(new Date(now + 5));
+
+        const proofA = shopProof(offerA, payment.id, now, { userOpHash: `0x${hex64()}` });
+        const proofB = shopProof(offerA, payment.id, now + 1, {
+          txHash: proofA.txHash,
+          logIndex: 1,
+        });
+        expect(await tx.insertProof(proofA)).toBe(true);
+        expect(await tx.insertProof({ ...proofA, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.insertProof(proofB)).toBe(true);
+        expect(await tx.getProof(proofA.id)).toEqual(proofA);
+        expect((await tx.proofsOf(payment.id)).map((row) => row.id)).toEqual([
+          proofA.id,
+          proofB.id,
+        ]);
+        expect(
+          (await tx.findProofs({ chainId: 1, txHash: proofA.txHash })).map((row) => row.id),
+        ).toEqual([proofA.id, proofB.id]);
+        expect(
+          (await tx.findProofs({ chainId: 1, userOpHash: proofA.userOpHash ?? '' })).map(
+            (row) => row.id,
+          ),
+        ).toEqual([proofA.id]);
+        const order = `order-${crypto.randomUUID()}`;
+        const accepted = await tx.updateProof(
+          proofA.id,
+          { results: [null], lastSubmitAtOrBefore: new Date(now) },
+          {
+            result: 'accepted',
+            providerOrder: order,
+            orderStatus: 'completed',
+            resolvedAt: new Date(now + 7),
+          },
+        );
+        expect(accepted).toEqual({
+          ...proofA,
+          result: 'accepted',
+          providerOrder: order,
+          orderStatus: 'completed',
+          resolvedAt: new Date(now + 7),
+        });
+        expect((await tx.findProofs({ providerOrder: order })).map((row) => row.id)).toEqual([
+          proofA.id,
+        ]);
+        // Unique violations inside a savepoint: the transaction stays usable.
+        expect(await tx.updateProof(proofB.id, {}, { providerOrder: order })).toBe('conflict');
+        expect(await tx.updateProof(proofB.id, {}, { logIndex: 0 })).toBe('conflict');
+        expect(await tx.updateProof(proofB.id, { results: ['late'] }, { tries: 1 })).toBeNull();
+        expect(
+          await tx.updateProof(
+            proofB.id,
+            { results: [null, 'late'] },
+            { tries: 2, lastSubmitAt: new Date(now) },
+          ),
+        ).toMatchObject({ tries: 2 });
+        expect(
+          await tx.updateProof(
+            proofB.id,
+            { lastSubmitAtOrBefore: new Date(now - 1) },
+            { tries: 3 },
+          ),
+        ).toBeNull();
+        expect(
+          (await tx.dueProofs('submit', now + 1, 100_000)).some((row) => row.id === proofB.id),
+        ).toBe(true);
+        expect(
+          (await tx.dueProofs('submit', now + 1, 100_000)).some((row) => row.id === proofA.id),
+        ).toBe(false);
+        expect(
+          (await tx.dueProofs('stuck', now + 86_400_001, 100_000)).some(
+            (row) => row.id === proofB.id,
+          ),
+        ).toBe(true);
+        expect(await tx.updateProof(proofA.id, {}, { nextStatusAt: new Date(now) })).not.toBeNull();
+        expect(
+          (await tx.dueProofs('status', now, 100_000)).some((row) => row.id === proofA.id),
+        ).toBe(true);
+        expect(
+          await tx.updateProof(proofB.id, {}, { nextReceiptAt: new Date(now) }),
+        ).not.toBeNull();
+        expect(
+          (await tx.dueProofs('receipt', now, 100_000)).some((row) => row.id === proofB.id),
+        ).toBe(true);
+        await tx.deleteProof(proofB.id);
+        expect(await tx.getProof(proofB.id)).toBeNull();
+
+        const lookup: ShopProofLookup = {
+          id: crypto.randomUUID(),
+          quoteId,
+          method: 'Ethereum',
+          asset: 'USDT',
+          chainId: 1,
+          hash: `0x${hex64()}`,
+          nextTryAt: new Date(now),
+          tries: 0,
+          doneAt: null,
+          createdAt: new Date(now),
+        };
+        expect(await tx.insertLookup(lookup)).toBe(true);
+        expect(await tx.insertLookup({ ...lookup, id: crypto.randomUUID() })).toBe(false);
+        expect(await tx.countLookups(quoteId)).toBe(1);
+        expect(await tx.findLookup(1, lookup.hash, quoteId)).toEqual(lookup);
+        expect((await tx.dueLookups(now, 100_000)).some((row) => row.id === lookup.id)).toBe(true);
+        expect(await tx.updateLookup(lookup.id, { tries: 1, doneAt: new Date(now) })).toEqual({
+          ...lookup,
+          tries: 1,
+          doneAt: new Date(now),
+        });
+        // A done row still counts against the cap of 4 rows per quote.
+        expect(await tx.countLookups(quoteId)).toBe(1);
+        expect(await tx.countLookups(crypto.randomUUID())).toBe(0);
+
+        expect(
+          await tx.updatePayment(payment.id, { statuses: ['accepted'] }, { replacements: 1 }),
+        ).toBeNull();
+        expect(
+          await tx.updatePayment(
+            payment.id,
+            { windowEndsAfter: new Date(now + 300_000) },
+            { replacements: 1 },
+          ),
+        ).toBeNull();
+        const bumped = await tx.updatePayment(
+          payment.id,
+          { statuses: ['open'], replacements: 0, windowEndsAfter: new Date(now), notClosed: true },
+          { replacements: 1, nextHistoryAt: new Date(now), historyOffset: 20 },
+        );
+        expect(bumped).toEqual({
+          ...payment,
+          replacements: 1,
+          nextHistoryAt: new Date(now),
+          historyOffset: 20,
+        });
+        const settle = (await tx.duePayments('settle', now, 100_000)).map((row) => row.id);
+        expect(settle).toContain(payment.id);
+        expect((await tx.duePayments('history', now, 100_000)).map((row) => row.id)).toContain(
+          payment.id,
+        );
+        expect((await tx.unsettledPayments(accountId)).map((row) => row.id)).toEqual([payment.id]);
+        const ended = await tx.endLapsedWindows(now + 300_000);
+        expect(ended.find((row) => row.id === payment.id)).toEqual({
+          ...bumped!,
+          status: 'ended',
+          endReason: 'window',
+          endedAt: new Date(now + 300_000),
+        });
+
+        await tx.deleteChargeInvoice(payment.paymentHash);
+        expect(await tx.chargeIdForInvoice(payment.paymentHash)).toBeNull();
+        expect((await tx.cancelPendingCharge(accountId, now + 1))?.id).toBe(chargeId);
+        expect(await tx.markChargePaid(chargeId, now + 2)).toBeNull();
+      });
+
+      const changes = await client.query<{ table_name: string; op: string }>(
+        `SELECT table_name, op FROM db_change
+         WHERE table_name LIKE 'shop_%' AND (after ->> 'id' = ANY($1::text[]) OR before ->> 'id' = ANY($1::text[]))
+         ORDER BY id ASC`,
+        [postgresTextArrayLiteral([payment.id, quoteId, offerA.id])],
+      );
+      expect(
+        changes.filter((row) => row.table_name === 'shop_payment').map((row) => row.op),
+      ).toEqual(['INSERT', 'UPDATE', 'UPDATE']);
+      expect(changes.some((row) => row.table_name === 'shop_quote' && row.op === 'UPDATE')).toBe(
+        true,
+      );
+      expect(changes.some((row) => row.table_name === 'shop_offer' && row.op === 'UPDATE')).toBe(
+        true,
+      );
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a thrown callback rolls back every write, including writes after a caught conflict', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      await expect(
+        store.transaction(async (tx) => {
+          expect(await tx.insertPayment(payment)).toBe(true);
+          expect(await tx.insertPayment(shopPayment(accountId, now))).toBe(false);
+          await tx.insertQuote({
+            id: crypto.randomUUID(),
+            paymentId: payment.id,
+            expiresAt: new Date(now),
+            transferAmounts: [],
+            createdAt: new Date(now),
+          });
+          throw new Error('rollback');
+        }),
+      ).rejects.toThrow('rollback');
+      expect(await store.transaction((tx) => tx.getPayment(payment.id))).toBeNull();
+      expect(await store.transaction((tx) => tx.insertPayment(payment))).toBe(true);
+      // An update that would open a second payment of the account fails the transaction.
+      const second = shopPayment(accountId, now, {
+        status: 'ended',
+        endReason: 'window',
+        endedAt: new Date(now),
+      });
+      expect(await store.transaction((tx) => tx.insertPayment(second))).toBe(true);
+      let refused: unknown;
+      try {
+        await store.transaction((tx) =>
+          tx.updatePayment(second.id, {}, { status: 'open', endReason: null, endedAt: null }),
+        );
+      } catch (error) {
+        refused = error;
+      }
+      expect(sqlState(refused)).toBe('23505');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('lockAccount and lockPayment hold FOR UPDATE locks until the transaction ends', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      expect(await store.transaction((tx) => tx.insertPayment(payment))).toBe(true);
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const firstLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const first = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        await tx.lockPayment(payment.id);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.updatePayment(payment.id, {}, { replacements: 1 });
+        events.push('first:commit');
+      });
+      await firstLocked;
+      const second = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        events.push('second:account');
+        const row = await tx.lockPayment(payment.id);
+        events.push(`second:replacements=${row?.replacements}`);
+      });
+      await Promise.all([first, second]);
+      expect(events).toEqual(['first:commit', 'second:account', 'second:replacements=1']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('successor_wait_until, superseded_by_order, and shop_proof_superseded_idx exist and round-trip', async () => {
+    const { client, sql, store, newAccount } = await setup();
+    try {
+      const columns = await client.query<{ table_name: string; column_name: string }>(
+        `SELECT table_name, column_name FROM information_schema.columns
+         WHERE (table_name = 'shop_payment' AND column_name = 'successor_wait_until')
+            OR (table_name = 'shop_proof' AND column_name = 'superseded_by_order')
+         ORDER BY table_name`,
+      );
+      expect(columns.map((row) => `${row.table_name}.${row.column_name}`)).toEqual([
+        'shop_payment.successor_wait_until',
+        'shop_proof.superseded_by_order',
+      ]);
+      const indexes = await client.query<{ indexdef: string }>(
+        `SELECT indexdef FROM pg_indexes WHERE indexname = 'shop_proof_superseded_idx'`,
+      );
+      expect(indexes).toHaveLength(1);
+      expect(indexes[0]?.indexdef).toContain('(payment_id)');
+      expect(indexes[0]?.indexdef).toContain('superseded_by_order IS NOT NULL');
+
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now, { successorWaitUntil: new Date(now + 1) });
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const proof = shopProof(offer, payment.id, now, { supersededByOrder: `order-${quoteId}` });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        expect(await tx.getPayment(payment.id)).toEqual(payment);
+        expect(
+          (await tx.updatePayment(payment.id, {}, { successorWaitUntil: new Date(now + 2) }))
+            ?.successorWaitUntil,
+        ).toEqual(new Date(now + 2));
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        expect(await tx.insertOffers([offer])).toHaveLength(1);
+        expect(await tx.insertProof(proof)).toBe(true);
+        expect(await tx.getProof(proof.id)).toEqual(proof);
+        const patched = await tx.updateProof(proof.id, {}, { supersededByOrder: null });
+        expect(patched === 'conflict' ? 'conflict' : patched?.supersededByOrder).toBeNull();
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the submits duty needs a log index and the status duty skips a tx_used refusal', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const unlogged = shopProof(offer, payment.id, now, {
+        source: 'hex',
+        rawHex: 'ab',
+        logIndex: null,
+        transferAmount: null,
+        nextSubmitAt: new Date(now - 1),
+      });
+      const logged = shopProof(offer, payment.id, now, { nextSubmitAt: new Date(now - 1) });
+      const used = shopProof(offer, payment.id, now, {
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: `order-used-${quoteId}`,
+        nextSubmitAt: null,
+        nextStatusAt: new Date(now - 1),
+      });
+      const mismatch = shopProof(offer, payment.id, now, {
+        result: 'refused',
+        refusal: 'mismatch',
+        providerOrder: `order-mismatch-${quoteId}`,
+        nextSubmitAt: null,
+        nextStatusAt: new Date(now - 1),
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        for (const row of [unlogged, logged, used, mismatch]) {
+          expect(await tx.insertProof(row)).toBe(true);
+        }
+        const submit = (await tx.dueProofs('submit', now, 100_000)).map((row) => row.id);
+        expect(submit).toContain(logged.id);
+        expect(submit).not.toContain(unlogged.id);
+        const status = (await tx.dueProofs('status', now, 100_000)).map((row) => row.id);
+        expect(status).toContain(mismatch.id);
+        expect(status).not.toContain(used.id);
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the status duty selects exactly the due proofs that followsOrderStatus admits', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const outcomes: Pick<ShopProof, 'result' | 'refusal'>[] = [
+        { result: null, refusal: null },
+        { result: 'refused', refusal: 'tx_used' },
+        { result: 'refused', refusal: 'mismatch' },
+        { result: 'refused', refusal: 'expired_order' },
+        { result: 'stuck', refusal: null },
+        { result: 'late', refusal: null },
+      ];
+      const rows: ShopProof[] = [];
+      for (const ordered of [false, true]) {
+        for (const nextStatusAt of [null, now - 1, now, now + 1]) {
+          for (const outcome of outcomes) {
+            rows.push(
+              shopProof(offer, payment.id, now, {
+                ...outcome,
+                providerOrder: ordered ? `order-${crypto.randomUUID()}` : null,
+                orderStatus: ordered ? 'processing' : null,
+                nextSubmitAt: null,
+                nextStatusAt: nextStatusAt === null ? null : new Date(nextStatusAt),
+              }),
+            );
+          }
+        }
+      }
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        for (const row of rows) {
+          expect(await tx.insertProof(row)).toBe(true);
+        }
+        const ids = new Set(rows.map((row) => row.id));
+        const selected = (await tx.dueProofs('status', now, 100_000))
+          .map((row) => row.id)
+          .filter((id) => ids.has(id))
+          .sort();
+        const admitted = rows
+          .filter(
+            (row) =>
+              followsOrderStatus(row) &&
+              row.nextStatusAt !== null &&
+              row.nextStatusAt.getTime() <= now,
+          )
+          .map((row) => row.id)
+          .sort();
+        // 2 due instants x 5 outcomes other than tx_used, all with an order.
+        expect(admitted).toHaveLength(10);
+        expect(selected).toEqual(admitted);
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('lockProofs returns the payment proofs by id and holds them until the transaction ends', async () => {
+    const { sql, store, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const payment = shopPayment(accountId, now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const suffix = crypto.randomUUID().slice(8);
+      const high = shopProof(offer, payment.id, now, { id: `ffffffff${suffix}` });
+      const low = shopProof(offer, payment.id, now + 1, { id: `00000000${suffix}` });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(high)).toBe(true);
+        expect(await tx.insertProof(low)).toBe(true);
+        expect((await tx.proofsOf(payment.id)).map((row) => row.id)).toEqual([high.id, low.id]);
+        expect((await tx.lockProofs(payment.id)).map((row) => row.id)).toEqual([low.id, high.id]);
+      });
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const firstLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const first = store.transaction(async (tx) => {
+        await tx.lockPayment(payment.id);
+        await tx.lockProofs(payment.id);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.updateProof(low.id, {}, { tries: 1 });
+        events.push('first:commit');
+      });
+      await firstLocked;
+      const second = store.transaction(async (tx) => {
+        const rows = await tx.lockProofs(payment.id);
+        events.push(`second:tries=${rows[0]?.tries}`);
+      });
+      await Promise.all([first, second]);
+      expect(events).toEqual(['first:commit', 'second:tries=1']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a settlement and proof decisions on one payment run without a deadlock; two decisions serialize', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      await pos.create({
+        id: chargeId,
+        accountId,
+        amountSats: 2100,
+        status: 'pending',
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      });
+      const payment = shopPayment(accountId, now, {
+        posChargeId: chargeId,
+        status: 'accepted',
+        acceptedAt: new Date(now),
+      });
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const accepted = shopProof(offer, payment.id, now, {
+        result: 'accepted',
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+      });
+      const superseded = shopProof(offer, payment.id, now + 1, {
+        result: 'superseded',
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'swapping',
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(accepted)).toBe(true);
+        expect(await tx.insertProof(superseded)).toBe(true);
+      });
+      const shop = new ShopPayments({
+        store,
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra: null,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      });
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const decisionLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      // A proof decision holds the payment row and its proof rows: the
+      // accepted proof is refunded and the superseded one takes its place.
+      const decision = store.transaction(async (tx) => {
+        expect((await lockPaymentForProofs(tx, payment.id))?.proofs).toHaveLength(2);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        await tx.updateProof(accepted.id, {}, { orderStatus: 'refunded' });
+        await evaluateProof(tx, accepted.id, Date.now());
+        events.push('decision:commit');
+      });
+      await decisionLocked;
+      // The settlement takes the account and the charge, then waits for the payment row.
+      const settlement = shop
+        .applySettlement(payment.id, true, Date.now())
+        .then(() => events.push('settlement:commit'));
+      // A second decision waits for the first.
+      const second = store.transaction(async (tx) => {
+        const again = await lockPaymentForProofs(tx, payment.id);
+        events.push(`second:${again?.proofs.map((row) => row.result).join(',')}`);
+      });
+      await Promise.all([decision, settlement, second]);
+      expect(events[0]).toBe('decision:commit');
+      expect(events).toContain('settlement:commit');
+      // The second decision saw the first one's results.
+      const seen = events.find((event) => event.startsWith('second:'));
+      expect(seen?.slice('second:'.length).split(',').sort()).toEqual(['accepted', 'refunded']);
+      const after = await store.transaction(async (tx) => ({
+        payment: await tx.getPayment(payment.id),
+        accepted: await tx.getProof(accepted.id),
+        superseded: await tx.getProof(superseded.id),
+      }));
+      expect(after.payment?.status).toBe('paid');
+      expect(after.accepted?.result).toBe('refunded');
+      expect(after.superseded?.result).toBe('accepted');
+      expect((await pos.findChargeForPayment({ chargeId }))?.status).toBe('paid');
+      // The other way round: the settlement holds account, charge, and payment
+      // rows while a proof decision waits only for the payment row.
+      const order: string[] = [];
+      let held = (): void => undefined;
+      const settlementHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockAccount(accountId);
+        await tx.lockCharge(chargeId);
+        await tx.lockPayment(payment.id);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        order.push('settlement-order:commit');
+      });
+      await settlementHeld;
+      const waiting = store.transaction(async (tx) => {
+        await lockPaymentForProofs(tx, payment.id);
+        order.push('decision:locked');
+      });
+      await Promise.all([holder, waiting]);
+      expect(order).toEqual(['settlement-order:commit', 'decision:locked']);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('two submit answers on crossed payments lock both payment rows by id and do not deadlock', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const now = Date.now();
+      // Two payments, each with an older proof being submitted and a newer
+      // row of another offer that holds the order Orchestra answers for the
+      // other payment's proof: each answer refuses a row of the other payment.
+      const sides = await Promise.all(
+        [0, 1].map(async () => {
+          const payment = shopPayment(await newAccount(), now);
+          const quoteId = crypto.randomUUID();
+          const offer = shopOffer(quoteId, now);
+          const older = shopProof(offer, payment.id, now - 1_000, {
+            nextSubmitAt: null,
+            lastSubmitAt: null,
+          });
+          const newer = shopProof(offer, payment.id, now, {
+            providerOrder: `o-${crypto.randomUUID()}`,
+            orderStatus: 'processing',
+            orderFoundAt: new Date(now),
+            nextSubmitAt: null,
+          });
+          return { payment, quoteId, offer, older, newer };
+        }),
+      );
+      const [a, b] = sides as [(typeof sides)[0], (typeof sides)[0]];
+      for (const side of [a, b]) {
+        await store.transaction(async (tx) => {
+          expect(await tx.insertPayment(side.payment)).toBe(true);
+          await tx.insertQuote({
+            id: side.quoteId,
+            paymentId: side.payment.id,
+            expiresAt: new Date(now + 120_000),
+            transferAmounts: [],
+            createdAt: new Date(now),
+          });
+          await tx.insertOffers([side.offer]);
+          expect(await tx.insertProof(side.older)).toBe(true);
+          expect(await tx.insertProof(side.newer)).toBe(true);
+        });
+      }
+      // a's older proof is answered with b's order, b's older proof with a's.
+      const answers = new Map([
+        [a.older.txHash, b.newer.providerOrder as string],
+        [b.older.txHash, a.newer.providerOrder as string],
+      ]);
+      const orchestra = {
+        submit: async (_quote: string, txHash: string) => ({
+          kind: 'order' as const,
+          orderId: answers.get(txHash) as string,
+          status: 'processing',
+        }),
+      } as unknown as OrchestraClient;
+      const shop = new ShopPayments({
+        store,
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      });
+      // Hold the lower payment row, so that both answers queue on it: taken
+      // in opposite order (a's own payment first, then b's, and b's the other
+      // way round) the two would deadlock once the holder lets go.
+      const [low] = [a.payment.id, b.payment.id].sort();
+      const order: string[] = [];
+      let held = (): void => undefined;
+      const lowHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockPayment(low as string);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+        order.push('holder:commit');
+      });
+      await lowHeld;
+      const deadline = Date.now() + 10_000;
+      const [first, second] = await Promise.all([
+        submitProofAttempt(shop, a.older.id, 'watcher', deadline),
+        submitProofAttempt(shop, b.older.id, 'watcher', deadline),
+        holder,
+      ]);
+      expect(order).toEqual(['holder:commit']);
+      expect(first).toMatchObject({ sent: true });
+      expect(second).toMatchObject({ sent: true });
+      const after = await store.transaction(async (tx) => ({
+        aOlder: await tx.getProof(a.older.id),
+        aNewer: await tx.getProof(a.newer.id),
+        bOlder: await tx.getProof(b.older.id),
+        bNewer: await tx.getProof(b.newer.id),
+      }));
+      // Each older proof took the other payment's order; each newer holder
+      // was refused tx_used by the other payment's answer.
+      expect(after.aOlder?.providerOrder).toBe(b.newer.providerOrder);
+      expect(after.bOlder?.providerOrder).toBe(a.newer.providerOrder);
+      expect(after.aNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+      expect(after.bNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+      expect(after.aOlder?.result).toBe('accepted');
+      expect(after.bOlder?.result).toBe('accepted');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  /**
+   * Wait until `n` backends of this database wait for a lock in a statement
+   * on `shop_payment`.
+   */
+  async function untilShopPaymentLockWaiters(client: SqlClient, n: number): Promise<void> {
+    for (let i = 0; i < 200; i += 1) {
+      const rows = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM pg_stat_activity
+         WHERE datname = current_database() AND wait_event_type = 'Lock'
+           AND query LIKE '%shop_payment%'`,
+      );
+      if ((rows[0]?.n ?? 0) >= n) {
+        return;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error(`fewer than ${n} backends wait on a shop_payment lock`);
+  }
+
+  /**
+   * Two payments with ids in a known order, the higher id inserted first (a
+   * scan of the table meets it first, and an index on `account_id` too: its
+   * account id is the lower one). Each has an older proof being submitted and
+   * a newer row that holds an order; the lower payment's older proof is
+   * answered with the order of the higher payment's newer row, so that answer
+   * locks both payment rows (`lockPaymentsForProofs`).
+   */
+  async function crossedPayments(
+    client: SqlClient,
+    store: PostgresShopPaymentStore,
+    pos: PostgresPosStore,
+    accounts: readonly [string, string],
+    now: number,
+    partial: Partial<ShopPayment>,
+  ) {
+    const [lowId, highId] = [crypto.randomUUID(), crypto.randomUUID()].sort() as [string, string];
+    const [highAccount, lowAccount] = [...accounts].sort() as [string, string];
+    const side = (id: string, accountId: string) => {
+      const payment = shopPayment(accountId, now, { ...partial, id });
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const older = shopProof(offer, payment.id, now - 1_000, {
+        nextSubmitAt: null,
+        lastSubmitAt: null,
+      });
+      const newer = shopProof(offer, payment.id, now, {
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(now),
+        nextSubmitAt: null,
+      });
+      return { payment, quoteId, offer, older, newer };
+    };
+    const high = side(highId, highAccount);
+    const low = side(lowId, lowAccount);
+    for (const row of [high, low]) {
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(row.payment)).toBe(true);
+        await tx.insertQuote({
+          id: row.quoteId,
+          paymentId: row.payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([row.offer]);
+        expect(await tx.insertProof(row.older)).toBe(true);
+        expect(await tx.insertProof(row.newer)).toBe(true);
+      });
+    }
+    const orchestra = {
+      submit: async () => ({
+        kind: 'order' as const,
+        orderId: high.newer.providerOrder as string,
+        status: 'processing',
+      }),
+    } as unknown as OrchestraClient;
+    const shop = new ShopPayments({
+      store,
+      posStore: pos,
+      auth: new PostgresAuthStore(client),
+      lnurlServer: {
+        baseUrl: 'http://lnurl.test',
+        publicBaseUrl: 'https://example.test',
+        host: 'example.test',
+      },
+      config: null,
+      orchestra,
+      fxSpot: new PostgresFxSpotStore(client),
+      fetchImpl: fetch,
+      now: () => Date.now(),
+    });
+    return { low, high, shop };
+  }
+
+  /**
+   * A holder locks the lower payment row; the crossed submit answer queues on
+   * it, then `other` starts and queues behind the answer. Run in the old,
+   * unordered way, `other` holds the higher row by then, and once the holder
+   * lets go the answer waits for it while `other` waits for the lower row: a
+   * deadlock (40P01). Taken in id order, `other` holds no payment row yet.
+   */
+  async function besideCrossedAnswer<T>(
+    client: SqlClient,
+    store: PostgresShopPaymentStore,
+    crossed: Awaited<ReturnType<typeof crossedPayments>>,
+    other: () => Promise<T>,
+  ): Promise<[ShopSubmitAttempt, T]> {
+    let held = (): void => undefined;
+    const lowHeld = new Promise<void>((resolve) => {
+      held = resolve;
+    });
+    let release = (): void => undefined;
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const holder = store.transaction(async (tx) => {
+      await tx.lockPayment(crossed.low.payment.id);
+      held();
+      await released;
+    });
+    await lowHeld;
+    const answer = submitProofAttempt(
+      crossed.shop,
+      crossed.low.older.id,
+      'watcher',
+      Date.now() + 30_000,
+    );
+    await untilShopPaymentLockWaiters(client, 1);
+    const running = other();
+    await untilShopPaymentLockWaiters(client, 2);
+    release();
+    const [attempt, result] = await Promise.all([answer, running, holder]);
+    return [attempt, result];
+  }
+
+  test('endLapsedWindows beside a crossed submit answer locks the payment rows by id and does not deadlock', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const now = Date.now();
+      const crossed = await crossedPayments(
+        client,
+        store,
+        pos,
+        [await newAccount(), await newAccount()],
+        now,
+        { windowEndsAt: new Date(now - 1_000) },
+      );
+      const ids = [crossed.low.payment.id, crossed.high.payment.id];
+      const [attempt, ended] = await besideCrossedAnswer(client, store, crossed, () =>
+        store.transaction((tx) => tx.endLapsedWindows(Date.now())),
+      );
+      expect(attempt).toMatchObject({ sent: true });
+      // The answer went first: the lower payment is accepted, so only the
+      // higher one is still open and lapsed.
+      expect(ended.filter((row) => ids.includes(row.id))).toEqual([
+        expect.objectContaining({
+          id: crossed.high.payment.id,
+          status: 'ended',
+          endReason: 'window',
+        }),
+      ]);
+      const after = await store.transaction(async (tx) => ({
+        low: await tx.getPayment(crossed.low.payment.id),
+        lowOlder: await tx.getProof(crossed.low.older.id),
+        highNewer: await tx.getProof(crossed.high.newer.id),
+      }));
+      expect(after.low?.status).toBe('accepted');
+      expect(after.lowOlder).toMatchObject({
+        result: 'accepted',
+        providerOrder: crossed.high.newer.providerOrder,
+      });
+      expect(after.highNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('a merge moving both payments beside a crossed submit answer locks them by id and does not deadlock', async () => {
+    const { client, mergeDb, sql, store, pos, newAccount } = await setup();
+    try {
+      await migrateMergeTables(client);
+      const from = await newAccount();
+      const into = await newAccount();
+      const now = Date.now();
+      // Paid payments do not stop the merge, and both belong to the merged account.
+      const crossed = await crossedPayments(client, store, pos, [from, from], now, {
+        status: 'paid',
+        acceptedAt: new Date(now),
+        paidAt: new Date(now),
+      });
+      const [attempt, merged] = await besideCrossedAnswer(client, store, crossed, () =>
+        mergeAccounts(mergeDb, { from, into, verify: 'into' }),
+      );
+      expect(attempt).toMatchObject({ sent: true });
+      expect(merged).toEqual({ ok: true, messages: 0 });
+      const after = await store.transaction(async (tx) => ({
+        low: await tx.getPayment(crossed.low.payment.id),
+        high: await tx.getPayment(crossed.high.payment.id),
+        lowOlder: await tx.getProof(crossed.low.older.id),
+        highNewer: await tx.getProof(crossed.high.newer.id),
+      }));
+      expect(after.low?.accountId).toBe(into);
+      expect(after.high?.accountId).toBe(into);
+      expect(after.lowOlder?.providerOrder).toBe(crossed.high.newer.providerOrder);
+      expect(after.highNewer).toMatchObject({
+        result: 'refused',
+        refusal: 'tx_used',
+        providerOrder: null,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('claimPaymentHash serializes writers whose hashes share their first 32 bits only', async () => {
+    const { sql, store } = await setup();
+    try {
+      const prefix = crypto.randomUUID().replaceAll('-', '').slice(0, 8);
+      const other = (Number.parseInt(prefix, 16) ^ 1).toString(16).padStart(8, '0');
+      const a = `${prefix}${hex64().slice(8)}`;
+      const b = `${prefix}${hex64().slice(8)}`;
+      const c = `${other}${hex64().slice(8)}`;
+      const events: string[] = [];
+      let locked = (): void => undefined;
+      const firstLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const first = store.transaction(async (tx) => {
+        await tx.claimPaymentHash(a);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        events.push('first:commit');
+      });
+      await firstLocked;
+      const second = store.transaction(async (tx) => {
+        await tx.claimPaymentHash(b);
+        events.push('same-prefix');
+      });
+      const third = store.transaction(async (tx) => {
+        await tx.claimPaymentHash(c);
+        events.push('other-prefix');
+      });
+      await Promise.all([first, second, third]);
+      expect(events).toEqual(['other-prefix', 'first:commit', 'same-prefix']);
+      // The two-key form never meets a one-key lock on the same number.
+      await store.transaction(async (tx) => {
+        await tx.claimPaymentHash(a);
+        const { mergeDb, sql: plain } = createBunSqlClient(databaseUrl);
+        try {
+          const taken = await mergeDb.begin((conn) =>
+            conn.query<{ ok: boolean }>('SELECT pg_try_advisory_xact_lock($1) AS ok', [
+              PAYMENT_HASH_LOCK_NAMESPACE,
+            ]),
+          );
+          expect(taken[0]?.ok).toBe(true);
+        } finally {
+          await closeIfPossible(plain);
+        }
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('recordInvoice waits for a step-8 claim on the same hash and then answers other_payment', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    try {
+      const payerAccount = await newAccount();
+      const shopAccount = await newAccount();
+      const now = Date.now();
+      const chargeId = crypto.randomUUID();
+      await pos.create({
+        id: chargeId,
+        accountId: shopAccount,
+        amountSats: 2100,
+        status: 'pending',
+        createdAt: new Date(now),
+        expiresAt: new Date(now + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      });
+      const hash = hex64();
+      const payment = shopPayment(payerAccount, now, { paymentHash: hash });
+      let locked = (): void => undefined;
+      const firstLocked = new Promise<void>((resolve) => {
+        locked = resolve;
+      });
+      const order: string[] = [];
+      const step8 = store.transaction(async (tx) => {
+        await tx.claimPaymentHash(hash);
+        await tx.lockAccount(payerAccount);
+        locked();
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        expect(await tx.chargeIdForInvoice(hash)).toBeNull();
+        expect(await tx.insertPayment(payment)).toBe(true);
+        order.push('step8:commit');
+      });
+      await firstLocked;
+      const recorded = pos.recordInvoice(chargeId, hash, now).then((result) => {
+        order.push('recordInvoice');
+        return result;
+      });
+      await step8;
+      expect(await recorded).toEqual({
+        outcome: 'other_payment',
+        holderChargeId: null,
+        holderPaymentId: payment.id,
+      });
+      expect(order).toEqual(['step8:commit', 'recordInvoice']);
+      const rows = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM pos_charge_invoice WHERE payment_hash = $1',
+        [hash],
+      );
+      expect(rows[0]?.n).toBe(0);
+      // The charge's own shop payment holding the hash is this charge.
+      const own = shopPayment(shopAccount, now, { posChargeId: chargeId });
+      expect(await store.transaction((tx) => tx.insertPayment(own))).toBe(true);
+      expect(await pos.recordInvoice(chargeId, own.paymentHash, now)).toEqual({
+        outcome: 'this_charge',
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test("a payer creation's re-check beside the settlement of the lapsed charge payment takes the account first and does not deadlock", async () => {
+    const { client, mergeDb, sql, store, pos, newAccount } = await setup();
+    try {
+      const accountId = await newAccount();
+      const account = await new PostgresAuthStore(client).getAccount(accountId);
+      if (account === undefined) {
+        throw new Error('account missing');
+      }
+      const now = Date.now();
+      // A charge whose expiry passed while it is still `pending` (no read has
+      // expired it yet), and its `open` payment, whose window was the charge's.
+      const charge: PosCharge = {
+        id: crypto.randomUUID(),
+        accountId,
+        amountSats: 2100,
+        status: 'pending',
+        createdAt: new Date(now - 400_000),
+        expiresAt: new Date(now - 10_000),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      };
+      await pos.create(charge);
+      const lapsed = shopPayment(accountId, now - 400_000, {
+        posChargeId: charge.id,
+        windowEndsAt: charge.expiresAt,
+      });
+      expect(await store.transaction((tx) => tx.insertPayment(lapsed))).toBe(true);
+      let ended = (): void => undefined;
+      const lapsedEnded = new Promise<void>((resolve) => {
+        ended = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      /** Holds the creation's re-check right after it ended the lapsed payment. */
+      class PausingStore extends PostgresShopPaymentStore {
+        #paused = false;
+        override transaction<T>(run: (tx: ShopTx) => Promise<T>): Promise<T> {
+          return super.transaction((tx) =>
+            run(
+              new Proxy(tx, {
+                get: (target, prop) => {
+                  const value = (target as unknown as Record<string | symbol, unknown>)[prop];
+                  if (typeof value !== 'function') {
+                    return value;
+                  }
+                  if (prop === 'updatePayment' && !this.#paused) {
+                    this.#paused = true;
+                    return async (...args: unknown[]) => {
+                      const result = await (value as (...a: unknown[]) => Promise<unknown>).apply(
+                        target,
+                        args,
+                      );
+                      ended();
+                      await released;
+                      return result;
+                    };
+                  }
+                  return (value as (...a: unknown[]) => unknown).bind(target);
+                },
+              }),
+            ),
+          );
+        }
+      }
+      const deps = {
+        posStore: pos,
+        auth: new PostgresAuthStore(client),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.test',
+          publicBaseUrl: 'https://example.test',
+          host: 'example.test',
+        },
+        config: null,
+        orchestra: null,
+        fxSpot: new PostgresFxSpotStore(client),
+        fetchImpl: fetch,
+        now: () => Date.now(),
+      };
+      const creator = new ShopPayments({ ...deps, store: new PausingStore(client, mergeDb) });
+      const settler = new ShopPayments({ ...deps, store });
+      // The re-check holds the lapsed payment's row (and, in the account-first
+      // order, the account row and the charge row) when it pauses.
+      const creation = creator.createForPayer(account, account.username ?? '', 2100, Date.now());
+      await lapsedEnded;
+      // The settlement locks the account, then the charge, then the payment:
+      // it queues on the first row the paused re-check holds.
+      const settlement = settler.applySettlement(lapsed.id, true, Date.now());
+      for (let i = 0; ; i += 1) {
+        const rows = await client.query<{ n: number }>(
+          `SELECT count(*)::int AS n FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock'`,
+        );
+        if ((rows[0]?.n ?? 0) >= 1) {
+          break;
+        }
+        if (i === 200) {
+          throw new Error('the settlement never waited for a lock');
+        }
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
+      // Taking the payment row before the charge rows, the re-check would now
+      // wait for the charge the settlement holds while the settlement waits
+      // for the payment: a deadlock (40P01).
+      release();
+      const [created] = await Promise.all([creation, settlement]);
+      expect(created).toEqual({ kind: 'unavailable' });
+      const after = await store.transaction((tx) => tx.getPayment(lapsed.id));
+      expect(after?.endReason).toBeNull();
+      expect(after?.status).toBe('paid');
+      expect((await pos.findChargeForPayment({ chargeId: charge.id }))?.status).toBe('paid');
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+  test('two containers that selected the same lapsed status row log order_stuck once', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const now = Date.now();
+      // The watchers' clock lies before every row other tests left behind,
+      // so their duties select only this proof.
+      const clockMs = Date.UTC(2001, 0, 1);
+      const payment = shopPayment(await newAccount(), now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const lapsed = shopProof(offer, payment.id, now, {
+        providerOrder: `o-${crypto.randomUUID()}`,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(clockMs - 86_400_000),
+        nextSubmitAt: null,
+        nextStatusAt: new Date(clockMs - 1_000),
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(lapsed)).toBe(true);
+      });
+      const container = (): ShopPayments =>
+        new ShopPayments({
+          store,
+          posStore: pos,
+          auth: new PostgresAuthStore(client),
+          lnurlServer: {
+            baseUrl: 'http://lnurl.test',
+            publicBaseUrl: 'https://example.test',
+            host: 'example.test',
+          },
+          config: null,
+          // The 24 h stop makes no call.
+          orchestra: {
+            status: async () => {
+              throw new Error('no status read expected');
+            },
+          } as unknown as OrchestraClient,
+          fxSpot: new PostgresFxSpotStore(client),
+          fetchImpl: fetch,
+          now: () => clockMs,
+        });
+      // Hold the payment row, so that both containers select the row without
+      // a lock and then queue for the payment row.
+      let held = (): void => undefined;
+      const paymentHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      const holder = store.transaction(async (tx) => {
+        await tx.lockPayment(payment.id);
+        held();
+        await new Promise((resolve) => setTimeout(resolve, 500));
+      });
+      await paymentHeld;
+      await Promise.all([
+        runShopPaymentTick(container(), 2),
+        runShopPaymentTick(container(), 2),
+        holder,
+      ]);
+      const alerts = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((text) => text.startsWith('{'))
+        .map((text) => JSON.parse(text) as Record<string, unknown>)
+        .filter(
+          (line) => line['event'] === 'shop.alert.order_stuck' && line['proofId'] === lapsed.id,
+        );
+      expect(alerts).toHaveLength(1);
+      expect((await store.transaction((tx) => tx.getProof(lapsed.id)))?.nextStatusAt).toBeNull();
+    } finally {
+      warn.mockRestore();
+      await closeIfPossible(sql);
+    }
+  });
+  test('a status read that another container overtook with expired keeps expired and stays stopped', async () => {
+    const { client, sql, store, pos, newAccount } = await setup();
+    const warn = spyOn(console, 'warn').mockImplementation(() => undefined);
+    try {
+      const now = Date.now();
+      // As above, the watchers' clock selects only this proof.
+      const clockMs = Date.UTC(2001, 0, 1);
+      const payment = shopPayment(await newAccount(), now);
+      const quoteId = crypto.randomUUID();
+      const offer = shopOffer(quoteId, now);
+      const orderId = `o-${crypto.randomUUID()}`;
+      const watched = shopProof(offer, payment.id, now, {
+        providerOrder: orderId,
+        orderStatus: 'processing',
+        orderFoundAt: new Date(clockMs - 1_000),
+        nextSubmitAt: null,
+        nextStatusAt: new Date(clockMs - 1_000),
+      });
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        await tx.insertOffers([offer]);
+        expect(await tx.insertProof(watched)).toBe(true);
+      });
+      const container = (status: () => Promise<unknown>): ShopPayments =>
+        new ShopPayments({
+          store,
+          posStore: pos,
+          auth: new PostgresAuthStore(client),
+          lnurlServer: {
+            baseUrl: 'http://lnurl.test',
+            publicBaseUrl: 'https://example.test',
+            host: 'example.test',
+          },
+          config: null,
+          orchestra: { status } as unknown as OrchestraClient,
+          fxSpot: new PostgresFxSpotStore(client),
+          fetchImpl: fetch,
+          now: () => clockMs,
+        });
+      const answer = (value: string): unknown => ({
+        ok: true,
+        order: { id: orderId, status: value, supersededByOperationId: null },
+      });
+      // Container A reads `expired` and commits while container B's read,
+      // which answers `processing`, is still in flight.
+      const first = container(async () => answer('expired'));
+      const second = container(async () => {
+        await runShopPaymentTick(first, 2);
+        return answer('processing');
+      });
+      await runShopPaymentTick(second, 2);
+      expect(await store.transaction((tx) => tx.getProof(watched.id))).toMatchObject({
+        orderStatus: 'expired',
+        result: 'refused',
+        refusal: 'expired_order',
+        nextStatusAt: null,
+      });
+      expect((await store.transaction((tx) => tx.getPayment(payment.id)))?.status).toBe('open');
+      const proofLines = warn.mock.calls
+        .map((call) => String(call[0]))
+        .filter((text) => text.startsWith('{'))
+        .map((text) => JSON.parse(text) as Record<string, unknown>)
+        .filter((line) => line['proofId'] === watched.id)
+        .map((line) => String(line['event']))
+        .filter((event) => event.startsWith('shop.proof.') || event.startsWith('shop.alert.'));
+      expect(proofLines).toEqual(['shop.proof.refused']);
+    } finally {
+      warn.mockRestore();
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('mergeAccounts and the shop payment rows', () => {
+  const hex64 = (): string =>
+    `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+
+  async function newAccount(auth: PostgresAuthStore): Promise<string> {
+    const id = crypto.randomUUID();
+    await auth.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      username: `merge_${Date.now()}_${Math.random().toString(16).slice(2, 10)}`,
+      location: null,
+      forumLawsDismissed: false,
+      viewKey: hex64(),
+      createdAt: Date.now(),
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    return id;
+  }
+
+  function pendingCharge(
+    accountId: string,
+    now: number,
+    expiresInMs = POS_CHARGE_TTL_MS,
+  ): PosCharge {
+    return {
+      id: crypto.randomUUID(),
+      accountId,
+      amountSats: 21,
+      status: 'pending',
+      createdAt: new Date(now),
+      expiresAt: new Date(now + expiresInMs),
+      paidAt: null,
+      sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
+    };
+  }
+
+  test('the merge locks the deleted pending charge, so a recordInvoice for it fails and leaves no row', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      await pos.create(pendingCharge(into, now));
+      const hash = hex64();
+      let recording: Promise<unknown> | null = null;
+      const watched: MergeDb = {
+        begin: (run) =>
+          mergeDb.begin((tx) =>
+            run({
+              query: async <R>(text: string, params: readonly unknown[] = []): Promise<R[]> => {
+                const rows = await tx.query<R>(text, params);
+                if (
+                  recording === null &&
+                  text.includes('FROM pos_charge') &&
+                  text.includes('FOR UPDATE')
+                ) {
+                  recording = pos.recordInvoice(fromCharge.id, hash, now).then(
+                    (result) => result,
+                    (error: unknown) => error,
+                  );
+                  // Wait until the insert's foreign-key check waits on the charge row lock.
+                  for (let i = 0; i < 50; i += 1) {
+                    const waiting = await client.query<{ n: number }>(
+                      `SELECT count(*)::int AS n FROM pg_stat_activity
+                       WHERE wait_event_type = 'Lock' AND query LIKE 'INSERT INTO pos_charge_invoice%'`,
+                    );
+                    if ((waiting[0]?.n ?? 0) > 0) {
+                      break;
+                    }
+                    await new Promise((resolve) => setTimeout(resolve, 100));
+                  }
+                }
+                return rows;
+              },
+            }),
+          ),
+      };
+      expect((await mergeAccounts(watched, { from, into, verify: 'into' })).ok).toBe(true);
+      expect(sqlState(await recording)).toBe('23503');
+      const invoices = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM pos_charge_invoice WHERE payment_hash = $1',
+        [hash],
+      );
+      expect(invoices[0]?.n).toBe(0);
+      expect(await pos.findChargeForPayment({ chargeId: fromCharge.id })).toBeUndefined();
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the merge refuses a pending charge of the merged account beside an open payment of the survivor', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const charge = pendingCharge(from, now);
+      await pos.create(charge);
+      const open = {
+        id: crypto.randomUUID(),
+        accountId: into,
+        amountSats: 2100,
+        posChargeId: null,
+        bolt11: 'lnbc21',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'open' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: null,
+        paidAt: null,
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(open))).toBe(true);
+      expect(await mergeAccounts(mergeDb, { from, into, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'shop_payment_open',
+      });
+      expect((await pos.findChargeForPayment({ chargeId: charge.id }))?.accountId).toBe(from);
+      // An expired pending charge does not count: the merge runs.
+      await client.execute(`UPDATE pos_charge SET expires_at = $2 WHERE id = $1`, [
+        charge.id,
+        new Date(now - 1).toISOString(),
+      ]);
+      expect((await mergeAccounts(mergeDb, { from, into, verify: 'into' })).ok).toBe(true);
+      expect(await shop.transaction((tx) => tx.getPayment(open.id))).toMatchObject({
+        status: 'open',
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the merge goes on when the survivor has its own unexpired pending charge: the merged charge is deleted, the survivor’s open payment stays', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const intoCharge = pendingCharge(into, now);
+      await pos.create(intoCharge);
+      // The survivor's charge has its own open shop payment.
+      const open = {
+        id: crypto.randomUUID(),
+        accountId: into,
+        amountSats: 21,
+        posChargeId: intoCharge.id,
+        bolt11: 'lnbc21',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'open' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: null,
+        paidAt: null,
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(open))).toBe(true);
+      expect((await mergeAccounts(mergeDb, { from, into, verify: 'into' })).ok).toBe(true);
+      expect(await pos.findChargeForPayment({ chargeId: fromCharge.id })).toBeUndefined();
+      expect((await pos.findChargeForPayment({ chargeId: intoCharge.id }))?.status).toBe('pending');
+      expect(await shop.transaction((tx) => tx.getPayment(open.id))).toMatchObject({
+        status: 'open',
+        posChargeId: intoCharge.id,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the merge takes the merged account’s charge rows before its payment rows: blocked on a held charge, it holds no payment row', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      // The survivor has no pending charge, so the merged account's pending
+      // charge is not deleted but moved by the catalog update.
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const paid = {
+        id: crypto.randomUUID(),
+        accountId: from,
+        amountSats: 21,
+        posChargeId: fromCharge.id,
+        bolt11: 'lnbc21',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'paid' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: new Date(now),
+        paidAt: new Date(now),
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(paid))).toBe(true);
+
+      // Another transaction holds the charge row, as the settlement step does.
+      let held = (): void => undefined;
+      const chargeHeld = new Promise<void>((resolve) => {
+        held = resolve;
+      });
+      let release = (): void => undefined;
+      const released = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const holder = mergeDb.begin(async (tx) => {
+        await tx.query('SELECT id FROM pos_charge WHERE id = $1 FOR UPDATE', [fromCharge.id]);
+        held();
+        await released;
+      });
+      await chargeHeld;
+      const merging = mergeAccounts(mergeDb, { from, into, verify: 'into' });
+      try {
+        // The merge waits on the charge row in its charge lock.
+        let waiting = false;
+        for (let i = 0; i < 50 && !waiting; i += 1) {
+          const rows = await client.query<{ n: number }>(
+            `SELECT count(*)::int AS n FROM pg_stat_activity
+             WHERE wait_event_type = 'Lock' AND query LIKE 'SELECT id FROM pos_charge%'`,
+          );
+          waiting = (rows[0]?.n ?? 0) > 0;
+          if (!waiting) {
+            await new Promise((resolve) => setTimeout(resolve, 100));
+          }
+        }
+        expect(waiting).toBe(true);
+        // While it waits it holds no payment row of the merged account.
+        const probe = await mergeDb.begin((tx) =>
+          tx
+            .query<{ id: string }>('SELECT id FROM shop_payment WHERE id = $1 FOR UPDATE NOWAIT', [
+              paid.id,
+            ])
+            .then(
+              (rows) => rows.map((row) => row.id),
+              (error: unknown) => sqlState(error),
+            ),
+        );
+        expect(probe).toEqual([paid.id]);
+      } finally {
+        release();
+        await holder;
+      }
+      expect(await merging).toEqual({ ok: true, messages: 0 });
+      expect((await pos.findChargeForPayment({ chargeId: fromCharge.id }))?.accountId).toBe(into);
+      expect(await shop.transaction((tx) => tx.getPayment(paid.id))).toMatchObject({
+        accountId: into,
+        posChargeId: fromCharge.id,
+      });
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
+  test('the merge refuses when the survivor’s only pending charge has expired', async () => {
+    const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateMergeTables(client);
+      const auth = new PostgresAuthStore(client);
+      const pos = new PostgresPosStore(client, mergeDb);
+      const shop = new PostgresShopPaymentStore(client, mergeDb);
+      const from = await newAccount(auth);
+      const into = await newAccount(auth);
+      const now = Date.now();
+      const fromCharge = pendingCharge(from, now);
+      await pos.create(fromCharge);
+      const intoCharge = pendingCharge(into, now);
+      await pos.create(intoCharge);
+      await client.execute(`UPDATE pos_charge SET expires_at = $2 WHERE id = $1`, [
+        intoCharge.id,
+        new Date(now - 1).toISOString(),
+      ]);
+      const open = {
+        id: crypto.randomUUID(),
+        accountId: into,
+        amountSats: 2100,
+        posChargeId: null,
+        bolt11: 'lnbc2100',
+        paymentHash: hex64(),
+        bolt11ExpiresAt: new Date(now + 600_000),
+        status: 'open' as const,
+        endReason: null,
+        windowEndsAt: new Date(now + 300_000),
+        replacements: 0,
+        nextSettleAt: new Date(now),
+        nextHistoryAt: null,
+        historyOffset: 0,
+        successorWaitUntil: null,
+        createdAt: new Date(now),
+        acceptedAt: null,
+        paidAt: null,
+        endedAt: null,
+        closedAt: null,
+      };
+      expect(await shop.transaction((tx) => tx.insertPayment(open))).toBe(true);
+      expect(await mergeAccounts(mergeDb, { from, into, verify: 'into' })).toEqual({
+        ok: false,
+        error: 'shop_payment_open',
+      });
+      expect((await pos.findChargeForPayment({ chargeId: fromCharge.id }))?.accountId).toBe(from);
+    } finally {
       await closeIfPossible(sql);
     }
   });

@@ -271,7 +271,6 @@ export function debugMessagesRoutes(deps: DebugMessagesRouteDeps): Hono {
             text: row.text,
             parentId: row.parentId ?? null,
             place: row.place ?? null,
-            authorName: row.name,
             textHasHashtagToken,
           });
         }

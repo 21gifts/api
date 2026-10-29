@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Account } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { FetchFn } from '@/lib/lnurlp';
+import { LNURL_SERVER_TIMEOUT_MS } from '@/lib/lnurl-server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import {
   accountByReceivingAddress,
@@ -177,5 +178,44 @@ describe('lnurlServerFetch', () => {
     );
     expect(fetchImpl).not.toHaveBeenCalled();
     await expect(routed(new URL('https://21.gifts/lnurlp/alice'))).rejects.toThrow(TypeError);
+  });
+
+  it('hands the LNURL server call the time left until a deadline', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetchImpl = vi.fn(async () => new Response('{"pr":"lnbc1"}', { status: 200 }));
+    let clock = 1_000;
+    const routed = lnurlServerFetch(config, fetchImpl, accounts, {
+      deadlineMs: 5_000,
+      now: () => clock,
+    });
+    const response = await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000');
+    expect(response.status).toBe(200);
+    const [, init] = fetchImpl.mock.calls[0] as unknown as [string, RequestInit];
+    expect(init.signal).toBeInstanceOf(AbortSignal);
+    // 5000 − 1000 ms left, not the default LNURL_SERVER_TIMEOUT_MS.
+    expect(timeout.mock.calls).toEqual([[4_000]]);
+    clock = 3_500;
+    await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000');
+    expect(timeout.mock.calls).toEqual([[4_000], [1_500]]);
+    clock = 5_000;
+    await expect(routed('https://21.gifts/lnurlp/alice/invoice?amount=1000')).rejects.toThrow(
+      'LNURL server request failed',
+    );
+    expect(fetchImpl).toHaveBeenCalledTimes(2);
+    expect(timeout).toHaveBeenCalledTimes(2);
+    // Other hosts ignore the deadline.
+    expect((await routed('https://example.com/x')).status).toBe(200);
+    expect(fetchImpl).toHaveBeenCalledTimes(3);
+    expect(timeout).toHaveBeenCalledTimes(2);
+    timeout.mockRestore();
+  });
+
+  it('hands the LNURL server call LNURL_SERVER_TIMEOUT_MS without a deadline', async () => {
+    const timeout = vi.spyOn(AbortSignal, 'timeout');
+    const fetchImpl = vi.fn(async () => new Response('{"pr":"lnbc1"}', { status: 200 }));
+    const routed = lnurlServerFetch(config, fetchImpl, accounts);
+    expect((await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000')).status).toBe(200);
+    expect(timeout.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+    timeout.mockRestore();
   });
 });
