@@ -1,9 +1,13 @@
 /**
- * Read-only account activity: donation given/received sats only.
+ * Read-only account activity: donation given/received sats, plus outstanding
+ * loan balances on the same JSON object.
  *
- * Counts confirmed forum zaps on non-loan notes, plus house gifts of kind
- * daily and welcome. Loans (`goalRepayable === true`), repayment invoices, and
- * moderator stipends are omitted. Public JSON never includes invoices, payment
+ * Donation series count confirmed forum zaps on non-loan notes, plus house
+ * gifts of kind daily and welcome. Loans (`goalRepayable === true`), repayment
+ * invoices, and moderator stipends stay out of `donatedSats` / `receivedSats`.
+ * Loan series are not `buildGiftStats`: balances can fall, only movement days
+ * are emitted, and every fiat field is JSON `null` because a loan movement
+ * stores no fiat figure. Public JSON never includes invoices, payment
  * hashes, or nsec. Does not change `GET /gifts/stats` (that route remains house
  * outbound only).
  */
@@ -20,14 +24,22 @@ import {
   type SpendDay,
 } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
-import { usdCentsToString } from '@/lib/money';
-import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
+import { satsToBtcString, usdCentsToString } from '@/lib/money';
+import type {
+  LoanLedgerMovement,
+  MessageInvoiceAttempt,
+  MessageStore,
+  ZapIngestRow,
+} from '@/lib/message-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 
 const PAYMENT_HASH_RE = /^[0-9a-f]{64}$/;
 const FALLBACK_RECIPIENT = 'zap';
 
-/** Donated and received sats with UTC spend series and FX metadata. */
+/**
+ * Donated and received sats with UTC spend series, FX metadata, and
+ * outstanding loan balances (`owedSats` / `creditSats` and their series).
+ */
 export interface AccountActivity {
   /** Confirmed given donation zaps (and platform daily/welcome outbound) in whole sats. */
   donatedSats: number;
@@ -40,6 +52,14 @@ export interface AccountActivity {
   donatedOverTime: SpendDay[];
   /** UTC daily received series. */
   receivedOverTime: SpendDay[];
+  /** Sats this account still owes on credits it received. */
+  owedSats: number;
+  /** Sats other people still owe this account (Guthaben). */
+  creditSats: number;
+  /** UTC days with an owed movement; cumulative may fall; no gap days. */
+  owedOverTime: SpendDay[];
+  /** UTC days with a credit movement; cumulative may fall; no gap days. */
+  creditOverTime: SpendDay[];
   /** Quote metadata (always present, including empty activity). */
   fx: GiftStatsFx;
 }
@@ -142,7 +162,8 @@ export function matchConfirmedGivenZaps(
 }
 
 /**
- * Aggregate donation given and received sats for one account.
+ * Aggregate donation given/received sats and outstanding loan balances for one
+ * account.
  *
  * Given: confirmed forum zaps this account paid on notes that are not loans,
  * excluding `repay:` repayment invoices, plus outbound house gifts of kind
@@ -156,10 +177,15 @@ export function matchConfirmedGivenZaps(
  * handle matches the local part of the account's receiving address (its
  * username, once the in-app wallet is verified). A loan is a note with
  * `goalRepayable === true`. Self-zaps on a non-loan note count on both sides.
- * Does not change `GET /gifts/stats`. Empty input is zeros. Amounts are the
- * stored figures. A missing stored amount stays null and is not priced from a
- * daily close. Series (`donatedOverTime` / `receivedOverTime`) are the same
- * `spendOverTime` day objects as `GET /gifts/stats`.
+ * Loan series come from `listLoanLedger`: grants raise a side, repayments lower
+ * it, balances are not clamped, and only movement days are emitted. A loan
+ * movement stores no fiat figure, so every loan USD/CHF/EUR/PHP field is JSON
+ * `null`; loan series carry sats and BTC only. Does not change
+ * `GET /gifts/stats`. Empty input (no donations and no loan movements) is
+ * zeros. Amounts are the stored figures. A missing stored amount stays null
+ * and is not priced from a daily close. Donation series (`donatedOverTime` /
+ * `receivedOverTime`) are the same `spendOverTime` day objects as
+ * `GET /gifts/stats`.
  *
  * @param args - Account, stores, BTC-USD rate book, optional USD→CHF/EUR/PHP
  *   book, and clock. The books are not read.
@@ -191,17 +217,26 @@ export async function buildAccountActivity(args: {
   const receivedZaps = await receivedZapsForAccount(args.account, args.messages, indexed);
   const givenRows = givenZaps.concat(givenHouse);
   const receivedRows = receivedZaps.concat(receivedHouse);
-  if (givenRows.length === 0 && receivedRows.length === 0) {
+  const ledger = await args.messages.listLoanLedger(args.account.id);
+
+  if (givenRows.length === 0 && receivedRows.length === 0 && ledger.length === 0) {
     const empty = buildGiftStats([], new Map());
     return {
       donatedSats: 0,
       receivedSats: 0,
       donatedOverTime: [],
       receivedOverTime: [],
+      owedSats: 0,
+      creditSats: 0,
+      owedOverTime: [],
+      creditOverTime: [],
       fx: empty.fx,
     };
   }
 
+  const sortedLedger = [...ledger].sort(compareLoanMovements);
+  const owedSeries = buildLoanSide(sortedLedger, 'owed');
+  const creditSeries = buildLoanSide(sortedLedger, 'credit');
   const givenStats = buildGiftStats(givenRows, new Map());
   const receivedStats = buildGiftStats(receivedRows, new Map());
   return {
@@ -209,8 +244,105 @@ export async function buildAccountActivity(args: {
     receivedSats: receivedStats.totalSats,
     donatedOverTime: givenStats.spendOverTime,
     receivedOverTime: receivedStats.spendOverTime,
+    owedSats: owedSeries.balance,
+    creditSats: creditSeries.balance,
+    owedOverTime: owedSeries.overTime,
+    creditOverTime: creditSeries.overTime,
     fx: givenRows.length > 0 ? givenStats.fx : receivedStats.fx,
   };
+}
+
+/**
+ * Stable rank so same-timestamp grants sort before repayments.
+ *
+ * @param kind - Movement kind.
+ * @returns `0` for grant, `1` for repayment.
+ */
+function loanKindRank(kind: 'grant' | 'repayment'): number {
+  return kind === 'grant' ? 0 : 1;
+}
+
+/**
+ * Order loan ledger rows by time, then grant before repayment.
+ *
+ * @param a - Left movement.
+ * @param b - Right movement.
+ * @returns Negative when `a` comes first, zero when equal, positive when `b` first.
+ */
+function compareLoanMovements(a: LoanLedgerMovement, b: LoanLedgerMovement): number {
+  const byTime = a.at.getTime() - b.at.getTime();
+  if (byTime !== 0) {
+    return byTime;
+  }
+  if (a.kind === b.kind) {
+    return 0;
+  }
+  return loanKindRank(a.kind) - loanKindRank(b.kind);
+}
+
+/**
+ * Outstanding balance series for one loan side.
+ *
+ * A movement stores no fiat figure, so every USD/CHF/EUR/PHP field is `null`.
+ *
+ * @param ledger - Sorted grant/repayment movements.
+ * @param side - `owed` or `credit` flag on each row.
+ * @returns Final balance and movement-day SpendDay rows.
+ */
+function buildLoanSide(
+  ledger: readonly LoanLedgerMovement[],
+  side: 'owed' | 'credit',
+): { balance: number; overTime: SpendDay[] } {
+  let balance = 0;
+  const byDay = new Map<string, { net: number; count: number; balanceAfter: number }>();
+  for (const movement of ledger) {
+    const onSide = side === 'owed' ? movement.owed : movement.credit;
+    if (!onSide) {
+      continue;
+    }
+    const signed = movement.kind === 'grant' ? movement.sats : -movement.sats;
+    balance += signed;
+    const day = movement.at.toISOString().slice(0, 10);
+    const bucket = byDay.get(day) ?? { net: 0, count: 0, balanceAfter: 0 };
+    bucket.net += signed;
+    bucket.count += 1;
+    bucket.balanceAfter = balance;
+    byDay.set(day, bucket);
+  }
+  const overTime: SpendDay[] = [];
+  for (const [day, bucket] of byDay) {
+    overTime.push({
+      day,
+      giftCount: bucket.count,
+      officialCount: 0,
+      sats: bucket.net,
+      cumulativeSats: bucket.balanceAfter,
+      btc: signedBtcString(bucket.net),
+      cumulativeBtc: signedBtcString(bucket.balanceAfter),
+      usd: null,
+      cumulativeUsd: null,
+      chf: null,
+      cumulativeChf: null,
+      eur: null,
+      cumulativeEur: null,
+      php: null,
+      cumulativePhp: null,
+    });
+  }
+  return { balance, overTime };
+}
+
+/**
+ * Format a possibly negative sat amount as an eight-decimal BTC string.
+ *
+ * @param sats - Integer sats (may be negative).
+ * @returns BTC string; negatives get a `-` prefix on the absolute value.
+ */
+function signedBtcString(sats: number): string {
+  if (sats < 0) {
+    return `-${satsToBtcString(-sats)}`;
+  }
+  return satsToBtcString(sats);
 }
 
 /**

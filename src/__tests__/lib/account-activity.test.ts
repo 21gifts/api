@@ -31,6 +31,10 @@ const EMPTY = {
   receivedSats: 0,
   donatedOverTime: [],
   receivedOverTime: [],
+  owedSats: 0,
+  creditSats: 0,
+  owedOverTime: [],
+  creditOverTime: [],
   fx: FX,
 };
 
@@ -720,5 +724,464 @@ describe('buildAccountActivity', () => {
     await messages.recordZapIngest(ingest({ messageId: 'missing' }));
     const stats = await activity({ messages });
     expect(stats.donatedSats).toBe(21);
+  });
+
+  it('credits an identified grant to the payer without counting it as a donation', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      const stats = await activity({ messages });
+      expect(stats.creditSats).toBe(100);
+      expect(stats.owedSats).toBe(0);
+      expect(stats.donatedSats).toBe(0);
+      expect(stats.receivedSats).toBe(0);
+      expect(stats.owedOverTime).toEqual([]);
+      expect(stats.creditOverTime).toHaveLength(1);
+      expect(stats.creditOverTime[0]).toMatchObject({
+        day: DAY,
+        giftCount: 1,
+        officialCount: 0,
+        sats: 100,
+        cumulativeSats: 100,
+        btc: '0.00000100',
+        cumulativeBtc: '0.00000100',
+        usd: null,
+        cumulativeUsd: null,
+        chf: null,
+        cumulativeChf: null,
+        eur: null,
+        cumulativeEur: null,
+        php: null,
+        cumulativePhp: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('leaves loan-only fiat null with rate books present and keeps donation totals at zero', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      const stats = await activity({
+        messages,
+        fiatRates: new InMemoryFiatStore({
+          [DAY]: { CHF: '0.80', EUR: '0.90', PHP: '50' },
+        }),
+      });
+      expect(stats.donatedSats).toBe(0);
+      expect(stats.receivedSats).toBe(0);
+      expect(stats.creditSats).toBe(100);
+      expect(stats.creditOverTime[0]).toMatchObject({
+        usd: null,
+        cumulativeUsd: null,
+        cumulativeChf: null,
+        cumulativeEur: null,
+        cumulativePhp: null,
+        chf: null,
+        eur: null,
+        php: null,
+      });
+      expect(stats.fx).toEqual(EMPTY.fx);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('owes the author the same grant the payer is credited', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'payer' });
+      const stats = await activity({ messages });
+      expect(stats.owedSats).toBe(100);
+      expect(stats.creditSats).toBe(0);
+      expect(stats.creditOverTime).toEqual([]);
+      expect(stats.owedOverTime).toHaveLength(1);
+      expect(stats.owedOverTime[0]?.cumulativeSats).toBe(100);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('lowers both balances after a repayment and leaves the outstanding fiat null', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      await messages.markRepaymentPaid({
+        messageId: 'loan',
+        dayIndex: 0,
+        recipientAccountId: 'acc',
+        dueSats: 40,
+        paidAt: new Date('2026-06-02T15:00:00.000Z'),
+      });
+      const rates = new InMemoryBtcUsdStore({
+        [DAY]: '100000',
+        '2026-06-02': '100000',
+      });
+      const payer = await activity({ messages, rates });
+      expect(payer.creditSats).toBe(60);
+      expect(payer.owedSats).toBe(0);
+      expect(payer.donatedSats).toBe(0);
+      expect(payer.receivedSats).toBe(0);
+      expect(payer.creditOverTime).toHaveLength(2);
+      expect(payer.creditOverTime[0]?.cumulativeSats).toBe(100);
+      expect(payer.creditOverTime[1]).toMatchObject({
+        day: '2026-06-02',
+        sats: -40,
+        cumulativeSats: 60,
+        btc: '-0.00000040',
+        cumulativeBtc: '0.00000060',
+        usd: null,
+        cumulativeUsd: null,
+      });
+      const author = await activity({
+        acc: account({ id: 'author', username: 'bob' }),
+        messages,
+        rates,
+      });
+      expect(author.owedSats).toBe(60);
+      expect(author.creditSats).toBe(0);
+      expect(author.owedOverTime[1]).toMatchObject({
+        sats: -40,
+        cumulativeSats: 60,
+        btc: '-0.00000040',
+        cumulativeBtc: '0.00000060',
+        usd: null,
+        cumulativeUsd: null,
+      });
+      expect(author.donatedSats).toBe(0);
+      expect(author.receivedSats).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores a grant receipt that arrives after the credit freeze', async () => {
+    vi.useFakeTimers();
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+        goalFundedAt: null,
+      });
+      vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+      await messages.recordZapReceipt('r1', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r1', { payerAccountId: 'acc' });
+      vi.setSystemTime(new Date('2026-06-02T12:00:00.000Z'));
+      await messages.recordZapReceipt('r2', 'loan', 50, null);
+      await messages.updateZapReceiptGift('r2', { payerAccountId: 'acc' });
+      const stats = await activity({
+        messages,
+        rates: new InMemoryBtcUsdStore({ [DAY]: '100000' }),
+      });
+      expect(stats.creditSats).toBe(100);
+      expect(stats.owedSats).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('ignores an anonymous grant receipt for payer and author', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-anon', 'loan', 100, null);
+      const author = await activity({ messages });
+      expect(author.owedSats).toBe(0);
+      expect(author.creditSats).toBe(0);
+      expect(author.owedOverTime).toEqual([]);
+      expect(author.creditOverTime).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('moves both owed and credit when payer and author are the same account', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'acc',
+        name: 'Ada',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-self', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-self', { payerAccountId: 'acc' });
+      const stats = await activity({ messages });
+      expect(stats.owedSats).toBe(100);
+      expect(stats.creditSats).toBe(100);
+      expect(stats.owedOverTime).toHaveLength(1);
+      expect(stats.creditOverTime).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges two same-timestamp grants into one credit day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 1000,
+      });
+      await messages.recordZapReceipt('r-grant-a', 'loan', 50, null);
+      await messages.updateZapReceiptGift('r-grant-a', { payerAccountId: 'acc' });
+      await messages.recordZapReceipt('r-grant-b', 'loan', 50, null);
+      await messages.updateZapReceiptGift('r-grant-b', { payerAccountId: 'acc' });
+      const stats = await activity({ messages });
+      expect(stats.donatedSats).toBe(0);
+      expect(stats.creditSats).toBe(100);
+      expect(stats.creditOverTime).toHaveLength(1);
+      expect(stats.creditOverTime[0]).toMatchObject({
+        day: DAY,
+        giftCount: 2,
+        sats: 100,
+        cumulativeSats: 100,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('nets a same-timestamp grant and repayment into one credit day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      await messages.markRepaymentPaid({
+        messageId: 'loan',
+        dayIndex: 0,
+        recipientAccountId: 'acc',
+        dueSats: 40,
+        paidAt: new Date('2026-06-01T12:00:00.000Z'),
+      });
+      const stats = await activity({ messages });
+      expect(stats.creditSats).toBe(60);
+      expect(stats.creditOverTime).toHaveLength(1);
+      expect(stats.creditOverTime[0]).toMatchObject({
+        day: DAY,
+        giftCount: 2,
+        sats: 60,
+        cumulativeSats: 60,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does not read the BTC-USD book for a loan day', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      const rates = new InMemoryBtcUsdStore({});
+      const ensureDays = vi.spyOn(rates, 'ensureDays');
+      const stats = await activity({ messages, rates });
+      expect(ensureDays).not.toHaveBeenCalled();
+      expect(stats.creditSats).toBe(100);
+      expect(stats.creditOverTime[0]).toMatchObject({ usd: null, cumulativeUsd: null });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('keeps a negative outstanding balance after an over-repayment', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-06-01T12:00:00.000Z'));
+    try {
+      const messages = new InMemoryMessageStore();
+      await messages.create({
+        id: 'loan',
+        accountId: 'author',
+        name: 'Bob',
+        text: 'loan',
+        createdAt: new Date('2026-06-01T12:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        goalRepayable: true,
+        goalSats: 100,
+      });
+      await messages.recordZapReceipt('r-grant', 'loan', 100, null);
+      await messages.updateZapReceiptGift('r-grant', { payerAccountId: 'acc' });
+      await messages.markRepaymentPaid({
+        messageId: 'loan',
+        dayIndex: 0,
+        recipientAccountId: 'acc',
+        dueSats: 160,
+        paidAt: new Date('2026-06-02T15:00:00.000Z'),
+      });
+      const rates = new InMemoryBtcUsdStore({
+        [DAY]: '100000',
+        '2026-06-02': '100000',
+      });
+      const fiatRates = new InMemoryFiatStore({
+        [DAY]: { CHF: '0.80', EUR: '0.90', PHP: '50' },
+        '2026-06-02': { CHF: '0.80', EUR: '0.90', PHP: '50' },
+      });
+      const payer = await activity({ messages, rates, fiatRates });
+      expect(payer.creditSats).toBe(-60);
+      expect(payer.donatedSats).toBe(0);
+      expect(payer.receivedSats).toBe(0);
+      expect(payer.creditOverTime).toHaveLength(2);
+      expect(payer.creditOverTime[1]).toMatchObject({
+        day: '2026-06-02',
+        sats: -160,
+        cumulativeSats: -60,
+        btc: '-0.00000160',
+        cumulativeBtc: '-0.00000060',
+        usd: null,
+        cumulativeUsd: null,
+        chf: null,
+        cumulativeChf: null,
+        eur: null,
+        cumulativeEur: null,
+        php: null,
+        cumulativePhp: null,
+      });
+      const author = await activity({
+        acc: account({ id: 'author', username: 'bob' }),
+        messages,
+        rates,
+        fiatRates,
+      });
+      expect(author.owedSats).toBe(-60);
+      expect(author.donatedSats).toBe(0);
+      expect(author.receivedSats).toBe(0);
+      expect(author.owedOverTime[1]).toMatchObject({
+        day: '2026-06-02',
+        sats: -160,
+        cumulativeSats: -60,
+        btc: '-0.00000160',
+        cumulativeBtc: '-0.00000060',
+        usd: null,
+        cumulativeUsd: null,
+        chf: null,
+        cumulativeChf: null,
+        eur: null,
+        cumulativeEur: null,
+        php: null,
+        cumulativePhp: null,
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
