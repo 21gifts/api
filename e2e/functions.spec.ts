@@ -113,17 +113,20 @@ test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNUR
 });
 
 test('welcome sweep switch turns on and off', async ({ request }) => {
-  const on = await request.put('/debug/welcome-sweep', {
-    headers: DEBUG,
-    data: { enabled: true },
-  });
-  expect(on.status()).toBe(200);
-  expect(await on.json()).toEqual({ enabled: true });
-  const off = await request.put('/debug/welcome-sweep', {
-    headers: DEBUG,
-    data: { enabled: false },
-  });
-  expect(await off.json()).toEqual({ enabled: false });
+  try {
+    const on = await request.put('/debug/welcome-sweep', {
+      headers: DEBUG,
+      data: { enabled: true },
+    });
+    expect(on.status()).toBe(200);
+    expect(await on.json()).toEqual({ enabled: true });
+  } finally {
+    const off = await request.put('/debug/welcome-sweep', {
+      headers: DEBUG,
+      data: { enabled: false },
+    });
+    expect(await off.json()).toEqual({ enabled: false });
+  }
   const bad = await request.put('/debug/welcome-sweep', {
     headers: DEBUG,
     data: { enabled: 'yes' },
