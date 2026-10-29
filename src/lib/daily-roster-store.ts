@@ -145,7 +145,8 @@ export interface DailyRosterStore {
 
   /**
    * Write the full document only when it has never been written. A second
-   * call returns the stored document unchanged, including an invalid body.
+   * call, including an invalid body, stores nothing and returns the stored
+   * document.
    * `defaultAmountUsd` in the body is ignored. A missing switch is `true`.
    * Body rows carry an `address`; a row is listed only once it is linked to
    * an account (see {@link linkDailyRosterAccounts}).
@@ -735,17 +736,22 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
   }
 
   /**
-   * First write of the full document, or a no-op when a settings row exists.
-   * The address rows are stored, then linked with {@link linkDailyRosterAccounts}.
+   * First write of the full document, or no write when a settings row exists.
+   * Every call then links the address rows with {@link linkDailyRosterAccounts},
+   * so a retry after a failed link still links them.
    *
    * @param body - Parsed JSON.
    * @returns The stored document.
    */
   async importDocument(body: unknown): Promise<DailyRosterDocument> {
-    const settings = await this.#settings();
-    if (settings !== undefined) {
-      return this.#load();
+    if ((await this.#settings()) === undefined) {
+      await this.#insertDocument(body);
     }
+    await linkDailyRosterAccounts(this.#sql, this.#host);
+    return this.#load();
+  }
+
+  async #insertDocument(body: unknown): Promise<void> {
     const parsed = parseImportBody(body);
     const addresses = [
       ...parsed.recipients.map((row) => row.address),
@@ -779,13 +785,10 @@ FROM unnest($4::text[], $5::float8[], $6::text[]) AS imported(addr, amt, bucket)
         ],
       );
     } catch (error) {
-      if (isUniqueViolation(error)) {
-        return this.#load();
+      if (!isUniqueViolation(error)) {
+        throw error;
       }
-      throw error;
     }
-    await linkDailyRosterAccounts(this.#sql, this.#host);
-    return this.#load();
   }
 
   async #add(

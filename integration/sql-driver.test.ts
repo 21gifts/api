@@ -682,6 +682,10 @@ describe('daily roster keyed by account', () => {
         moderators: [{ accountId: bea, amountUsd: 3 }],
       });
       expect(await store.importDocument({ comment: 'other' })).toEqual(first);
+      await client.execute('UPDATE daily_roster_entry SET account_id = NULL WHERE address = $1', [
+        legacyAda,
+      ]);
+      expect(await store.importDocument({ comment: 'retry' })).toEqual(first);
       await expect(store.addRecipient(ada, 4)).rejects.toMatchObject({
         status: 400,
         error: 'Address already listed',

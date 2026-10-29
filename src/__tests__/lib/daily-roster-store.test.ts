@@ -511,7 +511,7 @@ describe('PostgresDailyRosterStore', () => {
     expect(sql.queries[11]?.params).toEqual([MOD, 'moderator']);
   });
 
-  it('imports address rows, links them with its host, and no-ops when written', async () => {
+  it('imports address rows, links them with its host, and only links when written', async () => {
     const sql = new MockSql();
     const store = new PostgresDailyRosterStore(sql, 'Gifts.Example');
     sql.queryResults = [
@@ -523,6 +523,7 @@ describe('PostgresDailyRosterStore', () => {
         { account_id: null, address: 'mod@example.com', amount_usd: 3, bucket: 'moderator' },
       ],
       [{ comment: 'hi', payments_enabled: false, moderator_payments_enabled: true }],
+      [{ linked: 1, unlinked: 0 }],
       [{ comment: 'hi', payments_enabled: false, moderator_payments_enabled: true }],
       [],
     ];
@@ -557,6 +558,10 @@ describe('PostgresDailyRosterStore', () => {
     const second = await store.importDocument({ comment: 1 });
     expect(second.comment).toBe('hi');
     expect(sql.executes).toHaveLength(1);
+    expect(sql.queries[5]).toEqual({
+      text: DAILY_ROSTER_ACCOUNT_LINK_SQL,
+      params: ['gifts.example'],
+    });
   });
 
   it('imports empty lists and links with no host by default', async () => {
@@ -568,15 +573,15 @@ describe('PostgresDailyRosterStore', () => {
     expect(sql.queries[1]?.params).toEqual([null]);
   });
 
-  it('returns the stored document when a concurrent import hits unique', async () => {
+  it('links and returns the stored document when a concurrent import hits unique', async () => {
     const sql = new MockSql();
     const store = new PostgresDailyRosterStore(sql);
-    sql.queryResults = [[], [SETTINGS], []];
+    sql.queryResults = [[], [{ linked: 0, unlinked: 0 }], [SETTINGS], []];
     sql.execute = async () => {
       throw uniqueError();
     };
     expect(await store.importDocument({ comment: 'ignored' })).toEqual(EMPTY);
-    expect(sql.queries.some((q) => q.text === DAILY_ROSTER_ACCOUNT_LINK_SQL)).toBe(false);
+    expect(sql.queries[1]?.text).toBe(DAILY_ROSTER_ACCOUNT_LINK_SQL);
   });
 
   it('rethrows an import insert error that is not a unique violation', async () => {
