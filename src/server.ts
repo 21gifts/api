@@ -449,7 +449,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
+ *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`; `debugPaymentsRoutes` also
+ *   receives the conversation, trust, and gift stores for the window replay), vapidPublicKey, nostrKek,
  *   shopKek (optional; default nostrKek; new shop keys in `/messages`, `/me`,
  *   and `/debug/messages`),
  *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when

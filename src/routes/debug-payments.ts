@@ -1,5 +1,6 @@
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import { parseClientInstant } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { replayPayoutWindow } from '@/lib/cutover-replay';
@@ -63,26 +64,24 @@ const REPLAY_WINDOW_MAX_MS = 48 * 60 * 60 * 1000;
  *
  * @param body - Request body object.
  * @param nowMs - Clock.
- * @returns Window in epoch ms, or `null` when it is malformed, empty, longer
- *   than 48 hours, or starts after the clock.
+ * @returns Window in epoch ms, or `null` when an instant is refused by
+ *   `parseClientInstant`, the window is empty or longer than 48 hours, or
+ *   `dryRun` is not a boolean.
  */
 function parseReplayWindow(
   body: object,
   nowMs: number,
 ): { fromMs: number; toMs: number; dryRun: boolean } | null {
   const { from, to, dryRun } = body as { from?: unknown; to?: unknown; dryRun?: unknown };
-  if (typeof from !== 'string' || typeof to !== 'string') {
-    return null;
-  }
   if (dryRun !== undefined && typeof dryRun !== 'boolean') {
     return null;
   }
-  const fromMs = Date.parse(from);
-  const toMs = Date.parse(to);
-  if (!Number.isFinite(fromMs) || !Number.isFinite(toMs)) {
+  const fromMs = parseClientInstant(from, nowMs)?.getTime();
+  const toMs = parseClientInstant(to, nowMs)?.getTime();
+  if (fromMs === undefined || toMs === undefined) {
     return null;
   }
-  if (fromMs >= toMs || toMs - fromMs > REPLAY_WINDOW_MAX_MS || fromMs > nowMs) {
+  if (fromMs >= toMs || toMs - fromMs > REPLAY_WINDOW_MAX_MS) {
     return null;
   }
   return { fromMs, toMs, dryRun: dryRun === true };
@@ -153,14 +152,18 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
  *   compose (same `eligibleToday` gate as `POST /messages`) and used by
- *   `POST /spend-ping`. Does not take `postLimiter`; DEBUG_TOKEN settle is not
- *   the shared post burst limiter.
+ *   `POST /spend-ping`; optional `conversationStore`, `trustStore`, and
+ *   `giftStore` for the window replay (each omitted → an empty in-memory
+ *   store). Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared
+ *   post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
- *   successful settle resumed), zap-ingest list, and `POST /spend-ping` (replay
- *   one qualifying top-level post onto that post's UTC day; 202
- *   `{ messageId, status: 'accepted' }` or 200
- *   `{ messageId, status: 'skipped', reason }`; never returns the Lightning
- *   address).
+ *   successful settle resumed), zap-ingest list, and `POST /spend-ping`: with
+ *   `{ messageId }`, replay one qualifying top-level post onto that post's UTC
+ *   day (202 `{ messageId, status: 'accepted' }` or 200
+ *   `{ messageId, status: 'skipped', reason }`); with `{ from, to, dryRun? }`,
+ *   replay every payout trigger of that window through `replayPayoutWindow`
+ *   (200 `{ from, to, dryRun, events, totals }`). Never returns the Lightning
+ *   address.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
