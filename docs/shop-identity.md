@@ -1,7 +1,7 @@
 # Shop identity
 
 Status: **S1, S2, S3 and S5 implemented** in this repository. S4, the shop
-page, is in 21gifts/app#646 (open, not merged). The API route and response
+page, is in 21gifts/app (21gifts/app#646, merged 2026-10-21). The API route and response
 fields are documented in `SPEC.md`; the durable table is documented in
 `docs/schema/shop_identity.sql`.
 
@@ -1000,7 +1000,7 @@ paged start-up pass deploy together. The old `syncShopOcpPlace`, `removeShopOcpP
 1. S1 and S2: shop keys, backfill, profiles, NIP-05.
 2. S3: `GET /shops/:npub`, `shopNpub`.
 3. S5 ships in this same release with both outboxes, both senders and start-up.
-4. S4 is 21gifts/app#646 (open); it goes live before this API.
+4. S4 is 21gifts/app#646 (merged 2026-10-21); it went live before this API.
 5. Shop kind 0 uses `<site origin>/{npub}`.
 
 S1, S2, S3 and S5 are one pull request and one release in this repository.

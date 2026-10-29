@@ -83,7 +83,7 @@ api/
 │   │   ├── lnurl.ts          # POST /lnurl/pay-request; POST /lnurl/invoice (Bearer; outside LNURL relay)
 │   │   ├── contact.ts        # POST /contact (private mailbox + platform thread)
 │   │   ├── pos.ts            # GET/POST/DELETE /pos (one exact sat amount on the receiving wallet; paid status; `charge.shopPayment`)
-│   │   ├── shops.ts          # GET /shops/:npub (public listed-shop identity lookup)
+│   │   ├── shops.ts          # GET /shops (public shop directory, cursor paging); GET /shops/:npub (public shop identity lookup)
 │   │   ├── conversations.ts  # GET/POST /conversations, GET /conversations/moderator-group, GET/POST /conversations/:id, POST /conversations/:id/read, POST /conversations/:id/invoice, GET /conversations/:id/messages/:messageId/photo, GET /conversations/:id/messages/:messageId/photo/:file, POST /conversations/:id/messages/:messageId/translate
 │   │   └── notifications.ts  # GET /notifications, POST /notifications/read-by-message, POST /notifications/read-all, POST /notifications/:id/read
 │   ├── lib/
