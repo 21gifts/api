@@ -84,7 +84,6 @@ async function harness(
     legacy?: Map<string, string>;
   } = {},
 ): Promise<{
-  auth: InMemoryAuthStore;
   messages: InMemoryMessageStore;
   conversations: InMemoryConversationStore;
   trust: InMemoryTrustStore;
@@ -132,7 +131,6 @@ async function harness(
     now: () => NOW,
   };
   return {
-    auth,
     messages,
     conversations,
     trust,
@@ -192,6 +190,7 @@ describe('replayPayoutWindow', () => {
     await h.member(ADA, 'ada', 'moderator');
     await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
     await h.post(id(2), ADA, '2026-10-29T23:45:00.000Z');
+    await h.post(id(3), ADA, '2026-10-30T00:30:00.000Z');
 
     const first = await h.run();
     const daily = first.events.filter((e) => e.payout === 'daily');
@@ -213,20 +212,13 @@ describe('replayPayoutWindow', () => {
         reason: 'already_paid',
         detail: 'this_run',
       }),
+      expect.objectContaining({ eventId: id(3), day: NEXT_DAY, status: 'paid' }),
     ]);
-    expect(h.spend.pingOnDay).toHaveBeenCalledTimes(1);
-    expect(h.spend.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.test',
-      id(1),
-      DAY,
-      'admitted',
-      'daily',
+    expect(h.spend.pingOnDay.mock.calls).toEqual([
+      ['ada@example.test', id(1), DAY, 'admitted', 'daily'],
+      ['ada@example.test', id(3), NEXT_DAY, 'admitted', 'daily'],
     ]);
     expect(JSON.stringify(first)).not.toContain('@example.test');
-
-    // The stand-in keeps spend's record per day: the live ping for the member's own post on the
-    // new day (not the replay) still books that day next to the replayed one.
-    await h.spend.ping('ada@example.test', id(3), 'daily');
     expect(h.spend.booked).toEqual([
       { kind: 'daily', address: 'ada@example.test', day: DAY, messageId: id(1) },
       { kind: 'daily', address: 'ada@example.test', day: NEXT_DAY, messageId: id(3) },
@@ -242,7 +234,11 @@ describe('replayPayoutWindow', () => {
       reason: 'already_paid',
       detail: 'this_run',
     });
-    expect(second.totals).toMatchObject({ paid: 0, skipped: 2 });
+    expect(second.events.find((e) => e.eventId === id(3))).toMatchObject({
+      reason: 'already_paid',
+      detail: 'spend',
+    });
+    expect(second.totals).toMatchObject({ paid: 0, skipped: 3 });
     expect(h.spend.booked).toHaveLength(2);
   });
 
@@ -529,7 +525,14 @@ describe('replayPayoutWindow', () => {
 
   it('reports spend skips, failures, missing accounts, basis members, and profile notes', async () => {
     const h = await harness({
-      grants: [admitted(ADA), admitted(BOB), admitted(id(7)), admitted(id(6))],
+      grants: [
+        admitted(ADA),
+        admitted(BOB),
+        // A basis member is never eligible, so its trial of an earlier day is `grant`, not
+        // `trial_day_passed`, which would invite a payout by hand.
+        { ...admitted(id(7)), status: 'trial', trialUtcDate: '2026-10-28', admittedAt: null },
+        admitted(id(6)),
+      ],
     });
     await h.member(ADA, 'ada', 'moderator');
     await h.member(BOB, 'bob', 'moderator');

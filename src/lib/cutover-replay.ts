@@ -272,7 +272,8 @@ function notEligibleDetail(
  *
  * Each event is paid only when the account has a verified wallet now, is
  * eligible now (a `trial` grant of an earlier UTC day is reported as
- * `not_eligible` / `trial_day_passed`), and has no payout of that kind on the
+ * `not_eligible` / `trial_day_passed`, except for a `basis` account, which is
+ * never eligible and is reported as `grant`), and has no payout of that kind on the
  * event's UTC day: neither in the gift ledger under its username or its legacy
  * external address, nor earlier in this run. Daily and moderator payouts go
  * through `SpendPing.pingOnDay` on the event's UTC day; spend's own record per
