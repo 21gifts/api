@@ -185,7 +185,7 @@ function account(
 }
 
 describe('replayPayoutWindow', () => {
-  it('pays a post before 00:00 once on its own day and leaves the new day open', async () => {
+  it('pays a post before 00:00 once on its own day and still pays a post after 00:00 on the new day', async () => {
     const h = await harness({ grants: [admitted(ADA)] });
     await h.member(ADA, 'ada', 'moderator');
     await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
