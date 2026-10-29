@@ -1494,13 +1494,13 @@
 
 ## Function: repaymentStartMs
 
-- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-01. A credit that filled on or before 2026-10-31 starts on 2026-11-01. A credit that filled later starts the next UTC day. Every due date and due-day count uses this start.
+- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-10. A credit that filled on or before 2026-11-09 starts on 2026-11-10. A credit that filled later starts the next UTC day. Every due date and due-day count uses this start.
 - **Inputs:** Epoch milliseconds when the credit filled.
 - **Returns / side effects:** That midnight in epoch milliseconds. No I/O.
 
 ## Function: dueDayCount
 
-- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-01.
+- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-10.
 - **Inputs:** Funded time, now, term days.
 - **Returns / side effects:** A count from 0 through the term. No I/O.
 
@@ -1525,7 +1525,7 @@
 
 ## Function: repaymentDueDate
 
-- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-01.
+- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-10.
 - **Inputs:** Funded time in epoch milliseconds, and the zero-based day.
 - **Returns / side effects:** `YYYY-MM-DD`. No I/O.
 
