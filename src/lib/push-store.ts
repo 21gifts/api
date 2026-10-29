@@ -189,11 +189,11 @@ export interface PushOutboxCounts {
   queued: number;
   /** Rows the worker has not finished yet (first try or retry). */
   pending: number;
-  /** Sent rows that reached at least one subscription. */
+  /** Finished rows that reached at least one subscription (also when another one failed for good). */
   delivered: number;
   /** Sent rows that reached no subscription (removed or gone before the send). */
   dropped: number;
-  /** Rows that failed for good after the retry limit. */
+  /** Rows that failed for good after the retry limit without reaching any subscription. */
   failed: number;
 }
 
@@ -585,10 +585,10 @@ export class InMemoryPushStore implements PushStore {
       counts.queued += 1;
       if (row.status === 'pending') {
         counts.pending += 1;
-      } else if (row.status === 'failed') {
-        counts.failed += 1;
       } else if (row.deliveredEndpoints.length > 0) {
         counts.delivered += 1;
+      } else if (row.status === 'failed') {
+        counts.failed += 1;
       } else {
         counts.dropped += 1;
       }
@@ -926,8 +926,9 @@ export class PostgresPushStore implements PushStore {
   }
 
   /**
-   * Count outbox rows of one `messageId` by status; a sent row counts as
-   * delivered when its `delivered_endpoints` list is not empty.
+   * Count outbox rows of one `messageId` by status; a finished (sent or
+   * failed) row counts as delivered when its `delivered_endpoints` list is
+   * not empty.
    *
    * @param messageId - Outbox `messageId` (UUID).
    * @returns Row counts.
@@ -945,10 +946,12 @@ export class PostgresPushStore implements PushStore {
       counts.queued += row.n;
       if (row.status === 'pending') {
         counts.pending += row.n;
-      } else if (row.status === 'failed') {
-        counts.failed += row.n;
+        continue;
+      }
+      counts.delivered += row.reached;
+      if (row.status === 'failed') {
+        counts.failed += row.n - row.reached;
       } else {
-        counts.delivered += row.reached;
         counts.dropped += row.n - row.reached;
       }
     }

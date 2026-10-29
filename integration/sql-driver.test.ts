@@ -2304,21 +2304,29 @@ describe('PostgresPushStore countOutboxByMessageId', () => {
         deliveredEndpoints: [],
         skipEndpoints: [],
       });
-      const rows = [row(broadcastId), row(broadcastId), row(broadcastId), row(broadcastId)];
+      const rows = [
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+      ];
       for (const item of [...rows, row(crypto.randomUUID())]) {
         await store.enqueue(item);
       }
-      const [delivered, dropped, failed] = rows;
+      const [delivered, dropped, failed, partial] = rows;
       await store.recordDelivered(delivered?.id ?? '', ['https://push.example/a']);
       await store.markSent(delivered?.id ?? '', Date.now());
       await store.markSent(dropped?.id ?? '', Date.now());
+      await store.recordDelivered(partial?.id ?? '', ['https://push.example/b']);
       for (let i = 0; i < 8; i += 1) {
         await store.markFailed(failed?.id ?? '', Date.now());
+        await store.markFailed(partial?.id ?? '', Date.now());
       }
       expect(await store.countOutboxByMessageId(broadcastId)).toEqual({
-        queued: 4,
+        queued: 5,
         pending: 1,
-        delivered: 1,
+        delivered: 2,
         dropped: 1,
         failed: 1,
       });

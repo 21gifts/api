@@ -255,6 +255,25 @@ describe('POST /debug/push-broadcast', () => {
     expect(await pushStore.listAllOutbox(10)).toEqual([]);
   });
 
+  it('counts the length limits in characters, not UTF-16 units', async () => {
+    const { authStore, pushStore } = await seeded();
+    const app = mount({ authStore, pushStore });
+    const ok = await post(app, {
+      title: '🎁'.repeat(64),
+      body: '⚡️🎁'.repeat(80),
+      link: `/${'é'.repeat(199)}`,
+      dryRun: true,
+    });
+    expect(ok.status).toBe(200);
+    for (const body of [
+      { title: '🎁'.repeat(65), body: 'Hello' },
+      { title: 'Hi', body: '🎁'.repeat(241) },
+      { title: 'Hi', body: 'Hello', link: `/${'é'.repeat(200)}` },
+    ]) {
+      expect((await post(app, { ...body, dryRun: true })).status).toBe(400);
+    }
+  });
+
   it('accepts the length limits exactly', async () => {
     const { authStore, pushStore } = await seeded();
     const res = await post(mount({ authStore, pushStore }), {

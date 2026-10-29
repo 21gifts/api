@@ -5703,9 +5703,11 @@ or that no row carries (also a broadcast that queued nothing) → **404**
 ```
 
 `pending` rows are not finished yet (first try or retry). `delivered` rows
-reached at least one subscription. `dropped` rows were sent to none because
-the subscription was removed or gone before the send. `failed` rows gave up
-after the retry limit (8 attempts).
+are finished and reached at least one subscription, also when another
+subscription of that account failed for good. `dropped` rows were sent to
+none because the subscription was removed or gone before the send. `failed`
+rows gave up after the retry limit (8 attempts) without reaching any
+subscription. Lengths count characters (code points).
 
 ### `POST /debug/passkey-renew/reopen`
 

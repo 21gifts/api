@@ -16,13 +16,13 @@ import { enqueueBroadcastPush } from '@/lib/push-worker';
 import { normalizeUsername } from '@/lib/username';
 import { normalizeUuid } from '@/lib/uuid';
 
-/** Maximum broadcast title length after trim. */
+/** Maximum broadcast title length in characters after trim. */
 const TITLE_MAX_LENGTH = 64;
 
-/** Maximum broadcast body length after trim. */
+/** Maximum broadcast body length in characters after trim. */
 const BODY_MAX_LENGTH = 240;
 
-/** Maximum `link` length. */
+/** Maximum `link` length in characters. */
 const LINK_MAX_LENGTH = 200;
 
 /** Maximum entries in `usernames`. */
@@ -73,6 +73,11 @@ function hasControl(text: string, allowNewline: boolean): boolean {
   return false;
 }
 
+/** Length in characters (code points), as the push payload builders count it. */
+function charCount(text: string): number {
+  return Array.from(text).length;
+}
+
 /** One leading `/`, not `//`, no backslash, whitespace, or control character. */
 function isSameSitePath(link: string): boolean {
   return /^\/(?!\/)[^\\\s]*$/.test(link) && !hasControl(link, false);
@@ -84,15 +89,16 @@ const broadcastBody = z
       .string()
       .trim()
       .min(1)
-      .max(TITLE_MAX_LENGTH)
-      .refine((value) => !hasControl(value, false)),
+      .refine((value) => charCount(value) <= TITLE_MAX_LENGTH && !hasControl(value, false)),
     body: z
       .string()
       .trim()
       .min(1)
-      .max(BODY_MAX_LENGTH)
-      .refine((value) => !hasControl(value, true)),
-    link: z.string().max(LINK_MAX_LENGTH).refine(isSameSitePath).optional(),
+      .refine((value) => charCount(value) <= BODY_MAX_LENGTH && !hasControl(value, true)),
+    link: z
+      .string()
+      .refine((value) => charCount(value) <= LINK_MAX_LENGTH && isSameSitePath(value))
+      .optional(),
     usernames: z.array(z.string()).min(1).max(USERNAMES_MAX).optional(),
     dryRun: z.boolean().optional(),
   })

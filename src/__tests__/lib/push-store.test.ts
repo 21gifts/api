@@ -782,11 +782,23 @@ describe('countOutboxByMessageId', () => {
     );
     await store.enqueue(pending({ id: '3', accountId: 'a', messageId: 'b', status: 'sent' }));
     await store.enqueue(pending({ id: '4', accountId: 'a', messageId: 'b', status: 'failed' }));
+    await store.enqueue(
+      pending({
+        id: '6',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'failed',
+        deliveredEndpoints: ['y'],
+      }),
+    );
+    await store.enqueue(
+      pending({ id: '7', accountId: 'a', messageId: 'b', deliveredEndpoints: ['z'] }),
+    );
     await store.enqueue(pending({ id: '5', accountId: 'a', messageId: 'other' }));
     expect(await store.countOutboxByMessageId('b')).toEqual({
-      queued: 4,
-      pending: 1,
-      delivered: 1,
+      queued: 6,
+      pending: 2,
+      delivered: 2,
       dropped: 1,
       failed: 1,
     });
@@ -798,14 +810,14 @@ describe('countOutboxByMessageId', () => {
     sql.nextRows = [
       { status: 'pending', n: 2, reached: 0 },
       { status: 'sent', n: 5, reached: 3 },
-      { status: 'failed', n: 1, reached: 1 },
+      { status: 'failed', n: 3, reached: 1 },
     ];
     expect(await store.countOutboxByMessageId('b')).toEqual({
-      queued: 8,
+      queued: 10,
       pending: 2,
-      delivered: 3,
+      delivered: 4,
       dropped: 2,
-      failed: 1,
+      failed: 2,
     });
     expect(sql.queries.at(-1)?.text).toMatch(/WHERE message_id = \$1/);
     expect(sql.queries.at(-1)?.params).toEqual(['b']);
