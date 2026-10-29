@@ -459,12 +459,14 @@ describe('openBootStores', () => {
 
   it('logs gifts.fx.boot_fill.failed and still returns stores when fill throws', async () => {
     const diagnosticInserts: unknown[] = [];
+    const legacyQueries: string[] = [];
     const client: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {
         if (text.includes('min(paid_at)')) {
           throw new Error('range query failed');
         }
         if (text.includes('split_part(btrim(a.lightning_address)')) {
+          legacyQueries.push(text.replace(/\s+/g, ' '));
           return [{ id: 'acc-legacy' }] as T[];
         }
         if (text.includes('lightning_invoice')) {
@@ -571,6 +573,17 @@ describe('openBootStores', () => {
     expect(typeof listDbChange).toBe('function');
     expect(await listDbChange?.(10)).toEqual([]);
     expect(await giftStore?.listLegacyWelcomeAccountIds?.()).toEqual(['acc-legacy']);
+    expect(legacyQueries).toHaveLength(1);
+    for (const clause of [
+      'SELECT DISTINCT a.id::text AS id FROM account a JOIN gift g',
+      "g.direction = 'outbound'",
+      "g.kind = 'welcome'",
+      "lower(btrim(g.recipient_wos_user)) = lower(split_part(btrim(a.lightning_address), '@', 1))",
+      'a.lightning_address IS NOT NULL',
+      "split_part(btrim(a.lightning_address), '@', 1) <> ''",
+    ]) {
+      expect(legacyQueries[0]).toContain(clause);
+    }
     expect(await giftStore?.listDebug?.(10)).toEqual([
       expect.objectContaining({
         id: 1,

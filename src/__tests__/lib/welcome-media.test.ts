@@ -699,16 +699,29 @@ describe('syncWelcomePing', () => {
     await verifyWallet(auth, 'acc', '4');
     const listAccounts = vi.spyOn(auth, 'listAccounts');
     const messages = await photoStore();
-    await syncWelcomePing({ lnurlServer: LNURL_SERVER, spendPing: { ping }, messages, auth });
+    const media = vi.spyOn(messages, 'latestLiveTopLevelMediaId');
+    const gifts = new InMemoryGiftStore();
+    const listOutbound = vi.spyOn(gifts, 'listOutbound');
+    const listLegacy = vi.spyOn(gifts, 'listLegacyWelcomeAccountIds');
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
       spendPing: { ping },
       messages,
       auth,
+      gifts,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
       sweep: { enabled: false },
     });
     expect(ping).not.toHaveBeenCalled();
-    expect(listAccounts).not.toHaveBeenCalled();
+    for (const read of [listAccounts, media, listOutbound, listLegacy]) {
+      expect(read).not.toHaveBeenCalled();
+    }
     expect(
       parsedEvents(warn).filter(
         (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'sweep_off',
@@ -719,9 +732,11 @@ describe('syncWelcomePing', () => {
       spendPing: { ping },
       messages,
       auth,
+      gifts,
       sweep: { enabled: true },
     });
     expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
+    expect(listLegacy).toHaveBeenCalledTimes(1);
   });
 
   it('does not ping an account welcomed at its legacy external address', async () => {
