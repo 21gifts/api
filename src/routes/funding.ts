@@ -564,6 +564,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * `GET /funding/payout-days`, `GET /funding/daily-roster`,
+ * `GET /funding/daily-roster/links`,
  * `POST /funding/daily-roster/comment`, `POST /funding/daily-roster/payments`,
  * `POST /funding/daily-roster/recipients`,
  * `POST /funding/daily-roster/recipients/update`,

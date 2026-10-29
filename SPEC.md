@@ -49,7 +49,8 @@ verified wallet a member cannot receive and cannot post (`missing` contains
 `lightning-address` until the wallet is verified). The `lightning_address`
 column and its data are kept but are not read or written by the api (new rows
 take `lightning_address_verified` from its `DEFAULT false`); only the legacy
-boot repair of unclassified `gift.kind` rows still matches by it. Public
+boot repair of unclassified `gift.kind` rows and the daily roster account link
+(`linkDailyRosterAccounts`) still match by it. Public
 `GET /lightning-address` resolves LUD-16 metadata with an in-memory cache; it
 does not fetch or pay invoices.
 
