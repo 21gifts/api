@@ -256,7 +256,8 @@ export interface BootFxOptions {
   /** Per-relay timeout for the external-zapper backfill. */
   nostrRelayTimeoutMs?: number;
   /**
-   * LNURL server config for the roster wallet move, or `null` when off
+   * LNURL server config whose host `linkDailyRosterAccounts` matches, or
+   * `null` to match the legacy `lightning_address` only
    * (default: `resolveLnurlServerConfig(process.env)`).
    */
   lnurlServer?: LnurlServerConfig | null;

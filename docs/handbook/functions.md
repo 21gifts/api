@@ -682,7 +682,7 @@
 - **Purpose:** Whether an `Authorization` header carries the operator write or read token, so a staff GET route can serve the same body without a session. True only when `classifyDebugDbBearer` returns `'write'` or `'read'`. Both tokens unset, a missing header, or a bearer that matches neither is false, and the route falls through to its normal session and role check.
 - **Inputs:** Write token and read token (each `string | undefined`) and the raw `Authorization` header or `undefined`.
 - **Returns / side effects:** `boolean`. No I/O.
-- **Used by:** `grantContinuationRoutes` (`GET /funding/goal`), `fundingRoutes` (`GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/payout-days`, `GET /funding/daily-roster`), `trustRoutes` (`GET /trust/proposals`), `membersRoutes` (`GET /members/:accountId/activity`), and `messagesRoutes` (`GET /messages/hidden`, `GET /messages/:id/edits`).
+- **Used by:** `grantContinuationRoutes` (`GET /funding/goal`), `fundingRoutes` (`GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/payout-days`, `GET /funding/daily-roster`, and `GET /funding/daily-roster/links`, which has no session fallback and answers 401 without an operator token), `trustRoutes` (`GET /trust/proposals`), `membersRoutes` (`GET /members/:accountId/activity`), and `messagesRoutes` (`GET /messages/hidden`, `GET /messages/:id/edits`).
 
 ## Function: compareAccountsForList
 
