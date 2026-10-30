@@ -709,7 +709,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       webhookRoutes({
         secret: webhookSecret,
         auth: store,
-        messages: messageStore,
         pushStore,
         notifications: notificationStore,
         inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),

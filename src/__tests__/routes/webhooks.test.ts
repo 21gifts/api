@@ -19,7 +19,6 @@ function mount(push: InMemoryPushStore, unreadCount = async (): Promise<number> 
         getAccountByPubkey: async () => undefined,
         getNostrPublicKey: async () => undefined,
       },
-      messages: { getByEventId: async () => undefined },
       pushStore: push,
       notifications: { unreadCount },
       inboxUnreadCount: async () => 0,

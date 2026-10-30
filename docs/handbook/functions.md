@@ -1003,8 +1003,8 @@
 ## Function: notifyPaymentReceived
 
 - **Purpose:** Enqueue one Web Push to the receiver of a payment, at most once per payment hash.
-- **Inputs:** `PaymentReceivedDeps` (`auth`, `messages`, `pushStore`, `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
-- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and no `amount` tag other than the received amount in millisats; otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`; one whose `e` tag (normalized to lowercase hex) is a visible forum note of the receiver, other than the platform fee note, returns `zap`, because the zap index notifies that zap; a hidden note, another author's note, or the fee note still gets this push. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription returns `no_device`.
+- **Inputs:** `PaymentReceivedDeps` (`auth` with `getAccountByVerifiedSparkPubkey`, `getAccountByPubkey`, `getNostrPublicKey`; `pushStore`, `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
+- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and at least one `amount` tag, every one equal to the received amount in millisats (an unbound request could be replayed from a public receipt); otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`. A zap on a forum note is pushed too: `notifyZap` / `notifyHeart` send a separate notification about the note under their own rules (fan-out level, `notifyHearts`, platform payer), so this wallet push does not depend on them. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription returns `no_device`.
 - **Returns / side effects:** `queued` after `PushStore.enqueuePaymentReceived` wrote the claim and the outbox row (`unreadCount` is in-app plus listed inbox unread), `duplicate` when the hash was already claimed, or the skip reason above. Throws when a store call rejects.
 - **Used by:** `webhookRoutes`.
 
@@ -1453,7 +1453,7 @@
 - **Purpose:** Accept a 32-byte hex string (any case, trimmed).
 - **Inputs:** Raw hex string.
 - **Returns / side effects:** Lowercase 64-char hex or `null`.
-- **Used by:** `preimageMatchesHash`.
+- **Used by:** `preimageMatchesHash`; `parsePaymentReceived` (the webhook payment hash).
 
 ## Function: preimageMatchesHash
 
@@ -1498,7 +1498,7 @@
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions` and `/accounts`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot. Builds one `LoginGate` from `loginGateStore` (default `InMemoryLoginGateStore`) and `resolveLoginsOpenDefault(env)`, passes it with `resolveRequiredAppBuild(env)` to `authRoutes`, and mounts `debugLoginsRoutes` at `/debug`. An unknown `LOGINS_OPEN_DEFAULT` throws before routes mount.
 - **Social recovery:** When both the auth store and the push store are the in-memory adapters (the `createApp` defaults or injected `InMemoryAuthStore` and `InMemoryPushStore`), `createApp` links them with `store.usePushStore(pushStore)`, so a recovery commit also deletes the account's push subscriptions. Optional `recoveryShareKek` (`RECOVERY_SHARE_KEK`, from `openBootStores`) is the key of the recovery share; memory boots omit it. `meRoutes` receives it with `fetchImpl` (the anonymous explorer balance of previous wallets); without it `PUT /me/recovery-share` answers 503. `authRoutes` receives `fetchImpl` and, when it resolves, `lnurlServer`, for the recovery begin's lookup; `lnurlServerRoutes` carries the address transfer and the recover pass-through of a pending recovery's new key.
 - **Used by:** Boot path and every HTTP test.
-- **Payment webhook:** When `resolvePaymentWebhookSecret(env)` returns a secret (`LNURL_WEBHOOK_SECRET`), `webhookRoutes` is mounted at `/webhooks` with the auth, message, push, and notification stores, `inboxUnreadCountFor(conversationStore, store)`, and the same `now`; otherwise `POST /webhooks/lnurl` answers 404.
+- **Payment webhook:** When `resolvePaymentWebhookSecret(env)` returns a secret (`LNURL_WEBHOOK_SECRET`), `webhookRoutes` is mounted at `/webhooks` with the auth, push, and notification stores, `inboxUnreadCountFor(conversationStore, store)`, and the same `now`; otherwise `POST /webhooks/lnurl` answers 404.
 - **Daily roster:** Optional `rosterStore` defaults to a fresh `InMemoryDailyRosterStore`. The same instance is passed to `fundingRoutes`, `spendInstructionRoutes`, and the default `resolveSpendPing` (with the auth store as `accounts` and the LNURL server config). `HttpDailyRoster` is not built. `SPEND_URL` is the ping POST base. Until the roster store has been written, it is also the base of `GET /daily-roster`.
 - **Shops:** Optional `shopIdentityStore` (default `InMemoryShopIdentityStore` over the same `messageStore` and `now`) is passed to `/messages`, `/me`, `/debug/messages`, `/debug/dump`, `/debug/shop-keys`, `/debug/shop-notes`, `/.well-known` (NIP-05 shop locals) and `shopRoutes` at `/shops`, mounted after `/shops/activity`. Optional `shopKek` (default `nostrKek`) is the KEK for new shop keys in `/messages`, `/me`, `/debug/messages` and `/debug/shop-notes`; `/debug/shop-keys` encrypts an existing secret with the same KEK and does not mint a key. A memory boot passes a random process-ephemeral key, so public shops get an npub without Postgres. The app does not send to OpenCryptoPay; `src/index.ts` starts the outbox senders.
 - **Welcome sweep:** Optional `welcomeSweep` (`WelcomeSweepSwitch`, `{ enabled }`) defaults to a fresh switch that is off. `createApp` passes it, with `giftStore`, to `debugPaymentsRoutes`, whose `GET /debug/welcome-sweep` reads it and whose `PUT /debug/welcome-sweep` sets it. Boot (`src/index.ts`) creates one switch, off, and passes the same object to `createApp` and to the 15-minute `syncWelcomePing` sweep, so the operator route sets the switch the sweep reads.
@@ -1559,7 +1559,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`); `webhookRoutes` (`payment_received.failed` when a store call fails).
 
 ## Function: meRoutes
 
@@ -2120,7 +2120,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `none` is always false. `all` is always true. `active` is `isActive`. `mentions` is only `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`. A staff or platform actor does not satisfy mentions.
 - **Inputs:** `{ level: NotificationLevel; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.
+- **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set; `notifyPaymentReceived` (the receiver's own level; only `none` refuses).
 
 ## Function: notificationsMatchingLevel
 
@@ -2141,7 +2141,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account). GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
-- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`); `createApp` for `webhookRoutes` (badge count of the payment push).
 
 ## Function: notifyConversationMessage
 
@@ -4374,10 +4374,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: readCappedText
 
-- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), and `POST /webhooks/lnurl` (64 KiB).
+- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts`, and `POST /webhooks/lnurl` (64 KiB).
 - **Inputs:** The incoming `Request` and the largest accepted body in bytes.
-- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
-- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `memberEventRoutes`, `webhookRoutes`.
+- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
+- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `memberEventRoutes`, `webhookRoutes`.
 
 ## Function: isSecretFieldName
 

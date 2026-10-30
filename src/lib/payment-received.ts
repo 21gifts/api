@@ -5,13 +5,14 @@
  * settled invoice, signed with HMAC-SHA256 of the raw body in
  * `X-Breez-Signature`. Every field used here comes from that signed body; a
  * sender is named only from a signed NIP-57 zap request that names the
- * receiver. One push per payment hash (`PushStore.enqueuePaymentReceived`).
+ * receiver and this amount. One push per payment hash
+ * (`PushStore.enqueuePaymentReceived`), also for a zap on a forum note, whose
+ * zap notification is a separate notification about the note.
  */
 
 import { createHmac, timingSafeEqual } from 'node:crypto';
 import { verifyEvent } from 'nostr-tools/pure';
 import type { AuthStore } from '@/lib/auth/store';
-import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel, wantsNotification } from '@/lib/notification';
 import type { NotificationStore } from '@/lib/notification-store';
 import { normalizeHex32 } from '@/lib/proof';
@@ -37,8 +38,6 @@ export interface PaymentReceivedDeps {
     AuthStore,
     'getAccountByVerifiedSparkPubkey' | 'getAccountByPubkey' | 'getNostrPublicKey'
   >;
-  /** Forum notes, to leave zaps on a note to the zap notification. */
-  messages: Pick<MessageStore, 'getByEventId'>;
   /** Subscriptions and outbox. */
   pushStore: PushStore;
   /** In-app unread for the badge. */
@@ -51,7 +50,7 @@ export interface PaymentReceivedDeps {
 
 /** What {@link notifyPaymentReceived} did with one payment. */
 export type PaymentReceivedOutcome =
-  'queued' | 'duplicate' | 'unknown' | 'self' | 'zap' | 'off' | 'no_device';
+  'queued' | 'duplicate' | 'unknown' | 'self' | 'off' | 'no_device';
 
 /**
  * Read the webhook secret shared with the LNURL server.
@@ -136,12 +135,8 @@ export function parsePaymentReceived(body: string): PaymentReceived | null {
   };
 }
 
-/** Signer and note targets of a zap request that is signed and names the receiver. */
-function verifiedZapRequest(
-  raw: string,
-  receiverPubkey: string,
-  amountSats: number,
-): { pubkey: string; noteEventIds: string[] } | null {
+/** Signer of a zap request that is signed and names the receiver and this amount. */
+function zapRequestSigner(raw: string, receiverPubkey: string, amountSats: number): string | null {
   let event: unknown;
   try {
     event = JSON.parse(raw);
@@ -164,17 +159,11 @@ function verifiedZapRequest(
   if (!tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === receiverPubkey)) {
     return null;
   }
-  const amount = tags.find((tag) => tag[0] === 'amount')?.[1];
-  if (amount !== undefined && amount !== String(amountSats * 1000)) {
+  const amounts = tags.filter((tag) => tag[0] === 'amount').map((tag) => tag[1]);
+  if (amounts.length === 0 || amounts.some((amount) => amount !== String(amountSats * 1000))) {
     return null;
   }
-  return {
-    pubkey: shape.pubkey.toLowerCase(),
-    noteEventIds: tags
-      .filter((tag) => tag[0] === 'e')
-      .map((tag) => normalizeHex32(tag[1] as string))
-      .filter((id): id is string => id !== null),
-  };
+  return shape.pubkey.toLowerCase();
 }
 
 /**
@@ -182,13 +171,13 @@ function verifiedZapRequest(
  *
  * The receiver is the account whose verified wallet is `userPubkey`. A zap
  * request counts only when it is signed, names the receiver's Nostr pubkey in
- * a `p` tag, and any `amount` tag equals the received amount. Nothing is
- * enqueued when the zap request comes from the receiver, when it targets a
- * visible forum note of the receiver other than the platform fee note (the
- * zap index notifies that zap with `notifyZap` or `notifyHeart`), when the
- * receiver's notification level is `none`, or when
- * the receiver has no push subscription. The push names a sender only when
- * the zap request's signer is a 21.gifts account with a name.
+ * a `p` tag, and has at least one `amount` tag, every one equal to the
+ * received amount in millisats. Nothing is enqueued when a counted zap
+ * request comes from the receiver, when the receiver's notification level is
+ * `none`, or when the receiver has no push subscription. A zap on a forum
+ * note is pushed too: the zap notification is about the note and follows its
+ * own rules. The push names a sender only when the counted zap request's
+ * signer is a 21.gifts account with a name.
  *
  * @param deps - Stores and clock.
  * @param payment - Parsed signed webhook payment.
@@ -205,26 +194,14 @@ export async function notifyPaymentReceived(
   }
   let senderName: string | null = null;
   const receiverPubkey = (await deps.auth.getNostrPublicKey(account.id))?.toLowerCase();
-  const zap =
+  const signer =
     payment.zapRequest === null || receiverPubkey === undefined
       ? null
-      : verifiedZapRequest(payment.zapRequest, receiverPubkey, payment.amountSats);
-  if (zap !== null) {
-    const sender = await deps.auth.getAccountByPubkey(zap.pubkey);
+      : zapRequestSigner(payment.zapRequest, receiverPubkey, payment.amountSats);
+  if (signer !== null) {
+    const sender = await deps.auth.getAccountByPubkey(signer);
     if (sender?.id === account.id) {
       return 'self';
-    }
-    for (const eventId of zap.noteEventIds) {
-      const note = await deps.messages.getByEventId(eventId);
-      // The zap index notifies the author of a visible note that is not the platform fee note.
-      if (
-        note !== undefined &&
-        note.accountId === account.id &&
-        note.deletedAt === null &&
-        !(account.isPlatform === true && account.profileMessageId === note.id)
-      ) {
-        return 'zap';
-      }
     }
     const name = sender?.name?.trim() ?? '';
     senderName = name === '' ? null : name;
