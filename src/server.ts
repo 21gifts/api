@@ -306,6 +306,12 @@ export interface AppDeps {
    */
   shopKek?: Uint8Array;
   /**
+   * Optional AES-256 KEK (`RECOVERY_SHARE_KEK`) that encrypts the 21.gifts
+   * recovery share. Memory boots omit it, and `PUT /me/recovery-share` then
+   * answers 503.
+   */
+  recoveryShareKek?: Uint8Array;
+  /**
    * Optional Nostr EVENT publisher. When set with `nostrKek`, staff hide
    * publishes NIP-09 kind:5. Memory/unit boots may omit.
    */
@@ -587,6 +593,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
+  // A social recovery commit deletes the account's push subscriptions in the same step.
+  if (store instanceof InMemoryAuthStore && pushStore instanceof InMemoryPushStore) {
+    store.usePushStore(pushStore);
+  }
   const trustStore = deps.trustStore ?? new InMemoryTrustStore();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const bannerStore = deps.bannerStore ?? new InMemoryBannerStore();
@@ -752,6 +762,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       loginGate,
       requiredAppBuild,
+      fetchImpl,
       ...receivingDeps,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
@@ -772,12 +783,14 @@ export function createApp(deps: AppDeps = {}): Hono {
       fiatRates,
       fundingStore,
       dailyRoster: rosterStore,
+      fetchImpl,
       ...receivingDeps,
       shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
+      ...(deps.recoveryShareKek === undefined ? {} : { recoveryShareKek: deps.recoveryShareKek }),
     }),
   );
   app.route(

@@ -10,14 +10,17 @@ what must be true on release day for that to hold.
 - **Where do payouts go after the release?** Every daily grant payout and
   every moderator stipend goes only to the member's own in-app wallet
   `<username>@21.gifts`. Nothing is paid to Wallet of Satoshi any more.
-- **Does anyone lose a payout?** No. All 58 people paid from 2026-10-13 to
-  2026-10-15 keep being paid without a gap on every day they are eligible for
-  a grant, when these five conditions hold:
+- **Does anyone lose a payout?** Only a member in the grant program who has
+  not set up social recovery once it is on `main`. All 58 people paid from
+  2026-10-13 to 2026-10-15 keep being paid without a gap on every day they are
+  eligible for a grant, when these six conditions hold:
   1. The API release includes the roster move at boot, so listed amounts and
      moderator stipends keep matching.
   2. The API and the app go live together.
   3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` (API) and
-     `NEXT_PUBLIC_BREEZ_API_KEY` (app) set.
+     `NEXT_PUBLIC_BREEZ_API_KEY` (app) set. Once social recovery is on
+     `main`, the API also has `RECOVERY_SHARE_KEK` (64 lowercase hex,
+     different from `NOSTR_NSEC_KEK`) set, or it does not boot.
   4. The API roster (`daily_roster_entry`) holds the same rows as spend's
      live list counted below, both payment switches in `daily_roster` are
      on, and its comment is not `Welcome`. All three held on 2026-10-16;
@@ -27,9 +30,16 @@ what must be true on release day for that to hold.
      repository every production deploy run has completed, and the one that
      finished last succeeded on the release merge commit (see
      [Check again before release](#check-again-before-release)).
+  6. Once social recovery ([docs/social-recovery.md](social-recovery.md)) is
+     on `main`, possibly in the same release: the member has stored the 21.gifts
+     recovery share of their current verified wallet. A member in the grant
+     program without it is not paid until they set up social recovery (see
+     [Result](#result)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
+  Once social recovery is on `main`, a member in the grant program also sets
+  it up once (**Mein Konto absichern**) to be paid.
 - **How does it ship?** The API change and the app change each go through the
   release pull requests `staging → develop` and `develop → main` of their
   repository, and both go live together.
@@ -46,20 +56,24 @@ The rest of this document is the evidence.
   through the release pull requests `staging → develop` and `develop → main`
   of their repository. After the `main` deploy of both, the switch is
   complete.
-- No manual step is part of the release. Anything that has to change in data
-  changes at boot (see [Roster move at boot](#roster-move-at-boot)).
+- No manual data step is part of the release. Anything that has to change in
+  data changes at boot (see [Roster move at boot](#roster-move-at-boot)).
+  The one manual step is a setting: when social recovery reaches `main` in
+  this release, an operator sets `RECOVERY_SHARE_KEK` in production before
+  the `develop → main` merge, because the API with social recovery does not
+  boot without it.
 
 ## How a payout is triggered
 
 A daily payout or stipend is not paid on a timer. It follows the member's own forum post or moderator-group message, a staff decision on a `pending` grant, or spend's daily run. The one-time welcome gift and an operator replay are listed too:
 
-| Payout            | Trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Code (staging)                                                                                                                                                                  |
-| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Daily grant       | The member publishes a top-level forum post with a photo or video (`POST /messages`), or a top-level note that is paid through a zap (no media check on that path). The API pings spend with the member's receiving address. When staff move a `pending` grant to `trial` or `admitted`, the API pings spend for the member's newest live top-level media post of that UTC day (for a member who was still `pending` when posting, this is the first ping); a move from an active `trial` to `admitted` does not ping.                                                                                                     | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/nostr/zap-index.ts` (zap-paid note), `src/routes/funding.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
-| Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                                                                            |
-| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                         |
-| Welcome gift      | Once per `verified` account: when it has a live top-level photo or video (including About me) and no welcome yet, the API pings spend with `kind: "welcome"` on a new top-level post, an About-me save, a verification by a moderator, at boot and every 15 minutes. A platform `Welcome` reply under one of its notes, or a welcome gift recorded under its username after its wallet was verified, counts as received. Spend pays 1 USD while `payments_enabled` is on. A daily payout on the same UTC day is then skipped (`welcome_paid`) unless the roster comment is `Welcome`; moderator stipends are not affected. | `src/lib/welcome-media.ts`, `src/routes/messages.ts`, `src/routes/me.ts`, `src/routes/trust.ts`, `src/index.ts` (`welcomeCatchUp`), `src/lib/spend-instruction.ts`              |
-| Operator replay   | Not a member trigger: an operator with `DEBUG_TOKEN` books the daily ping for a live top-level media post on that post's UTC day (`POST /debug/spend-ping`).                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `src/routes/debug-payments.ts` (`pingOnDay`)                                                                                                                                    |
+| Payout            | Trigger                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    | Code (staging)                                                                                                                                                                                                                                                               |
+| ----------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Daily grant       | The member publishes a top-level forum post with a photo or video (`POST /messages`), or a top-level note that is paid through a zap (no media check on that path). The API pings spend with the member's receiving address. When staff move a `pending` grant to `trial` or `admitted`, the API pings spend for the member's newest live top-level media post of that UTC day (for a member who was still `pending` when posting, this is the first ping); a move from an active `trial` to `admitted` does not ping. The first recovery share of the current wallet (`PUT /me/recovery-share`) sends the same ping.      | `src/routes/messages.ts` (spend ping after `POST /messages`), `src/lib/nostr/zap-index.ts` (zap-paid note), `src/routes/funding.ts` (trial and admit ping), `src/routes/me.ts` (first recovery share), `src/lib/funding-ping.ts` (`pingTodayMedia`), `src/lib/spend-ping.ts` |
+| Moderator stipend | A moderator sends a message in the moderator group conversation and has a live public top-level post on that UTC day. The API pings spend with `kind: "moderator"`.                                                                                                                                                                                                                                                                                                                                                                                                                                                        | `src/routes/conversations.ts` (`hasLivingRoomPostOnUtcDay`), `src/lib/spend-ping.ts`                                                                                                                                                                                         |
+| Daily run (spend) | Spend asks `POST /spend/daily-instruction` for each roster address. The API pays only a member with a passkey, a live media post, and eligibility.                                                                                                                                                                                                                                                                                                                                                                                                                                                                         | `src/routes/spend-instruction-route.ts`, `src/lib/spend-instruction.ts`                                                                                                                                                                                                      |
+| Welcome gift      | Once per `verified` account: when it has a live top-level photo or video (including About me) and no welcome yet, the API pings spend with `kind: "welcome"` on a new top-level post, an About-me save, a verification by a moderator, at boot and every 15 minutes. A platform `Welcome` reply under one of its notes, or a welcome gift recorded under its username after its wallet was verified, counts as received. Spend pays 1 USD while `payments_enabled` is on. A daily payout on the same UTC day is then skipped (`welcome_paid`) unless the roster comment is `Welcome`; moderator stipends are not affected. | `src/lib/welcome-media.ts`, `src/routes/messages.ts`, `src/routes/me.ts`, `src/routes/trust.ts`, `src/index.ts` (`welcomeCatchUp`), `src/lib/spend-instruction.ts`                                                                                                           |
+| Operator replay   | Not a member trigger: an operator with `DEBUG_TOKEN` books the daily ping for a live top-level media post on that post's UTC day (`POST /debug/spend-ping`).                                                                                                                                                                                                                                                                                                                                                                                                                                                               | `src/routes/debug-payments.ts` (`pingOnDay`)                                                                                                                                                                                                                                 |
 
 The amount comes from the daily roster when the address is listed there, and
 from `DAILY_ROSTER_DEFAULT_AMOUNT_USD` (1 USD) for an unlisted admitted or
@@ -274,14 +288,27 @@ rows and deletes 1 recipient row.
 
 ## Result
 
-The release does not change who is eligible. `eligibleToday`
-(`src/lib/funding.ts`) is identical on `main` and `staging`: a payout needs a
-role other than `basis`, and an `admitted` grant or a `trial` grant on the
-current UTC day. The grant requirement has applied since 2026-10-01
-(`FUNDING_REQUIRED_FROM_UTC`). Daily payouts and moderator stipends both pass
-through it. The 58 people had the roles `verified`, `moderator` and
-`founder` on 2026-10-16. A member who is not eligible on a day is not paid that
-day, before and after the release alike.
+The wallet change does not change who is eligible; social recovery adds one
+condition (below). `eligibleToday`
+(`src/lib/funding.ts`) was identical on `main` and `staging` on 2026-10-16: a
+payout needs a role other than `basis`, and an `admitted` grant or a `trial`
+grant on the current UTC day. The grant requirement has applied since
+2026-10-01 (`FUNDING_REQUIRED_FROM_UTC`). Daily payouts and moderator
+stipends both pass through it. The 58 people had the roles `verified`,
+`moderator` and `founder` on 2026-10-16. A member who is not eligible on a
+day is not paid that day, before and after the release alike.
+
+Since social recovery ([docs/social-recovery.md](social-recovery.md)),
+`eligibleToday` also needs a stored 21.gifts recovery share for the member's
+current verified wallet, on the same days as the grant and with no start
+date of its own: wherever that code runs, on staging once merged there and
+on production once released to `main`. When social recovery reaches `main` in
+the same `develop → main` release as the wallet change, the condition starts
+on release day. A member in the grant program without
+that share is not paid that day, with the same answers as for a missing
+grant; the staff trial and admit pings are skipped too. Storing the first
+share of the current wallet pings that UTC day's newest media post, so later
+triggers that day pay as usual.
 
 The welcome gift does not cut a payout for these 58. 50 of the 51 `verified`
 people already have the platform `Welcome` reply, so no welcome ping is sent
@@ -300,7 +327,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    block posting for everyone, because the old app cannot create a wallet.
 3. Production has `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` set for the API and
    `NEXT_PUBLIC_BREEZ_API_KEY` set for the app. Without them no wallet can be
-   created or verified, and nobody can post.
+   created or verified, and nobody can post. Once social recovery is on
+   `main`, the API also has `RECOVERY_SHARE_KEK` (64 lowercase hex, different
+   from `NOSTR_NSEC_KEK`) set. Without it the API stops at boot
+   (`openBootStores`), so it keeps restarting and nobody is paid.
 4. The API roster (`daily_roster_entry`) holds the same addresses, amounts and
    buckets as spend's live list in [Daily roster](#daily-roster). Every legacy
    row then belongs to an account with a username, except the one recipient
@@ -313,6 +343,10 @@ they are eligible, on the in-app wallet only, when all of these hold:
    before it waits for the deploy, so a later run that failed or was
    cancelled may already have moved `latest`, and a re-run of an older run
    keeps its creation time but pushes `latest` again.
+6. Once social recovery is on `main`: the member has stored the 21.gifts
+   recovery share of their current verified wallet. A member in the grant
+   program without it is not paid until they set up social recovery; storing
+   the first share pings that UTC day's newest media post.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under
@@ -342,8 +376,14 @@ except rows that belong to no account (on 2026-10-16 one recipient), which the
 roster move deletes. Read `gifts-debug db daily_roster`: both `payments_enabled` and `moderator_payments_enabled` must be `true`, and `comment` must not be `Welcome`.
 Read the grants of the 58 people with `gifts-debug db funding_grant` and their
 roles with `gifts-debug db account` to know who is eligible on release day
-(role not `basis`, and `admitted`, or `trial` for that UTC day).
-Check the three settings in the production deployment configuration.
+(role not `basis`, and `admitted`, or `trial` for that UTC day). Once social
+recovery is on `main`, also read `gifts-debug db recovery_share`: an eligible
+member additionally needs a row whose `spark_pubkey` equals the account's
+`spark_pubkey`, on an account whose `spark_pubkey_verified_at` is set, as
+`loadPayoutEligibility` reads it.
+Check the three settings of condition 3 in the production deployment
+configuration, and the fourth, `RECOVERY_SHARE_KEK`, when the release brings
+social recovery to `main`.
 After both `develop → main` merges, list every production deploy of each
 repository:
 `gh run list -R 21gifts/api --workflow deploy-prd.yaml -L 1000 --json headSha,status,conclusion,createdAt,updatedAt`

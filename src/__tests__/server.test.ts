@@ -7,6 +7,7 @@ import { setDiagnosticSink } from '@/lib/log';
 import { InMemoryMemberEventStore } from '@/lib/member-event-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore, PostgresMessageStore } from '@/lib/message-store';
+import { InMemoryPushStore, PostgresPushStore } from '@/lib/push-store';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import { PostRateLimiter } from '@/lib/nostr/rate-limit';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
@@ -20,9 +21,11 @@ import {
   BOLT11,
   FREE_PAYMENTS_ENV,
   LNURL_SERVER,
+  WALLET_PUBKEY,
   createWalletAccount,
   walletLnurlFetch,
 } from '@/__tests__/helpers/wallet-lnurl';
+import { PINNED, seedPinnedAccount, stagePendingRecovery } from '@/__tests__/helpers/recovery';
 
 function b64url(bytes: Uint8Array): string {
   return Buffer.from(bytes)
@@ -571,6 +574,69 @@ describe('createApp', () => {
     expect(res.status).toBe(200);
   });
 
+  it('links in-memory push subscriptions to the in-memory recovery commit', async () => {
+    const commitWith = async (pushStore: InMemoryPushStore | PostgresPushStore) => {
+      const authStore = new InMemoryAuthStore();
+      createApp({ authStore, pushStore });
+      const push = new InMemoryPushStore();
+      const subscriber = pushStore instanceof InMemoryPushStore ? pushStore : push;
+      await createWalletAccount(authStore, 'acc', 'ada');
+      await subscriber.upsertSubscription({
+        endpoint: 'https://push.example/acc',
+        accountId: 'acc',
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(1),
+        sessionToken: null,
+      });
+      const newKey = `03${'2'.repeat(64)}`;
+      const now = Date.now();
+      await authStore.startRecoveryChallenge({
+        accountId: 'acc',
+        oldSparkPubkey: WALLET_PUBKEY,
+        challenge: {
+          id: 'c1',
+          type: 'recovery',
+          challenge: 'chal',
+          accountId: 'acc',
+          consumed: false,
+          createdAt: now,
+        },
+        now,
+      });
+      await authStore.storePendingRecovery({
+        challengeId: 'c1',
+        pending: {
+          accountId: 'acc',
+          oldSparkPubkey: WALLET_PUBKEY,
+          newSparkPubkey: newKey,
+          credentialId: 'new-credential',
+          publicKey: Uint8Array.of(1),
+          signCount: 0,
+          createdAt: now,
+          forwardedAt: null,
+        },
+        now,
+      });
+      await authStore.markRecoveryForwarded({
+        newSparkPubkey: newKey,
+        oldSparkPubkey: WALLET_PUBKEY,
+        username: 'ada',
+        now,
+      });
+      expect(
+        await authStore.commitRecovery({ accountId: 'acc', newSparkPubkey: newKey, now }),
+      ).toBe('committed');
+      return subscriber.listByAccount('acc');
+    };
+    expect(await commitWith(new InMemoryPushStore())).toEqual([]);
+    const unlinked = new PostgresPushStore({
+      query: async () => [],
+      execute: async () => undefined,
+    });
+    expect(await commitWith(unlinked)).toHaveLength(1);
+  });
+
   it('returns 401 for unauthenticated GET /conversations', async () => {
     const app = createApp();
     const res = await app.request('/conversations');
@@ -1016,7 +1082,17 @@ describe('LNURL server wiring', () => {
     );
     expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(false);
 
+    for (const [method, path] of [
+      ['PUT', '/me/recovery-share'],
+      ['GET', '/me/previous-wallets'],
+      ['DELETE', '/me/previous-wallets/:sparkPubkey'],
+    ] as const) {
+      expect(pairs.some((r) => r.method === method && r.path === path)).toBe(false);
+    }
+
     expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(404);
+    expect((await app.request('/me/recovery-share', { method: 'PUT' })).status).toBe(404);
+    expect((await app.request('/me/previous-wallets')).status).toBe(404);
     expect((await app.request('/lnurlpay/x', { method: 'POST' })).status).toBe(404);
     expect((await app.request('/lnurlp/x/invoice')).status).toBe(404);
     expect((await app.request('/verify/x')).status).toBe(404);
@@ -1044,12 +1120,76 @@ describe('LNURL server wiring', () => {
     );
     expect(pairs.some((r) => r.method === 'GET' && r.path === '/verify/:paymentHash')).toBe(true);
 
+    for (const [method, path] of [
+      ['PUT', '/me/recovery-share'],
+      ['GET', '/me/previous-wallets'],
+      ['DELETE', '/me/previous-wallets/:sparkPubkey'],
+    ] as const) {
+      expect(pairs.some((r) => r.method === method && r.path === path)).toBe(true);
+    }
+
     expect((await app.request('/me/wallet', { method: 'PUT' })).status).toBe(401);
+    expect((await app.request('/me/recovery-share', { method: 'PUT' })).status).toBe(401);
     expect((await app.request('/lnurlpay/not-a-key', { method: 'POST', body: '{}' })).status).toBe(
       404,
     );
     expect((await app.request('/lnurlp/_/invoice')).status).toBe(404);
     expect((await app.request('/verify/abc')).status).toBe(200);
+  });
+
+  it('passes RECOVERY_SHARE_KEK and the fetch to the /me recovery routes', async () => {
+    const env = { LNURL_SERVER_URL: 'http://lnurl.test', PUBLIC_BASE_URL: 'https://example.test' };
+    const share =
+      'duckling enlarge academic academic agency result length solution fridge kidney ' +
+      'coal piece deal husband erode duke ajar critical decision keyboard';
+    const recovered = async (): Promise<InMemoryAuthStore> => {
+      const authStore = new InMemoryAuthStore();
+      await seedPinnedAccount(authStore);
+      const now = Date.now();
+      await stagePendingRecovery(authStore, { createdAt: now, forwardedAt: now });
+      await authStore.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.newSparkPubkey,
+        now,
+      });
+      await authStore.createSession({ token: 'tok', accountId: PINNED.accountId, createdAt: now });
+      return authStore;
+    };
+    const putShare = (app: ReturnType<typeof createApp>): Promise<Response> =>
+      Promise.resolve(
+        app.request('/me/recovery-share', {
+          method: 'PUT',
+          headers: { authorization: 'Bearer tok', 'content-type': 'application/json' },
+          body: JSON.stringify({ sparkPubkey: PINNED.newSparkPubkey, share }),
+        }),
+      );
+
+    const withoutKek = await putShare(createApp({ env, authStore: await recovered() }));
+    expect(withoutKek.status).toBe(503);
+
+    const explorerUrls: string[] = [];
+    const app = createApp({
+      env,
+      authStore: await recovered(),
+      recoveryShareKek: new Uint8Array(32).fill(0xcd),
+      fetchImpl: async (input) => {
+        explorerUrls.push(String(input));
+        return Response.json({ balance: { btcSoftBalanceSats: 7 } });
+      },
+    });
+    const stored = await putShare(app);
+    expect(stored.status).toBe(200);
+    expect(((await stored.json()) as { socialRecoverySetUp: boolean }).socialRecoverySetUp).toBe(
+      true,
+    );
+    const listed = await app.request('/me/previous-wallets', {
+      headers: { authorization: 'Bearer tok' },
+    });
+    expect(((await listed.json()) as { wallets: Array<{ balanceSats: number }> }).wallets).toEqual([
+      expect.objectContaining({ sparkPubkey: PINNED.oldSparkPubkey, balanceSats: 7 }),
+    ]);
+    expect(explorerUrls).toHaveLength(1);
+    expect(explorerUrls[0]?.startsWith('https://api.sparkscan.io/v1/address/spark1')).toBe(true);
   });
 
   async function giftInvoiceApp(

@@ -5,10 +5,13 @@
  * Every gate is a store lookup (the wallet carries no session of this api).
  * Rate-limited per client IP; never logs a query string, body, signature header,
  * comment, or zap request. A BOLT11 minted for a shop at the amount of its
- * open point-of-sale charge is recorded against that charge.
+ * open point-of-sale charge is recorded against that charge. The address
+ * transfer and the lookup of a pending social recovery's new key are the
+ * recovery's own forwards (docs/social-recovery.md).
  */
 
 import { Hono } from 'hono';
+import { settleAfterLookup } from '@/lib/auth/recovery';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import { readCappedText } from '@/lib/capped-body';
 import { decodeBolt11 } from '@/lib/bolt11';
@@ -19,12 +22,19 @@ import type { FetchFn } from '@/lib/lnurlp';
 import {
   LNURL_BODY_LIMIT_BYTES,
   LNURL_SERVER_TIMEOUT_MS,
+  LNURL_SIGNED_MESSAGE_VALIDITY_SECS,
+  LNURL_UNAVAILABLE_ERROR,
   callLnurlServer,
   type LnurlServerResult,
 } from '@/lib/lnurl-server';
 import { WAIT_SATS_TIMEOUT_MS } from '@/lib/message';
 import type { PosCharge } from '@/lib/pos-charge';
 import { duplicateInvoiceLogFields, type PosStore } from '@/lib/pos-store';
+import {
+  lnurlTransferFromMessage,
+  lnurlTransferToMessage,
+  verifyLnurlDerSignature,
+} from '@/lib/recovery-signature';
 import { readClientRequestMeta } from '@/lib/request-meta';
 import { shopError, shopResponse, type ShopPayments } from '@/lib/shop-payment';
 import { handleShopProof } from '@/lib/shop-proof';
@@ -53,16 +63,48 @@ export interface LnurlServerRouteDeps {
 /** Stable 404 body when a gate fails or the upstream returns 404. */
 const NOT_FOUND = { error: 'Not found' } as const;
 /** Stable 503 body when the upstream is unreachable or returns an unexpected status. */
-const UNAVAILABLE = { error: 'Lightning address service is unavailable' } as const;
+const UNAVAILABLE = { error: LNURL_UNAVAILABLE_ERROR } as const;
 /** Stable 429 body when a client exceeds the per-route limit. */
 const TOO_MANY = { error: 'Too many requests' } as const;
 /** Stable 413 body when the request body exceeds {@link LNURL_BODY_LIMIT_BYTES}. */
 const TOO_LARGE = { error: 'Request body is too large' } as const;
-/** Stable 409 body when upstream accepted registration but the account is not verified on the key. */
+/**
+ * Stable 409 body when upstream accepted a registration or an address
+ * transfer but the account is not confirmed on the new key.
+ */
 const UNCONFIRMED = { error: 'Wallet registration could not be confirmed' } as const;
 
 /** Route name for diagnostic logs (never a path or query). */
-type LnurlServerRouteName = 'register' | 'recover' | 'metadata' | 'invoice' | 'verify';
+type LnurlServerRouteName = 'register' | 'transfer' | 'recover' | 'metadata' | 'invoice' | 'verify';
+
+/** Body keys of an address transfer that the api reads and forwards (Breez SDK 0.26.0). */
+const TRANSFER_KEYS = [
+  'username',
+  'description',
+  'from_pubkey',
+  'from_signature',
+  'to_signature',
+  'timestamp',
+] as const;
+
+/** Longest description the LNURL server stores, in Unicode code points. */
+const TRANSFER_DESCRIPTION_MAX_CHARS = 255;
+
+/** A parsed address transfer whose fields the api checked. */
+interface TransferClaim {
+  /** Normalized username. */
+  username: string;
+  /** Description the new wallet stores with the name. */
+  description: string;
+  /** Normalized identity key of the current owner (the old wallet). */
+  fromPubkey: string;
+  /** Current owner's DER signature, hex. */
+  fromSignature: string;
+  /** New owner's DER signature, hex. */
+  toSignature: string;
+  /** Unix seconds both signatures cover. */
+  timestamp: number;
+}
 
 /** Shop route name for diagnostic logs (never a path or query). */
 type ShopRouteName = 'callback' | 'proof' | 'wait';
@@ -214,6 +256,104 @@ function repeatedKey(queries: Record<string, string[]>, keys: readonly string[])
 }
 
 /**
+ * Read and check an address transfer body (`POST /lnurlpay/:pubkey/transfer`).
+ *
+ * The body must be one JSON object. A key that NFKC-lowercases to a transfer
+ * field without being that exact key is refused, so the api and the LNURL
+ * server cannot read two different values. The username must be printable
+ * ASCII and normalize, the description at most 255 code points, `from_pubkey`
+ * a wallet key, both signatures strings, and `timestamp` a safe non-negative
+ * integer within {@link LNURL_SIGNED_MESSAGE_VALIDITY_SECS} of `nowMs`.
+ *
+ * @param text - Raw request body.
+ * @param nowMs - Current time (epoch ms).
+ * @returns The parsed object (forwarded re-serialized) and its checked fields, or `null`.
+ */
+function readTransferClaim(
+  text: string,
+  nowMs: number,
+): { parsed: Record<string, unknown>; claim: TransferClaim } | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return null;
+  }
+  const body = parsed as Record<string, unknown>;
+  for (const key of Object.keys(body)) {
+    const folded = key.normalize('NFKC').toLowerCase();
+    if ((TRANSFER_KEYS as readonly string[]).includes(folded) && key !== folded) {
+      return null;
+    }
+  }
+  const {
+    username: usernameRaw,
+    description,
+    from_pubkey: fromRaw,
+    from_signature: fromSignature,
+    to_signature: toSignature,
+    timestamp,
+  } = body;
+  if (typeof usernameRaw !== 'string' || !/^[\x20-\x7e]*$/.test(usernameRaw)) {
+    return null;
+  }
+  const username = normalizeUsername(usernameRaw);
+  const fromPubkey = typeof fromRaw === 'string' ? normalizeSparkPubkey(fromRaw) : null;
+  if (
+    username === null ||
+    typeof description !== 'string' ||
+    [...description].length > TRANSFER_DESCRIPTION_MAX_CHARS ||
+    fromPubkey === null ||
+    typeof fromSignature !== 'string' ||
+    typeof toSignature !== 'string' ||
+    typeof timestamp !== 'number' ||
+    !Number.isSafeInteger(timestamp) ||
+    timestamp < 0 ||
+    Math.abs(Math.floor(nowMs / 1000) - timestamp) > LNURL_SIGNED_MESSAGE_VALIDITY_SECS
+  ) {
+    return null;
+  }
+  return {
+    parsed: body,
+    claim: { username, description, fromPubkey, fromSignature, toSignature, timestamp },
+  };
+}
+
+/**
+ * Whether both wallets signed this transfer for `domain`, as the LNURL server
+ * will check: the old key over `transfer-from`, the new key over `transfer-to`.
+ *
+ * @param domain - Domain the LNURL server resolves from `Host` (lowercase).
+ * @param toPubkey - Normalized new key (the path key).
+ * @param claim - Checked transfer fields.
+ * @returns `true` when both DER signatures verify.
+ */
+function transferSigned(domain: string, toPubkey: string, claim: TransferClaim): boolean {
+  return (
+    verifyLnurlDerSignature(
+      lnurlTransferFromMessage(domain, claim.username, claim.fromPubkey, toPubkey, claim.timestamp),
+      claim.fromPubkey,
+      claim.fromSignature,
+    ) &&
+    verifyLnurlDerSignature(
+      lnurlTransferToMessage(
+        domain,
+        claim.username,
+        claim.fromPubkey,
+        toPubkey,
+        claim.description,
+        claim.timestamp,
+      ),
+      toPubkey,
+      claim.toSignature,
+    )
+  );
+}
+
+/**
  * The shop account of a username: a verified wallet and a username that is
  * not `invoice` (the invoice forward keeps that path segment).
  *
@@ -240,12 +380,18 @@ async function shopAccount(
  * Build the forwarded LNURL route group, plus the shop payment callback,
  * proof, and wait routes when {@link LnurlServerRouteDeps.shopPayments} is set.
  *
+ * The address transfer forwards a claim only for a pending social recovery it
+ * admits (`markRecoveryForwarded`) and commits that recovery on the upstream
+ * 2xx; the recover lookup also passes a pending recovery's new key and settles
+ * a forwarded recovery afterwards (`settleAfterLookup`).
+ *
  * @param deps - Auth store, LNURL config, fetch, clock, POS store, and the
  *   optional shop payment service.
- * @returns A Hono app with the five forwarded routes and the shop routes.
+ * @returns A Hono app with the six forwarded routes and the shop routes.
  */
 export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
   const registerLimiter = new IpRateLimiter(30);
+  const transferLimiter = new IpRateLimiter(30);
   const recoverLimiter = new IpRateLimiter(30);
   const metadataLimiter = new IpRateLimiter(120);
   const invoiceLimiter = new IpRateLimiter(20);
@@ -338,11 +484,73 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
         return c.json(UNAVAILABLE, 503);
       }
     })
+    .post('/lnurlpay/:pubkey/transfer', async (c) => {
+      const route: LnurlServerRouteName = 'transfer';
+      try {
+        const now = deps.now();
+        const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
+        if (!transferLimiter.allow(clientIp, now)) {
+          return c.json(TOO_MANY, 429);
+        }
+        const toPubkey = normalizeSparkPubkey(c.req.param('pubkey'));
+        if (toPubkey === null) {
+          return c.json(NOT_FOUND, 404);
+        }
+        const text = await readCappedText(c.req.raw, LNURL_BODY_LIMIT_BYTES);
+        if (text === null) {
+          return c.json(TOO_LARGE, 413);
+        }
+        const read = readTransferClaim(text, now);
+        if (
+          read === null ||
+          !transferSigned(deps.config.host.toLowerCase(), toPubkey, read.claim)
+        ) {
+          return c.json(NOT_FOUND, 404);
+        }
+        // Read after the body and the checks, right before admission: the
+        // settle window counts from `forwardedAt`, which may precede the
+        // upstream send only by the admission step.
+        const pending = await deps.auth.markRecoveryForwarded({
+          newSparkPubkey: toPubkey,
+          oldSparkPubkey: read.claim.fromPubkey,
+          username: read.claim.username,
+          now: deps.now(),
+        });
+        if (pending === undefined) {
+          return c.json(NOT_FOUND, 404);
+        }
+        logEvent('account.recovery.forwarded', { accountId: pending.accountId });
+        const result = await callLnurlServer(deps.config, deps.fetchImpl, {
+          method: 'POST',
+          segments: ['lnurlpay', toPubkey, 'transfer'],
+          headers: c.req.raw.headers,
+          body: JSON.stringify(read.parsed),
+          timeoutMs: LNURL_SERVER_TIMEOUT_MS,
+        });
+        if (result.ok && result.status >= 200 && result.status < 300) {
+          const committed = await deps.auth.commitRecovery({
+            accountId: pending.accountId,
+            newSparkPubkey: toPubkey,
+            now: deps.now(),
+          });
+          if (committed !== 'committed') {
+            logEvent('account.recovery.unconfirmed', { accountId: pending.accountId });
+            return c.json(UNCONFIRMED, 409);
+          }
+          logEvent('account.recovery.committed', { accountId: pending.accountId, via: 'claim' });
+        }
+        return mapUpstream(result, route, { registration: true });
+      } catch {
+        logEvent('lnurl_server.failed', { route });
+        return c.json(UNAVAILABLE, 503);
+      }
+    })
     .post('/lnurlpay/:pubkey/recover', async (c) => {
       const route: LnurlServerRouteName = 'recover';
       try {
+        const now = deps.now();
         const clientIp = readClientRequestMeta(c.req.raw.headers).clientIp;
-        if (!recoverLimiter.allow(clientIp, deps.now())) {
+        if (!recoverLimiter.allow(clientIp, now)) {
           return c.json(TOO_MANY, 429);
         }
         const pubkey = normalizeSparkPubkey(c.req.param('pubkey'));
@@ -350,13 +558,17 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           return c.json(NOT_FOUND, 404);
         }
         const claimed = await deps.auth.isSparkPubkeyClaimed(pubkey);
-        if (!claimed) {
+        const pendingNew = claimed
+          ? undefined
+          : await deps.auth.getPendingRecoveryByNewSparkPubkey(pubkey, now);
+        if (!claimed && pendingNew === undefined) {
           return c.json(NOT_FOUND, 404);
         }
         const text = await readCappedText(c.req.raw, LNURL_BODY_LIMIT_BYTES);
         if (text === null) {
           return c.json(TOO_LARGE, 413);
         }
+        const sentAt = deps.now();
         const result = await callLnurlServer(deps.config, deps.fetchImpl, {
           method: 'POST',
           segments: ['lnurlpay', pubkey, 'recover'],
@@ -364,6 +576,10 @@ export function lnurlServerRoutes(deps: LnurlServerRouteDeps): Hono {
           body: text,
           timeoutMs: LNURL_SERVER_TIMEOUT_MS,
         });
+        await settleAfterLookup(
+          { auth: deps.auth, now: deps.now },
+          { pubkey, pendingNew, sentAt, result },
+        );
         return mapUpstream(result, route);
       } catch {
         logEvent('lnurl_server.failed', { route });

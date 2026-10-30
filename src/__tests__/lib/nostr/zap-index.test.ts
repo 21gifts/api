@@ -42,6 +42,7 @@ import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 vi.mock('@/lib/bolt11', () => ({
@@ -1669,6 +1670,103 @@ describe('manual invoice settlement', () => {
       'daily',
       'admitted',
     );
+  });
+
+  describe('compose spend ping from the grant gate day', () => {
+    const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
+
+    /** Settle an admitted payer's platform-note compose on a gated day. */
+    async function settleGated(share: boolean): Promise<{
+      ping: ReturnType<typeof vi.fn>;
+      createdId: string | undefined;
+      events: Array<Record<string, unknown>>;
+    }> {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      const messageId = await seedStore({
+        store,
+        auth,
+        accountId: 'gated-author',
+        messageId: 'gated-message',
+      });
+      const platform = await auth.getAccount('gated-author');
+      await auth.updateAccount({ ...platform!, isPlatform: true, profileMessageId: messageId });
+      await auth.createAccount({
+        id: 'gated-payer',
+        linkingKey: null,
+        role: 'verified',
+        name: 'Ada',
+        username: 'ada-gated',
+        walletRequired: true,
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: viewKeyFor('gated-payer'),
+        createdAt: 2,
+        rulesAgreedAt: 1,
+      });
+      await verifyWallet(auth, 'gated-payer', 'ada-gated');
+      if (share) {
+        const payer = await auth.getAccount('gated-payer');
+        await storeRecoveryShare(auth, 'gated-payer', payer!.sparkPubkey!);
+      }
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId: 'gated-payer',
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: 'staff',
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      const preimage = '15'.repeat(32);
+      const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+      await seedManualInvoice(store, paymentHash, {
+        conversationId: null,
+        messageId: 'gated-message',
+        payerAccountId: 'gated-payer',
+        authorAccountId: 'gated-author',
+        zapRequest: { content: 'Gated compose' },
+      });
+      const ping = vi.fn(async () => undefined);
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      const result = await settleInvoiceManually({
+        store,
+        auth,
+        now: () => GATE_NOW,
+        paymentHash,
+        note: 'gated compose',
+        preimage,
+        spendPing: { ping },
+        fundingStore,
+        postLimiter: new PostRateLimiter(),
+        lnurlServer: LNURL_SERVER,
+      });
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      warn.mockRestore();
+      expect(result.ok).toBe(true);
+      const created = (await store.listLatest(20)).find((row) => row.text === 'Gated compose');
+      expect(created?.accountId).toBe('gated-payer');
+      return { ping, createdId: created?.id, events };
+    }
+
+    it('pings an admitted payer with a recovery share', async () => {
+      const { ping, createdId } = await settleGated(true);
+      expect(ping).toHaveBeenCalledWith('ada-gated@example.test', createdId, 'daily', 'admitted');
+    });
+
+    it('skips an admitted payer without a recovery share as not eligible', async () => {
+      const { ping, events } = await settleGated(false);
+      expect(ping).not.toHaveBeenCalled();
+      expect(events).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'not_eligible' }),
+      );
+    });
   });
 
   it('skips the compose spend ping when the payer has no receiving address', async () => {

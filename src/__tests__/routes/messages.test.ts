@@ -20,6 +20,7 @@ import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import {
   BOLT11,
   BOLT11_250K,
@@ -3942,6 +3943,66 @@ describe('POST /messages', () => {
         (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
       ),
     ).toBe(true);
+  });
+
+  it('skips spend ping for an admitted poster without a recovery share', async () => {
+    const spendPing = { ping: vi.fn(async (_address: string, _messageId: string) => undefined) };
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+    const auth = await namedStore('Ada');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, new InMemoryMessageStore(), {
+      spendPing,
+      lnurlServer: LNURL_SERVER,
+      fundingStore: admittedFunding(),
+      now: () => gateNow,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello' }),
+    });
+    expect(res.status).toBe(200);
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(true);
+  });
+
+  it('daily-pings an admitted poster with a recovery share', async () => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+    const auth = await namedStore('Ada');
+    await storeRecoveryShare(auth, 'acc', walletKeyFor('acc'));
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, new InMemoryMessageStore(), {
+      spendPing,
+      lnurlServer: LNURL_SERVER,
+      fundingStore: admittedFunding(),
+      now: () => gateNow,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@example.test',
+      created.id,
+      'daily',
+      'admitted',
+    );
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      ),
+    ).toBe(false);
   });
 
   it('returns 200 on a top-level post when spendPing is omitted', async () => {

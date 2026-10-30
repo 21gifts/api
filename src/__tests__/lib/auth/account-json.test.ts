@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   EMPTY_DEBUG_NOSTR,
   debugNostrFieldsFromListRow,
@@ -15,6 +15,12 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import type { MessageRow } from '@/lib/message';
+import {
+  PINNED,
+  seedPinnedAccount,
+  stagePendingRecovery,
+  storeRecoveryShare,
+} from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const account: Account = {
@@ -398,6 +404,7 @@ describe('serializeOwnerAccount', () => {
       passkeyRenewFailed: false,
       passkeyRenewClosed: false,
       passkeyRenewPrfUnsupported: false,
+      socialRecoverySetUp: false,
     });
     expect(json.viewKey).toBe(account.viewKey);
     expect(json.setup).toBe('lightning-address');
@@ -1038,6 +1045,7 @@ describe('serializeOwnerAccountWithPosts', () => {
           hasUnacknowledgedPasskeyRenewFailure: async () => false,
           hasAcknowledgedPasskeyRenewFailure: async () => true,
           latestUnacknowledgedPasskeyRenewErrorName: async () => null,
+          hasRecoveryShareForVerifiedWallet: async () => false,
         },
       },
     );
@@ -1137,6 +1145,115 @@ describe('serializeOwnerAccountWithPosts', () => {
       { store: new InMemoryFundingStore(), nowMs: 4, authStore },
     );
     expect(newer.passkeyRenewPrfUnsupported).toBe(false);
+  });
+});
+
+describe('socialRecoverySetUp', () => {
+  const noPosts = {
+    accountHasLivePost: async (): Promise<boolean> => false,
+    getById: async (): Promise<undefined> => undefined,
+  };
+
+  function lookup(authStore: InMemoryAuthStore): {
+    store: InMemoryFundingStore;
+    nowMs: number;
+    authStore: InMemoryAuthStore;
+  } {
+    return { store: new InMemoryFundingStore(), nowMs: 1, authStore };
+  }
+
+  it('is the trailing serializeOwnerAccount argument', () => {
+    expect(serializeOwnerAccount(wallet, false, null, false).socialRecoverySetUp).toBe(false);
+    expect(
+      serializeOwnerAccount(
+        wallet,
+        false,
+        null,
+        false,
+        null,
+        null,
+        false,
+        false,
+        false,
+        undefined,
+        true,
+      ).socialRecoverySetUp,
+    ).toBe(true);
+  });
+
+  it('is true only for a share on the current verified wallet key', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    const stored = await authStore.getAccount(PINNED.accountId);
+    expect(
+      (await serializeOwnerAccountWithPosts(stored!, noPosts, lookup(authStore)))
+        .socialRecoverySetUp,
+    ).toBe(false);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    expect(
+      (await serializeOwnerAccountWithPosts(stored!, noPosts, lookup(authStore)))
+        .socialRecoverySetUp,
+    ).toBe(true);
+  });
+
+  it('is false when the only share belongs to a previous wallet', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    await stagePendingRecovery(authStore, { createdAt: 10, forwardedAt: 11 });
+    expect(
+      await authStore.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.newSparkPubkey,
+        now: 12,
+      }),
+    ).toBe('committed');
+    const moved = await authStore.getAccount(PINNED.accountId);
+    expect(moved?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    const json = await serializeOwnerAccountWithPosts(moved!, noPosts, lookup(authStore));
+    expect(json.sparkWalletVerified).toBe(true);
+    expect(json.socialRecoverySetUp).toBe(false);
+  });
+
+  it('is false for an unverified wallet claim', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({ ...account, walletRequired: true });
+    await authStore.claimSparkPubkey('acc', PINNED.oldSparkPubkey);
+    expect(
+      await authStore.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: PINNED.oldSparkPubkey,
+        ciphertext: Uint8Array.of(1),
+        now: 1,
+      }),
+    ).toBe('changed');
+    const claimed = await authStore.getAccount('acc');
+    const json = await serializeOwnerAccountWithPosts(claimed!, noPosts, lookup(authStore));
+    expect(json.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    expect(json.socialRecoverySetUp).toBe(false);
+  });
+
+  it('is false without a funding lookup and does not read the share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    const read = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const stored = await authStore.getAccount(PINNED.accountId);
+    const json = await serializeOwnerAccountWithPosts(stored!, noPosts);
+    expect(json.socialRecoverySetUp).toBe(false);
+    expect(read).not.toHaveBeenCalled();
+  });
+
+  it('reads the share of the re-read account', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPinnedAccount(authStore);
+    await storeRecoveryShare(authStore, PINNED.accountId, PINNED.oldSparkPubkey);
+    const read = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const stale = { ...(await authStore.getAccount(PINNED.accountId))!, sparkPubkey: null };
+    const json = await serializeOwnerAccountWithPosts(stale, noPosts, lookup(authStore));
+    expect(read).toHaveBeenCalledWith(PINNED.accountId);
+    expect(json.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    expect(json.socialRecoverySetUp).toBe(true);
   });
 });
 

@@ -8,8 +8,9 @@ import type { NotificationStore } from '@/lib/notification-store';
 import { settleInvoiceManually } from '@/lib/nostr/zap-index';
 import type { PushStore } from '@/lib/push-store';
 import { receivingAddress } from '@/lib/receiving-address';
-import { effectiveStatus, eligibleToday, utcDayKey } from '@/lib/funding';
-import type { FundingStore } from '@/lib/funding-store';
+import { effectiveStatus, utcDayKey } from '@/lib/funding';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import type { SpendPing } from '@/lib/spend-ping';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
@@ -257,14 +258,20 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       if (address === null) {
         return c.json({ error: 'No Lightning address' }, 409);
       }
-      let grant;
+      let payout;
       try {
-        grant = await deps.fundingStore?.getByAccountId(account.id);
+        payout = await loadPayoutEligibility(
+          deps.fundingStore ?? new InMemoryFundingStore(),
+          deps.auth,
+          account,
+          deps.now(),
+        );
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      if (!eligibleToday(account.role, grant, deps.now())) {
+      const grant = payout.grant;
+      if (!payout.eligible) {
         logEvent('debug.spend_ping.skipped', { messageId, reason: 'not_eligible' });
         return c.json({ error: 'Not eligible' }, 403);
       }

@@ -51,12 +51,22 @@ describe('MEMBER_EVENT_NAMES', () => {
         'wallet_move_copied',
         'wallet_move_closed',
         'wallet_move_done',
+        'recovery_done',
       ].sort(),
     );
   });
 });
 
 describe('parseMemberEventBatch', () => {
+  it('keeps recovery_done, sent once after a social recovery sign-in', () => {
+    const result = parse({ events: [event({ name: 'recovery_done', path: '/recover' })] });
+    expect(result).toEqual({
+      ok: true,
+      events: [{ name: 'recovery_done', at: new Date(AT_MS), path: '/recover', props: {} }],
+      dropped: 0,
+    });
+  });
+
   it('keeps the wallet tour and move events with their scalar props', () => {
     const names = [
       'wallet_tour_shown',

@@ -1,8 +1,12 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
+import { RECOVERY_SETTLE_AFTER_MS } from '@/lib/auth/recovery';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { CHALLENGE_TTL_MS } from '@/lib/config';
+import { InMemoryPushStore } from '@/lib/push-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 import type { LnurlServerConfig } from '@/lib/config';
-import { LNURL_BODY_LIMIT_BYTES } from '@/lib/lnurl-server';
+import { LNURL_BODY_LIMIT_BYTES, LNURL_SERVER_TIMEOUT_MS } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
 import { decodeBolt11 } from '@/lib/bolt11';
 import type { PosCharge } from '@/lib/pos-charge';
@@ -19,6 +23,18 @@ import {
   seed,
   txHash,
 } from '@/__tests__/helpers/shop-proof-fixture';
+import {
+  PINNED,
+  PINNED_PRIVATE_KEYS,
+  RECOVERY_USERNAME,
+  lookupHolds,
+  lookupUserNotFound,
+  scriptedLnurlFetch,
+  seedPinnedAccount,
+  stagePendingRecovery,
+  transferAccepted,
+  transferBody,
+} from '@/__tests__/helpers/recovery';
 
 const PUBKEY = `02${'a'.repeat(64)}`;
 const PUBKEY_OTHER = `03${'b'.repeat(64)}`;
@@ -681,6 +697,27 @@ describe('lnurlServerRoutes', () => {
       expect(calls[0]?.url).toBe(`http://lnurl.test/lnurlpay/${PUBKEY}/recover`);
     });
 
+    it('sends the lookup with LNURL_SERVER_TIMEOUT_MS, the bound its send time is settled under', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      try {
+        const store = new InMemoryAuthStore();
+        await seedWallet(store, { id: 'acc', username: 'ada' });
+        const { fetchImpl, calls } = recordingFetch(
+          async () => new Response('ok', { status: 200 }),
+        );
+        const res = await mount(store, fetchImpl).request(`/lnurlpay/${PUBKEY}/recover`, {
+          method: 'POST',
+          body: '{}',
+        });
+        expect(res.status).toBe(200);
+        expect(timeoutSpy.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+        expect(calls).toHaveLength(1);
+        expect(calls[0]?.init?.signal).toBe(timeoutSpy.mock.results[0]?.value);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+    });
+
     it('returns 404 when the key is unknown or invalid', async () => {
       const { fetchImpl, calls } = recordingFetch(async () => new Response('no'));
       const app = mount(new InMemoryAuthStore(), fetchImpl);
@@ -809,6 +846,505 @@ describe('lnurlServerRoutes', () => {
         ).status,
       ).toBe(429);
       expect(calls).toHaveLength(30);
+    });
+  });
+
+  describe('POST /lnurlpay/:pubkey/transfer', () => {
+    /** Unix seconds of {@link NOW}. */
+    const TS = Math.floor(NOW / 1000);
+    const TRANSFER_PATH = `/lnurlpay/${PINNED.newSparkPubkey}/transfer`;
+
+    function signedBody(
+      overrides: Partial<Parameters<typeof transferBody>[0]> = {},
+    ): Record<string, string | number> {
+      return transferBody({
+        username: RECOVERY_USERNAME,
+        fromPubkey: PINNED.oldSparkPubkey,
+        fromPrivKey: PINNED_PRIVATE_KEYS.old,
+        toPubkey: PINNED.newSparkPubkey,
+        toPrivKey: PINNED_PRIVATE_KEYS.new,
+        timestamp: TS,
+        ...overrides,
+      });
+    }
+
+    async function pendingStore(createdAt: number = NOW): Promise<InMemoryAuthStore> {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      await stagePendingRecovery(store, { createdAt });
+      return store;
+    }
+
+    function transfer(
+      app: Hono,
+      body: unknown,
+      headers: Record<string, string> = {},
+    ): Promise<Response> {
+      return Promise.resolve(
+        app.request(TRANSFER_PATH, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...headers },
+          body: typeof body === 'string' ? body : JSON.stringify(body),
+        }),
+      );
+    }
+
+    function events(name: string): Array<Record<string, unknown>> {
+      return parsedEvents(warn).filter((e) => e['event'] === name);
+    }
+
+    it('forwards an admitted claim and commits the recovery on the upstream 2xx', async () => {
+      const store = await pendingStore();
+      const push = new InMemoryPushStore();
+      store.usePushStore(push);
+      await push.upsertSubscription({
+        endpoint: 'https://push.test/1',
+        accountId: PINNED.accountId,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(NOW),
+        sessionToken: null,
+      });
+      await store.createSession({
+        token: 'd'.repeat(64),
+        accountId: PINNED.accountId,
+        createdAt: NOW,
+      });
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const body = signedBody();
+      const raw = `{ "username" : "ADA", ${JSON.stringify(body).slice(1).replace('"username":"ada",', '')}`;
+      const res = await transfer(mount(store, fetchImpl), raw, { 'x-breez-signature': 's' });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        lnurl: 'lnurlp://example.test/lnurlp/ada',
+        lightning_address: 'ada@example.test',
+      });
+      expect(calls).toHaveLength(1);
+      expect(calls[0]?.pubkey).toBe(PINNED.newSparkPubkey);
+      expect(calls[0]?.host).toBe('example.test');
+      expect(calls[0]?.body).toBe(JSON.stringify(JSON.parse(raw)));
+
+      const account = await store.getAccount(PINNED.accountId);
+      expect(account?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+      expect(account?.sparkPubkeyVerifiedAt).toBe(2);
+      expect(account?.username).toBe(RECOVERY_USERNAME);
+      expect(await store.getAccountByVerifiedSparkPubkey(PINNED.newSparkPubkey)).toEqual(account);
+      expect((await store.listPasskeyCredentials()).map((c) => c.credentialId)).toEqual([
+        PINNED.credentialId,
+      ]);
+      expect(await store.listSessions()).toEqual([]);
+      expect(await push.listByAccount(PINNED.accountId)).toEqual([]);
+      expect(await store.listPreviousWallets(PINNED.accountId)).toEqual([
+        {
+          accountId: PINNED.accountId,
+          sparkPubkey: PINNED.oldSparkPubkey,
+          sparkAddress: encodeSparkAddress(PINNED.oldSparkPubkey),
+          replacedAt: NOW,
+        },
+      ]);
+      expect(await store.getPendingRecovery(PINNED.accountId, NOW)).toBeUndefined();
+      expect(events('account.recovery.forwarded')).toEqual([
+        expect.objectContaining({ accountId: PINNED.accountId }),
+      ]);
+      expect(events('account.recovery.committed')).toEqual([
+        expect.objectContaining({ accountId: PINNED.accountId, via: 'claim' }),
+      ]);
+      const logged = JSON.stringify(parsedEvents(warn));
+      expect(logged).not.toContain(PINNED.oldSparkPubkey);
+      expect(logged).not.toContain(String(body['from_signature']));
+    });
+
+    it('answers 404 without forwarding when a gate fails', async () => {
+      const store = await pendingStore();
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const app = mount(store, fetchImpl);
+      const body = signedBody();
+      const stranger = transferBody({
+        username: RECOVERY_USERNAME,
+        fromPubkey: PINNED.newSparkPubkey,
+        fromPrivKey: PINNED_PRIVATE_KEYS.new,
+        toPubkey: PINNED.newSparkPubkey,
+        toPrivKey: PINNED_PRIVATE_KEYS.new,
+        timestamp: TS,
+      });
+      const refused: unknown[] = [
+        'not json',
+        '[]',
+        'null',
+        { ...body, Username: 'ada' },
+        { ...body, ｕｓｅｒｎａｍｅ: 'ada' },
+        { ...body, FROM_PUBKEY: PINNED.oldSparkPubkey },
+        { ...body, Timestamp: TS },
+        { ...body, username: 7 },
+        { ...body, username: 'ädä' },
+        { ...body, username: 'not a name' },
+        signedBody({ description: 'x'.repeat(256) }),
+        { ...body, description: 1 },
+        { ...body, from_pubkey: 'nope' },
+        { ...body, from_pubkey: 1 },
+        { ...body, from_signature: 1 },
+        { ...body, to_signature: null },
+        { ...body, timestamp: String(TS) },
+        { ...body, timestamp: 1.5 },
+        { ...body, timestamp: -1 },
+        signedBody({ timestamp: TS - 601 }),
+        signedBody({ timestamp: TS + 601 }),
+        { ...body, from_signature: body['to_signature'] },
+        { ...body, to_signature: body['from_signature'] },
+        { ...body, description: 'Pay to someone else' },
+        signedBody({ username: 'bob' }),
+        stranger,
+      ];
+      for (const candidate of refused) {
+        const res = await transfer(app, candidate);
+        expect(res.status).toBe(404);
+        expect(await res.json()).toEqual({ error: 'Not found' });
+      }
+      const badPath = await app.request('/lnurlpay/bad/transfer', {
+        method: 'POST',
+        body: JSON.stringify(body),
+      });
+      expect(badPath.status).toBe(404);
+      expect(calls).toEqual([]);
+      expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBeNull();
+    });
+
+    it('accepts a description of 255 code points, and the bounds of the time window', async () => {
+      for (const variant of [
+        signedBody({ description: '🎁'.repeat(255) }),
+        signedBody({ timestamp: TS - 600 }),
+        signedBody({ timestamp: TS + 600 }),
+      ]) {
+        const store = await pendingStore();
+        const { fetchImpl } = scriptedLnurlFetch({
+          transfer: () => transferAccepted(RECOVERY_USERNAME),
+        });
+        expect((await transfer(mount(store, fetchImpl), variant)).status).toBe(200);
+      }
+    });
+
+    it('answers 404 when no pending recovery admits the claim', async () => {
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const none = new InMemoryAuthStore();
+      await seedPinnedAccount(none);
+      expect((await transfer(mount(none, fetchImpl), signedBody())).status).toBe(404);
+
+      const expired = await pendingStore(NOW - CHALLENGE_TTL_MS - 1);
+      expect((await transfer(mount(expired, fetchImpl), signedBody())).status).toBe(404);
+
+      const refused = await pendingStore();
+      await refused.setSessionRefused(PINNED.accountId, true);
+      expect((await transfer(mount(refused, fetchImpl), signedBody())).status).toBe(404);
+
+      const forwarded = new InMemoryAuthStore();
+      await seedPinnedAccount(forwarded);
+      await stagePendingRecovery(forwarded, { createdAt: NOW, forwardedAt: NOW });
+      expect((await transfer(mount(forwarded, fetchImpl), signedBody())).status).toBe(404);
+
+      // The account left the old verified key after finish: on another
+      // verified key, or back on the old key but unverified.
+      for (const wallet of [
+        { pubkey: PUBKEY, verified: true },
+        { pubkey: PINNED.oldSparkPubkey, verified: false },
+      ]) {
+        const moved = await pendingStore();
+        await moved.deleteAccount(PINNED.accountId);
+        await seedWallet(moved, { id: PINNED.accountId, username: RECOVERY_USERNAME, ...wallet });
+        expect((await transfer(mount(moved, fetchImpl), signedBody())).status).toBe(404);
+        expect((await moved.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBeNull();
+      }
+      expect(calls).toEqual([]);
+    });
+
+    it('stamps forwardedAt with the time after the body was read', async () => {
+      const store = await pendingStore();
+      let clock = NOW;
+      const bytes = new TextEncoder().encode(JSON.stringify(signedBody()));
+      // highWaterMark 0: the stream is pulled only when the route reads the body.
+      const slowUpload = new ReadableStream<Uint8Array>(
+        {
+          pull(controller) {
+            clock = NOW + 4_000;
+            controller.enqueue(bytes);
+            controller.close();
+          },
+        },
+        { highWaterMark: 0 },
+      );
+      let seen: number | null | undefined;
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: async () => {
+          seen = (await store.getPendingRecovery(PINNED.accountId, clock))?.forwardedAt;
+          return new Response('"signature has already been used"', { status: 409 });
+        },
+      });
+      const request = new Request(`http://localhost${TRANSFER_PATH}`, {
+        method: 'POST',
+        body: slowUpload,
+        duplex: 'half',
+      } as RequestInit & { duplex: 'half' });
+      const res = await mount(store, fetchImpl, () => clock).request(request);
+      expect(res.status).toBe(409);
+      expect(calls).toHaveLength(1);
+      expect(seen).toBe(NOW + 4_000);
+      expect((await store.getPendingRecovery(PINNED.accountId, clock))?.forwardedAt).toBe(
+        NOW + 4_000,
+      );
+    });
+
+    it('answers 409 when the upstream accepted but the commit did not land', async () => {
+      const store = await pendingStore();
+      vi.spyOn(store, 'commitRecovery').mockResolvedValue('gone');
+      const { fetchImpl } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const res = await transfer(mount(store, fetchImpl), signedBody());
+      expect(res.status).toBe(409);
+      expect(await res.json()).toEqual({ error: 'Wallet registration could not be confirmed' });
+      expect(events('account.recovery.unconfirmed')).toEqual([
+        expect.objectContaining({ accountId: PINNED.accountId }),
+      ]);
+      expect(events('account.recovery.committed')).toEqual([]);
+    });
+
+    it('passes upstream 4xx through and keeps the pending recovery forwarded', async () => {
+      for (const upstream of [
+        new Response('"signature has already been used"', { status: 409 }),
+        new Response('"source pubkey does not own this username"', { status: 404 }),
+      ]) {
+        const store = await pendingStore();
+        const text = await upstream.clone().text();
+        const { fetchImpl } = scriptedLnurlFetch({ transfer: () => upstream });
+        const res = await transfer(mount(store, fetchImpl), signedBody());
+        expect(res.status).toBe(upstream.status);
+        expect(await res.text()).toBe(text);
+        expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBe(NOW);
+        expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+      }
+    });
+
+    it('answers 503 for upstream 5xx, an unreachable server, or an aborted forward, and changes nothing', async () => {
+      const abort = Object.assign(new Error('The operation was aborted due to timeout'), {
+        name: 'TimeoutError',
+      });
+      for (const fetchImpl of [
+        scriptedLnurlFetch({
+          transfer: () => new Response('"internal server error"', { status: 500 }),
+        }).fetchImpl,
+        (async () => {
+          throw new TypeError('fetch failed');
+        }) as FetchFn,
+        (async () => {
+          throw abort;
+        }) as FetchFn,
+      ]) {
+        const store = await pendingStore();
+        const res = await transfer(mount(store, fetchImpl), signedBody());
+        expect(res.status).toBe(503);
+        expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+        const pending = await store.getPendingRecovery(
+          PINNED.accountId,
+          NOW + CHALLENGE_TTL_MS + 1,
+        );
+        expect(pending?.forwardedAt).toBe(NOW);
+        const account = await store.getAccount(PINNED.accountId);
+        expect(account?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+        expect(await store.listPreviousWallets(PINNED.accountId)).toEqual([]);
+      }
+      expect(
+        events('lnurl_server.unreachable').filter((e) => e['route'] === 'transfer'),
+      ).toHaveLength(3);
+    });
+
+    it('sends the forward with LNURL_SERVER_TIMEOUT_MS, the bound the settle window counts on', async () => {
+      const timeoutSpy = vi.spyOn(AbortSignal, 'timeout');
+      try {
+        const store = await pendingStore();
+        const scripted = scriptedLnurlFetch({
+          transfer: () => transferAccepted(RECOVERY_USERNAME),
+        });
+        const signals: Array<AbortSignal | null | undefined> = [];
+        const fetchImpl: FetchFn = (input, init) => {
+          signals.push(init?.signal);
+          return scripted.fetchImpl(input, init);
+        };
+        expect((await transfer(mount(store, fetchImpl), signedBody())).status).toBe(200);
+        expect(scripted.calls.map((call) => call.route)).toEqual(['transfer']);
+        expect(timeoutSpy.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
+        expect(signals).toHaveLength(1);
+        expect(signals[0]).toBe(timeoutSpy.mock.results[0]?.value);
+        expect(RECOVERY_SETTLE_AFTER_MS).toBe(2 * LNURL_SERVER_TIMEOUT_MS);
+      } finally {
+        timeoutSpy.mockRestore();
+      }
+    });
+
+    it('answers 503 when the store throws at admission and contacts no upstream', async () => {
+      const store = await pendingStore();
+      vi.spyOn(store, 'markRecoveryForwarded').mockRejectedValue(new Error('db'));
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const res = await transfer(mount(store, fetchImpl), signedBody());
+      expect(res.status).toBe(503);
+      expect(calls).toEqual([]);
+      expect(events('lnurl_server.failed')).toEqual([
+        expect.objectContaining({ route: 'transfer' }),
+      ]);
+      expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBeNull();
+    });
+
+    it('answers 503 when the commit throws and keeps the pending recovery forwarded', async () => {
+      const store = await pendingStore();
+      vi.spyOn(store, 'commitRecovery').mockRejectedValue(new Error('db'));
+      const { fetchImpl, calls } = scriptedLnurlFetch({
+        transfer: () => transferAccepted(RECOVERY_USERNAME),
+      });
+      const res = await transfer(mount(store, fetchImpl), signedBody());
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+      expect(calls).toHaveLength(1);
+      expect(events('lnurl_server.failed')).toEqual([
+        expect.objectContaining({ route: 'transfer' }),
+      ]);
+      expect(events('account.recovery.committed')).toEqual([]);
+      expect((await store.getPendingRecovery(PINNED.accountId, NOW))?.forwardedAt).toBe(NOW);
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+      expect(await store.listPreviousWallets(PINNED.accountId)).toEqual([]);
+    });
+
+    it('answers 413 for a body over the limit', async () => {
+      const store = await pendingStore();
+      const { fetchImpl, calls } = scriptedLnurlFetch({});
+      const request = new Request(`http://localhost${TRANSFER_PATH}`, {
+        method: 'POST',
+        headers: { 'content-length': String(LNURL_BODY_LIMIT_BYTES + 1) },
+        body: '{}',
+      });
+      const res = await mount(store, fetchImpl).request(request);
+      expect(res.status).toBe(413);
+      expect(await res.json()).toEqual({ error: 'Request body is too large' });
+      expect(calls).toEqual([]);
+    });
+
+    it('answers 429 after 30 transfers a minute from one address', async () => {
+      const store = new InMemoryAuthStore();
+      const app = mount(store, scriptedLnurlFetch({}).fetchImpl);
+      const headers = { 'cf-connecting-ip': '198.51.100.9' };
+      for (let i = 0; i < 30; i += 1) {
+        expect((await transfer(app, '{}', headers)).status).toBe(404);
+      }
+      const limited = await transfer(app, '{}', headers);
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual({ error: 'Too many requests' });
+    });
+  });
+
+  describe('POST /lnurlpay/:pubkey/recover with a pending social recovery', () => {
+    const FORWARDED_AT = NOW;
+    const AFTER_WINDOW = FORWARDED_AT + RECOVERY_SETTLE_AFTER_MS + 1;
+
+    async function forwardedStore(): Promise<InMemoryAuthStore> {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      await stagePendingRecovery(store, { createdAt: NOW, forwardedAt: FORWARDED_AT });
+      return store;
+    }
+
+    function lookup(app: Hono, pubkey: string): Promise<Response> {
+      return Promise.resolve(
+        app.request(`/lnurlpay/${pubkey}/recover`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json' },
+          body: '{"signature":"s","timestamp":1}',
+        }),
+      );
+    }
+
+    it("passes the new key of a pending recovery, and an expired unforwarded one's not", async () => {
+      const store = new InMemoryAuthStore();
+      await seedPinnedAccount(store);
+      await stagePendingRecovery(store, { createdAt: NOW });
+      const { fetchImpl, calls } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+      const live = await lookup(mount(store, fetchImpl), PINNED.newSparkPubkey);
+      expect(live.status).toBe(404);
+      expect(calls).toHaveLength(1);
+      const expired = await lookup(
+        mount(store, fetchImpl, () => NOW + CHALLENGE_TTL_MS + 1),
+        PINNED.newSparkPubkey,
+      );
+      expect(expired.status).toBe(404);
+      expect(calls).toHaveLength(1);
+    });
+
+    it("commits after the window when the new key's lookup returns the username", async () => {
+      const store = await forwardedStore();
+      const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds(RECOVERY_USERNAME) });
+      const res = await lookup(
+        mount(store, fetchImpl, () => AFTER_WINDOW),
+        PINNED.newSparkPubkey,
+      );
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as { username: string }).username).toBe(RECOVERY_USERNAME);
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+      expect(
+        parsedEvents(warn).filter(
+          (e) => e['event'] === 'account.recovery.committed' && e['via'] === 'lookup',
+        ),
+      ).toHaveLength(1);
+    });
+
+    it("commits after the window when the old key's lookup finds no name, and answers 404", async () => {
+      const store = await forwardedStore();
+      const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+      const res = await lookup(
+        mount(store, fetchImpl, () => AFTER_WINDOW),
+        PINNED.oldSparkPubkey,
+      );
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    });
+
+    it("drops after the window when the old key's lookup still returns the username", async () => {
+      const store = await forwardedStore();
+      const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds(RECOVERY_USERNAME) });
+      const res = await lookup(
+        mount(store, fetchImpl, () => AFTER_WINDOW),
+        PINNED.oldSparkPubkey,
+      );
+      expect(res.status).toBe(200);
+      expect(await store.getPendingRecovery(PINNED.accountId, AFTER_WINDOW)).toBeUndefined();
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    });
+
+    it('keeps the pending recovery for lookups sent inside the window', async () => {
+      const store = await forwardedStore();
+      const atBoundary = FORWARDED_AT + RECOVERY_SETTLE_AFTER_MS;
+      const holds = scriptedLnurlFetch({ recover: () => lookupHolds(RECOVERY_USERNAME) });
+      await lookup(
+        mount(store, holds.fetchImpl, () => atBoundary),
+        PINNED.newSparkPubkey,
+      );
+      await lookup(
+        mount(store, holds.fetchImpl, () => atBoundary),
+        PINNED.oldSparkPubkey,
+      );
+      const notFound = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+      await lookup(
+        mount(store, notFound.fetchImpl, () => atBoundary),
+        PINNED.oldSparkPubkey,
+      );
+      expect((await store.getPendingRecovery(PINNED.accountId, atBoundary))?.forwardedAt).toBe(
+        FORWARDED_AT,
+      );
+      expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
     });
   });
 

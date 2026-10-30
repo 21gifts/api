@@ -62,12 +62,14 @@ describe('openBootStores', () => {
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     process.env['NOSTR_NSEC_KEK'] = 'ab'.repeat(32);
+    process.env['RECOVERY_SHARE_KEK'] = 'cd'.repeat(32);
   });
 
   afterEach(() => {
     warn.mockRestore();
     setDiagnosticSink(null);
     delete process.env['NOSTR_NSEC_KEK'];
+    delete process.env['RECOVERY_SHARE_KEK'];
   });
 
   it('returns in-memory auth, no gift store, and InMemoryBtcUsdStore when unset', async () => {
@@ -98,8 +100,12 @@ describe('openBootStores', () => {
       sparkInvoiceStore,
       walletStore,
       memberEventStore,
+      nostrKek,
+      recoveryShareKek,
     } = await openBootStores(undefined, factory);
     expect(authStore).toBeInstanceOf(InMemoryAuthStore);
+    expect(nostrKek).toBeUndefined();
+    expect(recoveryShareKek).toBeUndefined();
     expect(giftStore).toBeUndefined();
     expect(giftRecorder).toBeUndefined();
     expect(messageStore).toBeUndefined();
@@ -250,6 +256,7 @@ describe('openBootStores', () => {
       sparkInvoiceStore,
       walletStore,
       memberEventStore,
+      recoveryShareKek,
     } = await openBootStores(url, factory, {
       fetchImpl: async () => new Response('[]', { status: 200 }),
       candlesUrl: 'https://example.test/candles',
@@ -263,6 +270,7 @@ describe('openBootStores', () => {
     expect(factory).toHaveBeenCalledTimes(1);
     expect(factory).toHaveBeenCalledWith(url.trim());
     expect(authStore).toBeInstanceOf(PostgresAuthStore);
+    expect(recoveryShareKek).toEqual(new Uint8Array(32).fill(0xcd));
     expect(giftStore).toBeInstanceOf(QueryGiftStore);
     expect(giftRecorder).toBeInstanceOf(SqlGiftRecorder);
     expect(messageStore).toBeInstanceOf(PostgresMessageStore);
@@ -340,6 +348,17 @@ describe('openBootStores', () => {
       /CREATE TABLE IF NOT EXISTS member_event/i.test(q),
     );
     const dbChangeIdx = executes.findIndex((q) => /CREATE TABLE IF NOT EXISTS db_change/i.test(q));
+    const recoveryTableIdx = ['recovery_share', 'pending_recovery', 'previous_wallet'].map(
+      (table) =>
+        executes.findIndex((q) => new RegExp(`CREATE TABLE IF NOT EXISTS ${table} \\(`).test(q)),
+    );
+    // The recovery tables come with the auth schema, so trg_db_change attaches to them too.
+    for (const index of recoveryTableIdx) {
+      expect(index).toBeGreaterThanOrEqual(0);
+      expect(dbChangeIdx).toBeGreaterThan(index);
+    }
+    expect(recoveryTableIdx[1]).toBeGreaterThan(recoveryTableIdx[0] ?? -1);
+    expect(recoveryTableIdx[2]).toBeGreaterThan(recoveryTableIdx[1] ?? -1);
     expect(sparkInvoiceIdx).toBeGreaterThanOrEqual(0);
     expect(walletIdx).toBeGreaterThan(sparkInvoiceIdx);
     expect(memberEventIdx).toBeGreaterThan(walletIdx);
@@ -736,6 +755,85 @@ describe('openBootStores', () => {
       outcome: 'not_open',
     });
     expect(statements[0]).toBe('SELECT pg_advisory_xact_lock($1, $2)');
+  });
+
+  it('hands the transaction port to the SQL auth store for the social recovery steps', async () => {
+    const client: SqlClient = {
+      query: async <T>(text: string): Promise<T[]> =>
+        (text.includes('min(paid_at)') ? [{ min: null, max: null }] : []) as T[],
+      execute: async () => undefined,
+    };
+    const statements: string[] = [];
+    const transactions: MergeDb = {
+      begin: (run) =>
+        run({
+          query: async <Q>(text: string): Promise<Q[]> => {
+            statements.push(text);
+            return [] as Q[];
+          },
+        }),
+    };
+    const stores = await openBootStores(
+      'postgres://gifts21@localhost/gifts21',
+      () => client,
+      {
+        fetchImpl: async () => new Response('[]', { status: 200 }),
+        candlesUrl: 'https://example.test/candles',
+        frankfurterUrl: 'https://example.test/frankfurter',
+        nostrQuerier: new RecordingQuerier(),
+        zapRelayUrls: ['wss://relay.example'],
+      },
+      transactions,
+    );
+    expect(
+      await stores.authStore.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: `02${'a'.repeat(64)}`,
+        ciphertext: new Uint8Array(40),
+        now: 1,
+      }),
+    ).toBe('changed');
+    expect(statements[0]).toMatch(/FROM account WHERE id = \$1 FOR UPDATE/);
+  });
+
+  describe('RECOVERY_SHARE_KEK on the SQL path', () => {
+    const quietClient = (executes: string[]): SqlClient => ({
+      query: async <T>(text: string): Promise<T[]> =>
+        (text.includes('min(paid_at)') ? [{ min: null, max: null }] : []) as T[],
+      execute: async (text: string) => {
+        executes.push(text);
+      },
+    });
+
+    it('rejects a boot without it after the auth migration ran', async () => {
+      delete process.env['RECOVERY_SHARE_KEK'];
+      const executes: string[] = [];
+      await expect(
+        openBootStores('postgres://gifts21@localhost/gifts21', () => quietClient(executes)),
+      ).rejects.toThrow(/RECOVERY_SHARE_KEK is required when DATABASE_URL is set/);
+      expect(executes.some((q) => q.includes('CREATE TABLE IF NOT EXISTS recovery_share'))).toBe(
+        true,
+      );
+      expect(executes.some((q) => q.includes('btc_usd_daily'))).toBe(false);
+    });
+
+    it('rejects a blank or malformed value', async () => {
+      process.env['RECOVERY_SHARE_KEK'] = '   ';
+      await expect(
+        openBootStores('postgres://gifts21@localhost/gifts21', () => quietClient([])),
+      ).rejects.toThrow(/RECOVERY_SHARE_KEK is required/);
+      process.env['RECOVERY_SHARE_KEK'] = 'CD'.repeat(32);
+      await expect(
+        openBootStores('postgres://gifts21@localhost/gifts21', () => quietClient([])),
+      ).rejects.toThrow(/RECOVERY_SHARE_KEK must be 64 lowercase hex/);
+    });
+
+    it('rejects a value equal to NOSTR_NSEC_KEK', async () => {
+      process.env['RECOVERY_SHARE_KEK'] = 'ab'.repeat(32);
+      await expect(
+        openBootStores('postgres://gifts21@localhost/gifts21', () => quietClient([])),
+      ).rejects.toThrow(/RECOVERY_SHARE_KEK must differ from NOSTR_NSEC_KEK/);
+    });
   });
 
   it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {

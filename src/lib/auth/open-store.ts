@@ -1,3 +1,4 @@
+import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore, type AuthStore } from '@/lib/auth/store';
 import {
   backfillSparkAddresses,
@@ -20,12 +21,15 @@ import { backfillAccountUsernames } from '@/lib/username';
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL client factory; required when `databaseUrl` is set.
+ * @param transactions - Optional transaction port handed to {@link PostgresAuthStore} for
+ *   the social recovery steps; the in-memory adapter does not need it.
  * @returns The store to inject into {@link createApp}.
  * @throws If `databaseUrl` is set and `createClient` is omitted.
  */
 export async function openAuthStore(
   databaseUrl: string | undefined,
   createClient?: (url: string) => SqlClient,
+  transactions?: MergeDb,
 ): Promise<AuthStore> {
   if (databaseUrl === undefined || databaseUrl.trim() === '') {
     return new InMemoryAuthStore();
@@ -36,7 +40,7 @@ export async function openAuthStore(
   const sql = createClient(databaseUrl.trim());
   await migrateAuthSchema(sql);
   await backfillSparkAddresses(sql);
-  const store = new PostgresAuthStore(sql);
+  const store = new PostgresAuthStore(sql, transactions);
   await backfillAccountUsernames(store);
   return store;
 }

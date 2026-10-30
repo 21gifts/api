@@ -6,8 +6,13 @@ import {
   parseStoredFiat,
   parseStoredLocale,
   staffTagOf,
+  type PasskeyChallenge,
+  type PasskeyCredential,
+  type PendingRecovery,
 } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { InMemoryPushStore } from '@/lib/push-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 const KEY = `02${'a'.repeat(64)}`;
 const T0 = 1_000_000;
@@ -2670,5 +2675,733 @@ describe('InMemoryAuthStore setUsername', () => {
   it('returns missing when the account does not exist', async () => {
     const store = new InMemoryAuthStore();
     expect(await store.setUsername('missing', 'ada')).toEqual({ ok: false, reason: 'missing' });
+  });
+});
+
+describe('InMemoryAuthStore social recovery', () => {
+  const OLD = `02${'1'.repeat(64)}`;
+  const NEW = `03${'2'.repeat(64)}`;
+  const THIRD = `02${'3'.repeat(64)}`;
+  const NOW = 50_000_000;
+
+  async function recoverable(
+    store: InMemoryAuthStore,
+    id: string,
+    username: string,
+    sparkPubkey = OLD,
+  ): Promise<void> {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: `${id}`.padEnd(64, '0').slice(0, 64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await store.claimSparkPubkey(id, sparkPubkey);
+    expect(await store.markSparkPubkeyVerified(id, sparkPubkey, username.toLowerCase(), 10)).toBe(
+      true,
+    );
+  }
+
+  function challenge(id: string, accountId: string, createdAt = NOW): PasskeyChallenge {
+    return {
+      id,
+      type: 'recovery',
+      challenge: `challenge-${id}`,
+      accountId,
+      consumed: false,
+      createdAt,
+    };
+  }
+
+  function pending(accountId: string, overrides: Partial<PendingRecovery> = {}): PendingRecovery {
+    return {
+      accountId,
+      oldSparkPubkey: OLD,
+      newSparkPubkey: NEW,
+      credentialId: 'new-credential',
+      publicKey: Uint8Array.of(4, 5, 6),
+      signCount: 0,
+      createdAt: NOW,
+      forwardedAt: null,
+      ...overrides,
+    };
+  }
+
+  /** Begin, finish, and admit one recovery of `accountId`. */
+  async function forwarded(
+    store: InMemoryAuthStore,
+    accountId: string,
+    username: string,
+    from = OLD,
+    to = NEW,
+    credentialId = 'new-credential',
+  ): Promise<void> {
+    const id = `c-${accountId}-${to}`;
+    expect(
+      await store.startRecoveryChallenge({
+        accountId,
+        oldSparkPubkey: from,
+        challenge: challenge(id, accountId),
+        now: NOW,
+      }),
+    ).toBe('started');
+    expect(
+      await store.storePendingRecovery({
+        challengeId: id,
+        pending: pending(accountId, { oldSparkPubkey: from, newSparkPubkey: to, credentialId }),
+        now: NOW,
+      }),
+    ).toBe('stored');
+    expect(
+      await store.markRecoveryForwarded({
+        newSparkPubkey: to,
+        oldSparkPubkey: from,
+        username,
+        now: NOW + 1,
+      }),
+    ).toBeDefined();
+  }
+
+  describe('startRecoveryChallenge', () => {
+    it('refuses an unknown account, another key, an unverified key, and a refused account', async () => {
+      const store = new InMemoryAuthStore();
+      const start = (accountId: string, oldSparkPubkey = OLD) =>
+        store.startRecoveryChallenge({
+          accountId,
+          oldSparkPubkey,
+          challenge: challenge(`c-${accountId}`, accountId),
+          now: NOW,
+        });
+      expect(await start('missing')).toBe('changed');
+      await recoverable(store, 'acc', 'ada');
+      expect(await start('acc', NEW)).toBe('changed');
+      await store.createAccount({
+        id: 'claimed',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'claimed',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'c'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await store.claimSparkPubkey('claimed', THIRD);
+      expect(await start('claimed', THIRD)).toBe('changed');
+      await store.setSessionRefused('acc', true);
+      expect(await start('acc')).toBe('changed');
+      expect(await store.getPasskeyChallenge('c-acc')).toBeUndefined();
+    });
+
+    it('consumes earlier recovery challenges, drops an unforwarded pending recovery, evicts expired challenges, and stores the new one', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge({ ...challenge('old-expired', 'acc'), createdAt: 1 });
+      await store.createPasskeyChallenge(challenge('first', 'acc'));
+      await store.createPasskeyChallenge({ ...challenge('seed', 'acc'), type: 'seed' });
+      await store.createPasskeyChallenge(challenge('foreign', 'other'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'first',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('stored');
+      await store.createPasskeyChallenge(challenge('second', 'acc'));
+      const next = challenge('third', 'acc', NOW + 5);
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: 'acc',
+          oldSparkPubkey: OLD,
+          challenge: next,
+          now: NOW + CHALLENGE_TTL_MS - 1,
+        }),
+      ).toBe('started');
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect((await store.getPasskeyChallenge('second'))?.consumed).toBe(true);
+      expect((await store.getPasskeyChallenge('first'))?.consumed).toBe(true);
+      expect((await store.getPasskeyChallenge('seed'))?.consumed).toBe(false);
+      expect((await store.getPasskeyChallenge('foreign'))?.consumed).toBe(false);
+      expect(await store.getPasskeyChallenge('old-expired')).toBeUndefined();
+      expect(await store.getPasskeyChallenge('third')).toBe(next);
+    });
+
+    it('answers forwarded and writes nothing while a forwarded pending recovery remains', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('open', 'acc'));
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: 'acc',
+          oldSparkPubkey: OLD,
+          challenge: challenge('next', 'acc'),
+          now: NOW + 10 * CHALLENGE_TTL_MS,
+        }),
+      ).toBe('forwarded');
+      expect(await store.getPasskeyChallenge('next')).toBeUndefined();
+      expect((await store.getPasskeyChallenge('open'))?.consumed).toBe(false);
+      expect(
+        (await store.getPendingRecovery('acc', NOW + 10 * CHALLENGE_TTL_MS))?.forwardedAt,
+      ).toBe(NOW + 1);
+    });
+  });
+
+  describe('storePendingRecovery', () => {
+    it('refuses an account that left the old key and a missing, foreign, other-type, or expired challenge', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.createPasskeyChallenge({ ...challenge('seed', 'acc'), type: 'seed' });
+      const store1 = (challengeId: string, now = NOW, value = pending('acc')) =>
+        store.storePendingRecovery({ challengeId, pending: value, now });
+      expect(await store1('mine', NOW, pending('acc', { oldSparkPubkey: THIRD }))).toBe('changed');
+      expect(await store1('missing')).toBe('challenge');
+      expect(await store1('theirs')).toBe('challenge');
+      expect(await store1('seed')).toBe('challenge');
+      expect(await store1('mine', NOW + CHALLENGE_TTL_MS + 1)).toBe('challenge');
+      expect(await store1('mine', NOW + CHALLENGE_TTL_MS)).toBe('stored');
+    });
+
+    it('stores once, keeps the byte array by reference, consumes the challenge, and answers same for the repeat', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      const value = pending('acc', { forwardedAt: 99 });
+      expect(
+        await store.storePendingRecovery({ challengeId: 'mine', pending: value, now: NOW }),
+      ).toBe('stored');
+      expect((await store.getPasskeyChallenge('mine'))?.consumed).toBe(true);
+      const stored = await store.getPendingRecovery('acc', NOW);
+      expect(stored).toEqual({ ...value, forwardedAt: null });
+      expect(stored?.publicKey).toBe(value.publicKey);
+      expect(await store.getPendingRecoveryByNewSparkPubkey(NEW, NOW)).toBe(stored);
+      expect(await store.getPendingRecoveryByCredentialId('new-credential', NOW)).toBe(stored);
+      expect(await store.getPendingRecoveryByNewSparkPubkey(THIRD, NOW)).toBeUndefined();
+      expect(await store.getPendingRecoveryByCredentialId('other', NOW)).toBeUndefined();
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('same');
+      expect(await store.getPendingRecovery('acc', NOW)).toBe(stored);
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { credentialId: 'other' }),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+      await store.createPasskeyChallenge(challenge('again', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'again',
+          pending: pending('acc', { credentialId: 'other', newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('pending');
+      expect((await store.getPasskeyChallenge('again'))?.consumed).toBe(false);
+    });
+
+    it('answers challenge for a used challenge when the account has no pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge({ ...challenge('used', 'acc'), consumed: true });
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'used',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+    });
+
+    it('treats an expired unforwarded pending recovery as absent and a forwarded one as present', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      const later = NOW + CHALLENGE_TTL_MS + 1;
+      expect(await store.getPendingRecovery('acc', NOW + CHALLENGE_TTL_MS)).toBeDefined();
+      expect(await store.getPendingRecovery('acc', later)).toBeUndefined();
+      expect(await store.getPendingRecoveryByNewSparkPubkey(NEW, later)).toBeUndefined();
+      expect(await store.getPendingRecoveryByCredentialId('new-credential', later)).toBeUndefined();
+      await store.createPasskeyChallenge(challenge('later', 'acc', later));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'later',
+          pending: pending('acc', { createdAt: later }),
+          now: later,
+        }),
+      ).toBe('stored');
+      await store.markRecoveryForwarded({
+        newSparkPubkey: NEW,
+        oldSparkPubkey: OLD,
+        username: 'ada',
+        now: later,
+      });
+      expect(await store.getPendingRecovery('acc', later + 100 * CHALLENGE_TTL_MS)).toBeDefined();
+    });
+
+    it('evicts expired pending recoveries of other accounts before the key and credential checks', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.storePendingRecovery({
+        challengeId: 'theirs',
+        pending: pending('other', { oldSparkPubkey: THIRD }),
+        now: NOW,
+      });
+      const later = NOW + CHALLENGE_TTL_MS + 1;
+      await store.createPasskeyChallenge(challenge('mine', 'acc', later));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { createdAt: later }),
+          now: later,
+        }),
+      ).toBe('stored');
+    });
+
+    it('refuses a new key held by an account, a previous wallet, or another pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('key');
+      await forwarded(store, 'other', 'bob', THIRD, NEW, 'their-credential');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('key');
+      expect(
+        await store.commitRecovery({ accountId: 'other', newSparkPubkey: NEW, now: NOW + 2 }),
+      ).toBe('committed');
+      const fourth = `03${'4'.repeat(64)}`;
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: fourth, credentialId: 'their-credential' }),
+          now: NOW + 3,
+        }),
+      ).toBe('credential');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW + 3,
+        }),
+      ).toBe('key');
+      expect((await store.getPasskeyChallenge('mine'))?.consumed).toBe(false);
+    });
+
+    it('refuses a credential id held by another pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.storePendingRecovery({
+        challengeId: 'theirs',
+        pending: pending('other', { oldSparkPubkey: THIRD, newSparkPubkey: `03${'5'.repeat(64)}` }),
+        now: NOW,
+      });
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('credential');
+    });
+  });
+
+  describe('markRecoveryForwarded', () => {
+    it('admits only an open, unexpired pending recovery of the old verified key and the username', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'Ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      const admit = (
+        overrides: Partial<{
+          newSparkPubkey: string;
+          oldSparkPubkey: string;
+          username: string;
+          now: number;
+        }> = {},
+      ) =>
+        store.markRecoveryForwarded({
+          newSparkPubkey: NEW,
+          oldSparkPubkey: OLD,
+          username: 'ada',
+          now: NOW + 1,
+          ...overrides,
+        });
+      expect(await admit({ newSparkPubkey: THIRD })).toBeUndefined();
+      expect(await admit({ oldSparkPubkey: THIRD })).toBeUndefined();
+      expect(await admit({ username: 'bob' })).toBeUndefined();
+      expect(await admit({ now: NOW + CHALLENGE_TTL_MS + 1 })).toBeUndefined();
+      await store.setSessionRefused('acc', true);
+      expect(await admit()).toBeUndefined();
+      await store.setSessionRefused('acc', false);
+      const admitted = await admit();
+      expect(admitted).toEqual({ ...pending('acc'), forwardedAt: NOW + 1 });
+      expect(await store.getPendingRecovery('acc', NOW)).toEqual(admitted);
+      expect(await admit({ now: NOW + 2 })).toBeUndefined();
+    });
+  });
+
+  describe('commitRecovery', () => {
+    it('answers gone without a forwarded pending recovery with that new key', async () => {
+      const store = new InMemoryAuthStore();
+      expect(
+        await store.commitRecovery({ accountId: 'missing', newSparkPubkey: NEW, now: NOW }),
+      ).toBe('gone');
+      await recoverable(store, 'acc', 'ada');
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'gone',
+      );
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'gone',
+      );
+      await store.markRecoveryForwarded({
+        newSparkPubkey: NEW,
+        oldSparkPubkey: OLD,
+        username: 'ada',
+        now: NOW,
+      });
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW }),
+      ).toBe('gone');
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+    });
+
+    it('replaces credentials, sessions, push subscriptions, and the wallet key in one step', async () => {
+      const store = new InMemoryAuthStore();
+      const push = new InMemoryPushStore();
+      store.usePushStore(push);
+      await recoverable(store, 'acc', 'Ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyCredential({
+        credentialId: 'login',
+        publicKey: Uint8Array.of(1),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 5,
+      });
+      await store.createPasskeyCredential({
+        credentialId: 'seed',
+        publicKey: Uint8Array.of(2),
+        signCount: 0,
+        accountId: 'other',
+        createdAt: 5,
+      });
+      await store.createSession({ token: 'a'.repeat(64), accountId: 'acc', createdAt: NOW });
+      await store.createSession({ token: 'b'.repeat(64), accountId: 'other', createdAt: NOW });
+      const sub = (endpoint: string, accountId: string) => ({
+        endpoint,
+        accountId,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(NOW),
+        sessionToken: null,
+      });
+      await push.upsertSubscription(sub('https://push.example/1', 'acc'));
+      await push.upsertSubscription(sub('https://push.example/2', 'acc'));
+      await push.upsertSubscription(sub('https://push.example/3', 'other'));
+      expect(
+        await store.putRecoveryShare({
+          accountId: 'acc',
+          sparkPubkey: OLD,
+          ciphertext: new Uint8Array(40),
+          now: NOW,
+        }),
+      ).toBe('stored');
+      await store.createPasskeyChallenge(challenge('stale', 'acc'));
+      await forwarded(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('late', 'acc'));
+      const before = await store.getAccount('acc');
+
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 9 }),
+      ).toBe('committed');
+
+      const after = await store.getAccount('acc');
+      expect(after).toEqual({ ...before, sparkPubkey: NEW, walletRequired: true });
+      expect(after?.sparkPubkeyVerifiedAt).toBe(10);
+      expect(after?.username).toBe('Ada');
+      expect((await store.listPasskeyCredentials()).map((c) => c.credentialId).sort()).toEqual([
+        'new-credential',
+        'seed',
+      ]);
+      expect(await store.getPasskeyCredential('new-credential')).toEqual({
+        credentialId: 'new-credential',
+        publicKey: Uint8Array.of(4, 5, 6),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: NOW + 9,
+      });
+      expect((await store.listSessions()).map((session) => session.accountId)).toEqual(['other']);
+      expect(await push.listByAccount('acc')).toEqual([]);
+      expect(await push.listByAccount('other')).toHaveLength(1);
+      expect(await store.listPreviousWallets('acc')).toEqual([
+        {
+          accountId: 'acc',
+          sparkPubkey: OLD,
+          sparkAddress: encodeSparkAddress(OLD),
+          replacedAt: NOW + 9,
+        },
+      ]);
+      expect((await store.getPasskeyChallenge('late'))?.consumed).toBe(true);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+      expect(await store.getAccountByVerifiedSparkPubkey(NEW)).toEqual(after);
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 10 }),
+      ).toBe('gone');
+    });
+
+    it('commits without a linked push store', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'committed',
+      );
+    });
+
+    it('drops the pending recovery when the account no longer holds the old verified key', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await store.deleteAccount('acc');
+      await recoverable(store, 'acc', 'ada', THIRD);
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'changed',
+      );
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(THIRD);
+
+      const unverified = new InMemoryAuthStore();
+      await recoverable(unverified, 'acc', 'ada');
+      await forwarded(unverified, 'acc', 'ada');
+      await unverified.deleteAccount('acc');
+      await unverified.createAccount({
+        id: 'acc',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'ada',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await unverified.claimSparkPubkey('acc', OLD);
+      expect(
+        await unverified.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW }),
+      ).toBe('changed');
+    });
+
+    it('throws, writing nothing, when another account verified the new key meanwhile', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', NEW);
+      await expect(
+        store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW }),
+      ).rejects.toThrow(/verified wallet key of another account/);
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
+      expect(await store.listPreviousWallets('acc')).toEqual([]);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+    });
+
+    it('throws, writing nothing, when another account took the pending credential id meanwhile', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await forwarded(store, 'acc', 'ada');
+      const theirs: PasskeyCredential = {
+        credentialId: 'new-credential',
+        publicKey: Uint8Array.of(7, 8, 9),
+        signCount: 3,
+        accountId: 'other',
+        createdAt: NOW + 2,
+      };
+      expect(await store.createPasskeyCredential(theirs)).toBe(true);
+      await expect(
+        store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 3 }),
+      ).rejects.toThrow(/passkey of another account/);
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
+      expect(await store.listPreviousWallets('acc')).toEqual([]);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+      expect(await store.getPasskeyCredential('new-credential')).toEqual(theirs);
+    });
+  });
+
+  describe('dropPendingRecovery', () => {
+    it('deletes only the account pending recovery with that new key', async () => {
+      const store = new InMemoryAuthStore();
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(
+        false,
+      );
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: THIRD })).toBe(
+        false,
+      );
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(true);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+    });
+  });
+
+  describe('previous wallets', () => {
+    it('lists newest first, then by key, and drops a wallet together with its share', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: OLD,
+        ciphertext: new Uint8Array(40),
+        now: 1,
+      });
+      await forwarded(store, 'acc', 'ada', OLD, NEW, 'cred-1');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW });
+      await store.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: NEW,
+        ciphertext: new Uint8Array(40),
+        now: 2,
+      });
+      await forwarded(store, 'acc', 'ada', NEW, THIRD, 'cred-2');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW });
+      const fourth = `03${'4'.repeat(64)}`;
+      await forwarded(store, 'acc', 'ada', THIRD, fourth, 'cred-3');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: fourth, now: NOW + 5 });
+      expect((await store.listPreviousWallets('acc')).map((wallet) => wallet.sparkPubkey)).toEqual([
+        THIRD,
+        OLD,
+        NEW,
+      ]);
+      expect(await store.listPreviousWallets('other')).toEqual([]);
+      expect(await store.dropPreviousWallet('acc', fourth)).toBe(false);
+      expect(await store.dropPreviousWallet('acc', OLD)).toBe(true);
+      expect(await store.dropPreviousWallet('acc', OLD)).toBe(false);
+      expect(await store.getPreviousWalletBySparkPubkey(OLD)).toBeUndefined();
+      expect(await store.dropPreviousWallet('acc', NEW)).toBe(true);
+      await forwarded(store, 'acc', 'ada', fourth, OLD, 'cred-4');
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: OLD, now: NOW + 6 }),
+      ).toBe('committed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+    });
+
+    it('orders previous wallets of the same commit time by key whatever the commit order', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada', NEW);
+      await forwarded(store, 'acc', 'ada', NEW, OLD, 'cred-1');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: OLD, now: NOW });
+      await forwarded(store, 'acc', 'ada', OLD, THIRD, 'cred-2');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW });
+      expect((await store.listPreviousWallets('acc')).map((wallet) => wallet.sparkPubkey)).toEqual([
+        OLD,
+        NEW,
+      ]);
+    });
+
+    it('returns the newest previous wallet of a key, then the larger account id', async () => {
+      const shared = `03${'6'.repeat(64)}`;
+      const build = async (first: [string, number], second: [string, number]) => {
+        const store = new InMemoryAuthStore();
+        for (const [id, at] of [first, second]) {
+          await recoverable(store, id, `user-${id}`, shared);
+          await forwarded(store, id, `user-${id}`, shared, `02${id.repeat(64)}`, `cred-${id}`);
+          await store.commitRecovery({
+            accountId: id,
+            newSparkPubkey: `02${id.repeat(64)}`,
+            now: at,
+          });
+        }
+        return (await store.getPreviousWalletBySparkPubkey(shared))?.accountId;
+      };
+      expect(await build(['a', 5], ['b', 5])).toBe('b');
+      expect(await build(['b', 5], ['a', 5])).toBe('b');
+      expect(await build(['a', 9], ['b', 5])).toBe('a');
+      expect(await build(['b', 5], ['a', 9])).toBe('a');
+      expect(await new InMemoryAuthStore().getPreviousWalletBySparkPubkey(shared)).toBeUndefined();
+    });
+  });
+
+  describe('recovery shares', () => {
+    it('stores, replaces, and reports a share only for the current verified wallet', async () => {
+      const store = new InMemoryAuthStore();
+      const put = (accountId: string, sparkPubkey = OLD) =>
+        store.putRecoveryShare({
+          accountId,
+          sparkPubkey,
+          ciphertext: new Uint8Array(40),
+          now: NOW,
+        });
+      expect(await put('missing')).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('missing')).toBe(false);
+      await recoverable(store, 'acc', 'ada');
+      expect(await put('acc', THIRD)).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+      expect(await put('acc')).toBe('stored');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(true);
+      expect(await put('acc')).toBe('replaced');
+      await store.createAccount({
+        id: 'claimed',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'claimed',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'e'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      expect(await store.hasRecoveryShareForVerifiedWallet('claimed')).toBe(false);
+      await store.claimSparkPubkey('claimed', THIRD);
+      expect(await put('claimed', THIRD)).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('claimed')).toBe(false);
+    });
   });
 });

@@ -156,6 +156,26 @@ test('PUT /me/wallet is 404 when LNURL server is off', async ({ request }) => {
   expect(await res.text()).toBe('404 Not Found');
 });
 
+test('PUT /me/recovery-share is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.put('/me/recovery-share');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /me/previous-wallets is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/me/previous-wallets');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('DELETE /me/previous-wallets/:sparkPubkey is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.delete('/me/previous-wallets/:sparkPubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('POST /me/wallet/report without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/wallet/report');
   expect(res.status()).toBe(401);
@@ -224,6 +244,16 @@ test('POST /me/events with a session accepts login and logout and drops unknown 
   });
   expect(res.status()).toBe(200);
   expect(await res.json()).toEqual({ accepted: 2, dropped: 2 });
+});
+
+test('POST /me/events with a session accepts recovery_done', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'recovery_done', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
 });
 
 test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
@@ -527,6 +557,12 @@ test('GET /.well-known/lnurlp/:username is 404 when unknown', async ({ request }
 
 test('POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({ request }) => {
   const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /lnurlpay/:pubkey/transfer is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey/transfer');
   expect(res.status()).toBe(404);
   expect(await res.text()).toBe('404 Not Found');
 });
@@ -953,6 +989,20 @@ test('POST /auth/passkey/authenticate/begin issues options', async ({ request })
 test('POST /auth/passkey/authenticate/finish without body is 400', async ({ request }) => {
   const res = await request.post('/auth/passkey/authenticate/finish');
   expect(res.status()).toBe(400);
+});
+
+test('POST /auth/passkey/recovery/begin is 503 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/auth/passkey/recovery/begin');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+});
+
+test('POST /auth/passkey/recovery/finish without body is 400', async ({ request }) => {
+  const res = await request.post('/auth/passkey/recovery/finish');
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: 'Expected a JSON body with challengeId, credential, newSparkPubkey and signature',
+  });
 });
 
 test('POST /auth/passkey/replace/begin without bearer is 401', async ({ request }) => {

@@ -69,7 +69,11 @@ function quoteIdentifier(identifier: string): string {
  * the order `lockPaymentsForProofs` takes them in. When both accounts have a
  * pending charge, it then deletes the merged account's charge's
  * `pos_charge_invoice` rows and the charge; the catalog update moves the
- * rest of the merged account's charges and its shop payments.
+ * rest of the merged account's charges and its shop payments. Before the
+ * passkey challenges and the catalog-listed rows move, it deletes the merged
+ * account's `recovery_share`, `pending_recovery`, and `previous_wallet` rows
+ * and its `recovery` passkey challenges: they belong to the merged account's
+ * wallets, which go with its row.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -323,6 +327,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       'UPDATE message_repayment SET recipient_account_id = $2 WHERE recipient_account_id = $1',
       accountParams,
     );
+
+    // The source's social recovery rows belong to its own wallets, which go
+    // with the source row, and a share's additional data is the source id:
+    // delete them before the moves below would hand them to the survivor.
+    for (const statement of [
+      'DELETE FROM recovery_share WHERE account_id = $1',
+      'DELETE FROM pending_recovery WHERE account_id = $1',
+      'DELETE FROM previous_wallet WHERE account_id = $1',
+      "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
+    ]) {
+      await tx.query(statement, [input.from]);
+    }
 
     for (const statement of [
       'UPDATE message_invoice SET payer_account_id = $2 WHERE payer_account_id = $1',

@@ -1,6 +1,7 @@
 import { openAuthStore } from '@/lib/auth/open-store';
 import type { MergeDb } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
+import { parseRecoveryShareKek } from '@/lib/auth/recovery-share';
 import type { AuthStore } from '@/lib/auth/store';
 import { parseNostrKek } from '@/lib/nostr/kek';
 import { WebsocketNostrQuerier, type NostrQuerier } from '@/lib/nostr/query';
@@ -146,6 +147,11 @@ export interface BootStores {
   /** Parsed KEK when DATABASE_URL is set; `undefined` on memory boots. */
   nostrKek: Uint8Array | undefined;
   /**
+   * Parsed `RECOVERY_SHARE_KEK` (distinct from `nostrKek`) when DATABASE_URL is
+   * set; `undefined` on memory boots.
+   */
+  recoveryShareKek: Uint8Array | undefined;
+  /**
    * Postgres-backed contact mailbox, or `undefined` when no SQL client was
    * opened so `createApp` keeps the empty in-memory default.
    */
@@ -286,6 +292,7 @@ export interface BootFxOptions {
  * `loginGateStore: undefined`,
  * `listDbChange: undefined`,
  * `debugDbStore: undefined`, `shopIdentityStore: undefined`, `nostrKek: undefined`,
+ * `recoveryShareKek: undefined`,
  * an empty {@link InMemoryBtcUsdStore}, an empty {@link InMemoryFiatStore}, and an
  * empty {@link InMemoryFxSpotStore}.
  * A set URL asks `createClient` for one `SqlClient`, migrates auth (via
@@ -307,7 +314,8 @@ export interface BootFxOptions {
  * {@link PostgresDailyRosterStore}, {@link PostgresBannerStore},
  * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
  * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
- * `NOSTR_NSEC_KEK` into `nostrKek`, constructs {@link PostgresBtcUsdStore} and
+ * `NOSTR_NSEC_KEK` into `nostrKek` and `RECOVERY_SHARE_KEK` into
+ * `recoveryShareKek` right after the auth migration, constructs {@link PostgresBtcUsdStore} and
  * {@link PostgresFiatStore}, and best-effort fills rates for the outbound gift
  * day range (BTC-USD failures log `gifts.fx.boot_fill.failed`; fiat failures
  * log `gifts.fx.fiat_boot_fill.failed`; neither throws). Once the Postgres
@@ -316,8 +324,8 @@ export interface BootFxOptions {
  * before the remaining Postgres stores are constructed. External-zapper
  * backfill failures log `nostr.zapper.backfill.failed` and do not abort boot.
  * Memory boots omit
- * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek`
- * undefined, and do not run the `db_change` migrate. SQL boots return
+ * `notificationStore`, `trustStore`, and `fundingStore`, leave `nostrKek` and
+ * `recoveryShareKek` undefined, and do not run the `db_change` migrate. SQL boots return
  * {@link PostgresShopIdentityStore}, {@link PostgresNotificationStore}, {@link PostgresTrustStore},
  * {@link PostgresFundingStore}, {@link PostgresBannerStore},
  * {@link PostgresApiLogStore}, {@link PostgresDiagnosticStore},
@@ -345,11 +353,13 @@ export interface BootFxOptions {
  * @param createClient - SQL factory; required when `databaseUrl` is set.
  * @param fx - Optional network, URL, timeout, and clock overrides for tests.
  * @param transactions - Optional transaction port; the SQL funding store uses
- *   it for the locked admission count (`admitWithinPlaces`), and the SQL
- *   point-of-sale store for the payment hash claim of `recordInvoice`.
+ *   it for the locked admission count (`admitWithinPlaces`), the SQL
+ *   point-of-sale store for the payment hash claim of `recordInvoice`, and the
+ *   SQL auth store for the social recovery steps.
  * @returns Stores to inject into `createApp`.
  * @throws If `databaseUrl` is set and `createClient` is omitted, if the SQL
- *   path has a missing or malformed `NOSTR_NSEC_KEK`, or if a migration or
+ *   path has a missing or malformed `NOSTR_NSEC_KEK` or `RECOVERY_SHARE_KEK`, or
+ *   a `RECOVERY_SHARE_KEK` equal to `NOSTR_NSEC_KEK`, or if a migration or
  *   zap-payment backfill store operation fails.
  */
 export async function openBootStores(
@@ -367,6 +377,7 @@ export async function openBootStores(
           sqlClient = createClient(url);
           return sqlClient;
         },
+    transactions,
   );
   if (sqlClient === undefined) {
     return {
@@ -381,6 +392,7 @@ export async function openBootStores(
       translationStore: undefined,
       conversationTranslationStore: undefined,
       nostrKek: undefined,
+      recoveryShareKek: undefined,
       contactStore: undefined,
       memberHabitStore: undefined,
       posStore: new InMemoryPosStore(),
@@ -404,6 +416,7 @@ export async function openBootStores(
   const sql: SqlClient = sqlClient;
 
   const nostrKek = parseNostrKek(process.env['NOSTR_NSEC_KEK']);
+  const recoveryShareKek = parseRecoveryShareKek(process.env['RECOVERY_SHARE_KEK'], nostrKek);
 
   await migrateBtcUsdSchema(sqlClient);
   await migrateFiatSchema(sqlClient);
@@ -615,6 +628,7 @@ export async function openBootStores(
     translationStore,
     conversationTranslationStore,
     nostrKek,
+    recoveryShareKek,
     contactStore,
     memberHabitStore,
     posStore,

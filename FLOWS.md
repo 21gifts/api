@@ -8,7 +8,8 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-28.
+**Status**: living document. Last revised 2026-10-29 (securing and
+recovering the account: social recovery). Before that, 2026-09-28.
 
 ---
 
@@ -56,9 +57,12 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
-A recovery phrase is never replaced. `POST /auth/passkey/replace/begin` and
-`/finish` with a valid Bearer return 409
-`{ "error": "A recovery phrase cannot be replaced" }` and delete nothing.
+A recovery phrase is never replaced, except by a social recovery commit
+([`docs/social-recovery.md`](./docs/social-recovery.md)), which replaces the
+account's passkey and wallet key (see
+[Securing and recovering the account](#securing-and-recovering-the-account--shipped)).
+`POST /auth/passkey/replace/begin` and `/finish` with a valid Bearer return
+409 `{ "error": "A recovery phrase cannot be replaced" }` and delete nothing.
 An account whose `walletRequired` is not true can add one seed passkey via
 `POST /auth/passkey/seed/begin` then `/finish`. The login credential stays.
 The session stays. `walletBackupSeenAt` does not decide whether a seed exists.
@@ -89,7 +93,7 @@ not; `lightning-address` stays until the wallet is verified), `walletRequired`, 
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
-account.
+account unless social recovery or the 12 words restore it.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
@@ -97,6 +101,63 @@ HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/seed/begin`, `/auth/passkey/seed/finish`,
 `/me`, `/me/wallet-backup-seen`, `/me/wallet-intro-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
 `/me/rules-agreement`.
+
+### Securing and recovering the account — **Shipped**
+
+Optional, in the settings, for a member with a verified wallet
+([`docs/social-recovery.md`](./docs/social-recovery.md)). A member in the
+grant program is funding-eligible only with it (journeys 4 and 5).
+
+**Mein Konto absichern.** The owner's app splits the 12 words 2-of-3 and
+hands share 1 and share 2 by QR code to two people. Each holder scans it in
+their own signed-in app, which keeps it in that browser under the holder's
+account; no person's share reaches the api. The app then stores share 3 with
+`PUT /me/recovery-share` (`{ sparkPubkey, share }`); the api keeps it
+encrypted and answers the owner JSON with `socialRecoverySetUp: true`. A
+second setup replaces that share. Without the LNURL server the route is not
+mounted (404).
+
+**Recovery.** On a new phone, signed out, the owner scans the two holders'
+QR codes or types the old 12 words, and the app opens the old wallet.
+
+1. `POST /auth/passkey/recovery/begin` with the old wallet key and its signed
+   address lookup. 200 gives WebAuthn creation options for a new passkey on
+   that account, its `accountId` and `username`. 404 means no account or
+   previous wallet has that key; 409 `recovery_done` means the account was
+   already recovered (sign in with the new passkey); 409 `recovery_operator`
+   means the old key no longer holds the name; 503 means the lookup could
+   not be verified yet, and the app tries again after the forward window.
+   403 `app_outdated` and 503 `logins_closed` work as for sign-in.
+2. The browser creates the new passkey; the app derives the new 12 words
+   from it and opens the new wallet.
+3. **Übertragen.** `POST /auth/passkey/recovery/finish` with the attestation,
+   the new wallet key and the old wallet's signature over the recovery
+   message answers `{ "status": "pending" }` and mints no session. The Breez
+   SDK then moves the Lightning address: the old wallet authorizes it and
+   the new wallet's claim goes to `POST /lnurlpay/:pubkey/transfer`, which
+   commits the recovery when the LNURL server accepts it. Until then,
+   `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending`
+   for the new passkey, and `POST /lnurlpay/:pubkey/recover` lookups settle a
+   claim whose answer was lost.
+4. The app signs in with the new passkey (`POST /auth/passkey/authenticate/begin`
+   and `/finish`), sends `recovery_done` (`POST /me/events`), and moves the
+   old wallet's whole balance to the new wallet. It shows the new 12 words
+   and asks the owner to set up new shares.
+
+After the commit the account has one passkey, no old session or push
+subscription, the new wallet key verified, and the same username and
+Lightning address. A balance that did not move is listed in the settings
+with `GET /me/previous-wallets` (`balanceSats` from the explorer, or `null`;
+information only). **Restguthaben übertragen** opens that wallet with its
+words again and sends the rest; once that wallet reads 0, the owner drops it
+with `DELETE /me/previous-wallets/:sparkPubkey` (204), which also deletes
+its 21.gifts share.
+
+HTTP cited: `/me/recovery-share`, `/auth/passkey/recovery/begin`,
+`/auth/passkey/recovery/finish`, `/lnurlpay/:pubkey/transfer`,
+`/lnurlpay/:pubkey/recover`, `/auth/passkey/authenticate/begin`,
+`/auth/passkey/authenticate/finish`, `/me/events`, `/me/previous-wallets`,
+`/me/previous-wallets/:sparkPubkey`.
 
 ---
 

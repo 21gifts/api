@@ -1,4 +1,5 @@
 import { describe, it, expect } from 'vitest';
+import type { MergeDb } from '@/lib/account-merge';
 import { openAuthStore } from '@/lib/auth/open-store';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { PostgresAuthStore } from '@/lib/auth/postgres-store';
@@ -50,5 +51,40 @@ describe('openAuthStore', () => {
     expect(queries[0]).toBe(
       'SELECT id, spark_pubkey, spark_address FROM account WHERE spark_pubkey IS NOT NULL',
     );
+  });
+
+  it('hands the transaction port to the Postgres store for the recovery steps', async () => {
+    const client: SqlClient = { query: async () => [], execute: async () => undefined };
+    const locked: string[] = [];
+    const transactions: MergeDb = {
+      begin: (run) =>
+        run({
+          query: async <T>(text: string): Promise<T[]> => {
+            locked.push(text);
+            return [] as T[];
+          },
+        }),
+    };
+    const withPort = await openAuthStore(
+      'postgres://gifts21@localhost/gifts21',
+      () => client,
+      transactions,
+    );
+    expect(
+      await withPort.commitRecovery({
+        accountId: 'acc',
+        newSparkPubkey: `03${'2'.repeat(64)}`,
+        now: 1,
+      }),
+    ).toBe('gone');
+    expect(locked[0]).toMatch(/FROM account WHERE id = \$1 FOR UPDATE/);
+    const withoutPort = await openAuthStore('postgres://gifts21@localhost/gifts21', () => client);
+    await expect(
+      withoutPort.commitRecovery({
+        accountId: 'acc',
+        newSparkPubkey: `03${'2'.repeat(64)}`,
+        now: 1,
+      }),
+    ).rejects.toThrow('auth transactions are not configured');
   });
 });

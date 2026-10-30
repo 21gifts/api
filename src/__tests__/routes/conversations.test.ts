@@ -21,6 +21,7 @@ import type { SpendPing } from '@/lib/spend-ping';
 import { InMemoryTranslationStore, translationSourceHash } from '@/lib/translation-store';
 import { conversationRoutes } from '@/routes/conversations';
 import { InMemorySparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import {
   BOLT11,
   LNURL_SERVER,
@@ -3328,6 +3329,43 @@ describe('moderator_group', () => {
       ),
     ).toBe(true);
   });
+
+  for (const share of [false, true]) {
+    it(`${share ? 'pings' : 'does not ping'} an admitted moderator ${share ? 'with' : 'without'} a recovery share from the gate day`, async () => {
+      const auth = await seeded('moderator');
+      await withPlatform(auth);
+      await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
+      if (share) {
+        await storeRecoveryShare(auth, 'acc', ACC_PUBKEY);
+      }
+      const conversations = new InMemoryConversationStore();
+      const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+      const spendPing = { ping: vi.fn(async () => undefined) };
+      const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+      await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+      const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
+        spendPing,
+        fundingStore: admittedFunding(),
+        now: () => gateNow,
+      }).request(`/conversations/${thread.id}`, {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ text: 'hello mods' }),
+      });
+      expect(res.status).toBe(200);
+      const created = (await res.json()) as { id: string };
+      const skipped = parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
+      );
+      if (share) {
+        expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'moderator');
+        expect(skipped).toBe(false);
+      } else {
+        expect(spendPing.ping).not.toHaveBeenCalled();
+        expect(skipped).toBe(true);
+      }
+    });
+  }
 
   it('does not ping when the moderator has no living-room post today', async () => {
     const auth = await seeded('moderator');

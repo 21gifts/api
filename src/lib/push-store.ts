@@ -355,6 +355,24 @@ export class InMemoryPushStore implements PushStore {
   }
 
   /**
+   * Remove every subscription of one account, synchronously, so the in-memory
+   * social recovery commit deletes them in the same step.
+   *
+   * @param accountId - Owning account.
+   * @returns How many subscriptions were removed.
+   */
+  removeAccountSubscriptions(accountId: string): number {
+    let removed = 0;
+    for (const [endpoint, row] of this.#subs) {
+      if (row.accountId === accountId) {
+        this.#subs.delete(endpoint);
+        removed += 1;
+      }
+    }
+    return removed;
+  }
+
+  /**
    * List subscriptions for one account (copies).
    *
    * @param accountId - Account id.

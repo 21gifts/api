@@ -16,8 +16,9 @@ import {
   type GoalFiatCode,
   type GoalRateDay,
 } from '@/lib/goal-rate';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { isOperatorBearer } from '@/lib/debug-token';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
@@ -1240,10 +1241,13 @@ async function persistForumPost(
         lnurlServer,
       });
       try {
-        const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
-          account.id,
+        const { grant, eligible } = await loadPayoutEligibility(
+          deps.fundingStore ?? new InMemoryFundingStore(),
+          deps.authStore,
+          account,
+          deps.now(),
         );
-        if (!eligibleToday(account.role, grant, deps.now())) {
+        if (!eligible) {
           logEvent('spend.ping.skipped', { reason: 'not_eligible' });
         } else if (
           created.hasPhoto === true ||

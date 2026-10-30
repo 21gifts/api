@@ -18,9 +18,10 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 
 ## Indexes
 
-| Columns | Unique | Where | Definition                                                                                |
-| ------- | ------ | ----- | ----------------------------------------------------------------------------------------- |
-| `id`    | Yes    | –     | `CREATE UNIQUE INDEX passkey_challenge_pkey ON public.passkey_challenge USING btree (id)` |
+| Columns              | Unique | Where                | Definition                                                                                                                                 |
+| -------------------- | ------ | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------ |
+| `account_id`, `type` | No     | `(consumed = false)` | `CREATE INDEX passkey_challenge_open_account_type_idx ON public.passkey_challenge USING btree (account_id, type) WHERE (consumed = false)` |
+| `id`                 | Yes    | –                    | `CREATE UNIQUE INDEX passkey_challenge_pkey ON public.passkey_challenge USING btree (id)`                                                  |
 
 ## Referenced by
 

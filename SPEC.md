@@ -10,8 +10,7 @@ exact decimal string. A missing string stays null. A daily close, a later spot,
 or a round trip through sats does not fill or replace it. This file does not
 describe a backfill or a read that fills a committed figure that way.
 
-**Status**: living document. Last revised 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waits at most until 8 s after its fetch arrived; the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
-
+**Status**: living document. Last revised 2026-10-29 (social recovery per [docs/social-recovery.md](docs/social-recovery.md): `POST /auth/passkey/recovery/begin` and `POST /auth/passkey/recovery/finish`, behind the app build check and the login switch, store a pending recovery for a new passkey and wallet key, proven by the old wallet's verified lookup and its signature; `POST /lnurlpay/:pubkey/transfer` forwards the Lightning address transfer and commits it; `PUT /me/recovery-share` stores the encrypted 21.gifts share; `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey` list and drop the previous wallets; these four are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `POST /lnurlpay/:pubkey/recover` also passes a pending recovery's new key and settles a forwarded recovery; `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending` for the new passkey of a pending recovery; owner JSON `socialRecoverySetUp`; from the grant gate day `eligibleToday` also requires a 21.gifts recovery share for the current verified wallet, with no start date of its own; `POST /me/events` accepts `recovery_done`; `RECOVERY_SHARE_KEK` is required with `DATABASE_URL`; an account merge deletes the source's recovery rows). Before that, 2026-10-21 (`GET /accounts/by-username/:username` is an exact username lookup: 200 `{ id, username, name }`, stored `username` and stored `name` including null). Before that, 2026-10-20 (`GET /view/:viewKey` returns the same public profile card as the member page, including `profileMessage` and the post, shop, credit, and reply lists; the moderator trust graph stays off that URL; `createdAt` stays epoch milliseconds). Before that, 2026-10-20 (shop payment in USDT and USDC after the contract revision of #491: `recordInvoice` and step 8 take one payment hash claim across `pos_charge_invoice` and `shop_payment`, and `POST /pay/:username/invoice` (502) and `GET /lnurlp/:username/invoice` (503) hand out no BOLT11 that another payment holds; a creation inserts nothing 16 s after its request arrived or for a disconnected payer; the pay link waits at most until 8 s after its fetch arrived; the route list is reused until `validForMs` with its own budget; no stablecoin is offered without a USD spot younger than 10 minutes; a `hex` proof is submitted only after its receipt; a replaced order's successor is its own proof and the payment waits up to 24 h for it (`shop.alert.successor_missing`); a proof refused as `tx_used` is no longer followed; `POST /debug/accounts/merge` locks the deleted pending charge and answers 409 when a pending charge would land next to the survivor's open payment). Before that, 2026-10-17 (shop payment in USDT and USDC per [docs/shop-stablecoin-payment.md](docs/shop-stablecoin-payment.md): `POST /pay/:username/payment`, `GET /lnurlp/cb/:username`, `GET /lnurlp/tx/:username`, `GET /lnurlp/wait/:payment`, and `POST /debug/shop-proofs/:id/retry` are mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; `GET /.well-known/lnurlp/:username` serves the OpenCryptoPay pay request of an open amount, honours `timeout`, `method`, and `asset`, and every error there carries `statusCode`, `message`, `error`, `status`, and `reason`; `POST /pos` and `DELETE /pos` end the account's open shop payment in the same transaction; `GET /pos` adds `charge.shopPayment`; `POST /debug/accounts/merge` answers 409 while the merged account has a shop payment that is neither paid nor closed). Before that, 2026-10-16 (a member who cannot receive is visible before paying: public message JSON carries `authorCanReceive`, `GET /conversations` rows and `GET /habits` comments carry `canReceive`, each from `receivingAddress`; every "cannot receive" answer on the conversation invoice and the habit donation carries `code` `cannot_receive`). Before that, 2026-10-10 (repayment from the in-app wallet: `GET /messages/:id/repayment` gives each giver `canReceive` and each due line `dueSats`; the next share skips a giver who cannot receive, so that giver does not block the others; `POST /messages/:id/repayment/due` makes every payable bill of a loan at once; `GET /me/loans` lists the member's own loans with what is due). Before that, 2026-10-07 (`POST /me/wallet/report` stores the wallet balance and payments with a server-side category; `POST /me/events` stores the first-party interaction log; never a recovery phrase, seed, PRF output, preimage, or private key). Before that, 2026-10-05 (`PUT /me/about` never stores an empty profile note: empty text on a live note that keeps no photo, extra still, or video restores the auto name-copy, so the bio clears; with no live note it is 400 `Write something about yourself`. 2026-10-02: a 400 that means "needs a wallet" or "cannot receive" carries `code` `wallet_required` or `cannot_receive`; a member's only receiving address is the verified in-app wallet `<username>@<host>`: linking, verifying, or removing an external Lightning address is gone, money routes, spend lookups, `GET /.well-known/lnurlp/:username`, and kind 0 `lud16` are wallet-only, posting needs a verified wallet, `POST /pos` without one is `Set up your wallet first`, debug provisioning takes `{ name, username? }`, receipts are read only on the relays every zap request names. Earlier the same day: one receiving address per account: a verified wallet receives on `<username>@<host>` resolved internally against the LNURL server; `sparkInvoice` on `POST /messages/:id/invoice`, `POST /conversations/:id/invoice`, and `POST /messages/:id/repayment` when `LNURL_ZAP_NSEC_HEX` is also set; Spark invoice worker publishes and ingests the zap receipt; `spark_invoice` table. 2026-10-01: `PUT /me/wallet` and forwarded LNURL routes when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; owner `sparkPubkey` / `sparkWalletVerified`; wallet-backed `GET /.well-known/lnurlp/:username`; username fixed once verified; trailing/double-dot username reject. 2026-09-30: `GET /mentions` matches the start of the username, a `.` `_` `-` segment, or the start of the display name or one of its words; a token containing `.` `_` `-` matches only a whole-string start. 2026-09-28: `GET /mentions` username prefix suggestions. GET /mentions returns at most 20 username-prefix suggestions for a signed-in forum reader. 2026-09-24: `POST /conversations/:id/messages/:messageId/translate`; owner and view JSON include `aboutMessageId`; conversation rows include `lastMessageId`. 2026-09-23: `eligibleToday` does not require a grant until UTC 2026-10-10; funding-program grants independent of `account.role`; spend ping and `POST /invoices` require `eligibleToday`; verified top-level media also welcome-pings independent of `eligibleToday`; `GET /invoices/eligible`; `GET /conversations` list/open rows include per-row `unreadMessageCount`; envelope `unreadCount` remains unread thread count; `GET /trust-chain` requires a member Bearer session; public graph uses at most one incoming edge per subject: the oldest eligible sibling (`createdAt` then `id`), skipping a non-chain oldest sibling so a later displayable contact can show; eligible `verify`, `moderator_appoint`, and `moderator_propose` only when the subject is a moderator; `moderator_confirm` and `moderator_reject` never; later appoint/confirm/propose do not replace the first eligible contact; staff may reject an open proposal (`POST /trust/reject-moderator`, append-only `moderator_reject`, role stays `verified`) and re-propose after reject (new `moderator_propose`; 409 while currently pending, any confirm/appoint, or a concurrent older open propose wins after insert); confirm/reject re-list after insert and undo when the other grant already closed; pending = latest propose/reject is propose, verified, no confirm/appoint; live-unique kinds are verify/confirm/appoint only; open proposal fans out in-app `moderator_proposal` plus Web Push to other staff until confirm, until reject when pending is then empty, or until appoint; GET `/notifications` keeps `moderator_appointed` and `moderator_proposal` (mark-read / read-all do not stamp the proposal); owner `notificationLevel` on GET `/me` and `POST /me/notification-level`; fan-out filters in-app and Web Push by `all` / `active` / `mentions`; GET `/notifications` applies the same filter to stored rows (`moderator_appointed` always stays; `unreadCount` is unread among kept rows after the hidden filter (before the 200 cap), not `store.unreadCount()` and not the unfiltered matching unread of the newest 1000); a zap that inserts a gift-reply fans out only `notifyZap`, not a second `forum_reply`; gift-reply row still lands in the thread; confirm/appoint notify the subject only with `moderator_appointed` and Web Push url `/welcome`; official platform account (`isPlatform`) never fans out living-room `forum_post` / `forum_reply` / `zap`; house daily gift-replies still persist; GET /messages omits name-copy profile notes and About me text stays). 2026-10-01: opening a forum note, translating it, or opening Notifications stamps the matching unread forum and zap rows and tells the account's other devices to close those banners (`POST /notifications/read-by-message`; read-all and read-by-message return tags; a freshly stamped `POST /notifications/:id/read` only enqueues the dismiss tag and still returns the public notification). `moderator_proposal` stays unread. Private-message pushes are not dismissed. 2026-10-02: `GET /messages?mode=active` is paid notes plus unpaid founder/moderator notes. An ask with `sats = 0` is not active. 2026-10-09: the API stores the daily roster; initiator or founder edit it and a moderator is refused. Until that store has been written, a spend ping reads the live spend roster and does not import it. 2026-10-09: GET /me/activity, GET /members/:accountId/activity, and GET /view/:viewKey/activity count only donations. Loans (goalRepayable === true, including hidden notes), repay: repayment invoices, and moderator stipends are omitted. Daily and welcome gifts stay. An unknown note still counts as a donation. 2026-10-09: the activity JSON also returns outstanding loan balances that rise when an identified credit is given and fall on each repayment. The loan balances carry sats and BTC only; their fiat fields are null.
 ---
 
 ## Implemented HTTP surface (normative)
@@ -23,7 +22,10 @@ passkey credentials, and sessions survive a
 restart. `account.linking_key` is nullable for passkey-created rows. A missing or unreachable
 database URL that is set is fail-loud at boot. On the SQL path,
 `NOSTR_NSEC_KEK` (64 lowercase hex) is also required; missing or malformed
-KEK throws at boot. Public gift statistics
+KEK throws at boot. So is `RECOVERY_SHARE_KEK` (64 lowercase hex), the key
+of the 21.gifts recovery share, which must differ from `NOSTR_NSEC_KEK`; a
+missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
+boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
@@ -52,8 +54,8 @@ boot repair of unclassified `gift.kind` rows still matches by it. Public
 does not fetch or pay invoices.
 
 Spend-worker invoice routes: `GET /invoices/passkey` and `GET /invoices/posted`
-report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant required from UTC 2026-10-01);
-`POST /invoices` requires passkey and `eligibleToday` (grant required from UTC 2026-10-01), then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver.
+report those gates; `GET /invoices/eligible` reports `{ eligible, status }` (`eligibleToday` plus `effectiveStatus`; grant, and with it a 21.gifts recovery share for the current verified wallet, required from UTC 2026-10-01);
+`POST /invoices` requires passkey and `eligibleToday` (grant and recovery share required from UTC 2026-10-01), then fetches a BOLT11 via LNURL-pay through the internal LNURL-server resolver.
 Every `address` is matched only as the wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive) of a member with a verified wallet; any other domain, or a member without one, gets the existing not-found answer. An address must look like `local@domain.tld`, except that an address on the configured wallet host also passes when that host has a port or is an IP address; anything else is **400** `Not a valid Lightning Address (expected name@domain)`.
 When `messageId` is set, that note must be the address's live top-level note, including About me, and have a photo or video.
 When `messageId` is omitted, issue requires at least one live **top-level** forum message that is not the auto-created profile note.
@@ -92,8 +94,12 @@ Public base URLs used in examples:
 | GET    | `/info`                                              | none                                         | Service identity                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | GET    | `/.well-known/lnurlp/:username`                      | none                                         | LUD-16 payRequest served from the LNURL server for a verified wallet (needs `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`); anything else is 404; an open till charge pins both sendable bounds; an open shop payment answers the OpenCryptoPay pay request; `timeout` waits up to 10 s, then 404 with the OpenCryptoPay body                                                                                                                                                                                                                                                                                       |
 | PUT    | `/me/wallet`                                         | Bearer                                       | Bind wallet identity pubkey while unverified (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
+| PUT    | `/me/recovery-share`                                 | Bearer                                       | Store the encrypted 21.gifts share of social recovery for the verified wallet; 200 owner JSON with `socialRecoverySetUp: true`; 503 without `RECOVERY_SHARE_KEK` (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                          |
+| GET    | `/me/previous-wallets`                               | Bearer                                       | Wallets the account had before a social recovery commit, each with its explorer soft balance or `null` (information only) (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                 |
+| DELETE | `/me/previous-wallets/:sparkPubkey`                  | Bearer                                       | Drop one previous wallet together with its 21.gifts share; 204 (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | POST   | `/lnurlpay/:pubkey`                                  | none                                         | Forward wallet name registration (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| POST   | `/lnurlpay/:pubkey/recover`                          | none                                         | Forward signed recover (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
+| POST   | `/lnurlpay/:pubkey/transfer`                         | none                                         | Forward the Lightning address transfer of a social recovery and commit the recovery on upstream 2xx (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| POST   | `/lnurlpay/:pubkey/recover`                          | none                                         | Forward signed recover, also for the new key of a pending social recovery, and settle a forwarded recovery (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                |
 | GET    | `/lnurlpay/:pubkey/metadata`                         | none                                         | Forward signed payment metadata (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
 | GET    | `/lnurlp/:username/invoice`                          | none                                         | Forward LNURL-pay invoice for a wallet-backed username (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | GET    | `/verify/:paymentHash`                               | none                                         | LUD-21 verify forward (mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
@@ -113,11 +119,13 @@ Public base URLs used in examples:
 | POST   | `/auth/passkey/register/begin`                       | none                                         | Issue WebAuthn creation options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (always for a new account; a claim passes for the platform account or an allowlisted account)                                                                                                                                                                                                                                                                                                                                             |
 | POST   | `/auth/passkey/register/finish`                      | none                                         | Verify attestation, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                                                                                                |
 | POST   | `/auth/passkey/authenticate/begin`                   | none                                         | Issue WebAuthn request options; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
-| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass)                                                                                                                                                                                                                                                                                                                                                                                                  |
+| POST   | `/auth/passkey/authenticate/finish`                  | none                                         | Verify assertion, issue session; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass); 409 `recovery_pending` for the new passkey of a pending social recovery                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/auth/passkey/replace/begin`                        | Bearer                                       | 409 refusal after a valid Bearer (a recovery phrase cannot be replaced; no challenge)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | POST   | `/auth/passkey/replace/finish`                       | Bearer                                       | 409 refusal that deletes nothing and keeps the session                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/auth/passkey/seed/begin`                           | Bearer                                       | Creation options for one extra seed passkey; 409 when walletRequired is already true stores a failed renew row and does not change the account; a 200 stores no row; no excludeCredentials.                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | POST   | `/auth/passkey/seed/finish`                          | Bearer                                       | Verify attestation, insert an additional passkey, set walletRequired true, keep the login passkey and the session. Failure stores a failed renew row. Success stores succeeded, acknowledges open failures, and returns passkeyRenewClosed false.                                                                                                                                                                                                                                                                                                                                                              |
+| POST   | `/auth/passkey/recovery/begin`                       | none                                         | Social recovery: forward the old wallet's signed lookup, then issue WebAuthn creation options for a new passkey on that account; 403 `app_outdated` when `APP_BUILD_REQUIRED` is set and `X-App-Build` differs; 503 `logins_closed` while the login switch is closed (platform and allowlisted accounts pass); 503 without the LNURL server                                                                                                                                                                                                                                                                    |
+| POST   | `/auth/passkey/recovery/finish`                      | none                                         | Verify the new passkey's attestation and the old wallet's signature, store a pending recovery, issue no session; same 403 `app_outdated` and 503 `logins_closed` as begin                                                                                                                                                                                                                                                                                                                                                                                                                                      |
 | GET    | `/me`                                                | `Authorization: Bearer`                      | Account (`setup` + factual `missing` + `hasPosted` + `aboutMe` + `aboutMeHasPhoto` + `aboutMessageId` + `notificationLevel` + `amountUnit` + `locale` + `fiat` + `sparkPubkey` + `sparkWalletVerified`)                                                                                                                                                                                                                                                                                                                                                                                                        |
 | POST   | `/me/amount-unit`                                    | Bearer                                       | Set owner amount-entry unit (`btc` or `fiat`, default `btc`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | POST   | `/me/locale`                                         | Bearer                                       | Set owner UI language (`en`, `de`, `es`, or `fil`). Null until set. `onlyIfUnset` does not overwrite a stored value.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
@@ -290,7 +298,7 @@ Public base URLs used in examples:
 | GET    | `/invoices/passkey`                                  | Bearer `SPEND_API_TOKEN`                     | Whether a wallet address has a passkey-backed account                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | GET    | `/invoices/posted`                                   | Bearer `SPEND_API_TOKEN`                     | Live top-level post flag plus welcome media (`welcomeHasMedia` includes About me)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | GET    | `/invoices/eligible`                                 | Bearer `SPEND_API_TOKEN`                     | Whether the address is funding-eligible today, plus effective grant `status`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                     | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant, and forum post required)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
+| POST   | `/invoices`                                          | Bearer `SPEND_API_TOKEN`                     | Fetch a recipient BOLT11 (LNURL-pay; passkey, funding grant with the 21.gifts recovery share, and forum post required)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/invoices/proof`                                    | Bearer `SPEND_API_TOKEN`                     | Accept payment preimage as proof                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                               |
 | POST   | `/spend/daily-instruction`                           | Bearer `SPEND_API_TOKEN`                     | Spend Bearer. Body `{ address }`. The kind is always daily. 503 if the token env is unset; 401 wrong/missing Bearer. Success 200 is `{ action: skip, reason }` or `{ action: pay, amountUsd, comment }`, plus messageId only when the decision includes it.                                                                                                                                                                                                                                                                                                                                                    |
 
@@ -302,9 +310,12 @@ Two server-side request checks and one operator action for a release. The
 two checks only apply to the passkey steps that lead to a session:
 `POST /auth/passkey/register/begin` (new account and claim),
 `POST /auth/passkey/register/finish`, `POST /auth/passkey/authenticate/begin`
-(build check only), and `POST /auth/passkey/authenticate/finish`. The operator
-mint `POST /debug/accounts/:id/session` is exempt from both checks. Refusals
-are JSON `{ error, code }` with a stable `code`:
+(build check only), `POST /auth/passkey/authenticate/finish`, and the social
+recovery ceremony `POST /auth/passkey/recovery/begin` and
+`POST /auth/passkey/recovery/finish`, whose new passkey later signs in to the
+recovered account. The operator mint `POST /debug/accounts/:id/session` is
+exempt from both checks. Refusals are JSON `{ error, code }` with a stable
+`code`:
 
 | Check       | Status | `code`          | `error`                                             |
 | ----------- | ------ | --------------- | --------------------------------------------------- |
@@ -321,7 +332,10 @@ are JSON `{ error, code }` with a stable `code`:
   platform account (`isPlatform`) and accounts on `login_allowlist` may start a
   session; a new registration is always refused. Finish steps check after the
   passkey is verified and before any account, credential, or session write.
-  Existing sessions are not checked.
+  Recovery begin checks once the account of the old wallet key is found,
+  before the LNURL server is contacted; recovery finish checks once the
+  challenge's account is loaded, before the passkey is verified. Neither
+  writes anything when refused. Existing sessions are not checked.
 - **End all sessions.** `DELETE /debug/sessions` deletes every `auth_session`
   row and returns `{ deleted }`. Every bearer that held one answers 401 on its
   next request.
@@ -650,6 +664,128 @@ Success → **Response** `200` with the owner JSON (includes `sparkPubkey`
 and `sparkWalletVerified`). Logs `account.wallet.claimed` `{ accountId }`
 (never the key).
 
+### `PUT /me/recovery-share`
+
+Bearer session. Stores the 21.gifts share of social recovery
+([docs/social-recovery.md](docs/social-recovery.md), The 21.gifts share).
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve;
+otherwise Hono's default 404. Body (strict):
+
+```json
+{
+  "sparkPubkey": "02aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "share": "<20 lowercase words of 4 to 8 letters, single spaces>"
+}
+```
+
+`share` is the raw SLIP-39 mnemonic of member index 2, not the app's QR
+payload. The api encrypts it with `RECOVERY_SHARE_KEK` (AES-256-GCM, the
+account id as additional data) and stores the envelope for that wallet key in
+one locked step under the account row; a second PUT for the same wallet
+replaces it. No route returns it, and nothing in the api decrypts it.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+No `RECOVERY_SHARE_KEK` (a memory boot), checked before the body →
+**Response** `503` `{ "error": "Social recovery is unavailable" }`.
+
+Bad JSON, another shape, a `sparkPubkey` that does not normalise to 66
+lowercase hex, or a share that is not 20 lowercase words → **Response** `400`
+`{ "error": "Expected a JSON body with sparkPubkey and a recovery share" }`.
+
+Wallet not verified → **Response** `409`
+`{ "error": "Wallet is not connected" }`.
+
+`sparkPubkey` is not the account's verified wallet key, also when the wallet
+changes before the locked write → **Response** `409`
+`{ "error": "Wallet changed" }`.
+
+Encryption or store throw → **Response** `503`
+`{ "error": "Social recovery is unavailable" }` and
+`account.recovery_share.failed` `{ accountId }` with the error name and code.
+
+Success → **Response** `200` with the owner JSON, now with
+`socialRecoverySetUp: true`. Logs `account.recovery_share.stored`
+`{ accountId, replaced }`; never the share, the key, or the body. The first
+share of the current wallet (not a replacement) reads the grant and, when the
+member is eligible today with that share, sends the daily ping of today's
+newest live top-level photo or video, as `POST /funding/trial` does, without
+a second share read. A failed grant read or ping logs
+`funding.daily_ping.failed` `{ accountId }` and the answer stays 200.
+
+**Storage.** `recovery_share` (`docs/schema/recovery_share.sql`): primary key
+`(account_id, spark_pubkey)`, `recovery_share_ciphertext`, `stored_at`.
+`recovery_share_ciphertext` is a secret column: `db_change` keeps only its
+SHA-256 and `GET /debug/db` only its length. Migrated with the auth schema
+when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise.
+
+### `GET /me/previous-wallets`
+
+Bearer session. The wallets the account had before a social recovery commit,
+newest first. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL`
+resolve; otherwise Hono's default 404.
+
+**Response** `200`:
+
+```json
+{
+  "wallets": [
+    {
+      "sparkPubkey": "0281363910b0dc0015a4a25e758da30f0e28388ea5252c0e3713936f2d4ef7d3d5",
+      "sparkAddress": "spark1…",
+      "replacedAt": 1761700000000,
+      "balanceSats": 1234
+    }
+  ]
+}
+```
+
+`wallets` is empty when there is none. `replacedAt` is the commit time (epoch
+ms). `balanceSats` is the soft balance (`btcSoftBalanceSats`, incoming
+transfers that are not claimed yet included), which the api reads for every
+wallet in parallel, anonymously and without an API key, from the public
+explorer `GET https://api.sparkscan.io/v1/address/<sparkAddress>?network=MAINNET`
+(5 s timeout, no redirects). Any failure or another shape gives `null`
+(unknown) and logs `spark_explorer.unavailable` (with the explorer's HTTP
+status when there is one, never the address). The value is information
+only: no route and no app action depends on it.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+Store throw → **Response** `503` `{ "error": "Wallet data is unavailable" }`
+and `account.previous_wallets.failed` `{ accountId }`; the explorer is not
+called.
+
+**Storage.** `previous_wallet` (`docs/schema/previous_wallet.sql`): primary
+key `(account_id, spark_pubkey)`, `spark_address`, `replaced_at`, written by
+the recovery commit. Migrated with the auth schema when `DATABASE_URL` is set
+and covered by `db_change`; in memory otherwise.
+
+### `DELETE /me/previous-wallets/:sparkPubkey`
+
+Bearer session. Drops one previous wallet of the account and, in the same
+statement, the account's 21.gifts recovery share of that key. The app offers
+it only once that wallet, opened with its words, reads a balance of 0.
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve;
+otherwise Hono's default 404.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+`:sparkPubkey` does not normalise, or is not a previous wallet of the
+account (also on a repeat) → **Response** `404` `{ "error": "Not found" }`.
+
+Store throw → **Response** `503` `{ "error": "Wallet data is unavailable" }`
+and `account.previous_wallets.failed` `{ accountId }`.
+
+Success → **Response** `204` with no body. Logs
+`account.previous_wallet.dropped` `{ accountId }`, never the key.
+
+**Storage.** Deletes the `previous_wallet` row
+(`docs/schema/previous_wallet.sql`) and the account's `recovery_share` row of
+that key (`docs/schema/recovery_share.sql`) in one statement. Migrated with
+the auth schema when `DATABASE_URL` is set and covered by `db_change`; in
+memory otherwise.
+
 ### `POST /lnurlpay/:pubkey`
 
 Forward wallet name registration to the self-hosted LNURL server.
@@ -692,6 +828,93 @@ outside 2xx and 4xx (for example 5xx) → **Response** `503`
 On `/lnurlpay/*`, the allow-list CORS (same origins) additionally allows
 the request headers `X-Breez-Signature` and `X-Breez-Timestamp`.
 
+### `POST /lnurlpay/:pubkey/transfer`
+
+Forward the Lightning address transfer of a social recovery
+([docs/social-recovery.md](docs/social-recovery.md)) to the self-hosted
+LNURL server, and commit the recovery when the server moves the name.
+Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. No api
+session: the Breez SDK (`claimLightningAddressTransfer`) sends both wallets'
+signatures in the body. `:pubkey` is the **new** wallet key. Rate limit
+30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413
+`{ "error": "Request body is too large" }` and the upstream is not contacted.
+
+Body (Breez SDK 0.26.0):
+
+```json
+{
+  "username": "alice",
+  "description": "Pay to alice@21.gifts",
+  "from_pubkey": "0281363910b0dc0015a4a25e758da30f0e28388ea5252c0e3713936f2d4ef7d3d5",
+  "from_signature": "<lowercase hex DER>",
+  "to_signature": "<lowercase hex DER>",
+  "timestamp": 1761700000
+}
+```
+
+**Gate** (fail → 404 `{ "error": "Not found" }`, upstream not contacted):
+`normalizeSparkPubkey(:pubkey)` not null; the body is one JSON object with
+no other key that equals one of those six names after NFKC normalisation and
+lower-casing; `username` consists only of printable ASCII characters and
+normalises (`normalizeUsername`); `description` is a string of at most 255
+code points; `from_pubkey` normalises; both signatures are strings;
+`timestamp` is a safe non-negative integer within 600 s of the api clock
+(Unix seconds); and both signatures verify as the LNURL server checks them:
+lowercase hex DER, low S, over one SHA-256 of the UTF-8 message, for the
+host of `PUBLIC_BASE_URL` (lower-cased) as `<domain>`. `from_pubkey` signs
+`breez-lnurl:v2\ntransfer-from\n<domain>\n<username>\n<from_pubkey>\n<:pubkey>\n<timestamp>`
+and `:pubkey` signs
+`breez-lnurl:v2\ntransfer-to\n<domain>\n<username>\n<from_pubkey>\n<:pubkey>\n<lowercase SHA-256 hex of description>\n<timestamp>`.
+So malformed or unsigned bodies never use up a pending recovery.
+
+**Admission** (fail → 404, upstream not contacted). One locked step under
+the account row marks the account's pending recovery forwarded
+(`forwardedAt`, the time after the body and the checks). It needs a pending
+recovery whose new key is `:pubkey`, that is not forwarded yet and not
+expired (`CHALLENGE_TTL_MS` after the finish), and whose old key is
+`from_pubkey`, still the account's verified `sparkPubkey`, on an account
+that is not session-refused and whose normalised username is `username`.
+Logs `account.recovery.forwarded` `{ accountId }`.
+
+Upstream `POST /lnurlpay/<:pubkey>/transfer` with the parsed JSON
+re-serialised as the body (15 s). On upstream 2xx the recovery commits in one
+transaction under the account row, only while the account still holds the old
+key verified and the forwarded pending recovery: the old key and its
+`spark_address` go to `previous_wallet`; every passkey
+credential, session, and push subscription of the account is deleted and the
+new passkey inserted; `spark_pubkey` becomes the new key with its
+`spark_address` and `wallet_required` true, keeping
+`spark_pubkey_verified_at`; open `recovery` challenges are consumed and the
+pending row is deleted. Username, `session_refused`, the Nostr key, and
+recovery shares stay. Logs `account.recovery.committed`
+`{ accountId, via: "claim" }`. When the commit does not land, because the
+forwarded pending recovery is already gone, or because the account no longer
+holds the old key verified (then the commit deletes the pending recovery) →
+**Response** `409` `{ "error": "Wallet registration could not be confirmed" }`
+and `account.recovery.unconfirmed` `{ accountId }`; this request changes no
+account, and no pending recovery remains to settle.
+
+Upstream 2xx (after the commit) and every upstream 4xx (for example 409
+`"signature has already been used"`) pass through with their status, body
+and only the `content-type` / `cache-control` headers. Unreachable (including
+the 15 s abort) or any other upstream status → **Response** `503`
+`{ "error": "Lightning address service is unavailable" }`
+(`lnurl_server.unreachable` `{ route: "transfer" }`). A store throw →
+the same 503 (`lnurl_server.failed` `{ route: "transfer" }`). After an
+upstream 4xx, 5xx or abort, and after a throw in the commit, the pending
+recovery stays forwarded and the account unchanged; a throw at admission
+leaves it unforwarded and contacts no upstream. Over limit → 429. Body too
+large → 413.
+
+**Storage.** `pending_recovery` (`docs/schema/pending_recovery.sql`): at most
+one row per account (`account_id` primary key; `new_spark_pubkey` and
+`credential_id` unique) with the old and new wallet keys, the new passkey's
+credential id, public key and sign count, `created_at`, and `forwarded_at`.
+It holds no secret. The commit also writes `previous_wallet`,
+`passkey_credential`, `auth_session`, `push_subscription`, `account`, and
+`passkey_challenge` in the same transaction. Migrated with the auth schema
+when `DATABASE_URL` is set and covered by `db_change`; in memory otherwise.
+
 ### `POST /lnurlpay/:pubkey/recover`
 
 Forward signed recover. Mounted only when `LNURL_SERVER_URL` and
@@ -699,11 +922,31 @@ Forward signed recover. Mounted only when `LNURL_SERVER_URL` and
 (1 048 576 bytes); a larger body gets 413
 `{ "error": "Request body is too large" }` and the upstream is not contacted.
 
-**Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`. Fail → 404. Upstream `POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
+**Gate:** pubkey normalises; `auth.isSparkPubkeyClaimed(pubkey)`, or, for a
+key no account claims, the key is the new key of a pending social recovery
+that is forwarded or not expired. Fail → 404. Upstream
+`POST /lnurlpay/<pubkey>/recover` (15 s). Status mapping:
 upstream 2xx passed through with its status, body and only the
 `content-type` / `cache-control` headers (a 204 stays a 204); upstream
 404 → 404; unreachable, store throw, or any other upstream status (other
 4xx and 5xx) → 503 as above.
+
+**Settling** (rule 5 of [docs/social-recovery.md](docs/social-recovery.md)).
+After the upstream answer and before the response, the api reads what the
+lookup proves: 200 with a JSON object whose `username` normalises means the
+key holds that name; 404 with the JSON string `"user not found"` means the
+server verified the signature and the key holds no name; anything else
+proves nothing. The lookup settles a forwarded pending recovery whose new
+key is the path key, or, for the verified key of an account, that account's
+forwarded pending recovery from that key, but only when it was sent more
+than 30 s (twice the 15 s upstream timeout) after the recovery's
+`forwardedAt`. Then the new key holding the account's username commits the
+recovery (as `POST /lnurlpay/:pubkey/transfer` does on upstream 2xx), the old
+key's verified `"user not found"` commits it too, and the old key holding the
+username drops it; logs `account.recovery.committed` or
+`account.recovery.dropped` `{ accountId, via: "lookup" }`. Every other case
+keeps it. Settling never changes the answer to the wallet. A settling failure
+logs `account.recovery.settle_failed` and is swallowed.
 
 ### `GET /lnurlpay/:pubkey/metadata`
 
@@ -1989,14 +2232,15 @@ ID).
     "passkeyCredentialId": "<base64url>",
     "passkeyRenewFailed": false,
     "passkeyRenewClosed": false,
-    "passkeyRenewPrfUnsupported": false
+    "passkeyRenewPrfUnsupported": false,
+    "socialRecoverySetUp": false
   }
 }
 ```
 
-The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
+The `account` object is the same owner JSON as `GET /me` (includes `viewKey`, `setup`, `missing`, `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `aboutMessageId`, `notificationLevel`, `amountUnit`, `locale`, `fiat`, `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`, `passkeyRenewPrfUnsupported`, and `socialRecoverySetUp`). `passkeyRenewPrfUnsupported` is true only when the newest unacknowledged failed row has error name `prfUnsupported`. `locale` and `fiat` are null until the member's app stores them. The example above is a nameless new register (`name: null`, `username: null`, `setup: "name"`). When begin stored a name, `name` and `username` are that normalised handle (example `ada`), `nameSkippedAt` stays null, there is no profile note, and `setup` is `lightning-address`. Finish does not take `name` from the body. The recovery phrase is not a setup step and does not change `setup` or `missing`. Existing members start with `walletRequired: false`. Seed finish sets `walletRequired: true` and does not change `walletBackupSeenAt`. Replace refuses and changes nothing. `walletBackupSeenAt` does not decide whether a seed exists. The nameless example remains `walletRequired: true` with `setup: "name"` when the name is unset.
 
-A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
+A new register row is stored with `walletRequired: true` and `walletBackupSeenAt: null`. First-passkey claim of a provisioned row sets `walletRequired: true` in the same write as the credential (`createFirstPasskeyCredential`: Postgres CTE locks the account row with `FOR UPDATE`, then inserts and sets `wallet_required`; memory store writes both in one method) and does not clear a seen timestamp. Passkey replace refuses and does not change these columns. Seed finish sets `walletRequired: true` without changing `walletBackupSeenAt`. A social recovery commit (`POST /lnurlpay/:pubkey/transfer` or a settling lookup) sets `walletRequired: true` without changing `walletBackupSeenAt`. Operator `POST /debug/accounts` provision leaves `walletRequired` false. The api never stores a mnemonic or PRF output.
 
 ### `POST /auth/passkey/authenticate/begin`
 
@@ -2016,7 +2260,15 @@ issues a session. A non-increasing `signCount` is refused as
 `{ "error": "Invalid passkey" }` except the authenticator `0/0` case.
 Body shape matches register finish. Extra 400:
 `{ "error": "Unknown credential" }` when the assertion `id` is missing or
-not stored. An account with `sessionRefused` is **403**
+not stored. A credential that is not stored but is the new passkey of a
+pending social recovery (forwarded, or not older than `CHALLENGE_TTL_MS`) is
+**409** `{ "error": "Recovery is not finished", "code": "recovery_pending" }`
+instead, so the app keeps that passkey: the recovery may still commit with it
+(through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Without a
+pending recovery the credential is read once more: the commit stores the
+credential and deletes the pending recovery in one transaction, so a commit
+that lands between the two reads signs in instead of answering
+`Unknown credential`. An account with `sessionRefused` is **403**
 `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`
 and does not persist a bearer. Same 403 `app_outdated` as register finish,
 checked first. While the login switch is closed, an account that is neither
@@ -2030,7 +2282,10 @@ has).
 After a valid Bearer this returns **409**
 `{ "error": "A recovery phrase cannot be replaced" }`.
 It does not create a challenge, does not delete or insert a passkey, and
-does not mint a session.
+does not mint a session. Social recovery is the only path that gives an
+account a different recovery phrase (`POST /auth/passkey/recovery/begin`,
+`POST /auth/passkey/recovery/finish`, and the commit through
+`POST /lnurlpay/:pubkey/transfer` or a settling lookup).
 
 Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
 Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
@@ -2097,6 +2352,200 @@ Missing or invalid Bearer stays **401** `{ "error": "Unauthorized" }`.
 Unconfigured WebAuthn stays **500** `{ "error": "Server auth is not configured" }`,
 checked before the bearer.
 
+### `POST /auth/passkey/recovery/begin`
+
+Starts a social recovery ([docs/social-recovery.md](docs/social-recovery.md)).
+No session. The 403 `app_outdated` check of register begin runs first (see
+Login controls). Rate limit 30/min/client, a window of its own. Body
+(strict):
+
+```json
+{
+  "sparkPubkey": "0281363910b0dc0015a4a25e758da30f0e28388ea5252c0e3713936f2d4ef7d3d5",
+  "lookup": { "signature": "<lowercase hex DER>", "timestamp": 1761700000 }
+}
+```
+
+`sparkPubkey` is the old wallet's identity key. `lookup` is that wallet's
+signed address lookup: `signature` (16 to 144 lowercase hex characters) is the
+DER signature by that key over
+`breez-lnurl:v2\nrecover\n<app host>\n<sparkPubkey>\n<timestamp>`, and
+`timestamp` is Unix seconds. The api forwards it to the LNURL server as
+`POST /lnurlpay/<sparkPubkey>/recover` with the body
+`{ "signature", "timestamp" }` (15 s) and reads the answer as the recover
+route does: the key holds a username, the server verified the signature and
+the key holds no name (`"user not found"`), or nothing is proven.
+
+In this order:
+
+1. WebAuthn not configured → **Response** `500`
+   `{ "error": "Server auth is not configured" }`.
+2. LNURL server off → **Response** `503`
+   `{ "error": "Lightning address service is unavailable" }`.
+3. Over limit → **Response** `429` `{ "error": "Too many requests" }`.
+4. Invalid JSON → **Response** `400`
+   `{ "error": "Begin body is not valid JSON" }`. An absent body, another
+   shape, or a key that does not normalise → **Response** `400`
+   `{ "error": "Expected a JSON body with sparkPubkey and lookup" }`.
+5. No account is verified on the key: when no previous wallet has it either →
+   **Response** `404` `{ "error": "Not found" }`, without contacting the LNURL
+   server. For a previous wallet's key the lookup is forwarded: a verified
+   answer → **Response** `409`
+   `{ "error": "This account was already recovered. Sign in with the new passkey.", "code": "recovery_done" }`,
+   otherwise **Response** `503`
+   `{ "error": "Lightning address service is unavailable" }`.
+6. Session-refused account → **Response** `403`
+   `{ "error": "You signed in with the wrong account. Please try again with the correct account." }`.
+   Login switch closed for the account → **Response** `503`
+   `{ "error": "Logins are paused for an update. Try again later.", "code": "logins_closed" }`.
+   Both answer before the LNURL server is contacted.
+7. The lookup is forwarded. A forwarded pending recovery of the account is
+   settled with it first, as the lookup of its old key (see
+   `POST /lnurlpay/:pubkey/recover`): a commit → `409` `recovery_done` and
+   `account.recovery.committed` `{ accountId, via: "begin" }`; a drop goes on
+   with `account.recovery.dropped` `{ accountId, via: "begin" }`; a keep (the
+   lookup was sent within 30 s of the forward, or its answer neither commits
+   nor drops) → `503` `Lightning address service is unavailable`; a commit
+   that does not land (the forwarded recovery is already gone, or the account
+   no longer holds the old key verified) → `503`
+   `Lightning address service is unavailable`.
+8. Lookup not verified → `503` `Lightning address service is unavailable`.
+   The key no longer holds the account's username (`"user not found"`, or
+   another name) → **Response** `409`
+   `{ "error": "This account needs an operator to recover it", "code": "recovery_operator" }`,
+   unless a commit (the transfer's claim or a settling lookup) landed while
+   the lookup ran: when no account holds the key verified any more and a
+   previous wallet has it → `409` `recovery_done`.
+9. One locked step under the account row consumes the account's open
+   `recovery` challenges, drops a pending recovery that was not forwarded, and
+   stores the new `recovery` challenge. When the account no longer holds the
+   key verified, became session-refused, or has a forwarded pending recovery
+   by then → `503` `Lightning address service is unavailable`.
+
+An unreachable LNURL server on the forward of step 5 or 7 (including the 15 s
+abort) logs `lnurl_server.unreachable` `{ route: "recovery" }` and answers
+`503` `{ "error": "Lightning address service is unavailable" }`. A store
+throw at any step → `503`
+`{ "error": "Lightning address service is unavailable" }`.
+
+**Response** `200`:
+
+```json
+{
+  "challengeId": "<64 hex>",
+  "options": { "challenge": "<base64url>", "extensions": { "prf": {} } },
+  "accountId": "<uuid>",
+  "username": "alice"
+}
+```
+
+`options` is `PublicKeyCredentialCreationOptionsJSON` as for a seed passkey
+(`POST /auth/passkey/seed/begin`): user id and user name are the account id,
+the display name is the account name or `21.gifts`, and there is no
+`excludeCredentials`, so the new passkey replaces an earlier passkey of this
+account in the same authenticator. Logs `auth.passkey.recovery.begin`
+`{ accountId, challengeId }`. Every refusal except 429 and the build-check
+403 (`auth.app.outdated`) logs `auth.passkey.recovery.fail` with
+`stage: "begin"`; never the key, the signature, or the timestamp.
+
+**Storage.** The challenge is a `passkey_challenge` row of type `recovery`
+with the account id; the partial index
+`passkey_challenge_open_account_type_idx` serves the consume of the open
+ones.
+
+### `POST /auth/passkey/recovery/finish`
+
+Stores a pending social recovery
+([docs/social-recovery.md](docs/social-recovery.md), The recovery message).
+No session; requires `Origin`. The 403 `app_outdated` check of register
+finish runs first. Rate limit 30/min/client, a window of its own. Body
+(strict):
+
+```json
+{
+  "challengeId": "<64 hex>",
+  "credential": {
+    "id": "<base64url>",
+    "rawId": "<base64url>",
+    "type": "public-key",
+    "response": { "clientDataJSON": "…", "attestationObject": "…", "transports": [] },
+    "clientExtensionResults": {}
+  },
+  "newSparkPubkey": "0319d6c5d64753556063000ab42725bfe774fe722f00fbc692142eade1fd1ea52f",
+  "signature": {
+    "pubkey": "0281363910b0dc0015a4a25e758da30f0e28388ea5252c0e3713936f2d4ef7d3d5",
+    "signature": "<128 lowercase hex, r then s>"
+  }
+}
+```
+
+`credential` is the new passkey's attestation, without PRF results.
+`signature.signature` is the old wallet's compact ECDSA signature (low S,
+over one SHA-256 of the UTF-8 message; Breez SDK `signMessage` with
+`compact: true`) over five lines joined by LF with no trailing LF:
+`21gifts-account-recovery-v1`, the account id, the ceremony's challenge as
+issued, the new passkey's credential id, and `newSparkPubkey`. The
+credential id is the one the verified attestation carries, never the
+browser's `credential.id`. A signature with a high S is refused.
+
+In this order:
+
+1. WebAuthn not configured → **Response** `500`
+   `{ "error": "Server auth is not configured" }`.
+2. Over limit → **Response** `429` `{ "error": "Too many requests" }`.
+3. Absent body, another shape, a missing `credential`, or a key that does
+   not normalise → **Response** `400`
+   `{ "error": "Expected a JSON body with challengeId, credential, newSparkPubkey and signature" }`.
+   Invalid JSON → **Response** `400`
+   `{ "error": "Finish body is not valid JSON" }`.
+4. `Origin` missing or not allowed → `400` `{ "error": "Invalid origin" }`.
+5. The challenge: unknown, or its account is gone → `400`
+   `Unknown or expired challenge`; older than `CHALLENGE_TTL_MS` → `400`
+   `Challenge expired`; not of type `recovery` → `400` `Wrong challenge type`.
+   A consumed challenge passes here, so the locked step can recognise a
+   repeat.
+6. Session-refused account → `403` wrong account; login switch closed for
+   the account → `503` `logins_closed` (see Login controls).
+7. `signature.pubkey` is not the account's verified wallet key → `400`
+   `{ "error": "Invalid recovery signature" }`. `newSparkPubkey` is that key
+   → **Response** `409` `{ "error": "Wallet key is already in use" }`.
+8. The attestation does not verify for the challenge → `400`
+   `{ "error": "Invalid passkey" }`. The signature does not verify → `400`
+   `Invalid recovery signature`.
+9. One locked step under the account row: the account must still hold that
+   key verified and not be session-refused, else `400`
+   `Invalid recovery signature`; the challenge must be the account's and
+   inside `CHALLENGE_TTL_MS`, else `400` `Challenge already used`; a consumed
+   challenge is a repeat only when the account's pending recovery has the
+   same credential id and new key, else `400` `Challenge already used`; any
+   other pending recovery of the account → **Response** `409`
+   `{ "error": "A recovery is already pending" }` (a forwarded one is never
+   replaced); a new key that is any account's wallet key, a previous wallet's
+   key, or another pending recovery's new key → `409`
+   `Wallet key is already in use`; a credential id that is a stored passkey
+   or another pending recovery's → `400` `Invalid passkey`. Then it consumes
+   the challenge and stores the pending recovery.
+
+A store throw, including the unique violation of a parallel finish of
+another account → **Response** `503`
+`{ "error": "Lightning address service is unavailable" }`.
+
+**Response** `200` `{ "status": "pending" }`. It mints no session, and the
+account does not change until the address transfer commits
+(`POST /lnurlpay/:pubkey/transfer`). A repeat of the finish that stored the
+pending recovery, with the same challenge, credential id and new wallet key,
+answers 200 again and changes nothing; any other use of a consumed challenge
+is refused (`Challenge already used`). Logs `auth.passkey.recovery.finish`
+`{ accountId }` when it stores. Every refusal except 429 and the build-check
+403 logs `auth.passkey.recovery.fail` with `stage: "finish"`, the account id
+once known, and the challenge id only when it is 64 lowercase hex; never the
+keys, the signature, the credential, or the body.
+
+**Storage.** `pending_recovery` (`docs/schema/pending_recovery.sql`, see
+`POST /lnurlpay/:pubkey/transfer`). A pending recovery that was not
+forwarded counts as absent once it is older than `CHALLENGE_TTL_MS`; a
+forwarded one never expires.
+
 ### `GET /me`
 
 Returns the account bound to the bearer session.
@@ -2149,7 +2598,8 @@ An account with `sessionRefused` and a still-valid minted token → **Response**
   "passkeyCredentialId": null,
   "passkeyRenewFailed": false,
   "passkeyRenewClosed": false,
-  "passkeyRenewPrfUnsupported": false
+  "passkeyRenewPrfUnsupported": false,
+  "socialRecoverySetUp": false
 }
 ```
 
@@ -2160,7 +2610,8 @@ New register/claim owner JSON has `walletRequired: true` and `setup: "name"`
 when the name is unset. The recovery phrase is not a setup step and does not
 change `setup` or `missing`. `sparkPubkey` / `sparkWalletVerified` are set
 when the member binds a wallet (`PUT /me/wallet`) and when registration is
-accepted; they are owner-only.
+accepted, and `sparkPubkey` becomes the new verified key on a social recovery
+commit; they are owner-only.
 `staffTag` is present only as `"software_developer"` when set and is omitted
 otherwise (never JSON `null`). It is not a permission and does not change
 `role`.
@@ -2196,16 +2647,17 @@ stays `null`)).
 | `locale`                     | string \| null | Owner UI language: `en`, `de`, `es`, or `fil`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the browser.                                                                                                                                                                                                        |
 | `fiat`                       | string \| null | Owner fiat: `CHF`, `EUR`, `USD`, or `PHP`, or `null` when not stored yet. Owner-only; omitted from public `GET /view/:viewKey` and member cards. A stored value wins over the language default.                                                                                                                                                                                                   |
 | `funding`                    | object \| null | Funding-program grant. `null` for `basis`. Otherwise always an object; no row is `{ status: "none", trialUtcDate: null, admittedAt: null, reviewedByName: null, dailyPayoutStoppedNotice: false }`. `dailyPayoutStoppedNotice` is true only for the six legacy daily accounts while effective status is `none`. Admitted includes live `reviewedByName`.                                          |
-| `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, or seed finish). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                                                                                                                 |
+| `walletRequired`             | boolean        | True when a seed-bearing passkey exists (new register/claim, seed finish, or a social recovery commit through `POST /lnurlpay/:pubkey/transfer` or a settling lookup). Default false does not mean a seed is present. It does not make `setup` `'wallet'`.                                                                                                                                        |
 | `walletBackupSeenAt`         | number \| null | Epoch ms recorded after an existing member activates a passkey that can show a recovery phrase, so the app can offer Show recovery phrase next time instead of Activate. Not a confirmation. Not a seed check; it does not decide whether a seed exists. Null when that has not been recorded.                                                                                                    |
 | `walletIntroSeen`            | boolean        | `false` for every account until `POST /me/wallet-intro-seen`, then `true` for good (no reset; a later account write does not clear it). Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                           |
 | `hadExternalWallet`          | boolean        | `true` when the account has a stored legacy external payout address (`account.lightning_address`, kept as data). Read-only; no route sets it. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                     |
 | `sparkPubkey`                | string \| null | Identity public key of the member's wallet (66 lower-case hex), or `null` until claimed. Owner-only; omitted from public member cards and view profiles.                                                                                                                                                                                                                                          |
-| `sparkWalletVerified`        | boolean        | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). Owner-only.                                                                                                                                                                                                                                                                              |
+| `sparkWalletVerified`        | boolean        | True when `sparkPubkeyVerifiedAt` is a number (LNURL server accepted a registration signed by that key). After a social recovery commit, the new key is verified by the accepted address transfer and `sparkPubkeyVerifiedAt` keeps the first verification time. Owner-only.                                                                                                                      |
 | `passkeyCredentialId`        | string \| null | Null when `walletRequired` is not true, even if a login passkey exists. When `walletRequired` is true it is the newest credential id (`created_at` desc, `credential_id` desc with `COLLATE "C"`). Owner-only.                                                                                                                                                                                    |
 | `passkeyRenewFailed`         | boolean        | True only when that account has a failed renew row whose `acknowledged_at` is null. Owner-only.                                                                                                                                                                                                                                                                                                   |
 | `passkeyRenewClosed`         | boolean        | True only when `walletRequired` is not true and a failed renew row has non-null `acknowledged_at`. A later seed (`walletRequired` true) is not closed. While this is true the account still has no seed. Owner-only.                                                                                                                                                                              |
 | `passkeyRenewPrfUnsupported` | boolean        | True only when the newest unacknowledged failed renew row has error name `prfUnsupported`. Owner-only. False when that row is absent, acknowledged, or a different error.                                                                                                                                                                                                                         |
+| `socialRecoverySetUp`        | boolean        | True when the api holds a 21.gifts recovery share for the account's current verified wallet (`sparkPubkey` with `sparkWalletVerified`; `PUT /me/recovery-share`). A share of a previous wallet does not count. No grant or date check. Owner-only.                                                                                                                                                |
 
 ### `GET /me/activity`
 
@@ -2832,11 +3284,23 @@ not self, not `basis`. Sets `trial`, `trialUtcDate` = today UTC,
 Self / ineligible → **409**. Same 401/403/400/404/503 as
 `POST /trust/verify` with Funding-unavailable 503.
 
+After the write, when the spend ping is configured and the member has a
+receiving address, the api pings spend for the member's newest live
+top-level photo or video of that UTC day (About me included), as a daily
+payout. From the grant gate day (UTC 2026-10-01) that ping also needs a
+21.gifts recovery share for the member's current verified wallet
+([docs/social-recovery.md](docs/social-recovery.md)); without one it logs
+`spend.ping.skipped` / `not_eligible` and does not ping. No such post, or one
+from an earlier UTC day, does not ping. A failed share read, lookup, or ping
+logs `funding.daily_ping.failed` and the answer stays **200**.
+
 ### `POST /funding/admit`
 
 Staff Bearer. Target effective pending **or** trial, not self, not
 `basis`. Sets `admitted`, `admittedAt` now, `trialUtcDate` null.
-**200** same shape as trial.
+**200** same shape as trial. From effective pending it sends the same ping
+as `POST /funding/trial`, including its recovery share condition; from an
+active trial it does not ping.
 
 Admission is limited per grant round. Round 1 starts UTC 2026-10-16 and
 has 10 places; only grants with status `admitted` and `admittedAt` at or
@@ -2878,6 +3342,9 @@ seven booleans in the same order. A day is `paid` only for
 sets `welcome` and does not change `blocked`, `missed`, or `paid`.
 Both may be true on the same UTC day. Moderator stipends, blank
 handles, gifts outside the window, and other kinds do not count.
+Entitlement comes from the grant alone: it does not reconstruct whether a
+21.gifts recovery share was stored on a day, so a day an entitled member was
+not paid for lack of a share shows as `missed`.
 Logs `funding.payouts.listed` `{ count }`.
 No session → **401** `{ "error": "Unauthorized" }`. Below moderator →
 **403** `{ "error": "Forbidden" }`. Store throw → **503**
@@ -3700,7 +4167,8 @@ process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns
 `{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
 `nextCursor` when another page exists. Follow `nextCursor` until it is
-absent. `bytea` cells, including `nostr_nsec_ciphertext`, are octet lengths.
+absent. `bytea` cells, including `nostr_nsec_ciphertext` and
+`recovery_share_ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
 `auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
@@ -4008,7 +4476,11 @@ both accounts have that kind, and otherwise move. Proposals and
 rejections move even when they repeat.
 
 Passkeys of both accounts are kept, so both phones can sign in.
-Sessions of the source are deleted. Messages, invoice rows, edit
+Sessions of the source are deleted. The source's social recovery rows are
+deleted, not moved: its `recovery_share` rows, its `pending_recovery` row,
+its `previous_wallet` rows, and its `recovery` passkey challenges. They
+belong to the source's wallets, which go with the source row, and a share's
+additional data is the source id. Messages, invoice rows, edit
 history, contacts, push subscriptions, and the other foreign keys to
 `account(id)` are moved. Those foreign keys are read from the catalog
 inside the transaction, so a later table is moved too. A conversation
@@ -5096,8 +5568,10 @@ at most 50 events.
 - `name`: one of `screen_view`, `post_created`, `reply_created`, `gift_sent`,
   `payment_sent`, `payment_failed`, `payment_received_seen`, `pos_charge_created`,
   `pos_charge_paid_seen`, `search`, `shop_opened`, `profile_opened`, `login`,
-  `logout`, `signup_completed`, `wallet_open_failed`, `wallet_tour_shown`, `wallet_tour_step`, `wallet_tour_done`, `wallet_move_opened`, `wallet_move_step`, `wallet_move_copied`, `wallet_move_closed`, `wallet_move_done`. `logout` is sent while the session is still
-  valid, before the app ends it.
+  `logout`, `signup_completed`, `wallet_open_failed`, `wallet_tour_shown`, `wallet_tour_step`, `wallet_tour_done`, `wallet_move_opened`, `wallet_move_step`, `wallet_move_copied`, `wallet_move_closed`, `wallet_move_done`, `recovery_done`. `logout` is sent while the session is still
+  valid, before the app ends it. `recovery_done` is sent once after a social
+  recovery sign-in ([docs/social-recovery.md](docs/social-recovery.md)), with
+  no props.
 - `at`: same instant rules as `syncedAt` above.
 - `path`: optional; cut at the first `?` or `#`; must start with `/`, at most
   256 characters; a path that holds secret material anywhere (as written and with
@@ -5550,7 +6024,11 @@ Success is always **200** (never 404 for an unknown address):
 `{ "eligible": false, "status": "none" }` with no grant lookup. Until UTC
 2026-10-01 a missing/pending/rejected grant on a non-`basis` account is
 `eligible: true` with `status` still from `effectiveStatus`; from that day
-`eligible` is false unless admitted or trial-today.
+`eligible` is false unless admitted or trial-today **and** a 21.gifts
+recovery share is stored for the member's current verified wallet
+([docs/social-recovery.md](docs/social-recovery.md)). A member in the grant
+program without that share is `{ "eligible": false, "status": "admitted" }`
+(or `"trial"`): `status` stays the effective grant status.
 
 ### `GET /invoices/posted`
 
@@ -5599,7 +6077,8 @@ requires a 21.gifts member whose wallet-backed address is `address`
 (`<username>@<host of PUBLIC_BASE_URL>`, case-insensitive, verified wallet;
 any other domain or no verified wallet is **403** `Passkey required`) that
 already has a passkey
-credential and `eligibleToday` (grant required from UTC 2026-10-01).
+credential and `eligibleToday` (grant required from UTC 2026-10-01, and
+with it a 21.gifts recovery share for the current verified wallet).
 When `messageId` is omitted, it also requires at least one live **top-level**
 forum message that is not the auto-created profile note. When `messageId` is
 set, that note must be this address's live top-level note, including About me,
@@ -5688,7 +6167,8 @@ No account for the address, or the account has no passkey credential →
 { "error": "Passkey required" }
 ```
 
-The account has a passkey but is not funding-eligible today (`eligibleToday`)
+The account has a passkey but is not funding-eligible today (`eligibleToday`,
+also for a member in the grant program without a 21.gifts recovery share)
 → **403** (after the passkey check, before the forum-post check; no invoice
 is stored):
 
@@ -5795,7 +6275,8 @@ Success → **Response** `200`:
 
 Spend-worker daily instruction. Bearer `SPEND_API_TOKEN`. Body `{ "address" }`.
 Extra keys are ignored. The kind is always daily. The api collects passkey,
-live top-level post, media, funding eligibility, the same-UTC-day welcome
+live top-level post, media, funding eligibility (`eligibleToday`: grant and
+21.gifts recovery share), the same-UTC-day welcome
 flag, and the daily roster, then returns whether to pay and the amount,
 comment, and optional `messageId`. Spend does not choose those fields. The
 address is matched as a member's receiving address (`<username>@<host of
@@ -6297,8 +6778,9 @@ top-level persist, the welcome POST is sent and awaited before the daily
 POST. `address` is the author's wallet-backed receiving address (no verified
 wallet → no ping). The api POSTs `{ address, messageId }` to `{SPEND_URL}/ping` with
 Bearer `SPEND_API_TOKEN` (fire-and-await; `messageId` is the UUID of the new
-top-level row) only when `eligibleToday` for the author's funding grant
-**and** the new row has media (`hasPhoto` / `hasVideo` / `photoCount > 0`).
+top-level row) only when `eligibleToday` for the author's funding grant and
+21.gifts recovery share **and** the new row has media (`hasPhoto` /
+`hasVideo` / `photoCount > 0`).
 Otherwise no ping, log `spend.ping.skipped` / `not_eligible` (ineligible) or
 `no_media` (eligible text-only). When `role === 'verified'` and any live
 top-level photo or video exists, including the About-me note, the api also
@@ -7625,7 +8107,8 @@ HTTP body; `groupMessageId` is the new conversation message id) only when
 the caller has a receiving address (verified wallet; it is sent as
 `address`), `spendPing` is set, **and** the caller has a live
 living-room top-level post (not the profile note) whose `createdAt` is on
-the same UTC day **and** `eligibleToday` for the author's funding grant.
+the same UTC day **and** `eligibleToday` for the author's funding grant and
+21.gifts recovery share.
 No such post → **200**, no ping, log `spend.ping.skipped` /
 `no_public_post`. Public post today but not funding-eligible → **200**, no
 ping, log `spend.ping.skipped` / `not_eligible`. Ping throw still **200**.
@@ -8120,7 +8603,6 @@ exist on the account model; `GET /debug/accounts` and
 ## Out of scope for v1
 
 - Passkey + PRF + NIP-06 user-owned keys (non-custodial phase)
-- Optional securing of the account ([docs/social-recovery.md](docs/social-recovery.md)). Not a v1 route. Mein Konto absichern is not required, except for grant payouts from a start date set when it is built. An owner who continues chooses two people; 21.gifts keeps a backup share. Recovery keeps the account, gives it a new passkey with new 12 words and moves the wallet to it. No path in that document is reserved.
 - Email/password login (or any second login method)
 - Internationalization of api response text and push payloads (they stay English). A signed-in account may store `locale` and `fiat`; that is not translated copy.
 - Platform custody of **receiver** funds (receiving stays LUD-16 only)

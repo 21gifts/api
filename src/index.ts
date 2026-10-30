@@ -181,6 +181,7 @@ if (import.meta.main) {
     messageStore,
     shopIdentityStore,
     nostrKek,
+    recoveryShareKek,
     contactStore,
     memberHabitStore,
     posStore,
@@ -274,6 +275,7 @@ if (import.meta.main) {
     ...(nostrKek === undefined
       ? { shopKek: crypto.getRandomValues(new Uint8Array(32)) }
       : { nostrKek }),
+    ...(recoveryShareKek === undefined ? {} : { recoveryShareKek }),
     ...(publisher === undefined ? {} : { nostrPublisher: publisher }),
     nostrQuerier: querier,
     nostrRelayUrls: resolveZapRelays(process.env),
