@@ -1615,13 +1615,13 @@ describe('PostgresAuthStore social recovery', () => {
         ciphertext: new Uint8Array(40).fill(2),
         now,
       });
-      const movedBox = hex64().slice(0, 32);
+      const droppedBox = hex64().slice(0, 32);
       const keptBox = hex64().slice(0, 32);
       const boxBytes = new Uint8Array(40).fill(1);
       expect(
         await store.putHeldShareBox({
           accountId: from.id,
-          id: movedBox,
+          id: droppedBox,
           ciphertext: boxBytes,
           now,
           limit: 50,
@@ -1654,11 +1654,14 @@ describe('PostgresAuthStore social recovery', () => {
         [into.id],
       );
       expect(challenges[0]?.n).toBe(0);
-      // Held-share boxes move with the other per-account rows.
-      expect((await store.listHeldShareBoxes(into.id)).map((row) => row.id)).toEqual([
-        movedBox,
-        keptBox,
-      ]);
+      // The merged account's held-share boxes are dropped: the survivor
+      // could never open them. The survivor's own box stays.
+      expect((await store.listHeldShareBoxes(into.id)).map((row) => row.id)).toEqual([keptBox]);
+      const dropped = await client.query<{ n: number }>(
+        'SELECT count(*)::int AS n FROM held_share_box WHERE id = $1',
+        [droppedBox],
+      );
+      expect(dropped[0]?.n).toBe(0);
       expect(await store.getAccount(from.id)).toBeUndefined();
     } finally {
       await closeIfPossible(sql);
