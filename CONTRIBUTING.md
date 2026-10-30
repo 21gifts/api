@@ -220,7 +220,7 @@ api/
 │   │       ├── wrong-account.ts  # sessionRefused: refuse a bearer when the account flag is set
 │   │       ├── store.ts      # AuthStore port + in-memory adapter (+ passkey records)
 │   │       ├── sql.ts        # SqlClient port + SQLSTATE helpers (Bun adapter is in index.ts)
-│   │       ├── schema.ts     # AUTH_SCHEMA_SQL (incl. session_refused; recovery_share, pending_recovery, previous_wallet)
+│   │       ├── schema.ts     # AUTH_SCHEMA_SQL (incl. session_refused; recovery_share, pending_recovery, previous_wallet, held_share_box)
 │   │       ├── postgres-store.ts  # Durable AuthStore; backfillSparkAddresses
 │   │       ├── open-store.ts # DATABASE_URL → memory or Postgres
 │   │       └── webauthn.ts   # PasskeyCeremony port + SimpleWebAuthn adapter
