@@ -10,6 +10,7 @@ import { InMemoryGiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryTrustStore } from '@/lib/trust-store';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const PHOTO = {
@@ -96,7 +97,7 @@ async function harness(
     wallet?: boolean,
     extra?: Partial<Account>,
   ) => Promise<void>;
-  verifyWallet: (id: string, username: string) => Promise<void>;
+  verifyWallet: (id: string, username: string, share?: boolean) => Promise<void>;
   post: (id: string, accountId: string, at: string, photo?: boolean) => Promise<void>;
   run: (dryRun?: boolean) => ReturnType<typeof replayPayoutWindow>;
 }> {
@@ -113,10 +114,13 @@ async function harness(
   const funding = new InMemoryFundingStore(opts.grants ?? []);
   const spend = fakeSpend();
   await auth.createAccount(account(PLATFORM, 'platform', 'founder', { isPlatform: true }));
-  const verifyWallet = async (accountId: string, username: string): Promise<void> => {
+  const verifyWallet = async (accountId: string, username: string, share = true): Promise<void> => {
     const pubkey = `02${accountId.replace(/-/g, '').padEnd(64, '0').slice(0, 64)}`;
     await auth.claimSparkPubkey(accountId, pubkey);
     await auth.markSparkPubkeyVerified(accountId, pubkey, username, 1);
+    if (share) {
+      await storeRecoveryShare(auth, accountId, pubkey);
+    }
   };
   const deps: ReplayDeps = {
     auth,
@@ -291,6 +295,36 @@ describe('replayPayoutWindow', () => {
     expect(after.events).toEqual([expect.objectContaining({ eventId: id(1), status: 'paid' })]);
     expect(h.spend.booked).toEqual([
       { kind: 'daily', address: 'ada@example.test', day: DAY, messageId: id(1) },
+    ]);
+  });
+
+  it('skips a member without a recovery share and pays on a later run once it is stored', async () => {
+    const h = await harness({ grants: [admitted(ADA), admitted(BOB)] });
+    await h.member(ADA, 'ada', 'moderator', false);
+    await h.verifyWallet(ADA, 'ada', false);
+    await h.member(BOB, 'bob', 'moderator');
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+    await h.post(id(2), BOB, '2026-10-29T23:40:00.000Z');
+
+    const first = await h.run();
+    expect(first.events).toEqual([
+      expect.objectContaining({
+        eventId: id(1),
+        username: 'ada',
+        status: 'skipped',
+        reason: 'not_eligible',
+        detail: 'no_recovery_share',
+      }),
+      expect.objectContaining({ eventId: id(2), status: 'paid' }),
+    ]);
+    expect(h.spend.pingOnDay).toHaveBeenCalledTimes(1);
+
+    const pubkey = (await h.deps.auth.getAccount(ADA))?.sparkPubkey ?? '';
+    await storeRecoveryShare(h.deps.auth, ADA, pubkey);
+    const second = await h.run();
+    expect(second.events).toEqual([
+      expect.objectContaining({ eventId: id(1), status: 'paid', day: DAY }),
+      expect.objectContaining({ eventId: id(2), reason: 'already_paid', detail: 'spend' }),
     ]);
   });
 

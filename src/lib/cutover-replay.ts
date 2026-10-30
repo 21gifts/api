@@ -15,6 +15,7 @@ import type { GiftKind, GiftRow } from '@/lib/gift';
 import type { GiftStore } from '@/lib/gift-store';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageListRow, MessageStore } from '@/lib/message-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { receivingAddress } from '@/lib/receiving-address';
 import type { SpendPing } from '@/lib/spend-ping';
 import type { TrustStore } from '@/lib/trust-store';
@@ -260,9 +261,10 @@ function paidInLedger(
 function notEligibleDetail(
   account: Account,
   grant: FundingGrant | undefined,
+  eligible: boolean,
   nowMs: number,
 ): string | null {
-  if (eligibleToday(account.role, grant, nowMs)) {
+  if (eligible) {
     return null;
   }
   if (
@@ -275,18 +277,21 @@ function notEligibleDetail(
   ) {
     return 'trial_day_passed';
   }
-  return 'grant';
+  return eligibleToday(account.role, grant, nowMs, true) ? 'no_recovery_share' : 'grant';
 }
 
 /**
  * Replay every payout trigger in `[fromMs, toMs)`.
  *
  * Each event is paid only when the account has a verified wallet now, is
- * eligible now (a `trial` grant of an earlier UTC day, also once it was
- * stored as `pending`, is reported as `not_eligible` / `trial_day_passed`, except for a `basis` account, which is
- * never eligible and is reported as `grant`), and has no payout of that kind on the
- * event's UTC day: neither in the gift ledger under its username or its legacy
- * external address, nor earlier in this run. Daily and moderator payouts go
+ * eligible now through `loadPayoutEligibility` (a `trial` grant of an earlier
+ * UTC day, also once it was stored as `pending`, is reported as `not_eligible`
+ * / `trial_day_passed`, except for a `basis` account, which is never eligible
+ * and is reported as `grant`; an account eligible but for the 21.gifts
+ * recovery share of its current wallet is reported as `no_recovery_share`),
+ * and has no payout of that kind on the event's UTC day: neither in the gift
+ * ledger under its username or its legacy external address, nor earlier in
+ * this run. Daily and moderator payouts go
  * through `SpendPing.pingOnDay` on the event's UTC day; spend's own record per
  * day and address makes a repeated run skip what it already booked. Welcome
  * triggers are handed to `syncWelcomePing`, which pays once per account.
@@ -387,8 +392,13 @@ export async function replayPayoutWindow(
       skip('no_wallet', 'no_verified_wallet');
       continue;
     }
-    const grant = await deps.funding.getByAccountId(account.id);
-    const ineligible = notEligibleDetail(account, grant, nowMs);
+    const { grant, eligible } = await loadPayoutEligibility(
+      deps.funding,
+      deps.auth,
+      account,
+      nowMs,
+    );
+    const ineligible = notEligibleDetail(account, grant, eligible, nowMs);
     if (ineligible !== null) {
       skip('not_eligible', ineligible);
       continue;
