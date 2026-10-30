@@ -465,7 +465,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   and `/debug/messages`),
  *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when
  *   `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
- *   {@link resolveLnurlServerConfig}; otherwise they are not mounted),
+ *   {@link resolveLnurlServerConfig}; otherwise they are not mounted; `webhookRoutes`
+ *   is mounted at `/webhooks` only when `LNURL_WEBHOOK_SECRET` is set),
  *   sparkInvoiceStore (used only when free in-app payments are on; default
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
