@@ -3,8 +3,9 @@
 -- holder's browser under a key derived from the holder's own 12 words. The api
 -- never decrypts it and learns nothing about whose share it holds; the owner
 -- side references no box. Written by PUT /me/held-shares/:id, read by
--- GET /me/held-shares, deleted by DELETE /me/held-shares/:id and with the
--- account (ON DELETE CASCADE); an account merge moves it with the other rows.
+-- GET /me/held-shares, deleted by DELETE /me/held-shares/:id, with the
+-- account (ON DELETE CASCADE), and by an account merge (the merged-away
+-- account's boxes are dropped, not moved: the survivor could never open them).
 -- ciphertext is a secret column: db_change keeps only its SHA-256. Covered by
 -- db_change.
 

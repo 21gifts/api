@@ -3045,9 +3045,9 @@ describe('held-share boxes', () => {
   }
 
   /** Every logged line must stay free of box ids and ciphertext. */
-  function expectNoBoxInLogs(): void {
+  function expectNoBoxInLogs(extra: readonly string[] = []): void {
     const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
-    for (const secret of [BOX, BOX_2, CIPHERTEXT]) {
+    for (const secret of [BOX, BOX_2, CIPHERTEXT, ...extra]) {
       expect(logged).not.toContain(secret);
     }
   }
@@ -3091,11 +3091,13 @@ describe('held-share boxes', () => {
     const store = await seededStore();
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: clock });
     const app = mount(store, { clock: () => clock });
-    const created = await put(app, BOX, { ciphertext: CIPHERTEXT });
+    // BOX_2 (the larger id) first, so creation order differs from id order
+    // and from update order after the replace below.
+    const created = await put(app, BOX_2, { ciphertext: CIPHERTEXT });
     expect(created.status).toBe(201);
-    expect(await created.json()).toEqual({ id: BOX, updatedAt: '2026-10-30T10:00:00.000Z' });
+    expect(await created.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:00.000Z' });
     clock += 1_000;
-    expect((await put(app, BOX_2, { ciphertext: CIPHERTEXT })).status).toBe(201);
+    expect((await put(app, BOX, { ciphertext: CIPHERTEXT })).status).toBe(201);
     clock += 1_000;
     const replacement = Buffer.from(Uint8Array.from({ length: 1024 }, () => 1)).toString(
       'base64url',
@@ -3107,8 +3109,8 @@ describe('held-share boxes', () => {
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       boxes: [
+        { id: BOX_2, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:00.000Z' },
         { id: BOX, ciphertext: replacement, updatedAt: '2026-10-30T10:00:02.000Z' },
-        { id: BOX_2, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:01.000Z' },
       ],
     });
     const events = parsedEvents(warn).filter((e) => e['event'] === 'account.held_share.stored');
@@ -3117,7 +3119,7 @@ describe('held-share boxes', () => {
       expect.objectContaining({ accountId: 'acc', replaced: false }),
       expect.objectContaining({ accountId: 'acc', replaced: true }),
     ]);
-    expectNoBoxInLogs();
+    expectNoBoxInLogs([replacement]);
   });
 
   it('refuses an id that is not 32 lowercase hex', async () => {
@@ -3180,17 +3182,19 @@ describe('held-share boxes', () => {
     const res = await put(app, BOX, { ciphertext: CIPHERTEXT });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Box id in use' });
-    expect((await list(app)).status).toBe(200);
+    // The caller never sees the other account's box.
+    expect(await (await list(app)).json()).toEqual({ boxes: [] });
     expect(await store.listHeldShareBoxes('acc')).toEqual([]);
     expect((await remove(app, BOX)).status).toBe(204);
+    expect(await (await list(app)).json()).toEqual({ boxes: [] });
     expect(await store.listHeldShareBoxes('other')).toEqual([
       { id: BOX, ciphertext: Uint8Array.of(1, 2), createdAt: 1, updatedAt: 1 },
     ]);
   });
 
-  it('answers 409 for a 51st box but still replaces one of the 50', async () => {
+  it('creates the 50th box, answers 409 for a 51st, and still replaces one of the 50', async () => {
     const store = await seededStore();
-    for (let i = 0; i < 50; i += 1) {
+    for (let i = 0; i < 49; i += 1) {
       await store.putHeldShareBox({
         accountId: 'acc',
         id: i.toString(16).padStart(32, '0'),
@@ -3200,11 +3204,18 @@ describe('held-share boxes', () => {
       });
     }
     const app = mount(store);
+    expect((await put(app, BOX_2, { ciphertext: CIPHERTEXT })).status).toBe(201);
     const res = await put(app, BOX, { ciphertext: CIPHERTEXT });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Too many held shares' });
-    expect((await put(app, '0'.repeat(32), { ciphertext: CIPHERTEXT })).status).toBe(200);
-    expect(await store.listHeldShareBoxes('acc')).toHaveLength(50);
+    const other = Uint8Array.from({ length: 40 }, (_, i) => (i === 0 ? 1 : 9));
+    const replaced = await put(app, '0'.repeat(32), {
+      ciphertext: Buffer.from(other).toString('base64url'),
+    });
+    expect(replaced.status).toBe(200);
+    const boxes = await store.listHeldShareBoxes('acc');
+    expect(boxes).toHaveLength(50);
+    expect(boxes.find((box) => box.id === '0'.repeat(32))?.ciphertext).toEqual(other);
   });
 
   it('deletes the caller’s box with 204, idempotently', async () => {
