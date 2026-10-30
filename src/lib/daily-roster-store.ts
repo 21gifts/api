@@ -300,7 +300,7 @@ export interface DailyRosterLinkReport {
   rows: number;
   /** Rows linked to an account, both buckets. */
   linked: number;
-  /** Rows without an account in `id` order. */
+  /** Rows without an account, in stored order (`id` order in Postgres). */
   unlinked: DailyRosterUnlinkedRow[];
   /** Counts and USD sums per bucket. */
   buckets: Record<DailyRosterBucket, DailyRosterBucketSums>;
@@ -947,7 +947,7 @@ function listedEntries(rows: readonly StoredRosterRow[]): DailyRosterEntry[] {
 /**
  * Count and sum stored rows for {@link DailyRosterStore.linkReport}.
  *
- * @param rows - Every stored row in `id` order, with its bucket.
+ * @param rows - Every stored row in stored order, with its bucket.
  * @returns The report.
  */
 function buildLinkReport(

@@ -23,7 +23,10 @@ export const DAILY_ROSTER_INVALID_ADDRESS = 'Invalid address or amount';
  */
 export const DAILY_ROSTER_ADDRESS_LISTED = 'Address already listed';
 
-/** Spend 400 text when the account is not on the roster, or no account has that username or address. */
+/**
+ * Spend 400 text when the account is not on the roster, or no account has
+ * that username, address, or account id.
+ */
 export const DAILY_ROSTER_UNKNOWN_ADDRESS = 'Unknown address';
 
 /** Route text when the roster cannot be read. */

@@ -3417,7 +3417,7 @@ Operator only: Bearer `DEBUG_TOKEN` or `DEBUG_READ_TOKEN`; anything else, includ
 }
 ```
 
-`unlinked` lists the rows without an account in `id` order with their stored legacy address (or `null`) and amount; they are in no document and are never paid. `totalUsd` sums every row of the bucket, `linkedUsd` only the linked rows. Logs `funding.daily_roster` `{ operator: true, action: "links" }`. A store throw → 502 `{ "error": "Daily roster is unavailable" }` (`funding.daily_roster.failed`). Never logs an address.
+`unlinked` lists the rows without an account in `id` order (stored order on a memory boot) with their stored legacy address (or `null`) and amount; they are in no document and are never paid. `totalUsd` sums every row of the bucket, `linkedUsd` only the linked rows. Logs `funding.daily_roster` `{ operator: true, action: "links" }`. A store throw → 502 `{ "error": "Daily roster is unavailable" }` (`funding.daily_roster.failed`). Never logs an address.
 
 ### `GET /funding/daily-roster/document`
 
