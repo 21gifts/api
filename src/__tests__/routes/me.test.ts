@@ -3091,8 +3091,8 @@ describe('held-share boxes', () => {
     const store = await seededStore();
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: clock });
     const app = mount(store, { clock: () => clock });
-    // BOX_2 (the larger id) first, so creation order differs from id order
-    // and from update order after the replace below.
+    // BOX_2 (the larger id) is created first and replaced last, so creation
+    // order differs from id order and from update order.
     const created = await put(app, BOX_2, { ciphertext: CIPHERTEXT });
     expect(created.status).toBe(201);
     expect(await created.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:00.000Z' });
@@ -3102,15 +3102,15 @@ describe('held-share boxes', () => {
     const replacement = Buffer.from(Uint8Array.from({ length: 1024 }, () => 1)).toString(
       'base64url',
     );
-    const replaced = await put(app, BOX, { ciphertext: replacement });
+    const replaced = await put(app, BOX_2, { ciphertext: replacement });
     expect(replaced.status).toBe(200);
-    expect(await replaced.json()).toEqual({ id: BOX, updatedAt: '2026-10-30T10:00:02.000Z' });
+    expect(await replaced.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:02.000Z' });
     const res = await list(app);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       boxes: [
-        { id: BOX_2, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:00.000Z' },
-        { id: BOX, ciphertext: replacement, updatedAt: '2026-10-30T10:00:02.000Z' },
+        { id: BOX_2, ciphertext: replacement, updatedAt: '2026-10-30T10:00:02.000Z' },
+        { id: BOX, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:01.000Z' },
       ],
     });
     const events = parsedEvents(warn).filter((e) => e['event'] === 'account.held_share.stored');
