@@ -186,6 +186,15 @@ export interface GiftStore {
    * @returns Debug rows.
    */
   listDebug?(limit: number): Promise<GiftDebugRow[]>;
+
+  /**
+   * Accounts whose legacy external payout address (`account.lightning_address`)
+   * already received a `welcome` gift: its local part equals the gift's
+   * recipient handle, compared trimmed and case-insensitively.
+   *
+   * @returns Account ids (any order, no duplicates).
+   */
+  listLegacyWelcomeAccountIds?(): Promise<string[]>;
 }
 
 /**
@@ -195,8 +204,13 @@ export interface GiftStore {
 export class InMemoryGiftStore implements GiftStore {
   /**
    * @param rows - Seed gifts; stored as-is and copied on read.
+   * @param legacyWelcomeAccountIds - Accounts whose legacy external address
+   *   already received a welcome gift.
    */
-  constructor(private readonly rows: readonly GiftRow[] = []) {}
+  constructor(
+    private readonly rows: readonly GiftRow[] = [],
+    private readonly legacyWelcomeAccountIds: readonly string[] = [],
+  ) {}
 
   /**
    * Copy of the seed rows sorted by `paidAt` ascending.
@@ -205,6 +219,15 @@ export class InMemoryGiftStore implements GiftStore {
    */
   listOutbound(): Promise<GiftRow[]> {
     return Promise.resolve([...this.rows].sort((a, b) => a.paidAt.getTime() - b.paidAt.getTime()));
+  }
+
+  /**
+   * Copy of the seeded legacy welcome account ids.
+   *
+   * @returns A new array.
+   */
+  listLegacyWelcomeAccountIds(): Promise<string[]> {
+    return Promise.resolve([...this.legacyWelcomeAccountIds]);
   }
 
   /**
@@ -252,10 +275,13 @@ export class QueryGiftStore implements GiftStore {
   /**
    * @param query - Loader that returns outbound gift rows.
    * @param debugQuery - Optional full-column dump loader.
+   * @param legacyWelcomeQuery - Optional loader of the accounts whose legacy
+   *   external address already received a welcome gift.
    */
   constructor(
     private readonly query: () => Promise<GiftRow[]>,
     private readonly debugQuery?: () => Promise<GiftDebugRow[]>,
+    private readonly legacyWelcomeQuery?: () => Promise<string[]>,
   ) {}
 
   /**
@@ -265,6 +291,15 @@ export class QueryGiftStore implements GiftStore {
    */
   listOutbound(): Promise<GiftRow[]> {
     return this.query();
+  }
+
+  /**
+   * Runs `legacyWelcomeQuery`.
+   *
+   * @returns Its result, or an empty list when it was not given.
+   */
+  listLegacyWelcomeAccountIds(): Promise<string[]> {
+    return this.legacyWelcomeQuery === undefined ? Promise.resolve([]) : this.legacyWelcomeQuery();
   }
 
   /**

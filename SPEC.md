@@ -269,6 +269,8 @@ Public base URLs used in examples:
 | GET    | `/debug/invoices`                                    | `Authorization: Bearer`                      | Operator invoice attempts, forum and conversation (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | POST   | `/debug/invoices/settle`                             | `Authorization: Bearer`                      | Resumable operator settlement of a paid forum invoice (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                     |
 | POST   | `/debug/spend-ping`                                  | `Authorization: Bearer`                      | Replay one qualifying top-level forum post onto that post's UTC day and return accepted or skipped; not limited to the clock day. With `{ from, to, dryRun? }` instead, replay every payout trigger of that window (posts, moderator-group messages, `/trial`, `/admit`, welcome), daily payouts and moderator stipends on each event's own UTC day, and return each event's outcome and totals (`DEBUG_TOKEN`)                                                                                                                                           |
+| GET    | `/debug/welcome-sweep`                               | `Authorization: Bearer`                      | Welcome sweep switch and the accounts the sweep would ping now, without pinging (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                           |
+| PUT    | `/debug/welcome-sweep`                               | `Authorization: Bearer`                      | Body `{ enabled }`. Turn the 15-minute welcome sweep on or off; off on every boot (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
 | GET    | `/debug/zap-ingests`                                 | `Authorization: Bearer`                      | Operator kind:9735 ingest log (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | GET    | `/debug/messages`                                    | `Authorization: Bearer`                      | Operator forum listing including hidden rows and replies (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | GET    | `/debug/messages/:id`                                | `Authorization: Bearer`                      | Operator single-note fetch including hidden rows (`DEBUG_TOKEN`)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
@@ -5794,6 +5796,56 @@ Bad JSON, a non-boolean `open`, or another key → **400**
 
 Success → **Response** `200`: the same JSON as `GET /debug/logins`.
 
+### `GET /debug/welcome-sweep`
+
+Operator dry-run of the 15-minute welcome sweep. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN` (not an end-user session).
+Lists every account the sweep would welcome-ping now: role `verified`, a
+verified wallet with the LNURL server on, a live top-level photo or video
+(About me included), and not welcomed before (a platform `Welcome` reply, a
+`welcome` gift paid to its legacy external address, or a `21gifts welcome`
+gift under its username at or after its wallet verification). Reads only:
+pings nobody and stores nothing. Logs `debug.welcome_sweep.listed` with the
+count.
+
+**Response** `200`:
+
+```json
+{
+  "enabled": false,
+  "spendPing": true,
+  "wouldPing": [{ "accountId": "<uuid>", "username": "ada", "messageId": "<uuid>" }]
+}
+```
+
+`enabled` is the sweep switch. `spendPing` is false when `SPEND_URL` or
+`SPEND_API_TOKEN` is unset, in which case the sweep pings nobody even when on.
+The wallet address is not returned.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+A store read that throws → **503** `{ "error": "Messages are unavailable" }`.
+
+### `PUT /debug/welcome-sweep`
+
+Operator set of the welcome sweep switch. Authenticated with
+`Authorization: Bearer` matching `DEBUG_TOKEN`. JSON body
+`{ "enabled": <boolean> }` with no other keys. The switch lives in process
+memory: every boot starts with it off, so the sweep pings nobody until an
+operator turns it on again. The sweep reads the switch again right before each
+ping, so turning it off stops a running sweep before its next ping. One
+account whose check fails is skipped; the sweep goes on with the next.
+Single-account welcome pings (a new post, an
+About-me save, a verification) are not affected. Logs
+`debug.welcome_sweep.set`.
+
+`DEBUG_TOKEN` unset or blank → **503** `{ "error": "Debug is not configured" }`.
+Missing or non-matching bearer → **401** `{ "error": "Unauthorized" }`.
+Bad JSON, a non-boolean `enabled`, or another key → **400**
+`{ "error": "Expected a JSON body with an \"enabled\" boolean" }`.
+
+Success → **Response** `200` `{ "enabled": <boolean> }`.
+
 ### `POST /debug/logins/allowlist`
 
 Operator add of one account to the login allowlist. Authenticated with `Authorization: Bearer` matching `DEBUG_TOKEN` (not an
@@ -6167,7 +6219,7 @@ Success is always **200** (never 404 for an unknown address):
 or `{ "hasPosted": false, "messageId": null, "postedAt": null, "hasMedia": false, "welcomeHasMedia": false, "welcomeMessageId": null }` when there is no account for the
 address, or the account has no live top-level note other than a text-only profile note.
 `hasPosted` is still any live top-level note that is not the profile note, including text-only.
-A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
+A profile note that has a photo or video keeps `hasPosted: false` and sets `welcomeHasMedia: true` with that note as `welcomeMessageId`. An account that already received the welcome gift (a platform `Welcome` reply under one of its notes (live or hidden), a recorded `welcome` gift paid to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome` under its username at or after its wallet verification) reports `welcomeHasMedia: false` and `welcomeMessageId: null`. Replies do not count. Photo-only / empty-text
 top-level notes still count for `hasPosted`. `hasMedia` is true only when such a
 post has photo 0, extra stills, or video. `welcomeHasMedia` is true when any live top-level photo or video exists, including the About-me note, even when `hasPosted` is false. `welcomeMessageId` is that newest note's id, or null. When `hasPosted` is true, `messageId` is usually
 the newest live top-level non-profile post id; it can still be `null` if
@@ -6181,8 +6233,9 @@ note never become `messageId`. A text-only newest row can still pair with
 Spend-worker invoice fetch. After address and amount validation, the api
 requires a 21.gifts member whose wallet-backed address is `address`
 (`<username>@<host of PUBLIC_BASE_URL>`, case-insensitive, verified wallet;
-any other domain or no verified wallet is **403** `Passkey required`) that
-already has a passkey
+a member there with a passkey but no verified wallet is **403**
+`Wallet required`; any other domain or no such member is **403**
+`Passkey required`) that already has a passkey
 credential and `eligibleToday` (grant required from UTC 2026-10-01, and
 with it a 21.gifts recovery share for the current verified wallet).
 When `messageId` is omitted, it also requires at least one live **top-level**
@@ -6235,7 +6288,8 @@ media requirement). Missing
 `isPlatform` account → **503** `{ "error": "Platform account is not configured" }`
 (no LNURL). With `comment` exactly `Welcome` (with or without `messageId`),
 an account that already received the welcome gift (a platform `Welcome`
-reply under one of its notes, live or hidden, or a recorded `welcome` gift with description `21gifts welcome`
+reply under one of its notes, live or hidden, a recorded `welcome` gift paid
+to its legacy external address, or a recorded `welcome` gift with description `21gifts welcome`
 under its username at or after its wallet verification) → **409** `{ "error": "Welcome gift already paid" }`
 after the passkey and grant checks and before LNURL (with `groupMessageId`,
 after that id is resolved: a resolved moderator payout is recorded as
@@ -6266,8 +6320,18 @@ Bad JSON, `amountMsat` outside `1000..10000000000`, `comment` longer than
 Invalid Lightning Address → **400**
 `{ "error": "Not a valid Lightning Address (expected name@domain)" }`.
 
-No account for the address, or the account has no passkey credential →
-**403** (before any LNURL fetch; no invoice is stored):
+`address` is the wallet-backed address of a member who has a passkey but no
+verified wallet yet → **403** (checked first; before any LNURL fetch; no
+invoice is stored; logs `invoice.wallet_required`):
+
+```json
+{ "error": "Wallet required" }
+```
+
+Any other address that finds no member with a verified wallet (another
+domain, an unknown username, the LNURL server off, or a member with neither a
+passkey nor a verified wallet), or a member with a verified wallet but no
+passkey credential → **403** (before any LNURL fetch; no invoice is stored):
 
 ```json
 { "error": "Passkey required" }
@@ -6345,8 +6409,9 @@ outbound `gift` row when `DATABASE_URL` is set: BOLT11 `pr` as
 `lightning_invoice`, amount `floor(msat / 1000)` sats, fee 0, recipient
 handle from the invoice address, description `21gifts moderator` when the
 invoice has `groupMessageId`, else `21gifts welcome` when `comment` is
-exactly `Welcome` (the welcome checks count only these records), else
-`21gifts daily`,
+exactly `Welcome` (on the username path the welcome checks count only these
+records; a `welcome` gift of any description paid to the account's legacy
+external address counts too), else `21gifts daily`,
 `source_wallet` `lightning.space`. Without SQL the recorder is a no-op.
 Insert errors log `gifts.record_failed` and do not change the HTTP
 response.
@@ -6897,14 +6962,21 @@ of `eligibleToday` and independent of whether the new row itself has media.
 Spend pays the welcome gift and does not also pay the daily gift on that
 same UTC day. A later UTC day still pays the daily gift.
 The same ping runs when the account becomes verified and when About me is
-saved while verified. On boot, and every 15 minutes, every verified account
-that already has a live top-level photo or video (About me or a living-room
-post) is welcome-pinged, so the gift still goes out when the photo post and
-verification happened in either order. The welcome gift is once per
-account, not once per address: an account that already has a platform reply
-with the text `Welcome` under one of its notes (live or hidden), or a recorded
-`welcome` gift with description `21gifts welcome` under its username at or after its wallet verification, is not pinged again (`spend.ping.skipped` / `welcomed`), whichever address the gift went
-to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
+saved while verified. Every 15 minutes, while an operator has turned it on
+with `PUT /debug/welcome-sweep`, the welcome sweep welcome-pings every
+verified account that already has a live top-level photo or video (About me
+or a living-room post), so the gift still goes out when the photo post and
+verification happened in either order. A process starts with the sweep off,
+so its run at boot pings nobody (`spend.ping.skipped` / `sweep_off`).
+`GET /debug/welcome-sweep` lists the accounts it would ping without pinging.
+The welcome gift is once per account, not once per address: an account that
+already has a platform reply with the text `Welcome` under one of its notes
+(live or hidden), a recorded `welcome` gift paid to its legacy external
+address (the local part of `account.lightning_address` equals the gift's
+recipient handle), or a recorded `welcome` gift with description
+`21gifts welcome` under its username at or after its wallet verification, is
+not pinged again (`spend.ping.skipped` / `welcomed` for a single-account
+ping), whichever address the gift went to, so a member whose receiving address changed is not paid twice. Replies, and any role other than `verified`, do not
 welcome-ping. A verified text-only post with no photo or video anywhere does
 not welcome-ping.
 Errors are logged; the POST still

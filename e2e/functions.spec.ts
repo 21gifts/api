@@ -98,6 +98,42 @@ test('Function: syncWelcomePing — posted lookup is up', async ({ request }) =>
   expect(res.status()).toBe(503);
 });
 
+test('Function: accountWelcomed — posted lookup is up', async ({ request }) => {
+  const res = await request.get('/invoices/posted');
+  expect(res.status()).toBe(503);
+});
+
+test('Function: welcomeSweepCandidates — dry-run lists nobody without the LNURL server', async ({
+  request,
+}) => {
+  expect((await request.get('/debug/welcome-sweep')).status()).toBe(401);
+  const res = await request.get('/debug/welcome-sweep', { headers: DEBUG });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toMatchObject({ spendPing: false, wouldPing: [] });
+});
+
+test('welcome sweep switch turns on and off', async ({ request }) => {
+  try {
+    const on = await request.put('/debug/welcome-sweep', {
+      headers: DEBUG,
+      data: { enabled: true },
+    });
+    expect(on.status()).toBe(200);
+    expect(await on.json()).toEqual({ enabled: true });
+  } finally {
+    const off = await request.put('/debug/welcome-sweep', {
+      headers: DEBUG,
+      data: { enabled: false },
+    });
+    expect(await off.json()).toEqual({ enabled: false });
+  }
+  const bad = await request.put('/debug/welcome-sweep', {
+    headers: DEBUG,
+    data: { enabled: 'yes' },
+  });
+  expect(bad.status()).toBe(400);
+});
+
 test('Function: parseBindAddr — process listens on BIND_ADDR', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

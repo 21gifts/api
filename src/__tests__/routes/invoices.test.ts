@@ -2172,6 +2172,34 @@ describe('POST /invoices', () => {
     expect(first.status).toBe(200);
   });
 
+  it('returns 409 for a welcome invoice when the legacy external address got the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([], ['acc-alice']),
+      fetchImpl,
+    });
+    const refused = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const posted = await app.request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await posted.json()).toMatchObject({ welcomeHasMedia: false, welcomeMessageId: null });
+  });
+
   it('checks the funding grant before the welcome gift', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -4475,7 +4503,10 @@ describe('spend lookups by wallet address', () => {
   };
 
   /** `acc-alice` with a passkey, an admitted grant, and a live post, but no verified wallet. */
-  async function seedWithoutWallet(authStore: InMemoryAuthStore): Promise<void> {
+  async function seedWithoutWallet(
+    authStore: InMemoryAuthStore,
+    withPasskey = true,
+  ): Promise<void> {
     await authStore.createAccount({
       id: 'acc-alice',
       linkingKey: null,
@@ -4489,6 +4520,9 @@ describe('spend lookups by wallet address', () => {
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    if (!withPasskey) {
+      return;
+    }
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
@@ -4655,6 +4689,41 @@ describe('spend lookups by wallet address', () => {
     expect(result.eligible).toEqual({ eligible: false, status: 'none' });
     expect(result.posted).toEqual(EMPTY_POSTED);
     expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Wallet required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.wallet_required')).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers Passkey required for a member with neither a passkey nor a wallet', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedWithoutWallet(authStore, false);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, ADDRESS);
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers Passkey required for a member without a wallet named on another host', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedWithoutWallet(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, 'alice@other.test');
+    expect(result.post.status).toBe(403);
     expect(await result.post.json()).toEqual({ error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
@@ -4676,6 +4745,7 @@ describe('spend lookups by wallet address', () => {
     expect(result.eligible).toEqual({ eligible: false, status: 'none' });
     expect(result.posted).toEqual(EMPTY_POSTED);
     expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 });

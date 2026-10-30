@@ -3,7 +3,7 @@ import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
-import { syncWelcomePing } from '@/lib/welcome-media';
+import { accountWelcomed, syncWelcomePing, welcomeSweepCandidates } from '@/lib/welcome-media';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const JPEG = {
@@ -47,6 +47,12 @@ function account(partial: Partial<Account> & Pick<Account, 'id' | 'role'>): Acco
     sparkPubkeyVerifiedAt: 1,
     ...partial,
   };
+}
+
+async function verifyWallet(auth: InMemoryAuthStore, id: string, digit: string): Promise<void> {
+  const key = `02${digit.repeat(64)}`;
+  await auth.claimSparkPubkey(id, key);
+  await auth.markSparkPubkeyVerified(id, key, id, 2);
 }
 
 async function photoStore(id: string = PHOTO_ID): Promise<InMemoryMessageStore> {
@@ -437,9 +443,16 @@ describe('syncWelcomePing', () => {
       await auth.claimSparkPubkey(id, key);
       await auth.markSparkPubkeyVerified(id, key, id, 2);
     }
-    await syncWelcomePing({ spendPing: { ping }, messages, auth });
+    const sweep = { enabled: true };
+    await syncWelcomePing({ spendPing: { ping }, messages, auth, sweep });
     expect(ping).not.toHaveBeenCalled();
-    await syncWelcomePing({ lnurlServer: LNURL_SERVER, spendPing: { ping }, messages, auth });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep,
+    });
     expect(ping).toHaveBeenCalledTimes(2);
     expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
     expect(ping).toHaveBeenCalledWith(
@@ -457,9 +470,11 @@ describe('syncWelcomePing', () => {
       spendPing: { ping: vi.fn(async () => undefined) },
       messages: new InMemoryMessageStore(),
       auth,
+      sweep: { enabled: true },
     });
     const live = new InMemoryAuthStore();
     await live.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await verifyWallet(live, 'acc', '5');
     const messages = {
       async latestLiveTopLevelMediaId() {
         throw new Error('media boom');
@@ -470,6 +485,7 @@ describe('syncWelcomePing', () => {
       spendPing: { ping: vi.fn(async () => undefined) },
       messages,
       auth: live,
+      sweep: { enabled: true },
     });
     expect(
       parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
@@ -527,13 +543,19 @@ describe('syncWelcomePing', () => {
       auth,
       account: verified,
     });
-    await syncWelcomePing({ lnurlServer: LNURL_SERVER, spendPing: { ping }, messages, auth });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep: { enabled: true },
+    });
     expect(ping).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).filter(
         (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'welcomed',
       ),
-    ).toHaveLength(2);
+    ).toHaveLength(1);
   });
 
   it('logs and does not ping when the platform lookup throws for one account', async () => {
@@ -631,6 +653,7 @@ describe('syncWelcomePing', () => {
       messages,
       auth,
       gifts: welcomed,
+      sweep: { enabled: true },
     });
     await syncWelcomePing({
       lnurlServer: LNURL_SERVER,
@@ -661,10 +684,255 @@ describe('syncWelcomePing', () => {
       messages: await photoStore(),
       auth: NO_PLATFORM,
       gifts,
+      sweep: { enabled: true },
     });
     expect(ping).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
     ).toHaveLength(2);
+  });
+
+  it('keeps the sweep off unless an operator turned it on', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await verifyWallet(auth, 'acc', '4');
+    const listAccounts = vi.spyOn(auth, 'listAccounts');
+    const messages = await photoStore();
+    const media = vi.spyOn(messages, 'latestLiveTopLevelMediaId');
+    const gifts = new InMemoryGiftStore();
+    const listOutbound = vi.spyOn(gifts, 'listOutbound');
+    const listLegacy = vi.spyOn(gifts, 'listLegacyWelcomeAccountIds');
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
+      sweep: { enabled: false },
+    });
+    expect(ping).not.toHaveBeenCalled();
+    for (const read of [listAccounts, media, listOutbound, listLegacy]) {
+      expect(read).not.toHaveBeenCalled();
+    }
+    expect(
+      parsedEvents(warn).filter(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'sweep_off',
+      ),
+    ).toHaveLength(2);
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
+      sweep: { enabled: true },
+    });
+    expect(ping).toHaveBeenCalledWith('acc@example.test', PHOTO_ID, 'welcome');
+    expect(listLegacy).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not ping an account welcomed at its legacy external address', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    const verified = account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID });
+    await auth.createAccount(verified);
+    await verifyWallet(auth, 'acc', '3');
+    const messages = await photoStore();
+    const gifts = new InMemoryGiftStore([], ['acc']);
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
+      account: verified,
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      gifts,
+      sweep: { enabled: true },
+    });
+    expect(ping).not.toHaveBeenCalled();
+  });
+
+  it('stops a running sweep before its next ping once the switch is turned off', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await verifyWallet(auth, 'acc', '8');
+    const sweep = { enabled: true };
+    const messages = await photoStore();
+    const media = messages.latestLiveTopLevelMediaId.bind(messages);
+    vi.spyOn(messages, 'latestLiveTopLevelMediaId').mockImplementation(async (id) => {
+      sweep.enabled = false;
+      return media(id);
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep,
+    });
+    expect(ping).not.toHaveBeenCalled();
+    expect(
+      parsedEvents(warn).filter(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'sweep_off',
+      ),
+    ).toHaveLength(1);
+  });
+
+  it('keeps sweeping past an account whose check fails', async () => {
+    const ping = vi.fn(async () => undefined);
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    for (const [index, id] of ['first', 'broken', 'last'].entries()) {
+      await auth.createAccount(
+        account({ id, role: 'verified', viewKey: String(index).repeat(64) }),
+      );
+      await verifyWallet(auth, id, String(index + 1));
+    }
+    const media = vi.spyOn(messages, 'latestLiveTopLevelMediaId').mockImplementation(async (id) => {
+      if (id === 'broken') {
+        throw new Error('media boom');
+      }
+      return `${id}-photo`;
+    });
+    await syncWelcomePing({
+      lnurlServer: LNURL_SERVER,
+      spendPing: { ping },
+      messages,
+      auth,
+      sweep: { enabled: true },
+    });
+    expect(media).toHaveBeenCalledTimes(3);
+    expect(ping.mock.calls).toEqual([
+      ['first@example.test', 'first-photo', 'welcome'],
+      ['last@example.test', 'last-photo', 'welcome'],
+    ]);
+    expect(
+      parsedEvents(warn).filter((event) => event['event'] === 'spend.ping.failed'),
+    ).toHaveLength(1);
+  });
+});
+
+describe('accountWelcomed', () => {
+  const welcomeRow = (paidAtMs: number, handle = 'ada') => ({
+    paidAt: new Date(paidAtMs),
+    amountSats: 1,
+    recipientWosUser: handle,
+    kind: 'welcome' as const,
+    description: '21gifts welcome',
+  });
+  const ada: Pick<Account, 'id' | 'username' | 'sparkPubkeyVerifiedAt'> = {
+    id: 'acc',
+    username: ' Ada ',
+    sparkPubkeyVerifiedAt: 10,
+  };
+
+  it('counts a welcome gift paid to the legacy external address before the wallet', async () => {
+    const messages = new InMemoryMessageStore();
+    const gifts = new InMemoryGiftStore([], ['acc']);
+    expect(await accountWelcomed({ auth: NO_PLATFORM, messages, gifts, account: ada })).toBe(true);
+    expect(
+      await accountWelcomed({
+        auth: NO_PLATFORM,
+        messages,
+        gifts,
+        account: { id: 'acc', username: null, sparkPubkeyVerifiedAt: null },
+      }),
+    ).toBe(true);
+    expect(
+      await accountWelcomed({
+        auth: NO_PLATFORM,
+        messages,
+        gifts,
+        account: { ...ada, id: 'other' },
+      }),
+    ).toBe(false);
+  });
+
+  it('counts a username welcome only at or after the wallet verification', async () => {
+    const messages = new InMemoryMessageStore();
+    const check = (rows: ReturnType<typeof welcomeRow>[], account = ada): Promise<boolean> =>
+      accountWelcomed({ auth: NO_PLATFORM, messages, gifts: new InMemoryGiftStore(rows), account });
+    expect(await check([welcomeRow(10)])).toBe(true);
+    expect(await check([welcomeRow(9)])).toBe(false);
+    expect(await check([welcomeRow(10, 'bob')])).toBe(false);
+    expect(await check([welcomeRow(10)], { ...ada, sparkPubkeyVerifiedAt: null })).toBe(false);
+    expect(await check([welcomeRow(10)], { ...ada, username: '  ' })).toBe(false);
+    expect(await check([welcomeRow(10)], { ...ada, username: null })).toBe(false);
+  });
+
+  it('reads a gift store without the legacy lookup and no gift store at all', async () => {
+    const messages = new InMemoryMessageStore();
+    const listOnly = { listOutbound: async () => [welcomeRow(10)] };
+    expect(
+      await accountWelcomed({ auth: NO_PLATFORM, messages, gifts: listOnly, account: ada }),
+    ).toBe(true);
+    expect(await accountWelcomed({ auth: NO_PLATFORM, messages, account: ada })).toBe(false);
+  });
+
+  it('counts a platform Welcome reply', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(
+      account({ id: 'plat', role: 'basis', isPlatform: true, viewKey: 'f'.repeat(64) }),
+    );
+    const messages = await photoStore();
+    await messages.create({
+      id: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      accountId: 'plat',
+      name: '21.gifts',
+      text: 'Welcome',
+      createdAt: new Date(3),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+      parentId: PHOTO_ID,
+    });
+    expect(await accountWelcomed({ auth, messages, account: ada })).toBe(true);
+    expect(await accountWelcomed({ auth, messages, account: { ...ada, id: 'other' } })).toBe(false);
+  });
+});
+
+describe('welcomeSweepCandidates', () => {
+  it('lists the accounts the sweep would ping and pings nobody', async () => {
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount(account({ id: 'acc', role: 'verified', profileMessageId: PHOTO_ID }));
+    await auth.createAccount(account({ id: 'basis', role: 'basis', viewKey: 'c'.repeat(64) }));
+    await verifyWallet(auth, 'acc', '2');
+    const messages = await photoStore();
+    expect(await welcomeSweepCandidates({ auth, messages })).toEqual([]);
+    expect(await welcomeSweepCandidates({ auth, messages, lnurlServer: LNURL_SERVER })).toEqual([
+      { accountId: 'acc', username: 'acc', address: 'acc@example.test', messageId: PHOTO_ID },
+    ]);
+    expect(
+      await welcomeSweepCandidates({
+        auth,
+        messages,
+        gifts: new InMemoryGiftStore([], ['acc']),
+        lnurlServer: LNURL_SERVER,
+      }),
+    ).toEqual([]);
+  });
+
+  it('rejects when a read fails', async () => {
+    const auth = new InMemoryAuthStore();
+    vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('list boom'));
+    await expect(
+      welcomeSweepCandidates({ auth, messages: new InMemoryMessageStore() }),
+    ).rejects.toThrow('list boom');
   });
 });

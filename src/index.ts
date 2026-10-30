@@ -32,7 +32,7 @@ import { resolveMapPush } from './lib/ocp-place';
 import { InMemoryShopIdentityStore } from './lib/shop-identity';
 import { startOcpOutboxWorker } from './lib/ocp-outbox';
 import { resolveSpendPing } from './lib/spend-ping';
-import { syncWelcomePing } from './lib/welcome-media';
+import { syncWelcomePing, type WelcomeSweepSwitch } from './lib/welcome-media';
 import { resolveZapRelays } from './lib/nostr/relays';
 import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
@@ -254,7 +254,9 @@ if (import.meta.main) {
           fetchImpl: globalThis.fetch,
           now: Date.now,
         });
+  const welcomeSweep: WelcomeSweepSwitch = { enabled: false };
   const app = createApp({
+    welcomeSweep,
     ...(shopPayments === undefined ? {} : { shopPayments }),
     authStore,
     btcUsdRates,
@@ -308,6 +310,7 @@ if (import.meta.main) {
       auth: authStore,
       ...(giftStore === undefined ? {} : { gifts: giftStore }),
       ...(lnurlServer === undefined ? {} : { lnurlServer }),
+      sweep: welcomeSweep,
     });
   };
   welcomeCatchUp();

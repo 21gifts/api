@@ -34,6 +34,14 @@ describe('InMemoryGiftStore', () => {
 
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryGiftStore().listOutbound()).toEqual([]);
+    expect(await new InMemoryGiftStore().listLegacyWelcomeAccountIds()).toEqual([]);
+  });
+
+  it('returns a copy of the seeded legacy welcome accounts', async () => {
+    const seed = ['acc-a'];
+    const listed = await new InMemoryGiftStore([], seed).listLegacyWelcomeAccountIds();
+    expect(listed).toEqual(['acc-a']);
+    expect(listed).not.toBe(seed);
   });
 
   it('dumps stored gift fields newest-first', async () => {
@@ -59,6 +67,16 @@ describe('InMemoryGiftStore', () => {
 });
 
 describe('QueryGiftStore', () => {
+  it('runs the legacy welcome query, or lists nothing without one', async () => {
+    expect(await new QueryGiftStore(async () => []).listLegacyWelcomeAccountIds()).toEqual([]);
+    const store = new QueryGiftStore(
+      async () => [],
+      undefined,
+      async () => ['acc-a'],
+    );
+    expect(await store.listLegacyWelcomeAccountIds()).toEqual(['acc-a']);
+  });
+
   it('returns the injected query result', async () => {
     const store = new QueryGiftStore(async () => [LATE]);
     expect(await store.listOutbound()).toEqual([LATE]);
