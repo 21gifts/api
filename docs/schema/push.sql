@@ -42,3 +42,12 @@ BEGIN
     CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss'));
 END
 $push_outbox_type$;
+
+-- One row per payment hash whose "You received N sats" push was enqueued, so a
+-- repeated LNURL server webhook for the same payment enqueues nothing. Kept
+-- after the outbox row is swept.
+CREATE TABLE IF NOT EXISTS push_payment_received (
+  payment_hash text PRIMARY KEY,
+  outbox_id uuid NOT NULL,
+  created_at timestamptz NOT NULL
+);

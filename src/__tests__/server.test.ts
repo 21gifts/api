@@ -1,3 +1,4 @@
+import { createHmac } from 'node:crypto';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
@@ -1071,6 +1072,28 @@ describe('LNURL server wiring', () => {
     // The wallet was verified at 2: a record paid at 5 is the welcome gift, one paid at 1 is not.
     expect(await welcomePings(5)).toBe(0);
     expect(await welcomePings(1)).toBe(3);
+  });
+
+  it('mounts POST /webhooks/lnurl only when LNURL_WEBHOOK_SECRET is set', async () => {
+    const off = createApp({ env: { LNURL_WEBHOOK_SECRET: ' ' } });
+    expect(routePairs(off).some((r) => r.path === '/webhooks/lnurl')).toBe(false);
+    expect((await off.request('/webhooks/lnurl', { method: 'POST' })).status).toBe(404);
+    const on = createApp({ env: { LNURL_WEBHOOK_SECRET: 'secret' } });
+    expect(routePairs(on).some((r) => r.method === 'POST' && r.path === '/webhooks/lnurl')).toBe(
+      true,
+    );
+    const body = JSON.stringify({
+      template: 'spark_payment_received',
+      data: { payment_hash: 'ab'.repeat(32), user_pubkey: `02${'1'.repeat(64)}`, amount_sat: 21 },
+    });
+    const signature = createHmac('sha256', 'secret').update(body).digest('hex');
+    const res = await on.request('/webhooks/lnurl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breez-signature': signature },
+      body,
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ outcome: 'unknown' });
   });
 
   it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {

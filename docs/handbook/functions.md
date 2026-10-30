@@ -430,7 +430,7 @@
 
 ## Function: migratePushSchema
 
-- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS push_subscription` and its account index, `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text` (null on rows stored before it; those rows are never sent to and the sweep deletes them), `CREATE TABLE IF NOT EXISTS push_outbox` (with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`) and its pending index, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz` (null on rows finished before it; retention ages them from `created_at`), then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`).
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS push_subscription` and its account index, `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text` (null on rows stored before it; those rows are never sent to and the sweep deletes them), `CREATE TABLE IF NOT EXISTS push_outbox` (with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`) and its pending index, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz` (null on rows finished before it; retention ages them from `created_at`), then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`), and `CREATE TABLE IF NOT EXISTS push_payment_received` (`payment_hash text PRIMARY KEY`, `outbox_id uuid`, `created_at`; no account reference, kept after the outbox row is swept).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
@@ -827,7 +827,7 @@
 ## Function: InMemoryPushStore
 
 - **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
-- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row; `countBroadcastOutbox` counts the rows of one broadcast (`messageId` and payload tag `broadcast:<id>`) as queued, pending, delivered (sent or failed with at least one delivered endpoint), dropped (sent with none), and failed (failed with none)). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row; `countBroadcastOutbox` counts the rows of one broadcast (`messageId` and payload tag `broadcast:<id>`) as queued, pending, delivered (sent or failed with at least one delivered endpoint), dropped (sent with none), and failed (failed with none); `enqueuePaymentReceived(paymentHash, row)` appends the row and returns `true` only the first time a payment hash is given, otherwise `false` without a row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Recovery commit:** `removeAccountSubscriptions(accountId)` deletes every subscription of one account synchronously and returns how many it removed; `InMemoryAuthStore.commitRecovery` calls it through `usePushStore`.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
@@ -841,8 +841,8 @@
 
 ## Function: PostgresPushStore
 
-- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. `countBroadcastOutbox(broadcastId)` runs `SELECT status, count(*), count(*) FILTER (WHERE delivered_endpoints <> '[]') FROM push_outbox WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2 GROUP BY status` with `$2` = `broadcast:<broadcastId>`, then adds pending rows to `pending` and, per finished status, the rows with a delivered endpoint to `delivered` and the rest to `failed` or `dropped`. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
+- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`, `push_payment_received`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. `countBroadcastOutbox(broadcastId)` runs `SELECT status, count(*), count(*) FILTER (WHERE delivered_endpoints <> '[]') FROM push_outbox WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2 GROUP BY status` with `$2` = `broadcast:<broadcastId>`, then adds pending rows to `pending` and, per finished status, the rows with a delivered endpoint to `delivered` and the rest to `failed` or `dropped`. `enqueuePaymentReceived(paymentHash, row)` runs one statement: a CTE inserts `push_payment_received` with `ON CONFLICT (payment_hash) DO NOTHING RETURNING outbox_id`, and `push_outbox` is inserted `SELECT … FROM` that CTE, so the claim and the row are written together or not at all; returns whether a row was inserted. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -971,6 +971,49 @@
 - **Inputs:** `{ replyId, name, noteId }`. `replyId` is the receipt-derived UUID used in `tag`. `noteId` is the forum note to open.
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
 - **Used by:** `notifyHeart`.
+
+## Function: buildPaymentReceivedPushPayload
+
+- **Purpose:** English payload for the receiver of a lightning address payment (`type: 'zap'`, title the collapsed sender name or `21.gifts` when `name` is `null`, body `You received <amountSats> sats.`, url `/wallet`, tag `payment:<paymentHash>`).
+- **Inputs:** `{ paymentHash, amountSats, name }`; `name` is a member's display name or `null` when the sender is not known.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` (notifyPaymentReceived adds `unreadCount`).
+- **Used by:** `notifyPaymentReceived`.
+
+## Function: resolvePaymentWebhookSecret
+
+- **Purpose:** Read the secret the LNURL server signs its webhooks with, which also switches `POST /webhooks/lnurl` on.
+- **Inputs:** Environment slice; reads `LNURL_WEBHOOK_SECRET`.
+- **Returns / side effects:** The trimmed secret, or `null` when unset or blank (the route is not mounted). Never logged.
+- **Used by:** `createApp`.
+
+## Function: breezSignatureValid
+
+- **Purpose:** Check the LNURL server's `X-Breez-Signature`: hex HMAC-SHA256 of the raw body with the shared secret, compared in constant time.
+- **Inputs:** Secret, raw body text, header value or `null`.
+- **Returns / side effects:** `true` only for 64 hex characters (either case) that match; a missing or malformed header is `false`. No side effects.
+- **Used by:** `webhookRoutes`.
+
+## Function: parsePaymentReceived
+
+- **Purpose:** Read a `spark_payment_received` webhook body (`{ template, data }`) into the fields the push uses.
+- **Inputs:** Raw JSON body.
+- **Returns / side effects:** `{ paymentHash, userPubkey, amountSats, zapRequest }` (payment hash lowercased; `zapRequest` is `data.nostr_zap_request` or `null`), or `null` for malformed JSON, another template, a payment hash that is not 32-byte hex, a blank `user_pubkey`, or an `amount_sat` that is not a positive safe integer. `sender_comment` and `lightning_address` are not read.
+- **Used by:** `webhookRoutes`.
+
+## Function: notifyPaymentReceived
+
+- **Purpose:** Enqueue one Web Push to the receiver of a payment, at most once per payment hash.
+- **Inputs:** `PaymentReceivedDeps` (`auth`, `messages`, `pushStore`, `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
+- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and no `amount` tag other than the received amount in millisats; otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`; one with an `e` tag of a stored forum note returns `zap`. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription returns `no_device`.
+- **Returns / side effects:** `queued` after `PushStore.enqueuePaymentReceived` wrote the claim and the outbox row (`unreadCount` is in-app plus listed inbox unread), `duplicate` when the hash was already claimed, or the skip reason above. Throws when a store call rejects.
+- **Used by:** `webhookRoutes`.
+
+## Function: webhookRoutes
+
+- **Purpose:** Build the `/webhooks` group with `POST /webhooks/lnurl` (see the endpoint section).
+- **Inputs:** `WebhookRouteDeps`: `secret` plus `PaymentReceivedDeps`.
+- **Returns / side effects:** A Hono app. Logs `payment_received` with the outcome, `payment_received.ignored`, or `payment_received.failed` with `errorLogFields`; never the body, hash, or pubkey.
+- **Used by:** `createApp` when `resolvePaymentWebhookSecret` returns a secret.
 
 ## Function: buildModeratorAppointedPushPayload
 

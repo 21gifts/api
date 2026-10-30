@@ -5,6 +5,7 @@ import {
   buildReplyPushPayload,
   buildConversationPushPayload,
   buildHeartPushPayload,
+  buildPaymentReceivedPushPayload,
   buildZapPushPayload,
   parsePushSubscription,
   pushTagForNotification,
@@ -261,6 +262,23 @@ describe('buildHeartPushPayload', () => {
       url: '/messages/note-9',
       tag: 'heart:reply-1',
     });
+  });
+});
+
+describe('buildPaymentReceivedPushPayload', () => {
+  it('states the amount, opens the wallet, and tags the payment hash', () => {
+    expect(
+      buildPaymentReceivedPushPayload({ paymentHash: 'hash', amountSats: 21, name: '  Ada \n' }),
+    ).toEqual({
+      type: 'zap',
+      title: 'Ada',
+      body: 'You received 21 sats.',
+      url: '/wallet',
+      tag: 'payment:hash',
+    });
+    expect(
+      buildPaymentReceivedPushPayload({ paymentHash: 'hash', amountSats: 1, name: null }).title,
+    ).toBe('21.gifts');
   });
 });
 

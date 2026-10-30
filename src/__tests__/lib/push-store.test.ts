@@ -60,8 +60,8 @@ function pending(
 }
 
 describe('PUSH_SCHEMA_SQL', () => {
-  it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(9);
+  it('creates push_subscription, push_outbox, and push_payment_received with indexes', () => {
+    expect(PUSH_SCHEMA_SQL).toHaveLength(10);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(
@@ -79,6 +79,9 @@ describe('PUSH_SCHEMA_SQL', () => {
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/push_outbox_type_check/);
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/'conversation'/);
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/'dismiss'/);
+    expect(PUSH_SCHEMA_SQL[9]).toMatch(
+      /CREATE TABLE IF NOT EXISTS push_payment_received \(\n {2}payment_hash text PRIMARY KEY,/,
+    );
   });
 });
 
@@ -299,6 +302,49 @@ describe('InMemoryPushStore', () => {
       'https://push.example/a',
       'https://push.example/b',
     ]);
+  });
+});
+
+describe('enqueuePaymentReceived', () => {
+  it('enqueues in memory once per payment hash', async () => {
+    const store = new InMemoryPushStore();
+    const first = pending({ id: 'p1', accountId: 'a', messageId: null });
+    expect(await store.enqueuePaymentReceived('hash', first)).toBe(true);
+    expect(await store.enqueuePaymentReceived('hash', pending({ id: 'p2', accountId: 'a' }))).toBe(
+      false,
+    );
+    expect(await store.enqueuePaymentReceived('other', pending({ id: 'p3', accountId: 'a' }))).toBe(
+      true,
+    );
+    expect((await store.listAllOutbox(10)).map((row) => row.id).sort()).toEqual(['p1', 'p3']);
+  });
+
+  it('claims the hash and inserts the row in one Postgres statement', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    const row = pending({ id: 'p1', accountId: 'a', messageId: null, skipEndpoints: ['x'] });
+    sql.nextRows = [{ id: 'p1' }];
+    expect(await store.enqueuePaymentReceived('hash', row)).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(
+      /INSERT INTO push_payment_received[\s\S]*ON CONFLICT \(payment_hash\) DO NOTHING[\s\S]*INSERT INTO push_outbox[\s\S]*FROM claim/,
+    );
+    expect(sql.queries[0]?.params).toEqual([
+      'hash',
+      'p1',
+      'a',
+      'forum',
+      null,
+      '{}',
+      'pending',
+      0,
+      null,
+      row.createdAt,
+      null,
+      '[]',
+      '["x"]',
+    ]);
+    sql.nextRows = [];
+    expect(await store.enqueuePaymentReceived('hash', row)).toBe(false);
   });
 });
 
