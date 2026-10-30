@@ -528,7 +528,10 @@ each person to delete their old share by hand.
 ## What the server stores
 
 No 12 words, no 16 bytes, no readable person's share and no PRF output, in no
-row and no log, and the 21.gifts share and no held-share box in any log.
+row and no log. No application log or request log contains the 21.gifts share,
+a held-share box id or a box's ciphertext. The row-change log `db_change`
+keeps only a SHA-256 of each box's ciphertext, and keeps the box id and the
+holder's account id as it does for every row.
 
 - The 21.gifts share, encrypted, for the current wallet and for each previous
   wallet until the owner drops it (`recovery_share`).
