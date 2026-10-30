@@ -3447,10 +3447,28 @@ describe('InMemoryAuthStore social recovery', () => {
       listed[0]!.ciphertext[1] = 0;
       expect((await store.listHeldShareBoxes('acc'))[0]?.ciphertext).toEqual(Uint8Array.of(1, 2));
 
+      // Nor can the caller's input array after the write.
+      const input = Uint8Array.of(1, 8);
+      expect(
+        await store.putHeldShareBox({
+          accountId: 'acc',
+          id: BOX_B,
+          ciphertext: input,
+          now: NOW,
+          limit: 50,
+        }),
+      ).toBe('replaced');
+      input[1] = 0;
+      expect((await store.listHeldShareBoxes('acc'))[0]?.ciphertext).toEqual(Uint8Array.of(1, 8));
+      expect(await putBox(store, 'acc', BOX_B, 2, NOW)).toBe('replaced');
+      const before = await store.listHeldShareBoxes('acc');
+
       expect(await putBox(store, 'other', BOX_A, 7)).toBe('taken');
       await store.deleteHeldShareBox('other', BOX_A);
       expect(await store.listHeldShareBoxes('other')).toEqual([]);
-      expect(await store.listHeldShareBoxes('acc')).toHaveLength(3);
+      // The refused write and the foreign delete left the holder's boxes untouched.
+      expect(await store.listHeldShareBoxes('acc')).toEqual(before);
+      expect(before).toHaveLength(3);
 
       await store.deleteHeldShareBox('acc', BOX_A);
       await store.deleteHeldShareBox('acc', BOX_A);

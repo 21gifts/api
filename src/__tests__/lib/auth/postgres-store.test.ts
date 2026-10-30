@@ -3012,6 +3012,7 @@ describe('PostgresAuthStore social recovery', () => {
       expect(await created.result).toBe('created');
       const texts = created.tx.queries.map((query) => query.text.replace(/\s+/g, ' '));
       expect(texts[0]).toContain('FROM account WHERE id = $1 FOR UPDATE');
+      expect(created.tx.queries[0]?.params).toEqual(['acc']);
       expect(created.tx.queries[1]).toEqual({
         text: 'SELECT account_id FROM held_share_box WHERE id = $1',
         params: [BOX],
