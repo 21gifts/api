@@ -50,12 +50,13 @@ export interface DebugPaymentsRouteDeps {
   conversationStore: ConversationStore;
   /** Verifications (welcome triggers) for the window replay. */
   trustStore: TrustStore;
-  /** Gift ledger for the window replay's already-paid check. */
-  giftStore: Pick<GiftStore, 'listOutbound'>;
+  /**
+   * Gift ledger for the window replay's already-paid check and the welcome
+   * check of the welcome sweep dry-run.
+   */
+  giftStore: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
-  /** Outbound gifts for the welcome sweep dry-run; omitted → only `Welcome` replies count. */
-  gifts?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
   /** Switch of the 15-minute welcome sweep that `GET` and `PUT /welcome-sweep` read and set. */
   welcomeSweep: WelcomeSweepSwitch;
 }
@@ -415,7 +416,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
         const candidates = await welcomeSweepCandidates({
           auth: deps.auth,
           messages: deps.store,
-          gifts: deps.gifts,
+          gifts: deps.giftStore,
           lnurlServer: deps.lnurlServer,
         });
         logEvent('debug.welcome_sweep.listed', { count: candidates.length });

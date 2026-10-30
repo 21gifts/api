@@ -51,7 +51,6 @@ function mount(
     auth?: InMemoryAuthStore;
     now?: () => number;
     giftStore?: InMemoryGiftStore;
-    gifts?: InMemoryGiftStore;
     welcomeSweep?: WelcomeSweepSwitch;
   } = {},
 ): Hono {
@@ -67,7 +66,6 @@ function mount(
       conversationStore: new InMemoryConversationStore(),
       trustStore: new InMemoryTrustStore(),
       giftStore: extra.giftStore ?? new InMemoryGiftStore(),
-      ...(extra.gifts === undefined ? {} : { gifts: extra.gifts }),
       lnurlServer: LNURL_SERVER,
       welcomeSweep: extra.welcomeSweep ?? { enabled: false },
     }),
@@ -1600,6 +1598,7 @@ describe('debugPaymentsRoutes', () => {
           conversationStore: new InMemoryConversationStore(),
           trustStore: new InMemoryTrustStore(),
           giftStore: new InMemoryGiftStore(),
+          welcomeSweep: { enabled: false },
         }),
       );
       const res = await post(app, WINDOW);
@@ -1742,7 +1741,7 @@ describe('/debug/welcome-sweep', () => {
   it('leaves out an account welcomed at its legacy external address', async () => {
     const { store, auth } = await seedOwed();
     const gifts = new InMemoryGiftStore([], [accountId]);
-    const app = mount(store, 'secret', { auth, gifts });
+    const app = mount(store, 'secret', { auth, giftStore: gifts });
     const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
     expect(await res.json()).toEqual({ enabled: false, spendPing: false, wouldPing: [] });
   });

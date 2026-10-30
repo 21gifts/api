@@ -893,7 +893,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       trustStore,
       giftStore,
       ...receivingDeps,
-      gifts: giftStore,
       welcomeSweep: deps.welcomeSweep ?? { enabled: false },
     }),
   );
