@@ -3102,9 +3102,14 @@ describe('held-share boxes', () => {
       now: 1,
       limit: 50,
     });
-    expect((await list(app, refused)).status).toBe(401);
-    expect((await put(app, BOX, { ciphertext: CIPHERTEXT }, refused)).status).toBe(401);
-    expect((await remove(app, BOX_2, refused)).status).toBe(401);
+    for (const res of [
+      await list(app, refused),
+      await put(app, BOX, { ciphertext: CIPHERTEXT }, refused),
+      await remove(app, BOX_2, refused),
+    ]) {
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    }
     expect((await store.listHeldShareBoxes('refused')).map((box) => box.id)).toEqual([BOX_2]);
     expectNoBoxInLogs();
   });
@@ -3160,6 +3165,7 @@ describe('held-share boxes', () => {
       expect(await stored.json()).toEqual({
         error: 'Expected a box id of 32 lowercase hex characters',
       });
+      expect(await store.listHeldShareBoxes('acc')).toEqual([]);
       const removed = await remove(app, id);
       expect(removed.status).toBe(400);
       expect(await removed.json()).toEqual({
@@ -3266,6 +3272,11 @@ describe('held-share boxes', () => {
     const store = await seededStore();
     const app = mount(store);
     expect((await put(app, BOX, { ciphertext: CIPHERTEXT })).status).toBe(201);
+    expect(
+      ((await (await list(app)).json()) as { boxes: Array<{ id: string }> }).boxes.map(
+        (box) => box.id,
+      ),
+    ).toEqual([BOX]);
     const res = await remove(app, BOX);
     expect(res.status).toBe(204);
     expect(await res.text()).toBe('');
