@@ -17,7 +17,10 @@ export const DAILY_ROSTER_INVALID_PAYMENTS = 'Invalid payments switch';
 /** Spend 400 text for an address or amount the roster will not store. */
 export const DAILY_ROSTER_INVALID_ADDRESS = 'Invalid address or amount';
 
-/** Spend 400 text when the account is already on the roster. */
+/**
+ * Spend 400 text when the account is already on the roster, or when an
+ * import lists the same address twice in one list.
+ */
 export const DAILY_ROSTER_ADDRESS_LISTED = 'Address already listed';
 
 /** Spend 400 text when the account is not on the roster, or no account has that username or address. */

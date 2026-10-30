@@ -117,7 +117,8 @@ const rosterRecipientAddBody = z.object({
 
 /**
  * Body schema for the keyed roster writes: `username`, or `address` (the
- * editor row's edit key, `<username>@<host>`).
+ * editor row's edit key: `<username>@<host>`, the bare username when the
+ * LNURL server is off, or the account id).
  */
 const rosterRecipientBody = z.object({
   username: z.string().optional(),
