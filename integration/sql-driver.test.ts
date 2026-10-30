@@ -27,7 +27,7 @@ import { migrateMessageSchema, PostgresMessageStore } from '@/lib/message-store'
 import { migrateBannerSchema } from '@/lib/banner-store';
 import { migrateConversationSchema } from '@/lib/conversation-store';
 import { migrateNotificationSchema } from '@/lib/notification-store';
-import { migratePushSchema, PostgresPushStore } from '@/lib/push-store';
+import { migratePushSchema, PostgresPushStore, type PushOutboxRow } from '@/lib/push-store';
 import { migrateTrustSchema } from '@/lib/trust-store';
 import { PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
@@ -2262,6 +2262,82 @@ describe('PostgresAuthStore getAccounts', () => {
       const found = await store.getAccounts([first, unknown, second, first]);
       expect(found.map((row) => row.id).sort()).toEqual([first, second].sort());
       expect(await store.getAccounts([])).toEqual([]);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresPushStore countBroadcastOutbox', () => {
+  test('counts one broadcast id by status and delivered endpoints', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateAuthSchema(client);
+      await migratePushSchema(client);
+      await migrateDbChangeSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`,
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresPushStore(client);
+      const broadcastId = crypto.randomUUID();
+      const row = (messageId: string, tag = `broadcast:${messageId}`): PushOutboxRow => ({
+        id: crypto.randomUUID(),
+        accountId,
+        type: 'zap',
+        messageId,
+        payload: JSON.stringify({ tag }),
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt: new Date(),
+        finishedAt: null,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const rows = [
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+        row(broadcastId),
+      ];
+      const forumRow = { ...row(broadcastId, `zap:${broadcastId}`), status: 'sent' as const };
+      for (const item of [...rows, row(crypto.randomUUID()), forumRow]) {
+        await store.enqueue(item);
+      }
+      const [delivered, dropped, failed, partial] = rows;
+      await store.recordDelivered(delivered?.id ?? '', ['https://push.example/a']);
+      await store.markSent(delivered?.id ?? '', Date.now());
+      await store.markSent(dropped?.id ?? '', Date.now());
+      await store.recordDelivered(partial?.id ?? '', ['https://push.example/b']);
+      for (let i = 0; i < 8; i += 1) {
+        await store.markFailed(failed?.id ?? '', Date.now());
+        await store.markFailed(partial?.id ?? '', Date.now());
+      }
+      expect(await store.countBroadcastOutbox(broadcastId)).toEqual({
+        queued: 5,
+        pending: 1,
+        delivered: 2,
+        dropped: 1,
+        failed: 1,
+      });
+      expect(await store.countBroadcastOutbox(crypto.randomUUID())).toEqual({
+        queued: 0,
+        pending: 0,
+        delivered: 0,
+        dropped: 0,
+        failed: 0,
+      });
     } finally {
       await closeIfPossible(sql);
     }

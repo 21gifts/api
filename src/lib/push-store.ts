@@ -35,7 +35,10 @@ export interface PushOutboxRow {
   accountId: string;
   /** Notification kind. */
   type: 'forum' | 'zap' | 'conversation' | 'dismiss';
-  /** Forum or conversation message id when applicable; null for debug pings and dismiss rows. */
+  /**
+   * Forum or conversation message id when applicable; the broadcast id for an
+   * operator broadcast; null for debug pings and dismiss rows.
+   */
   messageId: string | null;
   /** JSON string payload. */
   payload: string;
@@ -170,6 +173,31 @@ export interface PushStore {
    * @param endpoints - Endpoint URLs that received the payload.
    */
   recordDelivered(id: string, endpoints: readonly string[]): Promise<void>;
+
+  /**
+   * Count the outbox rows of one operator broadcast by delivery outcome:
+   * rows whose `messageId` is the broadcast id and whose payload tag is
+   * `broadcast:<broadcastId>`. Rows of a forum or conversation message with
+   * the same id are not counted.
+   *
+   * @param broadcastId - Broadcast id (UUID).
+   * @returns Row counts; all zero when no broadcast row has this id.
+   */
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts>;
+}
+
+/** Outbox rows of one operator broadcast by delivery outcome. */
+export interface PushOutboxCounts {
+  /** Every row with this id. */
+  queued: number;
+  /** Rows the worker has not finished yet (first try or retry). */
+  pending: number;
+  /** Finished rows that reached at least one subscription (also when another one failed for good). */
+  delivered: number;
+  /** Sent rows that reached no subscription (removed or gone before the send). */
+  dropped: number;
+  /** Rows that failed for good after the retry limit without reaching any subscription. */
+  failed: number;
 }
 
 /** Idempotent DDL for push tables (matches `docs/schema/push.sql`). */
@@ -265,6 +293,18 @@ function unionDeliveredEndpoints(
     out.push(endpoint);
   }
   return out;
+}
+
+/** The `tag` of a JSON outbox payload, or `undefined` when it has none. */
+function payloadTagOf(payload: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed !== null && typeof parsed === 'object'
+      ? (parsed as { tag?: unknown }).tag
+      : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 /** Copy a subscription so callers cannot mutate store state. */
@@ -543,6 +583,33 @@ export class InMemoryPushStore implements PushStore {
     }
     row.deliveredEndpoints = unionDeliveredEndpoints(row.deliveredEndpoints, endpoints);
     return Promise.resolve();
+  }
+
+  /**
+   * Count in-memory outbox rows of one broadcast by delivery outcome.
+   *
+   * @param broadcastId - Broadcast id.
+   * @returns Row counts.
+   */
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    const tag = `broadcast:${broadcastId}`;
+    for (const row of this.#outbox) {
+      if (row.messageId !== broadcastId || payloadTagOf(row.payload) !== tag) {
+        continue;
+      }
+      counts.queued += 1;
+      if (row.status === 'pending') {
+        counts.pending += 1;
+      } else if (row.deliveredEndpoints.length > 0) {
+        counts.delivered += 1;
+      } else if (row.status === 'failed') {
+        counts.failed += 1;
+      } else {
+        counts.dropped += 1;
+      }
+    }
+    return Promise.resolve(counts);
   }
 }
 
@@ -872,5 +939,40 @@ export class PostgresPushStore implements PushStore {
       JSON.stringify(next),
       id,
     ]);
+  }
+
+  /**
+   * Count outbox rows of one broadcast (`message_id` and payload tag) by
+   * status; a finished (sent or
+   * failed) row counts as delivered when its `delivered_endpoints` list is
+   * not empty.
+   *
+   * @param broadcastId - Broadcast id (UUID).
+   * @returns Row counts.
+   */
+  async countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
+    const rows = await this.#sql.query<{ status: string; n: number; reached: number }>(
+      `SELECT status, count(*)::int AS n,
+         count(*) FILTER (WHERE delivered_endpoints <> '[]')::int AS reached
+       FROM push_outbox
+       WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2
+       GROUP BY status`,
+      [broadcastId, `broadcast:${broadcastId}`],
+    );
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    for (const row of rows) {
+      counts.queued += row.n;
+      if (row.status === 'pending') {
+        counts.pending += row.n;
+        continue;
+      }
+      counts.delivered += row.reached;
+      if (row.status === 'failed') {
+        counts.failed += row.n - row.reached;
+      } else {
+        counts.dropped += row.n - row.reached;
+      }
+    }
+    return counts;
   }
 }

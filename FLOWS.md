@@ -472,8 +472,10 @@ a second banner (service worker). Owners set one of four levels via POST /me/not
 
 Opening a forum note (explicit expand, translate, or the message page) or opening Notifications stamps the matching unread in-app rows on the server. `POST /notifications/read-by-message` stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` whose parent or reply id is that note and returns `{ ok: true, tags }`. A fully shown note uses `POST /notifications/read-visible`, which stamps only unread `forum_post`, `forum_reply`, and `forum_mention` whose `replyId` is that note; expand, translate, and open still use `POST /notifications/read-by-message`. `POST /notifications/read-all` returns the same shape, including `moderator_appointed` and excluding `moderator_proposal`. A freshly stamped `POST /notifications/:id/read` still returns the public notification and enqueues that row's tag; an already-read notification, including one whose stamp equals the route clock, does not enqueue. Those tags are a dismiss push to the account's other subscriptions; the calling endpoint is skipped only when it belongs to the account. `moderator_proposal` stays unread and is not dismissed. `conversation:` pushes are not closed by dismiss.
 
+An operator broadcast (`POST /debug/push-broadcast`) queues one push per account with a live subscription, or per listed username, through the same outbox and worker; level `none` is skipped. `GET /debug/push-broadcast/:id` reports how many were delivered, dropped, failed, or are still pending.
+
 HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
-`/notifications`, `/notifications/read-by-message`, `/notifications/read-visible`, `/notifications/read-all`, `/notifications/:id/read`.
+`/debug/push-broadcast`, `/debug/push-broadcast/:id`, `/notifications`, `/notifications/read-by-message`, `/notifications/read-visible`, `/notifications/read-all`, `/notifications/:id/read`.
 
 ---
 

@@ -759,3 +759,79 @@ describe('PostgresPushStore', () => {
     ]);
   });
 });
+
+describe('countBroadcastOutbox', () => {
+  it('counts in-memory rows of one broadcast by outcome', async () => {
+    const store = new InMemoryPushStore();
+    const tagged = (
+      overrides: Partial<PushOutboxRow> & Pick<PushOutboxRow, 'id' | 'accountId'>,
+    ): PushOutboxRow => pending({ payload: '{"tag":"broadcast:b"}', ...overrides });
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 0,
+      pending: 0,
+      delivered: 0,
+      dropped: 0,
+      failed: 0,
+    });
+    await store.enqueue(tagged({ id: '1', accountId: 'a', messageId: 'b' }));
+    await store.enqueue(
+      tagged({
+        id: '2',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'sent',
+        deliveredEndpoints: ['x'],
+      }),
+    );
+    await store.enqueue(tagged({ id: '3', accountId: 'a', messageId: 'b', status: 'sent' }));
+    await store.enqueue(tagged({ id: '4', accountId: 'a', messageId: 'b', status: 'failed' }));
+    await store.enqueue(
+      tagged({
+        id: '6',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'failed',
+        deliveredEndpoints: ['y'],
+      }),
+    );
+    await store.enqueue(
+      tagged({ id: '7', accountId: 'a', messageId: 'b', deliveredEndpoints: ['z'] }),
+    );
+    await store.enqueue(
+      tagged({ id: '5', accountId: 'a', messageId: 'other', payload: '{"tag":"broadcast:other"}' }),
+    );
+    await store.enqueue(
+      pending({ id: '8', accountId: 'a', messageId: 'b', payload: '{"tag":"zap:b"}' }),
+    );
+    await store.enqueue(pending({ id: '9', accountId: 'a', messageId: 'b', payload: 'not json' }));
+    await store.enqueue(pending({ id: '10', accountId: 'a', messageId: 'b', payload: 'null' }));
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 6,
+      pending: 2,
+      delivered: 2,
+      dropped: 1,
+      failed: 1,
+    });
+  });
+
+  it('groups Postgres rows by status and splits sent rows by delivered endpoints', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      { status: 'pending', n: 2, reached: 0 },
+      { status: 'sent', n: 5, reached: 3 },
+      { status: 'failed', n: 3, reached: 1 },
+    ];
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 10,
+      pending: 2,
+      delivered: 4,
+      dropped: 2,
+      failed: 2,
+    });
+    expect(sql.queries.at(-1)?.text).toMatch(
+      /WHERE message_id = \$1 AND payload::jsonb ->> 'tag' = \$2/,
+    );
+    expect(sql.queries.at(-1)?.params).toEqual(['b', 'broadcast:b']);
+  });
+});

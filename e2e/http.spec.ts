@@ -1082,6 +1082,66 @@ test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ re
   expect(res.status()).toBe(503);
 });
 
+test('POST /debug/push-broadcast without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/push-broadcast');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugPushBroadcastRoutes — dry run counts recipients, a bad link is 400', async ({
+  request,
+}) => {
+  const headers = { authorization: 'Bearer e2e-debug-token' };
+  const dry = await request.post('/debug/push-broadcast', {
+    headers,
+    data: { title: 'Update', body: 'Hello', link: '/welcome', dryRun: true },
+  });
+  expect(dry.status()).toBe(200);
+  expect(await dry.json()).toEqual({ dryRun: true, recipients: 0 });
+  const bad = await request.post('/debug/push-broadcast', {
+    headers,
+    data: { title: 'Update', body: 'Hello', link: 'https://example.com/' },
+  });
+  expect(bad.status()).toBe(400);
+});
+
+test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live subscription on a fresh boot', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', usernames: ['nobody-here'], dryRun: true },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({
+    error: 'No account with that username',
+    usernames: ['nobody-here'],
+  });
+  const all = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', dryRun: true },
+  });
+  expect(await all.json()).toEqual({ dryRun: true, recipients: 0 });
+});
+
+test('Function: enqueueBroadcastPush — a send without VAPID is 503 and queues nothing', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello' },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Push is not configured' });
+});
+
+test('GET /debug/push-broadcast/:id for an unknown id is 404', async ({ request }) => {
+  const res = await request.get('/debug/push-broadcast/:id', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
 test('POST /debug/passkey-renew/reopen without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/passkey-renew/reopen');
   expect(res.status()).toBe(401);
