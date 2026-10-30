@@ -220,6 +220,13 @@ describe('createApp', () => {
     expect(res.status).toBe(503);
   });
 
+  it('mounts the push broadcast routes behind the debug token', async () => {
+    const app = createApp({ debugToken: '' });
+    const res = await app.request('/debug/push-broadcast', { method: 'POST' });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Debug is not configured' });
+  });
+
   it('returns 503 on POST /debug/passkey-renew/reopen when debugToken is blank', async () => {
     const app = createApp({ debugToken: '' });
     const res = await app.request('/debug/passkey-renew/reopen', { method: 'POST' });
