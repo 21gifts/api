@@ -287,7 +287,7 @@ export interface DailyRosterBucketSums {
   linked: number;
   /** Sum over every stored row of the bucket. */
   totalUsd: number;
-  /** Sum over the rows linked to an account: what the bucket pays. */
+  /** Sum over the rows linked to an account. */
   linkedUsd: number;
 }
 
