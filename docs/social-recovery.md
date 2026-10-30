@@ -39,17 +39,21 @@ threshold 1, member count 3, member threshold 2, empty passphrase. Any two
 shares give back the same 16 bytes, and BIP-39 of those bytes is the original
 12 words. One share gives nothing.
 
-| Share | Held by                                           | How it travels                                                                            |
-| ----- | ------------------------------------------------- | ----------------------------------------------------------------------------------------- |
-| 1     | Person 1, signed in to their own 21.gifts account | QR code, phone to phone, kept in the app's browser storage under the holder's own account |
-| 2     | Person 2, signed in to their own 21.gifts account | QR code, phone to phone, kept in the app's browser storage under the holder's own account |
-| 3     | 21.gifts, as a backup                             | To the api at setup (`PUT /me/recovery-share`), stored encrypted                          |
+| Share | Held by                                           | How it travels                                                                                                                            |
+| ----- | ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| 1     | Person 1, signed in to their own 21.gifts account | QR code, phone to phone, then kept as a box on the api under the holder's own login, encrypted in the holder's browser (`held_share_box`) |
+| 2     | Person 2, signed in to their own 21.gifts account | QR code, phone to phone, then kept as a box on the api under the holder's own login, encrypted in the holder's browser (`held_share_box`) |
+| 3     | 21.gifts, as a backup                             | To the api at setup (`PUT /me/recovery-share`), stored encrypted                                                                          |
 
 - Person 1 and person 2 are two different people with two different phones,
   each with their own 21.gifts account. They hold a share only while signed
   in. There is no public holder page.
-- A person's share never reaches the 21.gifts server, sealed or not. The
-  server stores nothing about who protects whom.
+- A person's share reaches the 21.gifts server only as an opaque box,
+  encrypted in the holder's browser under a key from the holder's own 12
+  words, see [Held-share boxes](#held-share-boxes). The server cannot open it
+  and stores nothing about who protects whom: the owner's id and name exist
+  only inside the ciphertext, and nothing on the owner's account refers to a
+  box.
 - The 21.gifts share is a backup only. The api stores it encrypted and never
   decrypts or returns it; it reads only whether one is stored, see
   [Grant payouts](#grant-payouts). No release is planned; 21.gifts keeps it
@@ -85,16 +89,21 @@ Setup may happen remotely, for example with the QR code shown in a video call.
 2. The phone splits the 16 bytes into three shares. Before any share leaves
    the phone, it checks that each of the three pairs gives the same 16 bytes.
 3. The owner's phone shows share 1 as a QR code. Person 1 scans it in their
-   signed-in 21.gifts app (**Anteile, die ich für andere aufbewahre**), which
-   keeps it in that browser under the holder's own account id, the owner's
-   account id and the share's SLIP-39 identifier.
-4. The same for share 2 and person 2. A browser that already holds a share
-   with the same owner and identifier, under any account, refuses it, so one
-   browser never holds two shares of one set (a second browser or cleared
-   storage on the same phone cannot be detected). A share of the holder's own
-   account is refused too. The identifier is a random 15-bit value; if a new
-   set happens to draw the identifier of an old set a person still holds,
-   that browser refuses it too, and setup starts again with a new split.
+   signed-in 21.gifts app (**Anteile, die ich für andere aufbewahre**). The
+   app unlocks with the holder's passkey, encrypts the share code into a new
+   box and stores it on the api under the holder's own login
+   (`PUT /me/held-shares/:id`). Only the box says whose share it is (the
+   owner's account id and name and the SLIP-39 identifier are inside the
+   ciphertext).
+4. The same for share 2 and person 2. Before it stores a box, the holder's
+   app opens all of its own boxes (`GET /me/held-shares`) and refuses a share
+   with the same owner and identifier as one it already holds, so one holder
+   account never holds two shares of one set. The api cannot check this: it
+   cannot open the boxes. A second 21.gifts account of the same person cannot
+   be detected. A share of the holder's own account is refused too. The
+   identifier is a random 15-bit value; if a new set happens to draw the
+   identifier of an old set a person still holds, the holder's app refuses it
+   too, and setup starts again with a new split.
 5. Last, once both people hold their share, the owner's phone, signed in,
    sends share 3 to the api (`PUT /me/recovery-share`), which stores it as
    described under [The 21.gifts share](#the-21gifts-share). The stored share
@@ -107,7 +116,7 @@ Choosing other people later means a new setup with three new shares. A new
 setup does not revoke the old set, because the 12 words stay the same: any two
 old shares still rebuild them. The api replaces its stored share of that
 wallet with the new one. Holders delete an old share by hand in their app when
-the owner asks. The app warns the owner that a removed person's share stays
+the owner asks (`DELETE /me/held-shares/:id`). The app warns the owner that a removed person's share stays
 usable together with any other old share.
 
 ## The 21.gifts share
@@ -145,6 +154,58 @@ usable together with any other old share.
 - **No planned release.** 21.gifts plans no release of its share and keeps it
   only as an option. Using it would be a manual process outside the api, with
   the key from the vault.
+
+## Held-share boxes
+
+Decided 2026-10-30. A holder's share used to live in the app's browser
+storage, which a browser can delete without notice (Safari after seven days
+without a visit, cleared site data, a new phone or browser). Holders must
+never manage a secret themselves (no paper copies, no exports), so the share
+is kept on the api as an encrypted **box** under the holder's own login.
+
+- **Encryption, in the holder's browser.** The box key is HKDF-SHA256 over the
+  16 bytes behind the holder's own 12 words (salt `21gifts-held-share-box`,
+  info `box-key-v1`), imported as a non-extractable AES-GCM key. A box is the
+  version byte `0x01`, a random 12-byte IV and the AES-256-GCM ciphertext and
+  tag of the share code (`21gifts-share:v1:<owner account id>:<owner
+username>:<20 SLIP-39 words>`), with the additional data
+  `21gifts-held-share-v1\n<holder account id>\n<box id>`. The box id is 16
+  random bytes as 32 lowercase hex, chosen by the app. The app owns this
+  format (the counterpart pull request in the app repository); the api treats
+  the bytes as opaque.
+- **On the api.** `held_share_box` keeps the box id, the holder's account id,
+  the ciphertext and the creation and update times. The routes act only on
+  the caller's own boxes, with the normal session: `GET /me/held-shares`,
+  `PUT /me/held-shares/:id` and `DELETE /me/held-shares/:id` (contracts in
+  [SPEC.md](../SPEC.md)). The api checks only the id format, a size of 29–1024
+  bytes, the version byte, that the id is not another account's, and at most
+  50 boxes per account. They need no LNURL server and are always mounted.
+- **Nothing on the owner's side.** No box id, label or count is stored on the
+  owner's account, and the payout gate is unchanged: it checks only the
+  21.gifts share. The api does not tell holders anything; the owner contacts
+  them, and a holder opens **Anteile, die ich für andere aufbewahre**,
+  unlocks, picks the owner's name and shows the QR code.
+- **Secret column.** `ciphertext` is a secret column like
+  `recovery_share_ciphertext`: `db_change` keeps only its SHA-256 and
+  `GET /debug/db` shows only its length. No application log or request log
+  contains a ciphertext or a box id; the request log shows the path as
+  `/me/held-shares/:id`. The row-change log `db_change` keeps the box id and
+  the holder's account id like every other row (it must stay
+  reconstructable); neither names the owner of the share.
+- **The holder's own recovery.** The key comes from the holder's 12 words,
+  not from the passkey. A holder who recovers their own account rebuilds the
+  old words, opens the boxes with them and stores them again under the key of
+  the new words (`PUT` of the same ids). The recovery commit keeps the account
+  id, so the boxes stay where they are.
+- **Account deletion and merge.** Deleting the holder's account deletes its
+  boxes (`ON DELETE CASCADE`). An account merge deletes the boxes of the
+  merged-away account (`mergeAccounts`), with its other social recovery rows:
+  each box is sealed to that account's id and its words, so the surviving
+  account could never open them.
+- **Accepted risk.** A holder who loses their passkey for good and never
+  recovers loses the boxes, and nobody is told. The same holds for a holder
+  whose account is merged away: its held shares are dropped. There is no machinery for
+  this; the owner sets up shares with someone else.
 
 ## Grant payouts
 
@@ -339,6 +400,9 @@ The contracts are in [SPEC.md](../SPEC.md):
   the ceremony, behind the app build check and the login switch.
 - `POST /lnurlpay/:pubkey/transfer`: the address claim and the commit.
 - `PUT /me/recovery-share`: the 21.gifts share.
+- `GET /me/held-shares`, `PUT /me/held-shares/:id` and
+  `DELETE /me/held-shares/:id`: the holder's own boxes, see
+  [Held-share boxes](#held-share-boxes).
 - `GET /me/previous-wallets` and `DELETE /me/previous-wallets/:sparkPubkey`:
   the previous wallets.
 - Changed: `POST /lnurlpay/:pubkey/recover` (rule 5),
@@ -346,9 +410,10 @@ The contracts are in [SPEC.md](../SPEC.md):
   JSON `socialRecoverySetUp`, and `POST /me/events` (`recovery_done`).
 
 The new routes under `/lnurlpay` and `/me` are mounted only when
-`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve; without them, begin
-answers 503. The tables are `recovery_share`, `pending_recovery` and
-`previous_wallet` (`docs/schema/`).
+`LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, except the held-share
+routes, which are always mounted; without them, begin answers 503. The tables
+are `recovery_share`, `pending_recovery`, `previous_wallet` and
+`held_share_box` (`docs/schema/`).
 
 ### The LNURL server
 
@@ -463,8 +528,11 @@ each person to delete their old share by hand.
 
 ## What the server stores
 
-No 12 words, no 16 bytes, no person's share and no PRF output, in no row and
-no log, and the 21.gifts share in no log.
+No 12 words, no 16 bytes, no readable person's share and no PRF output, in no
+row and no log. No application log or request log contains the 21.gifts share,
+a held-share box id or a box's ciphertext. The row-change log `db_change`
+keeps only a SHA-256 of each box's ciphertext, and keeps the box id and the
+holder's account id as it does for every row.
 
 - The 21.gifts share, encrypted, for the current wallet and for each previous
   wallet until the owner drops it (`recovery_share`).
@@ -475,20 +543,35 @@ no log, and the 21.gifts share in no log.
 - At most one pending recovery per account, until it commits or is dropped
   (`pending_recovery`). It holds the new passkey's public key, never a
   secret.
+- Each holder's boxes, encrypted in the holder's browser, under the holder's
+  account until the holder deletes them or the account is deleted
+  (`held_share_box`). The api cannot open them and does not know whose share
+  a box holds or that a box belongs to a set.
 
 ## Security
 
 - **Two people together** can recover the account and move the wallet at
   once. The owner chooses them knowing this.
-- **One person** cannot. A single share reveals nothing, and a browser refuses
-  a second share of the same set.
+- **One person** cannot. A single share reveals nothing, and the holder's app
+  refuses a second share of the same set in that holder's boxes.
 - **Whoever holds the 12 words** can recover the account, with or without
   shares.
 - **Old shares** stay valid until each holder deletes them.
 - **The server alone** cannot. With its environment it can read the 21.gifts
-  share, one share per wallet, and it cannot sign with the wallet key.
+  share, one share per wallet, and it cannot sign with the wallet key. It
+  cannot open a held-share box: the key comes from the holder's 12 words,
+  which the server never sees.
 - **A stolen database** gives no share. A stolen database with the
-  environment gives every 21.gifts share, still one per wallet.
+  environment gives every 21.gifts share, still one per wallet, and no box.
+  It shows how many boxes each holder keeps and when they changed, not whose
+  shares they are.
+- **A holder's 12 words** open that holder's boxes. Whoever has them can
+  already take the holder's whole account; with the boxes they also get the
+  shares that holder keeps, one share per owner.
+- **A holder who loses their passkey** for good and never recovers loses the
+  boxes, and nobody is told. A holder account that an operator merges into
+  another account loses its held shares the same way. This is accepted; the owner sets up shares with
+  someone else when a holder can no longer show the QR code.
 - **21.gifts and one person** could rebuild the words, by hand and outside
   the api. No release is planned.
 - **A stranger with a fake QR code** has to stand in front of the person,
@@ -510,7 +593,6 @@ no log, and the 21.gifts share in no log.
 
 Later, not needed for a first version:
 
-- A printed copy of a person's share against cleared browser storage.
 - A confirmation code for remote setup.
 - NOSTR after v1, where new 12 words would mean a new npub.
 
@@ -518,9 +600,11 @@ Later, not needed for a first version:
 
 - Each pair of the three shares, or the typed old 12 words, rebuilds the
   original 12 words. One share does not.
-- Setup stops when the words do not open the account's verified wallet, and a
-  browser refuses a second share of the same set.
-- No person's share reaches the api. The api stores the 21.gifts share only
+- Setup stops when the words do not open the account's verified wallet, and
+  the holder's app refuses a second share of the same set in its boxes.
+- A person's share reaches the api only as a held-share box encrypted in the
+  holder's browser; the api cannot open it, and nothing on the owner's
+  account refers to it. The api stores the 21.gifts share only
   encrypted under its own key, with the account id as additional data, and
   has no path that decrypts or returns it or uses its content; it only checks
   whether one is stored. `db_change` holds only its
@@ -539,8 +623,10 @@ Later, not needed for a first version:
   previous wallets, the same username and Lightning address.
 - The rules for the implementation hold, and at most one recovery per old key
   commits.
-- No row contains the 12 words, the 16 bytes, a person's share, PRF output or
-  a readable 21.gifts share, and no log contains any of them.
+- No row contains the 12 words, the 16 bytes, a readable person's share, PRF
+  output or a readable 21.gifts share, and no log contains any of them. A
+  person's share is stored only as an opaque `held_share_box` row, and no
+  application log or request log contains a box id or a box's ciphertext.
 - **Social Recovery** is reachable from the settings, and nothing but grant
   payouts needs it.
 - From the release on, no payout goes to a member in the grant program

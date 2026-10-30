@@ -176,6 +176,115 @@ test('DELETE /me/previous-wallets/:sparkPubkey is 404 when LNURL server is off',
   expect(await res.text()).toBe('404 Not Found');
 });
 
+/** A fresh member session with a name of its own (two in one test must not collide). */
+async function holderSession(
+  request: APIRequestContext,
+  tag: string,
+): Promise<{ authorization: string }> {
+  const name = `E2eHolder${tag}${Math.random().toString(16).slice(2, 12)}`;
+  const provision = await request.post('/debug/accounts', {
+    headers: DEBUG,
+    data: { accounts: [{ name }] },
+  });
+  expect(provision.status()).toBe(200);
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  const accounts = ((await listed.json()) as { accounts: Array<{ id: string; name: string }> })
+    .accounts;
+  const row = accounts.find((item) => item.name === name);
+  expect(row).toBeDefined();
+  const session = await request.post(`/debug/accounts/${row?.id}/session`, { headers: DEBUG });
+  expect(session.status()).toBe(200);
+  return { authorization: `Bearer ${((await session.json()) as { token: string }).token}` };
+}
+
+test('GET /me/held-shares is 401 without a session', async ({ request }) => {
+  const res = await request.get('/me/held-shares');
+  expect(res.status()).toBe(401);
+  expect(await res.json()).toEqual({ error: 'Unauthorized' });
+});
+
+test('PUT /me/held-shares/:id refuses an id that is not 32 lowercase hex', async ({ request }) => {
+  const auth = await memberSession(request);
+  const ciphertext = Buffer.from(Uint8Array.from({ length: 29 }, () => 1)).toString('base64url');
+  const res = await request.put('/me/held-shares/:id', { headers: auth, data: { ciphertext } });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Expected a box id of 32 lowercase hex characters' });
+});
+
+test('DELETE /me/held-shares/:id refuses an id that is not 32 lowercase hex', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.delete('/me/held-shares/:id', { headers: auth });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Expected a box id of 32 lowercase hex characters' });
+});
+
+test('held-share boxes: create, replace, list, foreign id, and idempotent delete', async ({
+  request,
+}) => {
+  const holder = await holderSession(request, 'a');
+  const other = await holderSession(request, 'b');
+  const id = `${Date.now().toString(16)}${Math.random().toString(16).slice(2)}`
+    .padEnd(32, '0')
+    .slice(0, 32);
+  const box = (fill: number): string =>
+    Buffer.from(Uint8Array.from({ length: 40 }, (_, i) => (i === 0 ? 1 : fill))).toString(
+      'base64url',
+    );
+
+  expect(await (await request.get('/me/held-shares', { headers: holder })).json()).toEqual({
+    boxes: [],
+  });
+  const created = await request.put(`/me/held-shares/${id}`, {
+    headers: holder,
+    data: { ciphertext: box(2) },
+  });
+  expect(created.status()).toBe(201);
+  const replaced = await request.put(`/me/held-shares/${id}`, {
+    headers: holder,
+    data: { ciphertext: box(3) },
+  });
+  expect(replaced.status()).toBe(200);
+  expect(((await replaced.json()) as { id: string }).id).toBe(id);
+  const taken = await request.put(`/me/held-shares/${id}`, {
+    headers: other,
+    data: { ciphertext: box(4) },
+  });
+  expect(taken.status()).toBe(409);
+  expect(await taken.json()).toEqual({ error: 'Box id in use' });
+  const wrongVersion = await request.put(`/me/held-shares/${id}`, {
+    headers: holder,
+    data: { ciphertext: Buffer.from(new Uint8Array(40)).toString('base64url') },
+  });
+  expect(wrongVersion.status()).toBe(400);
+
+  const listed = (await (await request.get('/me/held-shares', { headers: holder })).json()) as {
+    boxes: Array<{ id: string; ciphertext: string; updatedAt: string }>;
+  };
+  expect(listed.boxes).toHaveLength(1);
+  expect(listed.boxes[0]?.id).toBe(id);
+  expect(listed.boxes[0]?.ciphertext).toBe(box(3));
+  expect(Number.isNaN(Date.parse(listed.boxes[0]?.updatedAt ?? ''))).toBe(false);
+  expect(await (await request.get('/me/held-shares', { headers: other })).json()).toEqual({
+    boxes: [],
+  });
+
+  expect((await request.delete(`/me/held-shares/${id}`, { headers: other })).status()).toBe(204);
+  expect(
+    (
+      (await (await request.get('/me/held-shares', { headers: holder })).json()) as {
+        boxes: unknown[];
+      }
+    ).boxes,
+  ).toHaveLength(1);
+  expect((await request.delete(`/me/held-shares/${id}`, { headers: holder })).status()).toBe(204);
+  expect((await request.delete(`/me/held-shares/${id}`, { headers: holder })).status()).toBe(204);
+  expect(await (await request.get('/me/held-shares', { headers: holder })).json()).toEqual({
+    boxes: [],
+  });
+});
+
 test('POST /me/wallet/report without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/wallet/report');
   expect(res.status()).toBe(401);

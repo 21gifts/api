@@ -240,6 +240,12 @@ describe('requestLogPath', () => {
     expect(requestLogPath('/view/a/b')).toBe('/view/:viewKey/b');
   });
 
+  it('redacts the held-share box id segment', () => {
+    expect(requestLogPath('/me/held-shares/' + 'a'.repeat(32))).toBe('/me/held-shares/:id');
+    expect(requestLogPath('/me/held-shares/x/y')).toBe('/me/held-shares/:id/y');
+    expect(requestLogPath('/me/held-shares')).toBe('/me/held-shares');
+  });
+
   it('leaves unrelated paths unchanged', () => {
     expect(requestLogPath('/preview/x')).toBe('/preview/x');
   });

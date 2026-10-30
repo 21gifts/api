@@ -17,6 +17,8 @@ import {
   type AccountLocale,
   type AccountRole,
   type AuthStore,
+  type HeldShareBox,
+  type HeldShareBoxPutResult,
   type NostrKeyListRow,
   type NostrKeyRecord,
   type PasskeyChallenge,
@@ -123,6 +125,14 @@ interface PreviousWalletRow {
   spark_pubkey: string;
   spark_address: string;
   replaced_at: Date | string;
+}
+
+/** Row shape of `held_share_box` without `account_id`. */
+interface HeldShareBoxRow {
+  id: string;
+  ciphertext: Uint8Array;
+  created_at: Date | string;
+  updated_at: Date | string;
 }
 
 /** The account row a social recovery step locks first. */
@@ -1488,6 +1498,72 @@ LIMIT $2`,
       [accountId],
     );
     return rows[0]?.stored === true;
+  }
+
+  async listHeldShareBoxes(accountId: string): Promise<HeldShareBox[]> {
+    const rows = await this.#sql.query<HeldShareBoxRow>(
+      `SELECT id, ciphertext, created_at, updated_at FROM held_share_box WHERE account_id = $1
+       ORDER BY created_at ASC, id COLLATE "C" ASC`,
+      [accountId],
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      ciphertext: new Uint8Array(row.ciphertext),
+      createdAt: epochMs(row.created_at),
+      updatedAt: epochMs(row.updated_at),
+    }));
+  }
+
+  async putHeldShareBox(input: {
+    accountId: string;
+    id: string;
+    ciphertext: Uint8Array;
+    now: number;
+    limit: number;
+  }): Promise<HeldShareBoxPutResult> {
+    return this.#recoveryTransactions().begin(async (tx) => {
+      // The account lock serializes the count check with the account's other creates.
+      await lockRecoveryAccount(tx, input.accountId);
+      const existing = await tx.query<{ account_id: string }>(
+        'SELECT account_id FROM held_share_box WHERE id = $1',
+        [input.id],
+      );
+      const owner = existing[0]?.account_id;
+      if (owner !== undefined && owner !== input.accountId) {
+        return 'taken';
+      }
+      if (owner === undefined) {
+        const counted = await tx.query<{ boxes: number | string }>(
+          'SELECT count(*)::int AS boxes FROM held_share_box WHERE account_id = $1',
+          [input.accountId],
+        );
+        if (Number(counted[0]?.boxes ?? 0) >= input.limit) {
+          return 'full';
+        }
+      }
+      // Another account's create of the same id in between leaves the row
+      // unchanged: the conditional update returns no row.
+      const written = await tx.query<{ id: string }>(
+        `INSERT INTO held_share_box (id, account_id, ciphertext, created_at, updated_at)
+         VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0), to_timestamp($4::double precision / 1000.0))
+         ON CONFLICT (id) DO UPDATE
+           SET ciphertext = EXCLUDED.ciphertext, updated_at = EXCLUDED.updated_at
+           WHERE held_share_box.account_id = EXCLUDED.account_id
+         RETURNING id`,
+        [input.id, input.accountId, input.ciphertext, input.now],
+      );
+      if (written.length === 0) {
+        return 'taken';
+      }
+      return owner === undefined ? 'created' : 'replaced';
+    });
+  }
+
+  async deleteHeldShareBox(accountId: string, id: string): Promise<void> {
+    await this.#sql.execute('DELETE FROM held_share_box WHERE id = $1 AND account_id = $2', [
+      id,
+      accountId,
+    ]);
   }
 
   /**

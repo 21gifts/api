@@ -44,7 +44,9 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/auth/);
     expect(joined).toMatch(/delivered_endpoints/);
     expect(joined).toMatch(/skip_endpoints/);
-    expect(joined).toMatch(/'skip_endpoints', 'session_token', 'recovery_share_ciphertext'\]/);
+    expect(joined).toMatch(
+      /'skip_endpoints', 'session_token', 'recovery_share_ciphertext', 'ciphertext'\]/,
+    );
     const guardBlock = joined.slice(joined.indexOf('$guard$'));
     const dropAt = guardBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
     const afterMatchAt = guardBlock.indexOf("a.view_key = d.after ->> 'view_key'");
@@ -105,6 +107,7 @@ describe('secret column lists', () => {
     const names = listed.split(', ').map((name) => name.replace(/'/g, ''));
     expect(names).toEqual([...DEBUG_DB_SECRET_COLUMNS]);
     expect(names).toContain('recovery_share_ciphertext');
+    expect(names).toContain('ciphertext');
   });
 });
 

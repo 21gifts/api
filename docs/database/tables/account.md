@@ -75,6 +75,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `daily_roster_entry`      | `account_id`              | `id`      |
 | `funding_grant`           | `account_id`              | `id`      |
 | `funding_grant`           | `decided_by`              | `id`      |
+| `held_share_box`          | `account_id`              | `id`      |
 | `login_allowlist`         | `account_id`              | `id`      |
 | `member_event`            | `account_id`              | `id`      |
 | `member_habit`            | `account_id`              | `id`      |
@@ -116,6 +117,7 @@ erDiagram
     "daily_roster_entry" }o..o| "account" : "account_id"
     "funding_grant" |o--|| "account" : "account_id"
     "funding_grant" }o..o| "account" : "decided_by"
+    "held_share_box" }o..|| "account" : "account_id"
     "login_allowlist" |o--|| "account" : "account_id"
     "member_event" }o..|| "account" : "account_id"
     "member_habit" }o..|| "account" : "account_id"
