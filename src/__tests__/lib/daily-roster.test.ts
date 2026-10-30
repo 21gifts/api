@@ -121,7 +121,7 @@ describe('withRecipientIdentities', () => {
 });
 
 describe('withPayoutAddresses', () => {
-  it('resolves each payout address now and leaves it null without a verified wallet', async () => {
+  it('resolves each payout address now and leaves it null without a verified wallet or a username', async () => {
     expect(await withPayoutAddresses(ROSTER, lookup, LNURL_SERVER)).toEqual({
       comment: 'thanks',
       paymentsEnabled: true,
