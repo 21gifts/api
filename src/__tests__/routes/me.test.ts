@@ -3080,10 +3080,18 @@ describe('held-share boxes', () => {
     });
     await store.createSession({ token: 'refused', accountId: 'refused', createdAt: 1_000_000 });
     const refused = { authorization: 'Bearer refused' };
+    // A box of the refused account must survive its refused DELETE.
+    await store.putHeldShareBox({
+      accountId: 'refused',
+      id: BOX_2,
+      ciphertext: BYTES,
+      now: 1,
+      limit: 50,
+    });
     expect((await list(app, refused)).status).toBe(401);
     expect((await put(app, BOX, { ciphertext: CIPHERTEXT }, refused)).status).toBe(401);
-    expect((await remove(app, BOX, refused)).status).toBe(401);
-    expect(await store.listHeldShareBoxes('refused')).toEqual([]);
+    expect((await remove(app, BOX_2, refused)).status).toBe(401);
+    expect((await store.listHeldShareBoxes('refused')).map((box) => box.id)).toEqual([BOX_2]);
   });
 
   it('creates (201), replaces (200), and lists the caller’s boxes oldest first', async () => {
@@ -3091,35 +3099,40 @@ describe('held-share boxes', () => {
     const store = await seededStore();
     await store.createSession({ token: 'tok', accountId: 'acc', createdAt: clock });
     const app = mount(store, { clock: () => clock });
-    // BOX_2 (the larger id) is created first and replaced last, so creation
-    // order differs from id order and from update order.
+    // Created BOX_2, BOX, MIDDLE; BOX_2 is replaced last. Creation order then
+    // matches neither id order nor update order, ascending or descending.
+    const MIDDLE = '8'.repeat(32);
     const created = await put(app, BOX_2, { ciphertext: CIPHERTEXT });
     expect(created.status).toBe(201);
     expect(await created.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:00.000Z' });
     clock += 1_000;
     expect((await put(app, BOX, { ciphertext: CIPHERTEXT })).status).toBe(201);
     clock += 1_000;
+    expect((await put(app, MIDDLE, { ciphertext: CIPHERTEXT })).status).toBe(201);
+    clock += 1_000;
     const replacement = Buffer.from(Uint8Array.from({ length: 1024 }, () => 1)).toString(
       'base64url',
     );
     const replaced = await put(app, BOX_2, { ciphertext: replacement });
     expect(replaced.status).toBe(200);
-    expect(await replaced.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:02.000Z' });
+    expect(await replaced.json()).toEqual({ id: BOX_2, updatedAt: '2026-10-30T10:00:03.000Z' });
     const res = await list(app);
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       boxes: [
-        { id: BOX_2, ciphertext: replacement, updatedAt: '2026-10-30T10:00:02.000Z' },
+        { id: BOX_2, ciphertext: replacement, updatedAt: '2026-10-30T10:00:03.000Z' },
         { id: BOX, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:01.000Z' },
+        { id: MIDDLE, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:02.000Z' },
       ],
     });
     const events = parsedEvents(warn).filter((e) => e['event'] === 'account.held_share.stored');
     expect(events).toEqual([
       expect.objectContaining({ accountId: 'acc', replaced: false }),
       expect.objectContaining({ accountId: 'acc', replaced: false }),
+      expect.objectContaining({ accountId: 'acc', replaced: false }),
       expect.objectContaining({ accountId: 'acc', replaced: true }),
     ]);
-    expectNoBoxInLogs([replacement]);
+    expectNoBoxInLogs([MIDDLE, replacement]);
   });
 
   it('refuses an id that is not 32 lowercase hex', async () => {
