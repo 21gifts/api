@@ -1094,6 +1094,32 @@ describe('LNURL server wiring', () => {
     });
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ outcome: 'unknown' });
+
+    const wallet = `02${'1'.repeat(64)}`;
+    const now = Date.now();
+    const auth = new InMemoryAuthStore();
+    await auth.createAccount({
+      id: 'acc',
+      linkingKey: 'a'.repeat(64),
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: now,
+      rulesAgreedAt: now,
+      username: 'ada',
+      walletRequired: true,
+    });
+    await auth.claimSparkPubkey('acc', wallet);
+    await auth.markSparkPubkeyVerified('acc', wallet, 'ada', now);
+    const known = createApp({ authStore: auth, env: { LNURL_WEBHOOK_SECRET: 'secret' } });
+    const noDevice = await known.request('/webhooks/lnurl', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-breez-signature': signature },
+      body,
+    });
+    expect(await noDevice.json()).toEqual({ outcome: 'no_device' });
   });
 
   it('does not mount the new routes when LNURL_SERVER_URL is unset', async () => {

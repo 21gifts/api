@@ -25,6 +25,7 @@ import {
   enqueueForumPushes,
   enqueueReplyPush,
   enqueueZapPush,
+  accountHasLiveSubscription,
   listAccountIdsWithLiveSubscriptions,
   runPushWorkerTick,
   startPushWorker,
@@ -303,6 +304,28 @@ describe('listAccountIdsWithLiveSubscriptions', () => {
     expect(
       await listAccountIdsWithLiveSubscriptions(store, auth, SESSION_AT + SESSION_TTL_MS + 1),
     ).toEqual([]);
+  });
+});
+
+describe('accountHasLiveSubscription', () => {
+  it('is true only when one of the account subscriptions has a live session', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_C, sessionToken: null });
+    await store.upsertSubscription(SUB_B);
+    const auth = await authWithSessions(['author', 'other'], ['other']);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_C.accountId)).toBe(false);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_B.accountId)).toBe(false);
+    expect(await accountHasLiveSubscription(store, auth, 1, 'nobody')).toBe(false);
+    await store.upsertSubscription(SUB_A);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_A.accountId)).toBe(true);
+    expect(
+      await accountHasLiveSubscription(
+        store,
+        auth,
+        SESSION_AT + SESSION_TTL_MS + 1,
+        SUB_A.accountId,
+      ),
+    ).toBe(false);
   });
 });
 

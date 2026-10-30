@@ -20,6 +20,7 @@ function mount(push: InMemoryPushStore, unreadCount = async (): Promise<number> 
         getNostrPublicKey: async () => undefined,
       },
       pushStore: push,
+      hasLiveDevice: async (id) => (await push.listByAccount(id)).length > 0,
       notifications: { unreadCount },
       inboxUnreadCount: async () => 0,
       now: () => 1_700_000_000_000,

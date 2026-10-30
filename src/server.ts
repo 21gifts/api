@@ -88,6 +88,7 @@ import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-ha
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import { resolvePaymentWebhookSecret } from '@/lib/payment-received';
+import { accountHasLiveSubscription } from '@/lib/push-worker';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { aboutMeFromNote } from '@/lib/about-me';
@@ -710,6 +711,8 @@ export function createApp(deps: AppDeps = {}): Hono {
         secret: webhookSecret,
         auth: store,
         pushStore,
+        hasLiveDevice: (accountId) =>
+          accountHasLiveSubscription(pushStore, store, now(), accountId),
         notifications: notificationStore,
         inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),
         now,

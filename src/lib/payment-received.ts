@@ -38,8 +38,10 @@ export interface PaymentReceivedDeps {
     AuthStore,
     'getAccountByVerifiedSparkPubkey' | 'getAccountByPubkey' | 'getNostrPublicKey'
   >;
-  /** Subscriptions and outbox. */
-  pushStore: PushStore;
+  /** Outbox and the once-per-payment claim. */
+  pushStore: Pick<PushStore, 'enqueuePaymentReceived'>;
+  /** Whether the account has a subscription the push worker would send to. */
+  hasLiveDevice: (accountId: string) => Promise<boolean>;
   /** In-app unread for the badge. */
   notifications: Pick<NotificationStore, 'unreadCount'>;
   /** Listed inbox unread for the badge. */
@@ -174,7 +176,8 @@ function zapRequestSigner(raw: string, receiverPubkey: string, amountSats: numbe
  * a `p` tag, and has at least one `amount` tag, every one equal to the
  * received amount in millisats. Nothing is enqueued when a counted zap
  * request comes from the receiver, when the receiver's notification level is
- * `none`, or when the receiver has no push subscription. A zap on a forum
+ * `none`, or when the receiver has no push subscription whose login session
+ * is still live (nothing is claimed, so a later retry can still push). A zap on a forum
  * note is pushed too: the zap notification is about the note and follows its
  * own rules. The push names a sender only when the counted zap request's
  * signer is a 21.gifts account with a name.
@@ -216,7 +219,7 @@ export async function notifyPaymentReceived(
   ) {
     return 'off';
   }
-  if ((await deps.pushStore.listByAccount(account.id)).length === 0) {
+  if (!(await deps.hasLiveDevice(account.id))) {
     return 'no_device';
   }
   const unreadCount =

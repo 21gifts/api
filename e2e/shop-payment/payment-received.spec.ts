@@ -85,6 +85,14 @@ test('Function: notifyPaymentReceived — a verified wallet without a push devic
   expect(await res.json()).toEqual({ outcome: 'no_device' });
 });
 
+test('Function: accountHasLiveSubscription — a verified wallet without a live push subscription is no_device', async ({
+  request,
+}) => {
+  const shop = await verifiedShop(request, 'paidlive');
+  const res = await postWebhook(request, paymentBody(shop.sparkPubkey));
+  expect(await res.json()).toEqual({ outcome: 'no_device' });
+});
+
 test('Function: buildPaymentReceivedPushPayload — no payload without a push subscription (VAPID blank)', async ({
   request,
 }) => {

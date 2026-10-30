@@ -50,16 +50,6 @@ async function setup(
   } = {},
 ): Promise<{ deps: PaymentReceivedDeps; push: InMemoryPushStore }> {
   const push = new InMemoryPushStore();
-  if (args.subscribed !== false) {
-    await push.upsertSubscription({
-      endpoint: 'https://push.example/a',
-      accountId: 'receiver',
-      p256dh: 'p',
-      auth: 'a',
-      createdAt: new Date(0),
-      sessionToken: 'session',
-    });
-  }
   const receiver = account('receiver', {
     name: args.receiverName ?? 'Bea',
     ...(args.level === undefined ? {} : { notificationLevel: args.level }),
@@ -78,6 +68,7 @@ async function setup(
           : undefined,
     },
     pushStore: push,
+    hasLiveDevice: async (id) => id === 'receiver' && args.subscribed !== false,
     notifications: { unreadCount: async () => 2 },
     inboxUnreadCount: async () => 1,
     now: () => 1_700_000_000_000,
