@@ -79,7 +79,7 @@ import {
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
   migrateDailyRosterSchema,
-  moveDailyRosterToWalletAddresses,
+  linkDailyRosterAccounts,
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
 import { resolveLnurlServerConfig, type LnurlServerConfig } from '@/lib/config';
@@ -256,7 +256,8 @@ export interface BootFxOptions {
   /** Per-relay timeout for the external-zapper backfill. */
   nostrRelayTimeoutMs?: number;
   /**
-   * LNURL server config for the roster wallet move, or `null` when off
+   * LNURL server config whose host `linkDailyRosterAccounts` matches, or
+   * `null` to match the legacy `lightning_address` only
    * (default: `resolveLnurlServerConfig(process.env)`).
    */
   lnurlServer?: LnurlServerConfig | null;
@@ -338,6 +339,10 @@ export interface BootFxOptions {
  * and `daily_roster_entry`. `migrateShopIdentitySchema` runs right after
  * `migrateMessageSchema` and before `migrateDbChangeSchema`, so
  * `trg_db_change` attaches to `shop_identity`.
+ * After `migrateDbChangeSchema`,
+ * `linkDailyRosterAccounts` links roster rows without an account (host of
+ * `PUBLIC_BASE_URL` when the LNURL server resolves, else null) and logs
+ * `daily_roster.accounts_linked` with `linked` and `unlinked`.
  * `migrateApiLogSchema` runs after `openAuthStore` (account exists).
  * `migrateBannerSchema` runs next, then `migrateDiagnosticSchema`, then
  * `migrateSparkInvoiceSchema`, then `migrateWalletSchema`, then
@@ -467,10 +472,11 @@ export async function openBootStores(
   await repairGiftKind(sqlClient);
   const rosterLnurlServer =
     fx?.lnurlServer === undefined ? resolveLnurlServerConfig(process.env) : fx.lnurlServer;
-  if (rosterLnurlServer !== null) {
-    const move = await moveDailyRosterToWalletAddresses(sqlClient, rosterLnurlServer.host);
-    logEvent('daily_roster.wallet_move', { moved: move.moved, removed: move.removed });
-  }
+  const rosterLink = await linkDailyRosterAccounts(sqlClient, rosterLnurlServer?.host ?? null);
+  logEvent('daily_roster.accounts_linked', {
+    linked: rosterLink.linked,
+    unlinked: rosterLink.unlinked,
+  });
 
   const fetchImpl = fx?.fetchImpl ?? globalThis.fetch;
   const candlesUrl = fx?.candlesUrl ?? resolveCandlesUrl(process.env);
@@ -615,7 +621,7 @@ export async function openBootStores(
   const notificationStore = new PostgresNotificationStore(sqlClient);
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
-  const rosterStore = new PostgresDailyRosterStore(sqlClient);
+  const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);
   return {
     authStore,
     giftStore,

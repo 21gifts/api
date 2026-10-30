@@ -2,17 +2,39 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   DailyRosterRequestError,
   normalizeDailyRosterComment,
+  withPayoutAddresses,
   withRecipientIdentities,
+  type DailyRosterAccount,
+  type DailyRosterDocument,
 } from '@/lib/daily-roster';
+import { LNURL_SERVER, WALLET_PUBKEY } from '../helpers/wallet-lnurl';
 
-const ROSTER = {
+const ADA = '11111111-1111-4111-8111-111111111111';
+const BEA = '22222222-2222-4222-8222-222222222222';
+const CID = '33333333-3333-4333-8333-333333333333';
+
+const ROSTER: DailyRosterDocument = {
   comment: 'thanks',
   paymentsEnabled: true,
-  moderatorPaymentsEnabled: true,
-  defaultAmountUsd: 3,
-  recipients: [{ address: 'ada@example.com', amountUsd: 2 }],
-  moderators: [],
+  moderatorPaymentsEnabled: false,
+  defaultAmountUsd: 1,
+  recipients: [
+    { accountId: ADA, amountUsd: 2 },
+    { accountId: BEA, amountUsd: 3 },
+    { accountId: CID, amountUsd: 4 },
+  ],
+  moderators: [{ accountId: ADA, amountUsd: 5 }],
 };
+
+const ACCOUNTS: Record<string, DailyRosterAccount> = {
+  [ADA]: { name: ' Ada ', username: ' Ada ', sparkPubkey: WALLET_PUBKEY, sparkPubkeyVerifiedAt: 1 },
+  [BEA]: { name: '  ', username: 'bea', sparkPubkey: null, sparkPubkeyVerifiedAt: null },
+  [CID]: { name: null, username: null, sparkPubkey: WALLET_PUBKEY, sparkPubkeyVerifiedAt: 1 },
+};
+
+async function lookup(id: string): Promise<DailyRosterAccount | undefined> {
+  return ACCOUNTS[id];
+}
 
 describe('normalizeDailyRosterComment', () => {
   it('folds newlines, trims, and refuses length over 500', () => {
@@ -33,115 +55,114 @@ describe('DailyRosterRequestError', () => {
 });
 
 describe('withRecipientIdentities', () => {
-  it('fills identities from lookup and preserves order and stored addresses', async () => {
-    const seen: string[] = [];
-    const roster = {
+  it('attaches the edit key, username, and name in stored order', async () => {
+    expect(await withRecipientIdentities(ROSTER, lookup, LNURL_SERVER)).toEqual({
       comment: 'thanks',
       paymentsEnabled: true,
-      moderatorPaymentsEnabled: false,
-      defaultAmountUsd: 3,
+      defaultAmountUsd: 1,
       recipients: [
-        { address: 'Ada@example.com', amountUsd: 2 },
-        { address: 'bob@example.com', amountUsd: 1 },
-      ],
-      moderators: [{ address: 'mod@example.com', amountUsd: 5 }],
-    };
-    await expect(
-      withRecipientIdentities(roster, async (address) => {
-        seen.push(address);
-        if (address === 'Ada@example.com') {
-          return { id: 'ada-id', name: '  Ada  ' };
-        }
-        if (address === 'mod@example.com') {
-          return { id: 'mod-id', name: 'Mod' };
-        }
-        return undefined;
-      }),
-    ).resolves.toEqual({
-      comment: 'thanks',
-      paymentsEnabled: true,
-      moderatorPaymentsEnabled: false,
-      defaultAmountUsd: 3,
-      recipients: [
-        { address: 'Ada@example.com', amountUsd: 2, accountId: 'ada-id', name: 'Ada' },
-        { address: 'bob@example.com', amountUsd: 1, accountId: null, name: null },
-      ],
-      moderators: [{ address: 'mod@example.com', amountUsd: 5, accountId: 'mod-id', name: 'Mod' }],
-    });
-    expect(seen).toEqual(['Ada@example.com', 'bob@example.com', 'mod@example.com']);
-  });
-
-  it('maps null, missing, and blank names to null', async () => {
-    const roster = {
-      comment: '',
-      paymentsEnabled: false,
-      moderatorPaymentsEnabled: true,
-      defaultAmountUsd: 3,
-      recipients: [
-        { address: 'a@example.com', amountUsd: 1 },
-        { address: 'b@example.com', amountUsd: 1 },
-        { address: 'c@example.com', amountUsd: 1 },
-      ],
-      moderators: [{ address: 'm@example.com', amountUsd: 4 }],
-    };
-    await expect(
-      withRecipientIdentities(roster, async (address) => {
-        if (address === 'a@example.com') {
-          return { id: 'a', name: null };
-        }
-        if (address === 'b@example.com') {
-          return { id: 'b', name: '   ' };
-        }
-        if (address === 'm@example.com') {
-          return { id: 'm', name: null };
-        }
-        return { id: 'c' } as { id: string; name: string | null };
-      }),
-    ).resolves.toEqual({
-      comment: '',
-      paymentsEnabled: false,
-      moderatorPaymentsEnabled: true,
-      defaultAmountUsd: 3,
-      recipients: [
-        { address: 'a@example.com', amountUsd: 1, accountId: 'a', name: null },
-        { address: 'b@example.com', amountUsd: 1, accountId: 'b', name: null },
-        { address: 'c@example.com', amountUsd: 1, accountId: 'c', name: null },
-      ],
-      moderators: [{ address: 'm@example.com', amountUsd: 4, accountId: 'm', name: null }],
-    });
-  });
-
-  it('does not call lookup when both lists are empty', async () => {
-    const lookup = vi.fn();
-    await expect(
-      withRecipientIdentities(
         {
-          comment: '',
-          paymentsEnabled: false,
-          moderatorPaymentsEnabled: true,
-          defaultAmountUsd: 3,
-          recipients: [],
-          moderators: [],
+          address: `ada@${LNURL_SERVER.host}`,
+          amountUsd: 2,
+          accountId: ADA,
+          username: 'ada',
+          name: 'Ada',
         },
-        lookup,
-      ),
-    ).resolves.toEqual({
-      comment: '',
-      paymentsEnabled: false,
-      moderatorPaymentsEnabled: true,
-      defaultAmountUsd: 3,
-      recipients: [],
-      moderators: [],
+        {
+          address: `bea@${LNURL_SERVER.host}`,
+          amountUsd: 3,
+          accountId: BEA,
+          username: 'bea',
+          name: null,
+        },
+        { address: CID, amountUsd: 4, accountId: CID, username: null, name: null },
+      ],
+      moderatorPaymentsEnabled: false,
+      moderators: [
+        {
+          address: `ada@${LNURL_SERVER.host}`,
+          amountUsd: 5,
+          accountId: ADA,
+          username: 'ada',
+          name: 'Ada',
+        },
+      ],
     });
-    expect(lookup).not.toHaveBeenCalled();
   });
 
-  it('propagates a lookup throw', async () => {
-    const boom = new Error('lookup failed');
+  it('uses the bare username without the LNURL server and the account id for a missing account', async () => {
+    const doc = await withRecipientIdentities(
+      {
+        ...ROSTER,
+        recipients: [{ accountId: BEA, amountUsd: 3 }],
+        moderators: [{ accountId: '44444444-4444-4444-8444-444444444444', amountUsd: 1 }],
+      },
+      lookup,
+      undefined,
+    );
+    expect(doc.recipients[0]?.address).toBe('bea');
+    expect(doc.moderators[0]).toEqual({
+      address: '44444444-4444-4444-8444-444444444444',
+      amountUsd: 1,
+      accountId: '44444444-4444-4444-8444-444444444444',
+      username: null,
+      name: null,
+    });
+  });
+
+  it('does not call lookup when both lists are empty and propagates a lookup throw', async () => {
+    const spy = vi.fn(lookup);
+    await withRecipientIdentities({ ...ROSTER, recipients: [], moderators: [] }, spy, LNURL_SERVER);
+    expect(spy).not.toHaveBeenCalled();
     await expect(
-      withRecipientIdentities(ROSTER, async () => {
-        throw boom;
-      }),
-    ).rejects.toBe(boom);
+      withRecipientIdentities(ROSTER, () => Promise.reject(new Error('db')), LNURL_SERVER),
+    ).rejects.toThrow('db');
+  });
+});
+
+describe('withPayoutAddresses', () => {
+  it('resolves each payout address now and leaves it null without a verified wallet or a username', async () => {
+    expect(await withPayoutAddresses(ROSTER, lookup, LNURL_SERVER)).toEqual({
+      comment: 'thanks',
+      paymentsEnabled: true,
+      moderatorPaymentsEnabled: false,
+      defaultAmountUsd: 1,
+      recipients: [
+        { accountId: ADA, username: 'ada', address: `ada@${LNURL_SERVER.host}`, amountUsd: 2 },
+        { accountId: BEA, username: 'bea', address: null, amountUsd: 3 },
+        { accountId: CID, username: null, address: null, amountUsd: 4 },
+      ],
+      moderators: [
+        { accountId: ADA, username: 'ada', address: `ada@${LNURL_SERVER.host}`, amountUsd: 5 },
+      ],
+    });
+  });
+
+  it('follows a later wallet verification', async () => {
+    const accounts: Record<string, DailyRosterAccount> = {
+      [BEA]: { name: 'Bea', username: 'bea', sparkPubkey: null, sparkPubkeyVerifiedAt: null },
+    };
+    const only = { ...ROSTER, recipients: [{ accountId: BEA, amountUsd: 3 }], moderators: [] };
+    const read = (id: string): Promise<DailyRosterAccount | undefined> =>
+      Promise.resolve(accounts[id]);
+    expect((await withPayoutAddresses(only, read, LNURL_SERVER)).recipients[0]?.address).toBeNull();
+    accounts[BEA] = {
+      name: 'Bea',
+      username: 'bea',
+      sparkPubkey: WALLET_PUBKEY,
+      sparkPubkeyVerifiedAt: 2,
+    };
+    expect((await withPayoutAddresses(only, read, LNURL_SERVER)).recipients[0]?.address).toBe(
+      `bea@${LNURL_SERVER.host}`,
+    );
+  });
+
+  it('gives no address for a missing account or with the LNURL server off', async () => {
+    const off = await withPayoutAddresses(ROSTER, lookup, undefined);
+    expect(off.recipients.map((row) => row.address)).toEqual([null, null, null]);
+    const missing = await withPayoutAddresses(ROSTER, async () => undefined, LNURL_SERVER);
+    expect(missing.moderators).toEqual([
+      { accountId: ADA, username: null, address: null, amountUsd: 5 },
+    ]);
   });
 });

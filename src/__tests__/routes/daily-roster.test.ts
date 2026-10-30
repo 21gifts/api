@@ -5,6 +5,7 @@ import {
   DailyRosterRequestError,
   type DailyRoster,
   type DailyRosterDocument,
+  type DailyRosterPayoutDocument,
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
@@ -15,7 +16,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { fundingRoutes } from '@/routes/funding';
 import { createApp } from '@/server';
-import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const FOUNDER = '11111111-1111-4111-8111-111111111111';
@@ -28,7 +29,7 @@ const ROSTER: DailyRoster = {
   comment: 'thanks',
   paymentsEnabled: true,
   defaultAmountUsd: 1,
-  recipients: [{ address: 'ada@example.com', amountUsd: 1 }],
+  recipients: [{ accountId: VERIFIED, amountUsd: 1 }],
 };
 
 const DOCUMENT: DailyRosterDocument = {
@@ -42,7 +43,9 @@ const PUBLIC_ROSTER: DailyRosterPublic = {
   paymentsEnabled: true,
   moderatorPaymentsEnabled: true,
   defaultAmountUsd: 1,
-  recipients: [{ address: 'ada@example.com', amountUsd: 1, accountId: null, name: null }],
+  recipients: [
+    { address: VERIFIED, amountUsd: 1, accountId: VERIFIED, username: null, name: 'Ada' },
+  ],
   moderators: [],
 };
 
@@ -156,7 +159,7 @@ function fakeStore(overrides: Partial<DailyRosterStore> = {}): DailyRosterStore 
       overrides.updateModerator ??
       ((address, amountUsd) => fallback.updateModerator(address, amountUsd)),
     deleteModerator: overrides.deleteModerator ?? ((address) => fallback.deleteModerator(address)),
-    renameAddress: overrides.renameAddress ?? ((from, to) => fallback.renameAddress(from, to)),
+    linkReport: overrides.linkReport ?? (() => fallback.linkReport()),
     importDocument: overrides.importDocument ?? ((body) => fallback.importDocument(body)),
   };
 }
@@ -314,7 +317,7 @@ describe('daily payout roster routes', () => {
   });
 
   it('forwards spend 400 Address already listed', async () => {
-    let seen: { address: string; amountUsd: number } | undefined;
+    let seen: { accountId: string; amountUsd: number } | undefined;
     const authStore = await seeded();
     const memberId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     await authStore.createAccount(
@@ -330,8 +333,8 @@ describe('daily payout roster routes', () => {
       mount(
         authStore,
         fakeStore({
-          addRecipient: async (address, amountUsd) => {
-            seen = { address, amountUsd };
+          addRecipient: async (accountId, amountUsd) => {
+            seen = { accountId, amountUsd };
             throw new DailyRosterRequestError(400, 'Address already listed');
           },
         }),
@@ -342,7 +345,7 @@ describe('daily payout roster routes', () => {
     );
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({ error: 'Address already listed' });
-    expect(seen).toEqual({ address: 'hide-me@example.test', amountUsd: 5 });
+    expect(seen).toEqual({ accountId: memberId, amountUsd: 5 });
     const logged = JSON.stringify(parsedEvents(warn));
     expect(logged).not.toContain('hide-me@example.test');
     expect(logged).not.toContain(memberId);
@@ -372,38 +375,76 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
-  it('returns 400 Person has no Lightning address and does not call spend without a verified wallet', async () => {
-    let called = false;
+  it('lists an account without a verified wallet by account id or username', async () => {
+    const seen: string[] = [];
     const authStore = await seeded();
     const noneId = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-    const blankId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     await authStore.createAccount(account({ id: noneId, role: 'verified', username: 'none' }));
-    await authStore.createAccount(
-      account({ id: blankId, role: 'verified', username: 'blank', walletRequired: true }),
-    );
-    await authStore.claimSparkPubkey(blankId, WALLET_PUBKEY);
     const app = mount(
       authStore,
       fakeStore({
-        addRecipient: async () => {
-          called = true;
+        addRecipient: async (accountId) => {
+          seen.push(`daily:${accountId}`);
+          return DOCUMENT;
+        },
+        addModerator: async (accountId) => {
+          seen.push(`moderator:${accountId}`);
           return DOCUMENT;
         },
       }),
     );
-    for (const accountId of [noneId, blankId]) {
-      const res = await post(app, '/funding/daily-roster/recipients', 'founder', {
-        accountId,
-        amountUsd: 5,
-      });
-      expect(res.status).toBe(400);
-      expect(await res.json()).toEqual({ error: 'Person has no Lightning address' });
+    for (const body of [
+      { accountId: noneId, amountUsd: 5 },
+      { username: ' NONE ', amountUsd: 5 },
+    ]) {
+      expect((await post(app, '/funding/daily-roster/recipients', 'founder', body)).status).toBe(
+        200,
+      );
+      expect((await post(app, '/funding/daily-roster/moderators', 'founder', body)).status).toBe(
+        200,
+      );
     }
-    expect(called).toBe(false);
+    expect(seen).toEqual([
+      `daily:${noneId}`,
+      `moderator:${noneId}`,
+      `daily:${noneId}`,
+      `moderator:${noneId}`,
+    ]);
+    for (const body of [
+      { username: 'nobody', amountUsd: 5 },
+      { username: '..', amountUsd: 5 },
+    ]) {
+      const res = await post(app, '/funding/daily-roster/recipients', 'founder', body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Unknown person' });
+    }
+    for (const body of [{ amountUsd: 5 }, { username: 'none' }]) {
+      const res = await post(app, '/funding/daily-roster/moderators', 'founder', body);
+      expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    }
+    for (const path of [
+      '/funding/daily-roster/recipients/delete',
+      '/funding/daily-roster/moderators/delete',
+    ]) {
+      const bad = await post(app, path, 'founder', { address: 1 });
+      expect(await bad.json()).toEqual({ error: 'Unknown address' });
+    }
+    for (const path of [
+      '/funding/daily-roster/recipients/update',
+      '/funding/daily-roster/moderators/update',
+    ]) {
+      expect(await (await post(app, path, 'founder', { username: 'none' })).json()).toEqual({
+        error: 'Invalid address or amount',
+      });
+      expect(await (await post(app, path, 'founder', { amountUsd: 1 })).json()).toEqual({
+        error: 'Unknown address',
+      });
+    }
+    expect(seen).toHaveLength(4);
   });
 
-  it('adds the wallet address of the person', async () => {
-    let seen: { address: string; amountUsd: number } | undefined;
+  it('adds the account of the person', async () => {
+    let seen: { accountId: string; amountUsd: number } | undefined;
     const authStore = await seeded();
     const memberId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
     await authStore.createAccount(
@@ -419,8 +460,8 @@ describe('daily payout roster routes', () => {
       mount(
         authStore,
         fakeStore({
-          addRecipient: async (address, amountUsd) => {
-            seen = { address, amountUsd };
+          addRecipient: async (accountId, amountUsd) => {
+            seen = { accountId, amountUsd };
             return DOCUMENT;
           },
         }),
@@ -430,7 +471,7 @@ describe('daily payout roster routes', () => {
       { accountId: memberId, amountUsd: 5 },
     );
     expect(res.status).toBe(200);
-    expect(seen).toEqual({ address: 'hide-me@example.test', amountUsd: 5 });
+    expect(seen).toEqual({ accountId: memberId, amountUsd: 5 });
   });
 
   it('returns 502 when loading the person throws and does not call spend', async () => {
@@ -525,6 +566,28 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
+  it('returns 400 Invalid person or amount and does not call spend when the body names an account id and a username', async () => {
+    let called = false;
+    const authStore = await seeded();
+    const res = await post(
+      mount(
+        authStore,
+        fakeStore({
+          addRecipient: async () => {
+            called = true;
+            return DOCUMENT;
+          },
+        }),
+      ),
+      '/funding/daily-roster/recipients',
+      'founder',
+      { accountId: VERIFIED, username: 'other', amountUsd: 5 },
+    );
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: 'Invalid person or amount' });
+    expect(called).toBe(false);
+  });
+
   it('returns 400 Invalid person or amount and does not call spend when the amount is a numeric string', async () => {
     let called = false;
     const authStore = await seeded();
@@ -547,9 +610,11 @@ describe('daily payout roster routes', () => {
     expect(called).toBe(false);
   });
 
-  it('proxies each founder edit to the matching client method', async () => {
+  it('proxies each founder edit by username, edit key, or account id', async () => {
     const calls: string[] = [];
     const authStore = await seeded();
+    const memberId = 'abababab-abab-4bab-8bab-abababababab';
+    await authStore.createAccount(account({ id: memberId, role: 'verified', username: 'hide-me' }));
     const app = mount(
       authStore,
       fakeStore({
@@ -557,12 +622,12 @@ describe('daily payout roster routes', () => {
           calls.push(`payments:${String(enabled)}`);
           return DOCUMENT;
         },
-        updateRecipient: async (address, amountUsd) => {
-          calls.push(`update:${address}:${amountUsd}`);
+        updateRecipient: async (accountId, amountUsd) => {
+          calls.push(`update:${accountId}:${amountUsd}`);
           return DOCUMENT;
         },
-        deleteRecipient: async (address) => {
-          calls.push(`delete:${address}`);
+        deleteRecipient: async (accountId) => {
+          calls.push(`delete:${accountId}`);
           return DOCUMENT;
         },
       }),
@@ -570,27 +635,89 @@ describe('daily payout roster routes', () => {
     expect(
       (await post(app, '/funding/daily-roster/payments', 'founder', { enabled: false })).status,
     ).toBe(200);
-    expect(
-      (
-        await post(app, '/funding/daily-roster/recipients/update', 'founder', {
-          address: 'hide-me@example.com',
-          amountUsd: 8,
-        })
-      ).status,
-    ).toBe(200);
-    expect(
-      (
-        await post(app, '/funding/daily-roster/recipients/delete', 'founder', {
-          address: 'hide-me@example.com',
-        })
-      ).status,
-    ).toBe(200);
+    for (const key of [
+      { username: 'Hide-Me' },
+      { address: ' HIDE-ME@example.test ' },
+      { address: VERIFIED },
+    ]) {
+      expect(
+        (
+          await post(app, '/funding/daily-roster/recipients/update', 'founder', {
+            ...key,
+            amountUsd: 8,
+          })
+        ).status,
+      ).toBe(200);
+      expect(
+        (await post(app, '/funding/daily-roster/recipients/delete', 'founder', key)).status,
+      ).toBe(200);
+    }
     expect(calls).toEqual([
       'payments:false',
-      'update:hide-me@example.com:8',
-      'delete:hide-me@example.com',
+      `update:${memberId}:8`,
+      `delete:${memberId}`,
+      `update:${memberId}:8`,
+      `delete:${memberId}`,
+      `update:${VERIFIED}:8`,
+      `delete:${VERIFIED}`,
     ]);
-    expect(JSON.stringify(parsedEvents(warn))).not.toContain('hide-me@example.com');
+    const both = { username: 'hide-me', address: 'hide-me@example.test' };
+    for (const [path, body, error] of [
+      [
+        '/funding/daily-roster/recipients/update',
+        { ...both, amountUsd: 8 },
+        'Invalid address or amount',
+      ],
+      ['/funding/daily-roster/recipients/delete', both, 'Unknown address'],
+    ] as const) {
+      const res = await post(app, path, 'founder', body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
+    }
+    for (const key of [
+      { username: 'nobody' },
+      { address: 'hide-me@elsewhere.example' },
+      { address: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb' },
+    ]) {
+      for (const [path, body] of [
+        ['/funding/daily-roster/recipients/update', { ...key, amountUsd: 8 }],
+        ['/funding/daily-roster/recipients/delete', key],
+        ['/funding/daily-roster/moderators/update', { ...key, amountUsd: 8 }],
+        ['/funding/daily-roster/moderators/delete', key],
+      ] as const) {
+        const res = await post(app, path, 'founder', body);
+        expect(res.status).toBe(400);
+        expect(await res.json()).toEqual({ error: 'Unknown address' });
+      }
+    }
+    expect(calls).toHaveLength(7);
+    expect(JSON.stringify(parsedEvents(warn))).not.toContain('hide-me');
+  });
+
+  it('refuses an edit key with a host when the LNURL server is off', async () => {
+    const authStore = await seeded();
+    await authStore.createAccount(
+      account({
+        id: 'abababab-abab-4bab-8bab-abababababab',
+        role: 'verified',
+        username: 'hide-me',
+      }),
+    );
+    const app = new Hono().route(
+      '/funding',
+      fundingRoutes({
+        authStore,
+        fundingStore: new InMemoryFundingStore(),
+        messageStore: new InMemoryMessageStore(),
+        now,
+        gifts: new InMemoryGiftStore(),
+        rosterStore: fakeStore(),
+      }),
+    );
+    const res = await post(app, '/funding/daily-roster/recipients/delete', 'founder', {
+      address: 'hide-me@example.test',
+    });
+    expect(await res.json()).toEqual({ error: 'Unknown address' });
   });
 
   it('returns 400 Invalid comment and does not call spend for a bad body', async () => {
@@ -703,9 +830,10 @@ describe('daily payout roster routes', () => {
     expect(await res.json()).toEqual(PUBLIC_ROSTER);
   });
 
-  it('adds account id and trimmed name for a matching wallet address', async () => {
+  it('adds the edit key, username, and trimmed name of each listed account', async () => {
     const authStore = await seeded();
     const memberId = '88888888-8888-4888-8888-888888888888';
+    const goneId = '99999999-9999-4999-8999-999999999999';
     await authStore.createAccount(
       account({
         id: memberId,
@@ -715,15 +843,14 @@ describe('daily payout roster routes', () => {
         walletRequired: true,
       }),
     );
-    await verifyWallet(authStore, memberId, 'ada');
     const roster: DailyRosterDocument = {
       comment: 'thanks',
       paymentsEnabled: true,
       defaultAmountUsd: 1,
       moderatorPaymentsEnabled: true,
       recipients: [
-        { address: 'ADA@example.test', amountUsd: 1 },
-        { address: 'unknown@example.test', amountUsd: 2 },
+        { accountId: memberId, amountUsd: 1 },
+        { accountId: goneId, amountUsd: 2 },
       ],
       moderators: [],
     };
@@ -739,8 +866,14 @@ describe('daily payout roster routes', () => {
       moderatorPaymentsEnabled: true,
       defaultAmountUsd: 1,
       recipients: [
-        { address: 'ADA@example.test', amountUsd: 1, accountId: memberId, name: 'Ada' },
-        { address: 'unknown@example.test', amountUsd: 2, accountId: null, name: null },
+        {
+          address: 'ada@example.test',
+          amountUsd: 1,
+          accountId: memberId,
+          username: 'ada',
+          name: 'Ada',
+        },
+        { address: goneId, amountUsd: 2, accountId: goneId, username: null, name: null },
       ],
       moderators: [],
     });
@@ -857,15 +990,15 @@ describe('daily payout roster routes', () => {
       paymentsEnabled: true,
       moderatorPaymentsEnabled: false,
       defaultAmountUsd: 1,
-      recipients: [{ address: 'ada@example.com', amountUsd: 1 }],
-      moderators: [{ address: 'mod@example.com', amountUsd: 3 }],
+      recipients: [{ accountId: VERIFIED, amountUsd: 1 }],
+      moderators: [{ accountId: MOD, amountUsd: 3 }],
     });
     const res = await get(mount(authStore, store), '/funding/daily-roster', 'founder');
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       ...PUBLIC_ROSTER,
       moderatorPaymentsEnabled: false,
-      moderators: [{ address: 'mod@example.com', amountUsd: 3, accountId: null, name: null }],
+      moderators: [{ address: MOD, amountUsd: 3, accountId: MOD, username: null, name: 'Mod' }],
     });
   });
 
@@ -938,13 +1071,6 @@ describe('daily payout roster routes', () => {
   it('refuses a bad moderator add the same way as a recipient add', async () => {
     let called = false;
     const authStore = await seeded();
-    const noneId = 'abababab-abab-4aba-8aba-abababababab';
-    const nullId = 'acacacac-acac-4aca-8aca-acacacacacac';
-    await authStore.createAccount(account({ id: noneId, role: 'verified', username: 'none' }));
-    await authStore.createAccount(
-      account({ id: nullId, role: 'verified', username: 'blank', walletRequired: true }),
-    );
-    await authStore.claimSparkPubkey(nullId, WALLET_PUBKEY);
     const app = mount(
       authStore,
       fakeStore({
@@ -966,18 +1092,6 @@ describe('daily payout roster routes', () => {
     });
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({ error: 'Unknown person' });
-    const blank = await post(app, '/funding/daily-roster/moderators', 'founder', {
-      accountId: noneId,
-      amountUsd: 5,
-    });
-    expect(blank.status).toBe(400);
-    expect(await blank.json()).toEqual({ error: 'Person has no Lightning address' });
-    const missingAddress = await post(app, '/funding/daily-roster/moderators', 'founder', {
-      accountId: nullId,
-      amountUsd: 5,
-    });
-    expect(missingAddress.status).toBe(400);
-    expect(await missingAddress.json()).toEqual({ error: 'Person has no Lightning address' });
     expect(called).toBe(false);
   });
 
@@ -1089,6 +1203,27 @@ describe('daily payout roster routes', () => {
     });
     expect(unauthorized.status).toBe(401);
     expect(await unauthorized.json()).toEqual({ error: 'Unauthorized' });
+    let bodyRead = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          bodyRead = true;
+          controller.enqueue(new TextEncoder().encode('{}'));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const refusedImport = await app.request(
+      new Request('http://localhost/funding/daily-roster/document', {
+        method: 'POST',
+        headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
+        body,
+        duplex: 'half',
+      } as RequestInit),
+    );
+    expect(refusedImport.status).toBe(401);
+    expect(bodyRead).toBe(false);
   });
 
   it('reads and imports the full document, then ignores a second import', async () => {
@@ -1129,9 +1264,13 @@ describe('daily payout roster routes', () => {
       paymentsEnabled: false,
       moderatorPaymentsEnabled: false,
       defaultAmountUsd: 1,
-      recipients: [{ address: 'ada@example.com', amountUsd: 2 }],
-      moderators: [{ address: 'mod@example.com', amountUsd: 3 }],
+      recipients: [],
+      moderators: [],
     });
+    expect((await store.linkReport()).unlinked).toEqual([
+      { bucket: 'daily', address: 'ada@example.com', amountUsd: 2 },
+      { bucket: 'moderator', address: 'mod@example.com', amountUsd: 3 },
+    ]);
     const second = await app.request('/funding/daily-roster/document', {
       method: 'POST',
       headers: {
@@ -1347,28 +1486,27 @@ describe('daily payout roster routes', () => {
     expect(logged).not.toContain('a'.repeat(501));
   });
 
-  it('adds, updates, and deletes worker recipients as the full document', async () => {
+  it('adds, updates, and deletes worker recipients by account with the payout address', async () => {
     const authStore = await seeded();
+    const adaId = '88888888-8888-4888-8888-888888888888';
     await authStore.createAccount(
-      account({
-        id: '88888888-8888-4888-8888-888888888888',
-        role: 'verified',
-        name: 'Ada',
-      }),
+      account({ id: adaId, role: 'verified', name: 'Ada', username: 'ada', walletRequired: true }),
     );
+    await verifyWallet(authStore, adaId, 'ada');
     const store = new InMemoryDailyRosterStore();
     const app = mount(authStore, store, 'spend-secret');
+    const row = { accountId: adaId, username: 'ada', address: 'ada@example.test' };
     const added = await post(app, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      address: '  Ada@Example.com  ',
+      address: '  Ada@Example.test  ',
       amountUsd: 2,
     });
     expect(added.status).toBe(200);
     expect(await added.json()).toEqual({
       ...EMPTY_DOCUMENT,
-      recipients: [{ address: 'ada@example.com', amountUsd: 2 }],
+      recipients: [{ ...row, amountUsd: 2 }],
     });
     const duplicate = await post(app, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      address: 'ADA@example.com',
+      username: 'ADA',
       amountUsd: 3,
     });
     expect(duplicate.status).toBe(400);
@@ -1377,71 +1515,77 @@ describe('daily payout roster routes', () => {
       app,
       '/funding/daily-roster/worker/recipients/update',
       'spend-secret',
-      { address: ' ADA@EXAMPLE.COM ', amountUsd: 8 },
+      { username: 'ada', amountUsd: 8 },
     );
     expect(updated.status).toBe(200);
     expect(await updated.json()).toEqual({
       ...EMPTY_DOCUMENT,
-      recipients: [{ address: 'ada@example.com', amountUsd: 8 }],
+      recipients: [{ ...row, amountUsd: 8 }],
     });
     const deleted = await post(
       app,
       '/funding/daily-roster/worker/recipients/delete',
       'spend-secret',
-      { address: 'Ada@example.com' },
-    );
-    expect(deleted.status).toBe(200);
-    const body = await deleted.json();
-    expect(body).toEqual(EMPTY_DOCUMENT);
-    expect(JSON.stringify(body)).not.toContain('accountId');
-    expect(JSON.stringify(body)).not.toContain('"name"');
-    const logged = JSON.stringify(parsedEvents(warn));
-    expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('ada@example.com');
-    expect(logged).not.toContain('Ada@Example.com');
-  });
-
-  it('adds, updates, and deletes worker moderators as the full document', async () => {
-    const authStore = await seeded();
-    const store = new InMemoryDailyRosterStore();
-    const app = mount(authStore, store, 'spend-secret');
-    const added = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-      address: 'mod@example.com',
-      amountUsd: 3,
-    });
-    expect(added.status).toBe(200);
-    expect(await added.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      moderators: [{ address: 'mod@example.com', amountUsd: 3 }],
-    });
-    const duplicate = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-      address: 'mod@example.com',
-      amountUsd: 4,
-    });
-    expect(duplicate.status).toBe(400);
-    expect(await duplicate.json()).toEqual({ error: 'Address already listed' });
-    const updated = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/update',
-      'spend-secret',
-      { address: 'mod@example.com', amountUsd: 5 },
-    );
-    expect(updated.status).toBe(200);
-    expect(await updated.json()).toEqual({
-      ...EMPTY_DOCUMENT,
-      moderators: [{ address: 'mod@example.com', amountUsd: 5 }],
-    });
-    const deleted = await post(
-      app,
-      '/funding/daily-roster/worker/moderators/delete',
-      'spend-secret',
-      { address: 'mod@example.com' },
+      { address: 'ada@example.test' },
     );
     expect(deleted.status).toBe(200);
     expect(await deleted.json()).toEqual(EMPTY_DOCUMENT);
     const logged = JSON.stringify(parsedEvents(warn));
     expect(logged).not.toContain('spend-secret');
-    expect(logged).not.toContain('mod@example.com');
+    expect(logged).not.toContain('ada@example.test');
+  });
+
+  it('adds worker moderators without a wallet and gives their payout address once verified', async () => {
+    const authStore = await seeded();
+    const modId = 'cdcdcdcd-cdcd-4dcd-8dcd-cdcdcdcdcdcd';
+    await authStore.createAccount(
+      account({ id: modId, role: 'moderator', name: 'Mo', username: 'mo', walletRequired: true }),
+    );
+    const store = new InMemoryDailyRosterStore();
+    const app = mount(authStore, store, 'spend-secret');
+    const added = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
+      username: 'mo',
+      amountUsd: 3,
+    });
+    expect(added.status).toBe(200);
+    expect(await added.json()).toEqual({
+      ...EMPTY_DOCUMENT,
+      moderators: [{ accountId: modId, username: 'mo', address: null, amountUsd: 3 }],
+    });
+    const duplicate = await post(app, '/funding/daily-roster/worker/moderators', 'spend-secret', {
+      address: 'mo@example.test',
+      amountUsd: 4,
+    });
+    expect(duplicate.status).toBe(400);
+    expect(await duplicate.json()).toEqual({ error: 'Address already listed' });
+    await verifyWallet(authStore, modId, 'mo');
+    const document = await app.request('/funding/daily-roster/document', {
+      headers: { authorization: 'Bearer spend-secret' },
+    });
+    expect(((await document.json()) as DailyRosterPayoutDocument).moderators).toEqual([
+      { accountId: modId, username: 'mo', address: 'mo@example.test', amountUsd: 3 },
+    ]);
+    const updated = await post(
+      app,
+      '/funding/daily-roster/worker/moderators/update',
+      'spend-secret',
+      { address: 'mo@example.test', amountUsd: 5 },
+    );
+    expect(updated.status).toBe(200);
+    expect(((await updated.json()) as DailyRosterPayoutDocument).moderators).toEqual([
+      { accountId: modId, username: 'mo', address: 'mo@example.test', amountUsd: 5 },
+    ]);
+    const deleted = await post(
+      app,
+      '/funding/daily-roster/worker/moderators/delete',
+      'spend-secret',
+      { username: 'mo' },
+    );
+    expect(deleted.status).toBe(200);
+    expect(await deleted.json()).toEqual(EMPTY_DOCUMENT);
+    const logged = JSON.stringify(parsedEvents(warn));
+    expect(logged).not.toContain('spend-secret');
+    expect(logged).not.toContain('mo@example.test');
   });
 
   it('returns 400 Invalid address or amount and Unknown address on worker list writes', async () => {
@@ -1493,20 +1637,25 @@ describe('daily payout roster routes', () => {
         expect(await res.json()).toEqual({ error: 'Invalid address or amount' });
       }
     }
+    await authStore.createAccount(
+      account({ id: '88888888-8888-4888-8888-888888888888', role: 'verified', username: 'ada' }),
+    );
     const store = new InMemoryDailyRosterStore();
     const live = mount(authStore, store, 'spend-secret');
     const zero = await post(live, '/funding/daily-roster/worker/recipients', 'spend-secret', {
-      address: 'ada@example.com',
+      address: 'ada@example.test',
       amountUsd: 0,
     });
     expect(zero.status).toBe(400);
     expect(await zero.json()).toEqual({ error: 'Invalid address or amount' });
-    const blank = await post(live, '/funding/daily-roster/worker/moderators', 'spend-secret', {
-      address: '   ',
-      amountUsd: 1,
-    });
-    expect(blank.status).toBe(400);
-    expect(await blank.json()).toEqual({ error: 'Invalid address or amount' });
+    for (const key of ['   ', 'ada@example.com']) {
+      const unknown = await post(live, '/funding/daily-roster/worker/moderators', 'spend-secret', {
+        address: key,
+        amountUsd: 1,
+      });
+      expect(unknown.status).toBe(400);
+      expect(await unknown.json()).toEqual({ error: 'Unknown address' });
+    }
     const nan = await live.request('/funding/daily-roster/worker/recipients', {
       method: 'POST',
       headers: {
@@ -1674,18 +1823,12 @@ describe('daily payout roster routes', () => {
       ['/funding/daily-roster/worker/comment', { comment: 'hush-comment' }],
       ['/funding/daily-roster/worker/payments', { enabled: true }],
       ['/funding/daily-roster/worker/moderators/payments', { enabled: true }],
-      ['/funding/daily-roster/worker/recipients', { address: 'ada@example.com', amountUsd: 1 }],
-      [
-        '/funding/daily-roster/worker/recipients/update',
-        { address: 'ada@example.com', amountUsd: 1 },
-      ],
-      ['/funding/daily-roster/worker/recipients/delete', { address: 'ada@example.com' }],
-      ['/funding/daily-roster/worker/moderators', { address: 'mod@example.com', amountUsd: 3 }],
-      [
-        '/funding/daily-roster/worker/moderators/update',
-        { address: 'mod@example.com', amountUsd: 3 },
-      ],
-      ['/funding/daily-roster/worker/moderators/delete', { address: 'mod@example.com' }],
+      ['/funding/daily-roster/worker/recipients', { address: VERIFIED, amountUsd: 1 }],
+      ['/funding/daily-roster/worker/recipients/update', { address: VERIFIED, amountUsd: 1 }],
+      ['/funding/daily-roster/worker/recipients/delete', { address: VERIFIED }],
+      ['/funding/daily-roster/worker/moderators', { username: MOD, amountUsd: 3 }],
+      ['/funding/daily-roster/worker/moderators/update', { username: MOD, amountUsd: 3 }],
+      ['/funding/daily-roster/worker/moderators/delete', { username: MOD }],
     ] as const;
     for (const [path, body] of cases) {
       const res = await post(app, path, 'spend-secret', body);
@@ -1698,6 +1841,33 @@ describe('daily payout roster routes', () => {
     expect(logged).not.toContain('ada@example.com');
     expect(logged).not.toContain('mod@example.com');
     expect(logged).not.toContain('leaked');
+  });
+
+  it('returns 502 when the account lookup of a keyed write throws', async () => {
+    const authStore = await seeded();
+    vi.spyOn(authStore, 'getAccountByUsername').mockRejectedValue(new Error('db down'));
+    const app = mount(authStore, fakeStore(), 'spend-secret');
+    for (const [path, body] of [
+      ['/funding/daily-roster/worker/recipients', { username: 'ada', amountUsd: 1 }],
+      ['/funding/daily-roster/worker/moderators/delete', { username: 'ada' }],
+    ] as const) {
+      const res = await post(app, path, 'spend-secret', body);
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
+    }
+    const session = await post(app, '/funding/daily-roster/recipients/update', 'founder', {
+      username: 'ada',
+      amountUsd: 1,
+    });
+    expect(session.status).toBe(502);
+    const add = await post(app, '/funding/daily-roster/moderators', 'founder', {
+      username: 'ada',
+      amountUsd: 1,
+    });
+    expect(add.status).toBe(502);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'funding.daily_roster.failed', action: 'moderator-add' }),
+    );
   });
 });
 
@@ -1751,5 +1921,75 @@ describe('GET /funding/daily-roster with an operator token', () => {
     expect((await get(app, '/funding/daily-roster', 'op-other')).status).toBe(401);
     expect((await get(app, '/funding/daily-roster', 'mod')).status).toBe(403);
     expect((await get(app, '/funding/daily-roster', 'founder')).status).toBe(200);
+  });
+});
+
+describe('GET /funding/daily-roster/links', () => {
+  const TOKENS = { debugToken: 'op-write', debugReadToken: 'op-read' };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it.each(['op-write', 'op-read'])(
+    'lists linked counts, unlinked rows, and sums with %s',
+    async (token) => {
+      const store = new InMemoryDailyRosterStore();
+      await store.importDocument({ recipients: [{ address: 'gone@example.com', amountUsd: 3 }] });
+      await store.addRecipient(VERIFIED, 2);
+      await store.addModerator(MOD, 5);
+      const res = await get(
+        mount(await seeded(), store, undefined, TOKENS),
+        '/funding/daily-roster/links',
+        token,
+      );
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        rows: 3,
+        linked: 2,
+        unlinked: [{ bucket: 'daily', address: 'gone@example.com', amountUsd: 3 }],
+        buckets: {
+          daily: { rows: 2, linked: 1, totalUsd: 5, linkedUsd: 2 },
+          moderator: { rows: 1, linked: 1, totalUsd: 5, linkedUsd: 5 },
+        },
+      });
+      const logged = parsedEvents(warn);
+      expect(logged).toContainEqual(
+        expect.objectContaining({ event: 'funding.daily_roster', operator: true, action: 'links' }),
+      );
+      expect(JSON.stringify(logged)).not.toContain('gone@example.com');
+    },
+  );
+
+  it('refuses a session, a wrong token, and no token', async () => {
+    const app = mount(await seeded(), fakeStore(), undefined, TOKENS);
+    for (const token of ['founder', 'op-other', undefined]) {
+      const res = await get(app, '/funding/daily-roster/links', token);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    }
+  });
+
+  it('returns 502 and logs the operator when the store throws', async () => {
+    const store = fakeStore({ linkReport: () => Promise.reject(new Error('down')) });
+    const res = await get(
+      mount(await seeded(), store, undefined, TOKENS),
+      '/funding/daily-roster/links',
+      'op-read',
+    );
+    expect(res.status).toBe(502);
+    expect(await res.json()).toEqual({ error: 'Daily roster is unavailable' });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'funding.daily_roster.failed',
+        operator: true,
+        action: 'links',
+      }),
+    );
   });
 });

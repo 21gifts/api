@@ -440,7 +440,7 @@ export interface AuthStore {
    * is kept, and so is the username of an account with a verified wallet
    * (`sparkPubkeyVerifiedAt` set); only a blank one is filled, so a write from
    * an older snapshot cannot undo a rename. Renames go through
-   * {@link AuthStore.setUsername} (or `setUsernameWithRoster`). The other
+   * {@link AuthStore.setUsername}. The other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
    * are never written here. `walletIntroSeen` is only ever raised to true
    * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is

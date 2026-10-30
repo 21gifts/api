@@ -1264,6 +1264,11 @@ test('GET /funding/daily-roster without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
+test('GET /funding/daily-roster/links without an operator token is 401', async ({ request }) => {
+  const res = await request.get('/funding/daily-roster/links');
+  expect(res.status()).toBe(401);
+});
+
 test('POST /funding/daily-roster/comment without bearer is 401', async ({ request }) => {
   const res = await request.post('/funding/daily-roster/comment', { data: { comment: 'x' } });
   expect(res.status()).toBe(401);

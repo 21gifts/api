@@ -192,6 +192,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
 
     const decision = decideCliDailyInstruction({
       address,
+      ...(account === undefined ? {} : { accountId: account.id }),
       hasPasskey,
       hasPosted,
       hasMedia,

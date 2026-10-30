@@ -27,7 +27,7 @@ import { PostgresDiagnosticStore } from '@/lib/diagnostic-log';
 import { logEvent, setDiagnosticSink } from '@/lib/log';
 import { PostgresFundingStore } from '@/lib/funding-store';
 import {
-  DAILY_ROSTER_WALLET_MOVE_SQL,
+  DAILY_ROSTER_ACCOUNT_LINK_SQL,
   InMemoryDailyRosterStore,
   PostgresDailyRosterStore,
 } from '@/lib/daily-roster-store';
@@ -836,7 +836,7 @@ describe('openBootStores', () => {
     });
   });
 
-  it('moves the daily roster onto wallet addresses when the LNURL server is configured', async () => {
+  it('links roster rows to accounts after the db_change triggers with the LNURL host', async () => {
     const operations: Array<{
       kind: 'query' | 'execute';
       text: string;
@@ -848,8 +848,8 @@ describe('openBootStores', () => {
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
         }
-        if (text === DAILY_ROSTER_WALLET_MOVE_SQL) {
-          return [{ moved: 1, removed: 1 }] as T[];
+        if (text === DAILY_ROSTER_ACCOUNT_LINK_SQL) {
+          return [{ linked: 21, unlinked: 1 }] as T[];
         }
         return [] as T[];
       },
@@ -881,25 +881,25 @@ describe('openBootStores', () => {
       (last, o, i) => (o.text.includes('trg_db_change') ? i : last),
       -1,
     );
-    const moves = operations.filter((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
-    const moveIdx = operations.findIndex((o) => o.text === DAILY_ROSTER_WALLET_MOVE_SQL);
+    const moves = operations.filter((o) => o.text === DAILY_ROSTER_ACCOUNT_LINK_SQL);
+    const moveIdx = operations.findIndex((o) => o.text === DAILY_ROSTER_ACCOUNT_LINK_SQL);
     expect(rosterIdx).toBeGreaterThanOrEqual(0);
     expect(dbChangeIdx).toBeGreaterThan(rosterIdx);
     expect(lastTriggerIdx).toBeGreaterThan(dbChangeIdx);
     expect(moveIdx).toBeGreaterThan(lastTriggerIdx);
     expect(moves).toEqual([
-      { kind: 'query', text: DAILY_ROSTER_WALLET_MOVE_SQL, params: ['21.gifts'] },
+      { kind: 'query', text: DAILY_ROSTER_ACCOUNT_LINK_SQL, params: ['21.gifts'] },
     ]);
     expect(parsedEvents(warn)).toContainEqual(
-      expect.objectContaining({ event: 'daily_roster.wallet_move', moved: 1, removed: 1 }),
+      expect.objectContaining({ event: 'daily_roster.accounts_linked', linked: 21, unlinked: 1 }),
     );
   });
 
-  it('skips the roster wallet move when the LNURL server is off', async () => {
-    const queries: string[] = [];
+  it('links roster rows by legacy address only when the LNURL server is off', async () => {
+    const queries: Array<{ text: string; params: readonly unknown[] | undefined }> = [];
     const client: SqlClient = {
-      query: async <T>(text: string): Promise<T[]> => {
-        queries.push(text);
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
+        queries.push({ text, params });
         if (text.includes('min(paid_at)')) {
           return [{ min: null, max: null }] as T[];
         }
@@ -917,9 +917,11 @@ describe('openBootStores', () => {
       lnurlServer: null,
     });
 
-    expect(queries).not.toContain(DAILY_ROSTER_WALLET_MOVE_SQL);
-    expect(parsedEvents(warn)).not.toContainEqual(
-      expect.objectContaining({ event: 'daily_roster.wallet_move' }),
+    expect(queries.filter((q) => q.text === DAILY_ROSTER_ACCOUNT_LINK_SQL)).toEqual([
+      { text: DAILY_ROSTER_ACCOUNT_LINK_SQL, params: [null] },
+    ]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'daily_roster.accounts_linked', linked: 0, unlinked: 0 }),
     );
   });
 

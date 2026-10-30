@@ -31,20 +31,22 @@ import {
   DAILY_ROSTER_INVALID_COMMENT,
   DAILY_ROSTER_INVALID_PAYMENTS,
   DAILY_ROSTER_INVALID_PERSON,
-  DAILY_ROSTER_NO_LIGHTNING,
   DAILY_ROSTER_UNAVAILABLE,
   DAILY_ROSTER_UNKNOWN_ADDRESS,
   DAILY_ROSTER_UNKNOWN_PERSON,
   DailyRosterRequestError,
   normalizeDailyRosterComment,
+  withPayoutAddresses,
   withRecipientIdentities,
   type DailyRosterDocument,
+  type DailyRosterPayoutDocument,
   type DailyRosterPublic,
 } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { checkSpendAuth } from '@/lib/spend-auth';
-import { accountByReceivingAddress, receivingAddress } from '@/lib/receiving-address';
+import { receivingAddress } from '@/lib/receiving-address';
 import { isStaffRole } from '@/lib/trust';
+import { normalizeUsername } from '@/lib/username';
 import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
@@ -88,9 +90,9 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  /** Operator write token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  /** Operator read-only token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
   debugReadToken?: string;
 }
 
@@ -106,36 +108,160 @@ const rosterCommentBody = z.object({ comment: z.string() });
 /** Body schema for `POST /funding/daily-roster/payments`. */
 const rosterPaymentsBody = z.object({ enabled: z.boolean() });
 
-/** Body schema for `POST /funding/daily-roster/recipients`. */
+/** Body schema for the session add routes: an account id or a username. */
 const rosterRecipientAddBody = z.object({
-  accountId: z.string(),
+  accountId: z.string().optional(),
+  username: z.string().optional(),
   amountUsd: z.number().finite(),
 });
-
-/** Body schema for recipient update. */
-const rosterRecipientBody = z.object({
-  address: z.string(),
-  amountUsd: z.number().finite(),
-});
-
-/** Body schema for `POST /funding/daily-roster/recipients/delete`. */
-const rosterDeleteBody = z.object({ address: z.string() });
 
 /**
- * True when a JSON value has a string `address`. Update uses this so a bad
- * amount is `Invalid address or amount` and a missing address is
+ * Body schema for the keyed roster writes: `username`, or `address` (the
+ * editor row's edit key: `<username>@<host>`, the bare username when the
+ * LNURL server is off, or the account id).
+ */
+const rosterRecipientBody = z.object({
+  username: z.string().optional(),
+  address: z.string().optional(),
+  amountUsd: z.number().finite(),
+});
+
+/** Body schema for the keyed roster deletes. */
+const rosterDeleteBody = z.object({
+  username: z.string().optional(),
+  address: z.string().optional(),
+});
+
+/**
+ * The row key of a keyed roster body: its `username` or its `address`.
+ *
+ * @param body - Parsed body.
+ * @returns The key, or `undefined` when neither or both are given.
+ */
+function rosterKey(body: {
+  username?: string | undefined;
+  address?: string | undefined;
+}): string | undefined {
+  return body.username === undefined
+    ? body.address
+    : body.address === undefined
+      ? body.username
+      : undefined;
+}
+
+/**
+ * True when a JSON value has a string `username` or `address`. Update uses
+ * this so a bad amount is `Invalid address or amount` and a missing key is
  * `Unknown address`, matching spend.
  *
  * @param raw - Parsed JSON, or `null` when the body was not JSON.
- * @returns Whether `address` is a string.
+ * @returns Whether `username` or `address` is a string.
  */
-function rawAddressIsString(raw: unknown): boolean {
-  return (
-    typeof raw === 'object' &&
-    raw !== null &&
-    !Array.isArray(raw) &&
-    typeof (raw as Record<string, unknown>)['address'] === 'string'
-  );
+function rawKeyIsString(raw: unknown): boolean {
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) {
+    return false;
+  }
+  const record = raw as Record<string, unknown>;
+  return typeof record['username'] === 'string' || typeof record['address'] === 'string';
+}
+
+/**
+ * The account with this username.
+ *
+ * @param deps - Route collaborators.
+ * @param raw - Username as given.
+ * @returns The account, or `undefined` for an invalid or unknown username.
+ */
+async function accountByUsername(
+  deps: FundingRouteDeps,
+  raw: string,
+): Promise<Account | undefined> {
+  const username = normalizeUsername(raw);
+  return username === null ? undefined : deps.authStore.getAccountByUsername(username);
+}
+
+/**
+ * The account lookup of a session add body: by `accountId` (which must be a
+ * UUID) or by `username`.
+ *
+ * @param deps - Route collaborators.
+ * @param body - Parsed add body.
+ * @returns The lookup, or `undefined` when the body names no account or gives both keys.
+ */
+function rosterAddLookup(
+  deps: FundingRouteDeps,
+  body: { accountId?: string | undefined; username?: string | undefined },
+): (() => Promise<Account | undefined>) | undefined {
+  const { accountId, username } = body;
+  if (accountId !== undefined) {
+    return MESSAGE_ID_RE.test(accountId) && username === undefined
+      ? () => deps.authStore.getAccount(accountId)
+      : undefined;
+  }
+  return username === undefined ? undefined : () => accountByUsername(deps, username);
+}
+
+/**
+ * The account a roster key names: `<username>@<host of PUBLIC_BASE_URL>`
+ * (any other domain, or any key with `@` while the LNURL server is off, is no
+ * account), a bare username, or, when no account has that username, an
+ * account id (the edit key of an account without one). The wallet does not
+ * matter.
+ *
+ * @param deps - Route collaborators.
+ * @param key - Username, in-app address, or account id.
+ * @returns The account, or `undefined` when none.
+ */
+async function rosterAccountByKey(
+  deps: FundingRouteDeps,
+  key: string,
+): Promise<Account | undefined> {
+  const lower = key.trim().toLowerCase();
+  const at = lower.lastIndexOf('@');
+  if (at >= 0) {
+    if (
+      deps.lnurlServer === undefined ||
+      lower.slice(at + 1) !== deps.lnurlServer.host.toLowerCase()
+    ) {
+      return undefined;
+    }
+    return accountByUsername(deps, lower.slice(0, at));
+  }
+  const named = await accountByUsername(deps, lower);
+  if (named !== undefined || !MESSAGE_ID_RE.test(lower)) {
+    return named;
+  }
+  return deps.authStore.getAccount(lower);
+}
+
+/**
+ * Account id of a roster key, for a store write.
+ *
+ * @param deps - Route collaborators.
+ * @param key - Username, in-app address, or account id.
+ * @returns The account id.
+ * @throws {@link DailyRosterRequestError} 400 `'Unknown address'` when no account matches.
+ */
+async function rosterAccountId(deps: FundingRouteDeps, key: string): Promise<string> {
+  const account = await rosterAccountByKey(deps, key);
+  if (account === undefined) {
+    throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
+  }
+  return account.id;
+}
+
+/**
+ * Spend document of a stored roster: each row with its payout address now.
+ *
+ * @param deps - Route collaborators.
+ * @param roster - Stored document.
+ * @returns The spend document.
+ */
+function payoutDocument(
+  deps: FundingRouteDeps,
+  roster: DailyRosterDocument,
+): Promise<DailyRosterPayoutDocument> {
+  return withPayoutAddresses(roster, (id) => deps.authStore.getAccount(id), deps.lnurlServer);
 }
 
 /** Logged roster action. Never a comment or a Lightning address. */
@@ -149,7 +275,8 @@ type DailyRosterAction =
   | 'moderator-add'
   | 'moderator-update'
   | 'moderator-delete'
-  | 'moderator-payments';
+  | 'moderator-payments'
+  | 'links';
 
 type RosterStop = { error: string; status: 401 | 403 };
 
@@ -331,27 +458,28 @@ function spendAuthGate(
 }
 
 /**
- * Spend Bearer then the stored document. Store 400 stays `{ error }`.
+ * Spend Bearer then the stored document with payout addresses. Store 400
+ * stays `{ error }`.
  *
  * @param c - Hono context.
- * @param token - Configured spend token, or unset.
+ * @param deps - Route collaborators (spend token, account lookup, LNURL server).
  * @param call - Store read or write.
- * @returns 200 document, 401/503 from {@link spendAuthGate}, 400, or 502.
+ * @returns 200 spend document, 401/503 from {@link spendAuthGate}, 400, or 502.
  */
 async function answerSpendDocument(
   c: Context,
-  token: string | undefined,
+  deps: FundingRouteDeps,
   call: () => Promise<DailyRosterDocument>,
 ): Promise<Response> {
   const denied = spendAuthGate(
-    checkSpendAuth(token, c.req.header('Authorization')),
+    checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
     (body, status) => c.json(body, status),
   );
   if (denied !== null) {
     return denied;
   }
   try {
-    return c.json(await call(), 200);
+    return c.json(await payoutDocument(deps, await call()), 200);
   } catch (err) {
     if (err instanceof DailyRosterRequestError && err.status === 400) {
       return c.json({ error: err.error }, 400);
@@ -378,7 +506,7 @@ function rosterLogFields(caller: Account | null, action: DailyRosterAction): Ros
 /**
  * Call spend and map failures. Success and 502 log the actor id and action only.
  *
- * @param deps - Route collaborators (auth store and LNURL server for recipient identity).
+ * @param deps - Route collaborators (auth store and LNURL server for the edit key).
  * @param caller - Initiator or founder, or `null` for an operator-token read.
  * @param action - Stable action name.
  * @param call - Client method.
@@ -392,13 +520,11 @@ async function callRoster(
 ): Promise<RosterReply> {
   try {
     const roster = await call();
-    const body = await withRecipientIdentities(roster, async (address) => {
-      const found = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
-      if (found === undefined) {
-        return undefined;
-      }
-      return { id: found.account.id, name: found.account.name };
-    });
+    const body = await withRecipientIdentities(
+      roster,
+      (id) => deps.authStore.getAccount(id),
+      deps.lnurlServer,
+    );
     logEvent('funding.daily_roster', rosterLogFields(caller, action));
     return { status: 200, body };
   } catch (err) {
@@ -440,6 +566,7 @@ function stopRoster(c: Context, stop: RosterStop): Response {
  * `GET /funding/applications`, `GET /funding/applications/:accountId`,
  * `POST /funding/trial`, `POST /funding/admit`, `POST /funding/reject`,
  * `GET /funding/payout-days`, `GET /funding/daily-roster`,
+ * `GET /funding/daily-roster/links`,
  * `POST /funding/daily-roster/comment`, `POST /funding/daily-roster/payments`,
  * `POST /funding/daily-roster/recipients`,
  * `POST /funding/daily-roster/recipients/update`,
@@ -853,43 +980,29 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       const result = await callRoster(deps, opened.caller, 'read', () => rosterStore.get());
       return answerRoster(c, result);
     })
-    .get('/daily-roster/document', async (c) => {
-      const denied = spendAuthGate(
-        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
-        (body, status) => c.json(body, status),
-      );
-      if (denied !== null) {
-        return denied;
+    .get('/daily-roster/links', async (c) => {
+      if (!isOperatorBearer(deps.debugToken, deps.debugReadToken, c.req.header('authorization'))) {
+        return c.json({ error: 'Unauthorized' }, 401);
       }
       try {
-        return c.json(await rosterStore.get(), 200);
-      } catch (err) {
-        if (err instanceof DailyRosterRequestError && err.status === 400) {
-          return c.json({ error: err.error }, 400);
-        }
+        const report = await rosterStore.linkReport();
+        logEvent('funding.daily_roster', rosterLogFields(null, 'links'));
+        return c.json(report, 200);
+      } catch {
+        logEvent('funding.daily_roster.failed', rosterLogFields(null, 'links'));
         return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
       }
+    })
+    .get('/daily-roster/document', async (c) => {
+      return answerSpendDocument(c, deps, () => rosterStore.get());
     })
     .post('/daily-roster/document', async (c) => {
-      const denied = spendAuthGate(
-        checkSpendAuth(deps.spendApiToken, c.req.header('Authorization')),
-        (body, status) => c.json(body, status),
+      return answerSpendDocument(c, deps, async () =>
+        rosterStore.importDocument(await c.req.json().catch(() => null)),
       );
-      if (denied !== null) {
-        return denied;
-      }
-      const raw = await c.req.json().catch(() => null);
-      try {
-        return c.json(await rosterStore.importDocument(raw), 200);
-      } catch (err) {
-        if (err instanceof DailyRosterRequestError && err.status === 400) {
-          return c.json({ error: err.error }, 400);
-        }
-        return c.json({ error: DAILY_ROSTER_UNAVAILABLE }, 502);
-      }
     })
     .post('/daily-roster/worker/comment', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterCommentBody.safeParse(await c.req.json().catch(() => null));
         if (!parsed.success) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_COMMENT);
@@ -902,7 +1015,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       });
     })
     .post('/daily-roster/worker/payments', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
         if (!parsed.success) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_PAYMENTS);
@@ -911,69 +1024,75 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       });
     })
     .post('/daily-roster/worker/recipients', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (!parsed.success || key === undefined) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
         }
-        return rosterStore.addRecipient(parsed.data.address, parsed.data.amountUsd);
+        return rosterStore.addRecipient(await rosterAccountId(deps, key), parsed.data.amountUsd);
       });
     })
     .post('/daily-roster/worker/recipients/update', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const raw = await c.req.json().catch(() => null);
         const parsed = rosterRecipientBody.safeParse(raw);
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (!parsed.success || key === undefined) {
           throw new DailyRosterRequestError(
             400,
-            rawAddressIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
+            rawKeyIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
           );
         }
-        return rosterStore.updateRecipient(parsed.data.address, parsed.data.amountUsd);
+        return rosterStore.updateRecipient(await rosterAccountId(deps, key), parsed.data.amountUsd);
       });
     })
     .post('/daily-roster/worker/recipients/delete', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (key === undefined) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
         }
-        return rosterStore.deleteRecipient(parsed.data.address);
+        return rosterStore.deleteRecipient(await rosterAccountId(deps, key));
       });
     })
     .post('/daily-roster/worker/moderators', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterRecipientBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (!parsed.success || key === undefined) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_ADDRESS);
         }
-        return rosterStore.addModerator(parsed.data.address, parsed.data.amountUsd);
+        return rosterStore.addModerator(await rosterAccountId(deps, key), parsed.data.amountUsd);
       });
     })
     .post('/daily-roster/worker/moderators/update', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const raw = await c.req.json().catch(() => null);
         const parsed = rosterRecipientBody.safeParse(raw);
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (!parsed.success || key === undefined) {
           throw new DailyRosterRequestError(
             400,
-            rawAddressIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
+            rawKeyIsString(raw) ? DAILY_ROSTER_INVALID_ADDRESS : DAILY_ROSTER_UNKNOWN_ADDRESS,
           );
         }
-        return rosterStore.updateModerator(parsed.data.address, parsed.data.amountUsd);
+        return rosterStore.updateModerator(await rosterAccountId(deps, key), parsed.data.amountUsd);
       });
     })
     .post('/daily-roster/worker/moderators/delete', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-        if (!parsed.success) {
+        const key = parsed.success ? rosterKey(parsed.data) : undefined;
+        if (key === undefined) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_UNKNOWN_ADDRESS);
         }
-        return rosterStore.deleteModerator(parsed.data.address);
+        return rosterStore.deleteModerator(await rosterAccountId(deps, key));
       });
     })
     .post('/daily-roster/worker/moderators/payments', async (c) => {
-      return answerSpendDocument(c, deps.spendApiToken, async () => {
+      return answerSpendDocument(c, deps, async () => {
         const parsed = rosterPaymentsBody.safeParse(await c.req.json().catch(() => null));
         if (!parsed.success) {
           throw new DailyRosterRequestError(400, DAILY_ROSTER_INVALID_PAYMENTS);
@@ -1020,13 +1139,14 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return stopRoster(c, opened);
       }
       const parsed = rosterRecipientAddBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success || !MESSAGE_ID_RE.test(parsed.data.accountId)) {
+      const lookup = parsed.success ? rosterAddLookup(deps, parsed.data) : undefined;
+      if (!parsed.success || lookup === undefined) {
         return c.json({ error: DAILY_ROSTER_INVALID_PERSON }, 400);
       }
       const amountUsd = parsed.data.amountUsd;
       let account: Account | undefined;
       try {
-        account = await deps.authStore.getAccount(parsed.data.accountId);
+        account = await lookup();
       } catch {
         logEvent('funding.daily_roster.failed', {
           accountId: opened.caller.id,
@@ -1037,12 +1157,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
       }
-      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
-      if (address === null) {
-        return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
-      }
+      const listedId = account.id;
       const result = await callRoster(deps, opened.caller, 'recipient-add', () =>
-        rosterStore.addRecipient(address, amountUsd),
+        rosterStore.addRecipient(listedId, amountUsd),
       );
       return answerRoster(c, result);
     })
@@ -1053,20 +1170,20 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       const raw = await c.req.json().catch(() => null);
       const parsed = rosterRecipientBody.safeParse(raw);
-      if (!parsed.success) {
+      const key = parsed.success ? rosterKey(parsed.data) : undefined;
+      if (!parsed.success || key === undefined) {
         return c.json(
           {
-            error: rawAddressIsString(raw)
+            error: rawKeyIsString(raw)
               ? DAILY_ROSTER_INVALID_ADDRESS
               : DAILY_ROSTER_UNKNOWN_ADDRESS,
           },
           400,
         );
       }
-      const address = parsed.data.address;
       const amountUsd = parsed.data.amountUsd;
-      const result = await callRoster(deps, opened.caller, 'recipient-update', () =>
-        rosterStore.updateRecipient(address, amountUsd),
+      const result = await callRoster(deps, opened.caller, 'recipient-update', async () =>
+        rosterStore.updateRecipient(await rosterAccountId(deps, key), amountUsd),
       );
       return answerRoster(c, result);
     })
@@ -1076,12 +1193,12 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return stopRoster(c, opened);
       }
       const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
+      const key = parsed.success ? rosterKey(parsed.data) : undefined;
+      if (key === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_ADDRESS }, 400);
       }
-      const address = parsed.data.address;
-      const result = await callRoster(deps, opened.caller, 'recipient-delete', () =>
-        rosterStore.deleteRecipient(address),
+      const result = await callRoster(deps, opened.caller, 'recipient-delete', async () =>
+        rosterStore.deleteRecipient(await rosterAccountId(deps, key)),
       );
       return answerRoster(c, result);
     })
@@ -1091,13 +1208,14 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return stopRoster(c, opened);
       }
       const parsed = rosterRecipientAddBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success || !MESSAGE_ID_RE.test(parsed.data.accountId)) {
+      const lookup = parsed.success ? rosterAddLookup(deps, parsed.data) : undefined;
+      if (!parsed.success || lookup === undefined) {
         return c.json({ error: DAILY_ROSTER_INVALID_PERSON }, 400);
       }
       const amountUsd = parsed.data.amountUsd;
       let account: Account | undefined;
       try {
-        account = await deps.authStore.getAccount(parsed.data.accountId);
+        account = await lookup();
       } catch {
         logEvent('funding.daily_roster.failed', {
           accountId: opened.caller.id,
@@ -1108,12 +1226,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (account === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_PERSON }, 400);
       }
-      const address = receivingAddress(account, deps.lnurlServer)?.address ?? null;
-      if (address === null) {
-        return c.json({ error: DAILY_ROSTER_NO_LIGHTNING }, 400);
-      }
+      const listedId = account.id;
       const result = await callRoster(deps, opened.caller, 'moderator-add', () =>
-        rosterStore.addModerator(address, amountUsd),
+        rosterStore.addModerator(listedId, amountUsd),
       );
       return answerRoster(c, result);
     })
@@ -1124,20 +1239,20 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       }
       const raw = await c.req.json().catch(() => null);
       const parsed = rosterRecipientBody.safeParse(raw);
-      if (!parsed.success) {
+      const key = parsed.success ? rosterKey(parsed.data) : undefined;
+      if (!parsed.success || key === undefined) {
         return c.json(
           {
-            error: rawAddressIsString(raw)
+            error: rawKeyIsString(raw)
               ? DAILY_ROSTER_INVALID_ADDRESS
               : DAILY_ROSTER_UNKNOWN_ADDRESS,
           },
           400,
         );
       }
-      const address = parsed.data.address;
       const amountUsd = parsed.data.amountUsd;
-      const result = await callRoster(deps, opened.caller, 'moderator-update', () =>
-        rosterStore.updateModerator(address, amountUsd),
+      const result = await callRoster(deps, opened.caller, 'moderator-update', async () =>
+        rosterStore.updateModerator(await rosterAccountId(deps, key), amountUsd),
       );
       return answerRoster(c, result);
     })
@@ -1147,12 +1262,12 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
         return stopRoster(c, opened);
       }
       const parsed = rosterDeleteBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
+      const key = parsed.success ? rosterKey(parsed.data) : undefined;
+      if (key === undefined) {
         return c.json({ error: DAILY_ROSTER_UNKNOWN_ADDRESS }, 400);
       }
-      const address = parsed.data.address;
-      const result = await callRoster(deps, opened.caller, 'moderator-delete', () =>
-        rosterStore.deleteModerator(address),
+      const result = await callRoster(deps, opened.caller, 'moderator-delete', async () =>
+        rosterStore.deleteModerator(await rosterAccountId(deps, key)),
       );
       return answerRoster(c, result);
     })

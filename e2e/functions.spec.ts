@@ -3112,14 +3112,16 @@ test('Function: migrateDailyRosterSchema — default boot has no DATABASE_URL', 
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: moveDailyRosterToWalletAddresses — default boot has no DATABASE_URL', async ({
+test('Function: linkDailyRosterAccounts — default boot has no DATABASE_URL', async ({
   request,
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
 
-test('Function: setUsernameWithRoster — default boot has no DATABASE_URL', async ({ request }) => {
-  expect((await request.get('/healthz')).status()).toBe(200);
+test('Function: withPayoutAddresses — GET /funding/daily-roster/document without SPEND_API_TOKEN is 503', async ({
+  request,
+}) => {
+  expect((await request.get('/funding/daily-roster/document')).status()).toBe(503);
 });
 
 test('Function: normalizeDailyRosterComment — POST /funding/daily-roster/comment without bearer is 401', async ({

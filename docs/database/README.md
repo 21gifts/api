@@ -5,8 +5,8 @@
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
 - Tables: 59
-- Columns: 571
-- Foreign keys: 57
+- Columns: 572
+- Foreign keys: 58
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -25,7 +25,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`conversation_message_translation`](tables/conversation_message_translation.md) | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 5       | 1            |
 | [`conversation_read`](tables/conversation_read.md)                               | [src/lib/conversation-store.ts](../../src/lib/conversation-store.ts)   | 3       | 2            |
 | [`daily_roster`](tables/daily_roster.md)                                         | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
-| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 4       | 0            |
+| [`daily_roster_entry`](tables/daily_roster_entry.md)                             | [src/lib/daily-roster-store.ts](../../src/lib/daily-roster-store.ts)   | 5       | 1            |
 | [`db_change`](tables/db_change.md)                                               | [src/lib/db-change.ts](../../src/lib/db-change.ts)                     | 7       | 0            |
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |

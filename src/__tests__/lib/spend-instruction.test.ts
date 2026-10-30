@@ -937,3 +937,57 @@ describe('welcomeGiftPaidOnUtcDay', () => {
     expect(welcomeGiftPaidOnUtcDay([], 'ada', day)).toBe(false);
   });
 });
+
+describe('stored roster rows by account', () => {
+  const ADA = '11111111-1111-4111-8111-111111111111';
+  const BEA = '22222222-2222-4222-8222-222222222222';
+  const roster = {
+    comment: 'thanks',
+    paymentsEnabled: true,
+    moderatorPaymentsEnabled: true,
+    defaultAmountUsd: 1,
+    recipients: [
+      { accountId: BEA, amountUsd: 0 },
+      { accountId: ADA, amountUsd: 3 },
+    ],
+    moderators: [{ accountId: ADA, amountUsd: 5 }],
+  };
+
+  it('matches a row by account id whatever the address', () => {
+    expect(
+      decideSpendInstruction({ address: 'ada@21.gifts', accountId: ADA, kind: 'daily', roster }),
+    ).toEqual({ amountUsd: 3, comment: 'thanks' });
+    expect(
+      decideSpendInstruction({ address: 'x@21.gifts', accountId: ADA, kind: 'moderator', roster }),
+    ).toEqual({ amountUsd: 5, comment: '21gifts moderator' });
+  });
+
+  it('does not match a row of another account or without an account id', () => {
+    expect(
+      decideSpendInstruction({
+        address: ADA,
+        kind: 'moderator',
+        roster,
+      }),
+    ).toEqual({ skip: 'not_listed' });
+    expect(
+      decideSpendInstruction({ address: ADDRESS, accountId: BEA, kind: 'moderator', roster }),
+    ).toEqual({ skip: 'not_listed' });
+  });
+
+  it('passes the account id through the daily instruction', () => {
+    expect(
+      decideCliDailyInstruction({
+        address: 'ada@21.gifts',
+        accountId: ADA,
+        hasPasskey: true,
+        hasPosted: true,
+        hasMedia: true,
+        eligible: true,
+        messageId: null,
+        roster,
+        grantStatus: 'none',
+      }),
+    ).toEqual({ action: 'pay', amountUsd: 3, comment: 'thanks' });
+  });
+});

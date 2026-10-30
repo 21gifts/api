@@ -212,16 +212,17 @@ if (import.meta.main) {
     nostrKek !== undefined && messageStore !== undefined
       ? new WebsocketNostrPublisher()
       : undefined;
-  const spendPing = resolveSpendPing(
-    process.env,
-    globalThis.fetch,
-    giftStore === undefined ? { rosterStore } : { gifts: giftStore, rosterStore },
-  );
+  const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
+  const spendPing = resolveSpendPing(process.env, globalThis.fetch, {
+    rosterStore,
+    accounts: authStore,
+    ...(giftStore === undefined ? {} : { gifts: giftStore }),
+    ...(lnurlServer === undefined ? {} : { lnurlServer }),
+  });
   const postLimiter = new PostRateLimiter();
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const shopIdentities = shopIdentityStore ?? new InMemoryShopIdentityStore(forumMessages);
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
-  const lnurlServer = resolveLnurlServerConfig(process.env) ?? undefined;
   const freePayments = resolveFreePaymentsConfig(process.env);
   const sparkInvoiceStore =
     lnurlServer !== undefined && freePayments !== null

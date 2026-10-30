@@ -72,6 +72,7 @@ Source: [src/lib/auth/schema.ts](../../../src/lib/auth/schema.ts)
 | `conversation_message`    | `actor_account_id`        | `id`      |
 | `conversation_message`    | `sender_account_id`       | `id`      |
 | `conversation_read`       | `account_id`              | `id`      |
+| `daily_roster_entry`      | `account_id`              | `id`      |
 | `funding_grant`           | `account_id`              | `id`      |
 | `funding_grant`           | `decided_by`              | `id`      |
 | `login_allowlist`         | `account_id`              | `id`      |
@@ -112,6 +113,7 @@ erDiagram
     "conversation_message" }o..o| "account" : "actor_account_id"
     "conversation_message" }o..o| "account" : "sender_account_id"
     "conversation_read" }o--|| "account" : "account_id"
+    "daily_roster_entry" }o..o| "account" : "account_id"
     "funding_grant" |o--|| "account" : "account_id"
     "funding_grant" }o..o| "account" : "decided_by"
     "login_allowlist" |o--|| "account" : "account_id"

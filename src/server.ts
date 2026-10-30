@@ -169,7 +169,8 @@ export interface AppDeps {
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, and the operator staff GET reads
+   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, the operator staff GET reads,
+   * and `GET /funding/daily-roster/links`
    * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
@@ -177,8 +178,8 @@ export interface AppDeps {
    */
   debugReadToken?: string;
   /**
-   * Reserved-connection transaction port for `POST /debug/accounts/merge`
-   * and `POST /me/username`. Omitted on a memory boot. A valid merge body
+   * Reserved-connection transaction port for `POST /debug/accounts/merge`.
+   * Omitted on a memory boot. A valid merge body
    * then returns 503. An invalid body is still 400.
    */
   mergeDb?: MergeDb;
@@ -236,15 +237,14 @@ export interface AppDeps {
   spendApiToken?: string;
   /**
    * Spend-worker ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore })`). Unset
+   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore, accounts, lnurlServer })`). Unset
    * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
    * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
   /**
    * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
-   * Boot injects the same instance used by {@link resolveSpendPing}. It is
-   * also passed to `meRoutes` for the `POST /me/username` roster rewrite.
+   * Boot injects the same instance used by {@link resolveSpendPing}.
    */
   rosterStore?: DailyRosterStore;
   /**
@@ -440,7 +440,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
  *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
  *   equal to debugToken after trim throws before routes mount),
- *   mergeDb (also `POST /me/username`), gift store,
+ *   mergeDb, gift store,
  *   gift recorder, BTC-USD rates, USD-fiat rates, message store,
  *   translationStore (optional; default InMemoryTranslationStore; SQL boot
  *   injects PostgresTranslationStore), contact store,
@@ -459,8 +459,7 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
- *   `POST /spend/daily-instruction`, the `POST /me/username` roster rewrite,
- *   and the default spend ping), postLimiter
+ *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
  *   and the Nostr worker), invoiceRateCaps (optional; default
  *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
@@ -610,7 +609,13 @@ export function createApp(deps: AppDeps = {}): Hono {
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   const spendPing =
     deps.spendPing ??
-    resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore });
+    resolveSpendPing(process.env, fetchImpl, {
+      gifts: giftStore,
+      now,
+      rosterStore,
+      accounts: store,
+      ...(lnurlServer === null ? {} : { lnurlServer }),
+    });
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
@@ -783,14 +788,12 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
-      dailyRoster: rosterStore,
       fetchImpl,
       ...receivingDeps,
       shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
-      ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
       ...(deps.recoveryShareKek === undefined ? {} : { recoveryShareKek: deps.recoveryShareKek }),
     }),
   );
