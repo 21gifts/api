@@ -1483,6 +1483,103 @@ describe('PostgresAuthStore social recovery', () => {
     }
   });
 
+  test('held-share boxes: put, list, delete, refusals, db_change hashes, recovery commit, and account delete', async () => {
+    const { client, sql, store } = await setup();
+    try {
+      const oldKey = walletKey();
+      const holder = await recoverable(store, oldKey);
+      const other = await recoverable(store, walletKey());
+      const box = (): string => hex64().slice(0, 32);
+      const bytes = (fill: number): Uint8Array => {
+        const out = new Uint8Array(40).fill(fill);
+        out[0] = 1;
+        return out;
+      };
+      const hexOf = (value: Uint8Array): string => Buffer.from(value).toString('hex');
+      const sha256OfBytea = (value: Uint8Array): string =>
+        createHash('sha256')
+          .update(`\\x${hexOf(value)}`, 'utf8')
+          .digest('hex');
+      const marker = await client.query<{ id: string }>(
+        'SELECT coalesce(max(id), 0)::text AS id FROM db_change',
+      );
+      const now = Date.now();
+      const first = box();
+      const second = box();
+      const put = (accountId: string, id: string, ciphertext: Uint8Array, at: number, limit = 50) =>
+        store.putHeldShareBox({ accountId, id, ciphertext, now: at, limit });
+
+      expect(await put(holder.id, second, bytes(2), now)).toBe('created');
+      expect(await put(holder.id, first, bytes(3), now + 1)).toBe('created');
+      expect(await put(holder.id, second, bytes(4), now + 2)).toBe('replaced');
+      expect(await put(other.id, first, bytes(5), now)).toBe('taken');
+      expect(await put(holder.id, box(), bytes(6), now, 2)).toBe('full');
+      expect(await store.listHeldShareBoxes(holder.id)).toEqual([
+        { id: second, ciphertext: bytes(4), createdAt: now, updatedAt: now + 2 },
+        { id: first, ciphertext: bytes(3), createdAt: now + 1, updatedAt: now + 1 },
+      ]);
+      expect(await store.listHeldShareBoxes(other.id)).toEqual([]);
+      await store.deleteHeldShareBox(other.id, first);
+      expect(await countRows(client, 'held_share_box', holder.id)).toBe(2);
+      await store.deleteHeldShareBox(holder.id, first);
+      await store.deleteHeldShareBox(holder.id, first);
+      expect(await countRows(client, 'held_share_box', holder.id)).toBe(1);
+      await expect(
+        client.execute(
+          `INSERT INTO held_share_box (id, account_id, ciphertext, created_at, updated_at)
+           VALUES ($1, $2, $3, now(), now())`,
+          [box(), holder.id, new Uint8Array(40).fill(2)],
+        ),
+      ).rejects.toThrow();
+
+      // The recovery commit keeps the account id, so the boxes stay.
+      const { pending } = await stored(store, holder.id, oldKey, now);
+      await store.markRecoveryForwarded({
+        newSparkPubkey: pending.newSparkPubkey,
+        oldSparkPubkey: oldKey,
+        username: holder.username,
+        now,
+      });
+      expect(
+        await store.commitRecovery({
+          accountId: holder.id,
+          newSparkPubkey: pending.newSparkPubkey,
+          now,
+        }),
+      ).toBe('committed');
+      expect((await store.listHeldShareBoxes(holder.id)).map((row) => row.id)).toEqual([second]);
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after FROM db_change
+         WHERE table_name = 'held_share_box' AND id > $1::bigint
+           AND coalesce(after ->> 'account_id', before ->> 'account_id') = $2
+         ORDER BY id ASC`,
+        [marker[0]?.id ?? '0', holder.id],
+      );
+      expect(changes.map((row) => row.op)).toEqual(['INSERT', 'INSERT', 'UPDATE', 'DELETE']);
+      expect(changes[0]?.after?.['ciphertext']).toBe(sha256OfBytea(bytes(2)));
+      expect(changes[2]?.before?.['ciphertext']).toBe(sha256OfBytea(bytes(2)));
+      expect(changes[2]?.after?.['ciphertext']).toBe(sha256OfBytea(bytes(4)));
+      expect(changes[3]?.before?.['ciphertext']).toBe(sha256OfBytea(bytes(3)));
+      const dump = JSON.stringify(changes);
+      for (const value of [bytes(2), bytes(3), bytes(4)]) {
+        expect(dump.includes(hexOf(value))).toBe(false);
+      }
+
+      // Deleting a plain account takes its boxes with it.
+      const plain = await recoverable(store, walletKey());
+      expect(await put(plain.id, box(), bytes(7), now)).toBe('created');
+      await store.deleteAccount(plain.id);
+      expect(await countRows(client, 'held_share_box', plain.id)).toBe(0);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+
   test('mergeAccounts deletes the merged account social recovery rows', async () => {
     const { client, mergeDb, sql } = createBunSqlClient(databaseUrl);
     try {
@@ -1518,6 +1615,27 @@ describe('PostgresAuthStore social recovery', () => {
         ciphertext: new Uint8Array(40).fill(2),
         now,
       });
+      const movedBox = hex64().slice(0, 32);
+      const keptBox = hex64().slice(0, 32);
+      const boxBytes = new Uint8Array(40).fill(1);
+      expect(
+        await store.putHeldShareBox({
+          accountId: from.id,
+          id: movedBox,
+          ciphertext: boxBytes,
+          now,
+          limit: 50,
+        }),
+      ).toBe('created');
+      expect(
+        await store.putHeldShareBox({
+          accountId: into.id,
+          id: keptBox,
+          ciphertext: boxBytes,
+          now: now + 1,
+          limit: 50,
+        }),
+      ).toBe('created');
       for (const table of ['recovery_share', 'pending_recovery', 'previous_wallet']) {
         expect(await countRows(client, table, from.id)).toBe(1);
       }
@@ -1536,6 +1654,11 @@ describe('PostgresAuthStore social recovery', () => {
         [into.id],
       );
       expect(challenges[0]?.n).toBe(0);
+      // Held-share boxes move with the other per-account rows.
+      expect((await store.listHeldShareBoxes(into.id)).map((row) => row.id)).toEqual([
+        movedBox,
+        keptBox,
+      ]);
       expect(await store.getAccount(from.id)).toBeUndefined();
     } finally {
       await closeIfPossible(sql);

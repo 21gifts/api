@@ -275,6 +275,23 @@ describe('mergeAccounts', () => {
     }
   });
 
+  it('moves the source held-share boxes with the catalog loop instead of deleting them', async () => {
+    const { db, queries } = fakeDatabase({
+      columns: [{ schema_name: 'public', table_name: 'held_share_box', column_name: 'account_id' }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+
+    expect(queries).toContainEqual({
+      text: 'UPDATE "public"."held_share_box" SET "account_id" = $1 WHERE "account_id" = $2',
+      params: [INTO, FROM],
+    });
+    expect(queries.some((query) => /DELETE FROM\s+held_share_box/.test(query.text))).toBe(false);
+  });
+
   it('clears the source free first post mark before moving messages when the survivor has one', async () => {
     const { db, queries } = fakeDatabase();
 

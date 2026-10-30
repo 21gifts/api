@@ -1483,6 +1483,27 @@
 - **Used by:** App `/settings/previous-wallets/[sparkPubkey]` (transfer remaining balance) once the wallet reads 0.
 - **Auth:** `Authorization: Bearer` session.
 
+## Endpoint: GET /me/held-shares
+
+- **Purpose:** The caller's own held-share boxes (docs/social-recovery.md): social recovery shares this member keeps for other members, each encrypted in the holder's browser under a key derived from the holder's 12 words. 200 `{ boxes: [{ id, ciphertext, updatedAt }] }`, oldest first (creation time, then id); `ciphertext` is unpadded base64url of the stored bytes, `updatedAt` ISO 8601; an empty array when there are none (`listHeldShareBoxes`). The api never decrypts a box and does not know whose share it holds. Always mounted (no LNURL server needed).
+- **Errors:** 401 `{ error: 'Unauthorized' }` without a valid session, also for a `session_refused` account; 503 `{ error: 'Held shares are unavailable' }` when the store fails (logs `account.held_shares.failed` `{ accountId }` with the error name and code).
+- **Used by:** App **Anteile, die ich für andere aufbewahre** (shares I keep for others), after the holder unlocks with their passkey.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: PUT /me/held-shares/:id
+
+- **Purpose:** Creates (201) or replaces (200) one of the caller's held-share boxes. `:id` is the box id the app chose, 16 random bytes as 32 lowercase hex. Body strict `{ "ciphertext": "<unpadded base64url>" }`; the decoded bytes are 29–1024 long and start with the version byte `0x01`, and the rest stays opaque. Stored in one locked step per account (`putHeldShareBox`); a replace keeps the creation time, so the list order stays. Success is `{ id, updatedAt }` (ISO 8601). Logs `account.held_share.stored` `{ accountId, replaced }`; never the box id or the ciphertext, and the request log shows the path as `/me/held-shares/:id`. Always mounted.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a box id of 32 lowercase hex characters' }` for a bad id; 400 `{ error: 'Expected a JSON body with a held share ciphertext' }` for bad JSON, a wrong shape or extra key, text that is not canonical unpadded base64url, a size outside 29–1024 bytes, or a first byte other than `0x01`; 409 `{ error: 'Box id in use' }` when another account has that id (nothing changes); 409 `{ error: 'Too many held shares' }` when a new box would make more than 50 (a replace is still allowed); 503 `{ error: 'Held shares are unavailable' }` when the store fails.
+- **Used by:** App holder flow: after scanning an owner's share QR code, and when the holder's own social recovery re-locks the boxes under the rebuilt words.
+- **Auth:** `Authorization: Bearer` session.
+
+## Endpoint: DELETE /me/held-shares/:id
+
+- **Purpose:** Deletes one of the caller's held-share boxes (`deleteHeldShareBox`). Idempotent: 204 with no body also for an unknown id and for another account's id, which stays unchanged. Logs `account.held_share.deleted` `{ accountId }` without the box id. Always mounted.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 400 `{ error: 'Expected a box id of 32 lowercase hex characters' }` for a bad id; 503 `{ error: 'Held shares are unavailable' }` when the store fails.
+- **Used by:** App holder flow, when the owner asks the holder to delete an old share.
+- **Auth:** `Authorization: Bearer` session.
+
 ## Endpoint: POST /lnurlpay/:pubkey
 
 - **Purpose:** Forward wallet registration to the self-hosted LNURL server. Mounted only when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve. Gate: normalised pubkey, JSON body with string `username`; `body.username` must consist only of printable ASCII characters (otherwise 404 and the LNURL server is not contacted); no other key equals `username` after NFKC normalisation and lower-casing (for example `Username`); normalised name; account owns that username with matching claimed key; and no other account is verified on the key. The body is forwarded as the parsed JSON re-serialised. Upstream 2xx marks the key verified (`account.wallet.verified`); when the account is not verified on that key afterwards, 409 `{ error: 'Wallet registration could not be confirmed' }` and `account.wallet.unconfirmed`. Path segments are only `A-Z a-z 0-9 . _ ~ -`, never `.` or `..`. Rate limit 30/min/client. Body cap 1 MB (1 048 576 bytes); a larger body gets 413 `{ error: 'Request body is too large' }` and the upstream is not contacted. A request without a validated `cf-connecting-ip` is not counted by the per-address limits.

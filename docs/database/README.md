@@ -4,9 +4,9 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 59
-- Columns: 572
-- Foreign keys: 58
+- Tables: 60
+- Columns: 577
+- Foreign keys: 59
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -30,6 +30,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |
 | [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                     | 19      | 0            |
+| [`held_share_box`](tables/held_share_box.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |
 | [`login_allowlist`](tables/login_allowlist.md)                                   | [src/lib/login-gate-store.ts](../../src/lib/login-gate-store.ts)       | 2       | 1            |
 | [`member_event`](tables/member_event.md)                                         | [src/lib/member-event-store.ts](../../src/lib/member-event-store.ts)   | 7       | 1            |
 | [`member_habit`](tables/member_habit.md)                                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 11      | 1            |

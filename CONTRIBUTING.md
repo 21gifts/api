@@ -39,7 +39,7 @@ api/
 │   │   ├── info.ts           # GET /info
 │   │   ├── brand.ts          # GET /favicon.ico, /favicon.svg, /apple-touch-icon.png
 │   │   ├── auth.ts           # Passkey: /auth/passkey/register|authenticate|replace|recovery begin/finish
-│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet, PUT /me/recovery-share, GET /me/previous-wallets, DELETE /me/previous-wallets/:sparkPubkey (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/wallet-intro-seen; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
+│   │   ├── me.ts             # GET /me; GET /me/activity; PUT /me/about; GET /me/about/photo; POST /me/wallet-backup-seen; PUT /me/wallet, PUT /me/recovery-share, GET /me/previous-wallets, DELETE /me/previous-wallets/:sparkPubkey (when LNURL_SERVER_URL and PUBLIC_BASE_URL resolve); GET /me/held-shares, PUT /me/held-shares/:id, DELETE /me/held-shares/:id (holder's encrypted boxes, always mounted); POST /me/setup/skip; POST /me/name; POST /me/username; POST /me/location; POST /me/forum-laws-dismissed; POST /me/wallet-intro-seen; POST /me/notification-level; POST /me/heart-notifications; POST /me/amount-unit; POST /me/locale; POST /me/fiat; POST /me/rules-agreement
 │   │   ├── pictures.ts       # GET/PUT /pictures/me; public GET /pictures/:accountId.jpg|.png|.webp (round profile photo; not the About me photo)
 │   │   ├── banner.ts         # GET/PUT /banners/me; public GET /banners/:accountId.jpg|.png|.webp (wide image; not the About me photo)
 │   │   ├── members.ts        # GET /members/:accountId (Bearer; live identity + profile note + counts + trust + fundingReviewedAt); GET /members/:accountId/activity; GET /members/:accountId/posts; GET /members/:accountId/replies
@@ -450,6 +450,7 @@ api/
 │   ├── recovery_share.sql    # encrypted 21.gifts recovery share per account and wallet key (secret column recovery_share_ciphertext)
 │   ├── pending_recovery.sql  # at most one pending social recovery per account (new passkey's public key, no secret)
 │   ├── previous_wallet.sql   # wallet keys an account had before a social recovery commit
+│   ├── held_share_box.sql    # a holder's opaque encrypted boxes of other members' shares (secret column ciphertext)
 │   ├── push.sql              # push_subscription + push_outbox
 │   ├── notification.sql      # in-app Notifications rows (`forum_post`, `forum_reply`, `zap`, `heart`)
 │   ├── trust_edge.sql        # who granted which staff status (GET /trust-chain)
@@ -719,7 +720,7 @@ gap. Reviewers enforce this; `migrateDbChangeSchema` in `src/lib/db-change.ts` /
   still match a live `account.view_key`, then recreates it. Rows whose key no
   longer matches a live account are left unchanged.
 - In the stored JSON, secret columns `token`, `challenge`, `nostr_nsec_ciphertext`,
-  `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, `skip_endpoints`, `session_token`, and `recovery_share_ciphertext` are SHA-256 hex of the column text. All other columns, including
+  `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`, `delivered_endpoints`, `skip_endpoints`, `session_token`, `recovery_share_ciphertext`, and `ciphertext` (`held_share_box`) are SHA-256 hex of the column text. All other columns, including
   `name`, stay plaintext except unchanged bytea columns on UPDATE, see below. Do not omit those secret keys from the JSON (rotation
   **must** still be visible as a hash change).
 - On UPDATE, a bytea column whose value did not change (for example `message.photo`)

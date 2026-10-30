@@ -155,18 +155,23 @@ export function errorLogFields(error: unknown): LogFields {
 }
 
 /**
- * Redact capability-URL path segments before request logging.
+ * Redact capability-URL and held-share box path segments before request
+ * logging.
  *
  * A raw `/view/<secret>` would print the durable view key. The first
  * segment after `/view/` is replaced with `:viewKey`, including when a
- * trailing slash or extra segments follow. `/view` alone and unrelated
- * paths are unchanged.
+ * trailing slash or extra segments follow. The segment after
+ * `/me/held-shares/` is replaced with `:id`, so no log ties a holder to a
+ * box id. `/view` and `/me/held-shares` alone and unrelated paths are
+ * unchanged.
  *
  * @param path - Request path without the query string.
  * @returns Redacted path for `http.request` logs.
  */
 export function requestLogPath(path: string): string {
-  return path.replace(/^\/view\/[^/]+/, '/view/:viewKey');
+  return path
+    .replace(/^\/view\/[^/]+/, '/view/:viewKey')
+    .replace(/^\/me\/held-shares\/[^/]+/, '/me/held-shares/:id');
 }
 
 /** Collaborators {@link requestLog} needs to persist `api_log` rows. */

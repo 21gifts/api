@@ -3404,4 +3404,96 @@ describe('InMemoryAuthStore social recovery', () => {
       expect(await store.hasRecoveryShareForVerifiedWallet('claimed')).toBe(false);
     });
   });
+
+  describe('held-share boxes', () => {
+    const BOX_A = 'a'.repeat(32);
+    const BOX_B = 'b'.repeat(32);
+    const BOX_C = 'c'.repeat(32);
+
+    function putBox(
+      store: InMemoryAuthStore,
+      accountId: string,
+      id: string,
+      byte: number,
+      now = NOW,
+      limit = 50,
+    ): Promise<string> {
+      return store.putHeldShareBox({
+        accountId,
+        id,
+        ciphertext: Uint8Array.of(1, byte),
+        now,
+        limit,
+      });
+    }
+
+    it('creates, replaces, lists oldest first, and deletes only own boxes', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      expect(await store.listHeldShareBoxes('acc')).toEqual([]);
+      // Same creation time, stored in reverse id order: the id breaks the tie.
+      expect(await putBox(store, 'acc', BOX_C, 3, NOW)).toBe('created');
+      expect(await putBox(store, 'acc', BOX_B, 2, NOW)).toBe('created');
+      expect(await putBox(store, 'acc', BOX_A, 1, NOW + 1)).toBe('created');
+      expect(await putBox(store, 'acc', BOX_C, 9, NOW + 5)).toBe('replaced');
+      const listed = await store.listHeldShareBoxes('acc');
+      expect(listed).toEqual([
+        { id: BOX_B, ciphertext: Uint8Array.of(1, 2), createdAt: NOW, updatedAt: NOW },
+        { id: BOX_C, ciphertext: Uint8Array.of(1, 9), createdAt: NOW, updatedAt: NOW + 5 },
+        { id: BOX_A, ciphertext: Uint8Array.of(1, 1), createdAt: NOW + 1, updatedAt: NOW + 1 },
+      ]);
+      // A listed copy cannot change the stored bytes.
+      listed[0]!.ciphertext[1] = 0;
+      expect((await store.listHeldShareBoxes('acc'))[0]?.ciphertext).toEqual(Uint8Array.of(1, 2));
+
+      expect(await putBox(store, 'other', BOX_A, 7)).toBe('taken');
+      await store.deleteHeldShareBox('other', BOX_A);
+      expect(await store.listHeldShareBoxes('other')).toEqual([]);
+      expect(await store.listHeldShareBoxes('acc')).toHaveLength(3);
+
+      await store.deleteHeldShareBox('acc', BOX_A);
+      await store.deleteHeldShareBox('acc', BOX_A);
+      expect((await store.listHeldShareBoxes('acc')).map((box) => box.id)).toEqual([BOX_B, BOX_C]);
+    });
+
+    it('refuses a create past the limit but still replaces', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      expect(await putBox(store, 'other', BOX_C, 3, NOW, 2)).toBe('created');
+      expect(await putBox(store, 'acc', BOX_A, 1, NOW, 2)).toBe('created');
+      expect(await putBox(store, 'acc', BOX_B, 2, NOW, 2)).toBe('created');
+      expect(await putBox(store, 'acc', 'd'.repeat(32), 4, NOW, 2)).toBe('full');
+      expect(await putBox(store, 'acc', BOX_B, 5, NOW + 1, 2)).toBe('replaced');
+      expect((await store.listHeldShareBoxes('acc')).map((box) => box.id)).toEqual([BOX_A, BOX_B]);
+    });
+
+    it('keeps the boxes through a recovery commit, which keeps the account id', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      expect(await putBox(store, 'acc', BOX_A, 1)).toBe('created');
+      await forwarded(store, 'acc', 'ada');
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 2 }),
+      ).toBe('committed');
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(NEW);
+      expect(await store.listHeldShareBoxes('acc')).toEqual([
+        { id: BOX_A, ciphertext: Uint8Array.of(1, 1), createdAt: NOW, updatedAt: NOW },
+      ]);
+    });
+
+    it('deletes the boxes with the account', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      expect(await putBox(store, 'acc', BOX_A, 1)).toBe('created');
+      expect(await putBox(store, 'other', BOX_B, 2)).toBe('created');
+      await store.deleteAccount('acc');
+      expect(await store.listHeldShareBoxes('acc')).toEqual([]);
+      expect((await store.listHeldShareBoxes('other')).map((box) => box.id)).toEqual([BOX_B]);
+      // The id is free again.
+      expect(await putBox(store, 'other', BOX_A, 3)).toBe('created');
+    });
+  });
 });

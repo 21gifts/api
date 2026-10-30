@@ -2996,6 +2996,254 @@ describe('DELETE /me/previous-wallets/:sparkPubkey', () => {
     expect(events).not.toContain('account.previous_wallet.dropped');
   });
 });
+describe('held-share boxes', () => {
+  const BOX = '0123456789abcdef0123456789abcdef';
+  const BOX_2 = 'f'.repeat(32);
+  /** A minimal valid box: version byte 0x01, then 28 more bytes. */
+  const BYTES = Uint8Array.from({ length: 29 }, (_, i) => (i === 0 ? 1 : i));
+  const CIPHERTEXT = Buffer.from(BYTES).toString('base64url');
+
+  function put(
+    app: Hono,
+    id: string,
+    body: unknown,
+    headers: Record<string, string> = AUTH,
+  ): Promise<Response> {
+    return Promise.resolve(
+      app.request(`/me/held-shares/${id}`, {
+        method: 'PUT',
+        headers: { ...headers, 'content-type': 'application/json' },
+        body: typeof body === 'string' ? body : JSON.stringify(body),
+      }),
+    );
+  }
+
+  function list(app: Hono, headers: Record<string, string> = AUTH): Promise<Response> {
+    return Promise.resolve(app.request('/me/held-shares', { headers }));
+  }
+
+  function remove(
+    app: Hono,
+    id: string,
+    headers: Record<string, string> = AUTH,
+  ): Promise<Response> {
+    return Promise.resolve(app.request(`/me/held-shares/${id}`, { method: 'DELETE', headers }));
+  }
+
+  async function withOther(store: InMemoryAuthStore): Promise<void> {
+    await store.createAccount({
+      id: 'other',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+    });
+  }
+
+  /** Every logged line must stay free of box ids and ciphertext. */
+  function expectNoBoxInLogs(): void {
+    const logged = warn.mock.calls.map((call) => String(call[0])).join('\n');
+    for (const secret of [BOX, BOX_2, CIPHERTEXT]) {
+      expect(logged).not.toContain(secret);
+    }
+  }
+
+  it('is mounted without the LNURL server and starts empty', async () => {
+    const res = await list(mount(await seededStore()));
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ boxes: [] });
+  });
+
+  it('answers 401 on every route without a session or for a refused account', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    expect((await list(app, {})).status).toBe(401);
+    expect((await put(app, BOX, { ciphertext: CIPHERTEXT }, {})).status).toBe(401);
+    const removed = await remove(app, BOX, { authorization: 'Bearer nope' });
+    expect(removed.status).toBe(401);
+    expect(await removed.json()).toEqual({ error: 'Unauthorized' });
+    await store.createAccount({
+      id: 'refused',
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'c'.repeat(64),
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      sessionRefused: true,
+    });
+    await store.createSession({ token: 'refused', accountId: 'refused', createdAt: 1_000_000 });
+    const refused = { authorization: 'Bearer refused' };
+    expect((await list(app, refused)).status).toBe(401);
+    expect((await put(app, BOX, { ciphertext: CIPHERTEXT }, refused)).status).toBe(401);
+    expect((await remove(app, BOX, refused)).status).toBe(401);
+    expect(await store.listHeldShareBoxes('refused')).toEqual([]);
+  });
+
+  it('creates (201), replaces (200), and lists the caller’s boxes oldest first', async () => {
+    let clock = Date.parse('2026-10-30T10:00:00.000Z');
+    const store = await seededStore();
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: clock });
+    const app = mount(store, { clock: () => clock });
+    const created = await put(app, BOX, { ciphertext: CIPHERTEXT });
+    expect(created.status).toBe(201);
+    expect(await created.json()).toEqual({ id: BOX, updatedAt: '2026-10-30T10:00:00.000Z' });
+    clock += 1_000;
+    expect((await put(app, BOX_2, { ciphertext: CIPHERTEXT })).status).toBe(201);
+    clock += 1_000;
+    const replacement = Buffer.from(Uint8Array.from({ length: 1024 }, () => 1)).toString(
+      'base64url',
+    );
+    const replaced = await put(app, BOX, { ciphertext: replacement });
+    expect(replaced.status).toBe(200);
+    expect(await replaced.json()).toEqual({ id: BOX, updatedAt: '2026-10-30T10:00:02.000Z' });
+    const res = await list(app);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      boxes: [
+        { id: BOX, ciphertext: replacement, updatedAt: '2026-10-30T10:00:02.000Z' },
+        { id: BOX_2, ciphertext: CIPHERTEXT, updatedAt: '2026-10-30T10:00:01.000Z' },
+      ],
+    });
+    const events = parsedEvents(warn).filter((e) => e['event'] === 'account.held_share.stored');
+    expect(events).toEqual([
+      expect.objectContaining({ accountId: 'acc', replaced: false }),
+      expect.objectContaining({ accountId: 'acc', replaced: false }),
+      expect.objectContaining({ accountId: 'acc', replaced: true }),
+    ]);
+    expectNoBoxInLogs();
+  });
+
+  it('refuses an id that is not 32 lowercase hex', async () => {
+    const app = mount(await seededStore());
+    for (const id of ['A'.repeat(32), 'a'.repeat(31), 'a'.repeat(33), 'g'.repeat(32), ':id']) {
+      const stored = await put(app, id, { ciphertext: CIPHERTEXT });
+      expect(stored.status).toBe(400);
+      expect(await stored.json()).toEqual({
+        error: 'Expected a box id of 32 lowercase hex characters',
+      });
+      const removed = await remove(app, id);
+      expect(removed.status).toBe(400);
+      expect(await removed.json()).toEqual({
+        error: 'Expected a box id of 32 lowercase hex characters',
+      });
+    }
+  });
+
+  it('refuses a body that is not one canonical box of 29–1024 bytes with version 1', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const encode = (bytes: Uint8Array): string => Buffer.from(bytes).toString('base64url');
+    const bodies: unknown[] = [
+      'not json',
+      null,
+      {},
+      { ciphertext: 1 },
+      { ciphertext: CIPHERTEXT, extra: true },
+      { ciphertext: '' },
+      { ciphertext: `${CIPHERTEXT}=` },
+      { ciphertext: `${CIPHERTEXT.slice(0, -1)}+` },
+      // Non-zero unused bits: decodes, but is not the canonical encoding.
+      { ciphertext: `${CIPHERTEXT.slice(0, -1)}B` },
+      { ciphertext: encode(BYTES.slice(0, 28)) },
+      { ciphertext: encode(Uint8Array.from({ length: 1025 }, () => 1)) },
+      { ciphertext: 'A'.repeat(1367) },
+      { ciphertext: encode(Uint8Array.from({ length: 29 }, () => 2)) },
+    ];
+    for (const body of bodies) {
+      const res = await put(app, BOX, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with a held share ciphertext',
+      });
+    }
+    expect(await store.listHeldShareBoxes('acc')).toEqual([]);
+  });
+
+  it('answers 409 for an id of another account and leaves that box alone', async () => {
+    const store = await seededStore();
+    await withOther(store);
+    await store.putHeldShareBox({
+      accountId: 'other',
+      id: BOX,
+      ciphertext: Uint8Array.of(1, 2),
+      now: 1,
+      limit: 50,
+    });
+    const app = mount(store);
+    const res = await put(app, BOX, { ciphertext: CIPHERTEXT });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Box id in use' });
+    expect((await list(app)).status).toBe(200);
+    expect(await store.listHeldShareBoxes('acc')).toEqual([]);
+    expect((await remove(app, BOX)).status).toBe(204);
+    expect(await store.listHeldShareBoxes('other')).toEqual([
+      { id: BOX, ciphertext: Uint8Array.of(1, 2), createdAt: 1, updatedAt: 1 },
+    ]);
+  });
+
+  it('answers 409 for a 51st box but still replaces one of the 50', async () => {
+    const store = await seededStore();
+    for (let i = 0; i < 50; i += 1) {
+      await store.putHeldShareBox({
+        accountId: 'acc',
+        id: i.toString(16).padStart(32, '0'),
+        ciphertext: BYTES,
+        now: i,
+        limit: 50,
+      });
+    }
+    const app = mount(store);
+    const res = await put(app, BOX, { ciphertext: CIPHERTEXT });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Too many held shares' });
+    expect((await put(app, '0'.repeat(32), { ciphertext: CIPHERTEXT })).status).toBe(200);
+    expect(await store.listHeldShareBoxes('acc')).toHaveLength(50);
+  });
+
+  it('deletes the caller’s box with 204, idempotently', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    expect((await put(app, BOX, { ciphertext: CIPHERTEXT })).status).toBe(201);
+    const res = await remove(app, BOX);
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect((await remove(app, BOX)).status).toBe(204);
+    expect(await (await list(app)).json()).toEqual({ boxes: [] });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'account.held_share.deleted', accountId: 'acc' }),
+    );
+    expectNoBoxInLogs();
+  });
+
+  it('answers 503 when the store fails, without logging the box', async () => {
+    const store = await seededStore();
+    vi.spyOn(store, 'listHeldShareBoxes').mockRejectedValue(new Error('db down'));
+    vi.spyOn(store, 'putHeldShareBox').mockRejectedValue(new Error('db down'));
+    vi.spyOn(store, 'deleteHeldShareBox').mockRejectedValue(new Error('db down'));
+    const app = mount(store);
+    for (const res of [
+      await list(app),
+      await put(app, BOX, { ciphertext: CIPHERTEXT }),
+      await remove(app, BOX),
+    ]) {
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Held shares are unavailable' });
+    }
+    const events = parsedEvents(warn).map((e) => e['event']);
+    expect(events.filter((e) => e === 'account.held_shares.failed')).toHaveLength(3);
+    expect(events).not.toContain('account.held_share.stored');
+    expect(events).not.toContain('account.held_share.deleted');
+    expectNoBoxInLogs();
+  });
+});
+
 describe('shop identity hooks', () => {
   const now = (): number => 1_700_000_000_000;
 

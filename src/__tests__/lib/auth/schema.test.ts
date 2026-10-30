@@ -147,7 +147,7 @@ describe('AUTH_SCHEMA_SQL', () => {
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS notify_hearts boolean NOT NULL DEFAULT true',
     );
     const tail = AUTH_SCHEMA_SQL.slice(notifyHeartsAt + 1);
-    expect(tail).toHaveLength(10);
+    expect(tail).toHaveLength(12);
     expect(tail.slice(0, 3)).toEqual([
       'ALTER TABLE account ADD COLUMN IF NOT EXISTS spark_address text',
       'ALTER TABLE account DROP CONSTRAINT IF EXISTS account_spark_address_chk',
@@ -161,6 +161,8 @@ describe('AUTH_SCHEMA_SQL', () => {
       'CREATE UNIQUE INDEX IF NOT EXISTS pending_recovery_credential_id_uidx ON pending_recovery (credential_id)',
       'CREATE TABLE IF NOT EXISTS previous_wallet (',
       'CREATE INDEX IF NOT EXISTS previous_wallet_spark_pubkey_idx ON previous_wallet (spark_pubkey)',
+      'CREATE TABLE IF NOT EXISTS held_share_box (',
+      'CREATE INDEX IF NOT EXISTS held_share_box_account_idx ON held_share_box (account_id)',
       'CREATE INDEX IF NOT EXISTS passkey_challenge_open_account_type_idx',
     ]);
     const staffTagAt = AUTH_SCHEMA_SQL.indexOf(
@@ -210,6 +212,15 @@ describe('AUTH_SCHEMA_SQL', () => {
     expect(joined).toMatch(
       /passkey_challenge_open_account_type_idx\s+ON passkey_challenge \(account_id, type\) WHERE consumed = false/,
     );
+    const boxes = AUTH_SCHEMA_SQL.find((statement) =>
+      statement.startsWith('CREATE TABLE IF NOT EXISTS held_share_box'),
+    );
+    expect(boxes).toMatch(/id text PRIMARY KEY/);
+    expect(boxes).toMatch(/account_id uuid NOT NULL REFERENCES account \(id\) ON DELETE CASCADE/);
+    expect(boxes).toMatch(/ciphertext bytea NOT NULL/);
+    expect(boxes).toMatch(/held_share_box_id_chk CHECK \(id ~ '\^\[0-9a-f\]\{32\}\$'\)/);
+    expect(boxes).toMatch(/octet_length\(ciphertext\) BETWEEN 29 AND 1024/);
+    expect(boxes).toContain("substring(ciphertext FROM 1 FOR 1) = '\\x01'::bytea");
     expect(joined).not.toMatch(/composite|REFERENCES account \(id, /i);
   });
 
@@ -227,6 +238,7 @@ describe('AUTH_SCHEMA_SQL', () => {
       ['recovery_share', 1],
       ['pending_recovery', 3],
       ['previous_wallet', 2],
+      ['held_share_box', 2],
     ] as const) {
       const statements = statementsOf(table);
       expect(statements).toHaveLength(count);
