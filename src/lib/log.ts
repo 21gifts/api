@@ -264,7 +264,7 @@ async function writeRequestLog(deps: RequestLogDeps, captured: RequestLogCapture
  * Hono middleware: one `http.request` event after the handler, then one
  * `api_log` row. Skips `/healthz` and `OPTIONS` (stdout and store). Never
  * includes the query string, body, Authorization, or tokens. Redacts
- * `/view/<segment>` via {@link requestLogPath}. The audit write does not
+ * `/view/<segment>` and `/me/held-shares/<segment>` via {@link requestLogPath}. The audit write does not
  * delay the response unless {@link RequestLogDeps.awaitWrite} is set, so a
  * stuck insert cannot hold the client open. A store write failure logs
  * `api_log.write.failed` and does not replace the response.
