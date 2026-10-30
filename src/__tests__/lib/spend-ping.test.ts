@@ -1182,6 +1182,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
       gifts: { listOutbound },
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19', undefined, 'moderator');
