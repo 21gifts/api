@@ -145,8 +145,8 @@ export interface DailyRosterStore {
 
   /**
    * Write the full document only when it has never been written. A second
-   * call, including an invalid body, stores nothing and returns the stored
-   * document.
+   * call, including an invalid body, does not insert the body and returns the
+   * stored document.
    * `defaultAmountUsd` in the body is ignored. A missing switch is `true`.
    * Body rows carry an `address`; a row is listed only once it is linked to
    * an account (see {@link linkDailyRosterAccounts}).
@@ -736,7 +736,7 @@ export class PostgresDailyRosterStore implements DailyRosterStore {
   }
 
   /**
-   * First write of the full document, or no write when a settings row exists.
+   * First write of the full document; a later call does not insert the body.
    * Every call then links the address rows with {@link linkDailyRosterAccounts},
    * so a retry after a failed link still links them.
    *
