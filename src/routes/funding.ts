@@ -996,8 +996,9 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       return answerSpendDocument(c, deps, () => rosterStore.get());
     })
     .post('/daily-roster/document', async (c) => {
-      const raw = await c.req.json().catch(() => null);
-      return answerSpendDocument(c, deps, () => rosterStore.importDocument(raw));
+      return answerSpendDocument(c, deps, async () =>
+        rosterStore.importDocument(await c.req.json().catch(() => null)),
+      );
     })
     .post('/daily-roster/worker/comment', async (c) => {
       return answerSpendDocument(c, deps, async () => {

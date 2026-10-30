@@ -1203,6 +1203,27 @@ describe('daily payout roster routes', () => {
     });
     expect(unauthorized.status).toBe(401);
     expect(await unauthorized.json()).toEqual({ error: 'Unauthorized' });
+    let bodyRead = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          bodyRead = true;
+          controller.enqueue(new TextEncoder().encode('{}'));
+          controller.close();
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const refusedImport = await app.request(
+      new Request('http://localhost/funding/daily-roster/document', {
+        method: 'POST',
+        headers: { authorization: 'Bearer nope', 'content-type': 'application/json' },
+        body,
+        duplex: 'half',
+      } as RequestInit),
+    );
+    expect(refusedImport.status).toBe(401);
+    expect(bodyRead).toBe(false);
   });
 
   it('reads and imports the full document, then ignores a second import', async () => {
