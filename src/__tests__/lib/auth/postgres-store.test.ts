@@ -104,6 +104,18 @@ describe('PostgresAuthStore nostr keys', () => {
     expect(ids).toEqual(['f1', 'm1']);
   });
 
+  it('listLegacyPayoutHandles maps account ids to the legacy address local part', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { id: 'a1', handle: 'adawos' },
+      { id: 'a2', handle: '' },
+    ];
+    const handles = await new PostgresAuthStore(sql).listLegacyPayoutHandles();
+    expect(sql.queries[0]?.text).toContain("split_part(btrim(lightning_address), '@', 1)");
+    expect(sql.queries[0]?.text).toContain("btrim(lightning_address) <> ''");
+    expect(handles).toEqual(new Map([['a1', 'adawos']]));
+  });
+
   it('listIdsByPrefix selects matching account ids', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ id: 'D70C4763-3033-43da-817a-2c7de9938f27' }];

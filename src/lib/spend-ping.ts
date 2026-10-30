@@ -50,18 +50,21 @@ export interface SpendPing {
   ): Promise<void>;
 
   /**
-   * Daily ping booked on `day` (`YYYY-MM-DD`) instead of the clock UTC day.
+   * Daily or moderator ping booked on `day` (`YYYY-MM-DD`) instead of the
+   * clock UTC day.
    *
    * @param address - Recipient Lightning Address.
-   * @param messageId - Forum post id.
+   * @param messageId - Forum post id (daily) or moderator-group message id (moderator).
    * @param day - UTC day key `YYYY-MM-DD`.
    * @param grantStatus - Effective grant status; daily only.
+   * @param kind - `'daily'` (default) or `'moderator'`.
    */
   pingOnDay?(
     address: string,
     messageId: string,
     day: string,
     grantStatus?: SpendGrantStatus,
+    kind?: 'daily' | 'moderator',
   ): Promise<SpendPingOutcome>;
 }
 
@@ -226,21 +229,27 @@ export class HttpSpendPing implements SpendPing {
   }
 
   /**
-   * Daily ping booked on `day` (`YYYY-MM-DD`) instead of the clock UTC day.
-   * Kind is always daily. The POST body is
-   * `{ address, messageId, amountUsd, comment, day }`. Never throws.
+   * Daily or moderator ping booked on `day` (`YYYY-MM-DD`) instead of the
+   * clock UTC day. The daily POST body is
+   * `{ address, messageId, amountUsd, comment, day }`; the moderator body is
+   * `{ address, kind: "moderator", groupMessageId, amountUsd, comment, day }`
+   * and skips the welcome-paid check. Never throws.
    *
    * @param address - Recipient Lightning Address (JSON body).
-   * @param messageId - Forum post id (JSON `messageId`).
+   * @param messageId - Forum post id (daily `messageId`) or moderator-group
+   *   message id (moderator `groupMessageId`).
    * @param day - UTC day key `YYYY-MM-DD`.
    * @param grantStatus - Effective grant status; forwarded for daily.
+   * @param kind - `'daily'` (default) or `'moderator'`.
    */
   async pingOnDay(
     address: string,
     messageId: string,
     day: string,
     grantStatus?: SpendGrantStatus,
+    kind?: 'daily' | 'moderator',
   ): Promise<SpendPingOutcome> {
+    const resolvedKind = kind === 'moderator' ? kind : 'daily';
     const roster = await this.#loadRoster(address);
     if (roster === undefined) {
       return { status: 'failed' };
@@ -249,14 +258,18 @@ export class HttpSpendPing implements SpendPing {
     if (accountId === 'failed') {
       return { status: 'failed' };
     }
-    const welcomePaid = await this.#welcomePaid(address, day);
-    if (welcomePaid === 'failed') {
-      return { status: 'failed' };
+    let welcomePaid: boolean | undefined;
+    if (resolvedKind === 'daily') {
+      const paid = await this.#welcomePaid(address, day);
+      if (paid === 'failed') {
+        return { status: 'failed' };
+      }
+      welcomePaid = paid;
     }
     const decision = this.#instructionFor(
       address,
       accountId,
-      'daily',
+      resolvedKind,
       roster,
       grantStatus,
       welcomePaid,
@@ -272,13 +285,24 @@ export class HttpSpendPing implements SpendPing {
           Authorization: `Bearer ${this.#token}`,
           'Content-Type': 'application/json',
         },
-        body: JSON.stringify({
-          address,
-          messageId,
-          amountUsd: decision.amountUsd,
-          comment: decision.comment,
-          day,
-        }),
+        body: JSON.stringify(
+          resolvedKind === 'moderator'
+            ? {
+                address,
+                kind: 'moderator',
+                groupMessageId: messageId,
+                amountUsd: decision.amountUsd,
+                comment: decision.comment,
+                day,
+              }
+            : {
+                address,
+                messageId,
+                amountUsd: decision.amountUsd,
+                comment: decision.comment,
+                day,
+              },
+        ),
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
       if (response.status === 202) {

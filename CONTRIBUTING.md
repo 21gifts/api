@@ -181,6 +181,7 @@ api/
 │   │   ├── spend-auth.ts     # Timing-safe SPEND_API_TOKEN Bearer check
 │   │   ├── spend-instruction.ts  # Decide the USD amount and memo for a spend ping
 │   │   ├── spend-ping.ts     # SpendPing port, HttpSpendPing, resolveSpendPing (`{ address, messageId }` daily; optional `{ address, kind: "moderator", groupMessageId }`)
+│   │   ├── cutover-replay.ts # replayPayoutWindow: every payout trigger of a time window; daily and moderator payouts on the event's UTC day, welcomes through the welcome path (`POST /debug/spend-ping` window body)
 │   │   ├── daily-roster.ts   # Daily roster types, 400 texts, comment folding, editor identity projection, payout address projection
 │   │   ├── daily-roster-store.ts  # DailyRosterStore port (rows keyed by account), InMemoryDailyRosterStore, PostgresDailyRosterStore, DAILY_ROSTER_SCHEMA_SQL, linkDailyRosterAccounts (DAILY_ROSTER_ACCOUNT_LINK_SQL)
 │   │   ├── invoice-store.ts  # In-memory gift invoices awaiting proof
@@ -278,6 +279,7 @@ api/
 │       │   ├── spend-auth.test.ts
 │       │   ├── spend-instruction.test.ts
 │       │   ├── spend-ping.test.ts
+│       │   ├── cutover-replay.test.ts
 │       │   ├── daily-roster.test.ts
 │       │   ├── daily-roster-store.test.ts
 │       │   ├── invoice-store.test.ts
@@ -618,6 +620,8 @@ after a staff decision or a stored recovery share, so its test asserts `POST /fu
 without a session;
 `withPayoutAddresses`, which runs only on the spend document routes and so needs
 `SPEND_API_TOKEN` (its test asserts the 503 of `GET /funding/daily-roster/document`);
+`replayPayoutWindow`, which runs only when `SPEND_URL` and `SPEND_API_TOKEN` resolve a spend
+ping (its test asserts the window body's 503 `Spend ping is not configured`);
 `fetchFxSpot`, `runFxSpotTick`, and `startFxSpotWorker`, which store a quote only from a reachable
 provider, so their tests assert the empty `GET /fx/spot` result for the pinned refused
 `BTC_FIAT_SPOT_URL`;

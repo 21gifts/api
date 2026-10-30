@@ -1,6 +1,9 @@
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import { parseClientInstant } from '@/lib/client-instant';
 import type { LnurlServerConfig } from '@/lib/config';
+import type { ConversationStore } from '@/lib/conversation-store';
+import { replayPayoutWindow } from '@/lib/cutover-replay';
 import { bearerMatchesDebugToken } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
 import type { MessageInvoiceAttempt, MessageStore, ZapIngestRow } from '@/lib/message-store';
@@ -11,7 +14,9 @@ import { receivingAddress } from '@/lib/receiving-address';
 import { effectiveStatus, utcDayKey } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import type { GiftStore } from '@/lib/gift-store';
 import type { SpendPing } from '@/lib/spend-ping';
+import type { TrustStore } from '@/lib/trust-store';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
@@ -39,11 +44,48 @@ export interface DebugPaymentsRouteDeps {
   fundingStore?: FundingStore;
   /** LNURL server config for the spend ping's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
+  /** Moderator group messages for the window replay. */
+  conversationStore: ConversationStore;
+  /** Verifications (welcome triggers) for the window replay. */
+  trustStore: TrustStore;
+  /** Gift ledger for the window replay's already-paid check. */
+  giftStore: Pick<GiftStore, 'listOutbound'>;
   /** Configured operator token, or `undefined` when debug is disabled. */
   debugToken: string | undefined;
 }
 
 const DEBUG_LIST_LIMIT = 200;
+
+/** Longest window `POST /spend-ping` replays in one call. */
+const REPLAY_WINDOW_MAX_MS = 48 * 60 * 60 * 1000;
+
+/**
+ * Parse the window body `{ from, to, dryRun? }` of `POST /spend-ping`.
+ *
+ * @param body - Request body object.
+ * @param nowMs - Clock.
+ * @returns Window in epoch ms, or `null` when an instant is refused by
+ *   `parseClientInstant`, the window is empty or longer than 48 hours, or
+ *   `dryRun` is not a boolean.
+ */
+function parseReplayWindow(
+  body: object,
+  nowMs: number,
+): { fromMs: number; toMs: number; dryRun: boolean } | null {
+  const { from, to, dryRun } = body as { from?: unknown; to?: unknown; dryRun?: unknown };
+  if (dryRun !== undefined && typeof dryRun !== 'boolean') {
+    return null;
+  }
+  const fromMs = parseClientInstant(from, nowMs)?.getTime();
+  const toMs = parseClientInstant(to, nowMs)?.getTime();
+  if (fromMs === undefined || toMs === undefined) {
+    return null;
+  }
+  if (fromMs >= toMs || toMs - fromMs > REPLAY_WINDOW_MAX_MS) {
+    return null;
+  }
+  return { fromMs, toMs, dryRun: dryRun === true };
+}
 
 /** Shared 503/401 gate matching `/debug/accounts`. */
 function gateDebugToken(
@@ -110,14 +152,17 @@ function serializeIngest(row: ZapIngestRow): Record<string, unknown> {
  * @param deps - Stores, clock, optional debug token, and optional `spendPing` /
  *   `fundingStore` forwarded into `settleInvoiceManually` for platform-note
  *   compose (same `eligibleToday` gate as `POST /messages`) and used by
- *   `POST /spend-ping`. Does not take `postLimiter`; DEBUG_TOKEN settle is not
- *   the shared post burst limiter.
+ *   `POST /spend-ping`; `conversationStore`, `trustStore`, and `giftStore`
+ *   for the window replay. Does not take `postLimiter`; DEBUG_TOKEN settle is not the shared
+ *   post burst limiter.
  * @returns A Hono app exposing invoice list/manual settle (including whether a
- *   successful settle resumed), zap-ingest list, and `POST /spend-ping` (replay
- *   one qualifying top-level post onto that post's UTC day; 202
- *   `{ messageId, status: 'accepted' }` or 200
- *   `{ messageId, status: 'skipped', reason }`; never returns the Lightning
- *   address).
+ *   successful settle resumed), zap-ingest list, and `POST /spend-ping`: with
+ *   `{ messageId }`, replay one qualifying top-level post onto that post's UTC
+ *   day (202 `{ messageId, status: 'accepted' }` or 200
+ *   `{ messageId, status: 'skipped', reason }`); with `{ from, to, dryRun? }`,
+ *   replay every payout trigger of that window through `replayPayoutWindow`
+ *   (200 `{ from, to, dryRun, events, totals }`). Never returns the Lightning
+ *   address.
  */
 export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
   return new Hono()
@@ -217,6 +262,46 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
       const body: unknown = await c.req.json().catch(() => null);
       if (body === null || typeof body !== 'object' || Array.isArray(body)) {
         return c.json({ error: 'Invalid body' }, 400);
+      }
+      if ('from' in body || 'to' in body) {
+        const pingOnDay = deps.spendPing.pingOnDay;
+        if (pingOnDay === undefined) {
+          return c.json({ error: 'Spend ping is not configured' }, 503);
+        }
+        const window = 'messageId' in body ? null : parseReplayWindow(body, deps.now());
+        if (window === null) {
+          return c.json({ error: 'Invalid body' }, 400);
+        }
+        try {
+          const result = await replayPayoutWindow(
+            {
+              auth: deps.auth,
+              messages: deps.store,
+              conversations: deps.conversationStore,
+              funding: deps.fundingStore ?? new InMemoryFundingStore(),
+              trust: deps.trustStore,
+              gifts: deps.giftStore,
+              spendPing: deps.spendPing,
+              pingOnDay: pingOnDay.bind(deps.spendPing),
+              ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
+              now: deps.now,
+            },
+            window,
+          );
+          logEvent('debug.spend_ping.replayed', { dryRun: window.dryRun, ...result.totals });
+          return c.json(
+            {
+              from: new Date(window.fromMs).toISOString(),
+              to: new Date(window.toMs).toISOString(),
+              dryRun: window.dryRun,
+              ...result,
+            },
+            200,
+          );
+        } catch {
+          logEvent('debug.spend_ping.replay_failed');
+          return c.json({ error: 'Messages are unavailable' }, 503);
+        }
       }
       const messageId = (body as { messageId?: unknown }).messageId;
       if (typeof messageId !== 'string' || !MESSAGE_ID_RE.test(messageId)) {

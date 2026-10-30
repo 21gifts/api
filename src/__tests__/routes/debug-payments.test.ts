@@ -11,6 +11,9 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryTrustStore } from '@/lib/trust-store';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
 import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
@@ -38,6 +41,7 @@ function mount(
         messageId: string,
         day: string,
         grantStatus?: 'none' | 'pending' | 'trial' | 'admitted' | 'rejected',
+        kind?: 'daily' | 'moderator',
       ) => Promise<
         { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' }
       >;
@@ -45,6 +49,7 @@ function mount(
     fundingStore?: InMemoryFundingStore;
     auth?: InMemoryAuthStore;
     now?: () => number;
+    giftStore?: InMemoryGiftStore;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -56,6 +61,9 @@ function mount(
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      conversationStore: new InMemoryConversationStore(),
+      trustStore: new InMemoryTrustStore(),
+      giftStore: extra.giftStore ?? new InMemoryGiftStore(),
       lnurlServer: LNURL_SERVER,
     }),
   );
@@ -469,6 +477,9 @@ describe('debugPaymentsRoutes', () => {
         debugToken: 'secret',
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
+        conversationStore: new InMemoryConversationStore(),
+        trustStore: new InMemoryTrustStore(),
+        giftStore: new InMemoryGiftStore(),
       }),
     );
     const settled = await app.request('/debug/invoices/settle', {
@@ -1495,6 +1506,182 @@ describe('debugPaymentsRoutes', () => {
         expect.objectContaining({ event: 'debug.spend_ping.failed', messageId }),
       );
       expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('window replay', () => {
+    const WINDOW = { from: '2026-09-29T23:00:00.000Z', to: '2026-09-30T01:00:00.000Z' };
+    const WINDOW_NOW = (): number => Date.parse('2026-09-30T01:30:00.000Z');
+    const ACCOUNT_ID = 'a7777777-7777-4777-8777-777777777777';
+    const MESSAGE_ID = '17171717-1717-4171-8171-171717171717';
+
+    async function seeded(): Promise<{
+      store: InMemoryMessageStore;
+      auth: InMemoryAuthStore;
+      fundingStore: InMemoryFundingStore;
+    }> {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await createReceiver(auth, { id: ACCOUNT_ID, role: 'verified', name: 'Ada' });
+      await store.create(
+        {
+          id: MESSAGE_ID,
+          accountId: ACCOUNT_ID,
+          name: 'Ada',
+          text: 'photo',
+          createdAt: new Date('2026-09-29T23:30:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+        },
+        SPEND_PHOTO,
+      );
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId: ACCOUNT_ID,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: null,
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      return { store, auth, fundingStore };
+    }
+
+    async function post(app: Hono, body: unknown): Promise<Response> {
+      return app.request('/debug/spend-ping', {
+        method: 'POST',
+        headers: SPEND_HEADERS,
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('replays every event of the window onto its own day', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json).toMatchObject({
+        ...WINDOW,
+        dryRun: false,
+        totals: { events: 2, paid: 1, sent: 1 },
+      });
+      expect(json['events']).toEqual([
+        expect.objectContaining({ trigger: 'post', day: '2026-09-29', status: 'paid' }),
+        expect.objectContaining({ trigger: 'welcome', status: 'sent' }),
+      ]);
+      expect(JSON.stringify(json)).not.toContain('ada@example.test');
+      expect(spendPing.pingOnDay.mock.calls).toEqual([
+        ['ada@example.test', MESSAGE_ID, '2026-09-29', 'admitted', 'daily'],
+      ]);
+      const replayed = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.replayed');
+      expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
+    });
+
+    it('replays without a funding store or LNURL server', async () => {
+      const app = new Hono().route(
+        '/debug',
+        debugPaymentsRoutes({
+          store: new InMemoryMessageStore(),
+          auth: new InMemoryAuthStore(),
+          now: WINDOW_NOW,
+          debugToken: 'secret',
+          spendPing: spendPingMock(),
+          conversationStore: new InMemoryConversationStore(),
+          trustStore: new InMemoryTrustStore(),
+          giftStore: new InMemoryGiftStore(),
+        }),
+      );
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ events: [], totals: { events: 0 } });
+    });
+
+    it('dry-run pings nothing', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const res = await post(app, { ...WINDOW, dryRun: true });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        dryRun: true,
+        totals: { events: 2, wouldPay: 1, wouldSend: 1, paid: 0, sent: 0 },
+      });
+      expect(spendPing.ping).not.toHaveBeenCalled();
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('counts a payout in the gift ledger on that day as already paid', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const giftStore = new InMemoryGiftStore([
+        {
+          paidAt: new Date('2026-09-29T10:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'ada',
+          kind: 'daily',
+        },
+      ]);
+      const app = mount(store, 'secret', {
+        spendPing,
+        auth,
+        fundingStore,
+        giftStore,
+        now: WINDOW_NOW,
+      });
+      const json = (await (await post(app, WINDOW)).json()) as { events: unknown[] };
+      expect(json.events[0]).toMatchObject({ reason: 'already_paid', detail: 'ledger' });
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ from: WINDOW.from }],
+      [{ ...WINDOW, from: 1 }],
+      [{ ...WINDOW, dryRun: 'yes' }],
+      [{ ...WINDOW, from: 'yesterday' }],
+      [{ ...WINDOW, to: WINDOW.from }],
+      [{ from: '2026-09-27T00:00:00.000Z', to: '2026-09-29T00:00:01.000Z' }],
+      [{ from: '2026-09-30T02:00:00.000Z', to: '2026-09-30T03:00:00.000Z' }],
+      [{ ...WINDOW, messageId: MESSAGE_ID }],
+    ])('returns 400 for the window body %j', async (body) => {
+      const spendPing = spendPingMock();
+      const app = mount(new InMemoryMessageStore(), 'secret', { spendPing, now: WINDOW_NOW });
+      const res = await post(app, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid body' });
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when pingOnDay is missing', async () => {
+      const app = mount(new InMemoryMessageStore(), 'secret', {
+        spendPing: { ping: vi.fn(async () => undefined) },
+        now: WINDOW_NOW,
+      });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Spend ping is not configured' });
+    });
+
+    it('returns 503 when a store read throws', async () => {
+      const { store, auth } = await seeded();
+      const fundingStore = new InMemoryFundingStore();
+      vi.spyOn(fundingStore, 'listGrants').mockRejectedValue(new Error('down'));
+      const app = mount(store, 'secret', {
+        spendPing: spendPingMock(),
+        auth,
+        fundingStore,
+        now: WINDOW_NOW,
+      });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.replay_failed')).toBe(
+        true,
+      );
     });
   });
 });
