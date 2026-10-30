@@ -101,8 +101,9 @@ export class NoopSpendPing implements SpendPing {
  * and do not POST.
  *
  * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
- * Network, abort, non-2xx, a store read throw, a live GET failure, and a
- * gift-ledger throw log `spend.ping.failed` and resolve. Never throws.
+ * Network, abort, non-2xx, a store read throw, a live GET failure, an
+ * account lookup throw, and a gift-ledger throw log `spend.ping.failed` and
+ * resolve. Never throws.
  * Never logs the token. Optional `grantStatus` is passed to
  * {@link decideSpendInstruction} only when the resolved kind is daily.
  */
