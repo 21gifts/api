@@ -187,8 +187,11 @@ username>:<20 SLIP-39 words>`), with the additional data
   unlocks, picks the owner's name and shows the QR code.
 - **Secret column.** `ciphertext` is a secret column like
   `recovery_share_ciphertext`: `db_change` keeps only its SHA-256 and
-  `GET /debug/db` shows only its length. No log contains a ciphertext or a box
-  id; the request log shows the path as `/me/held-shares/:id`.
+  `GET /debug/db` shows only its length. No application log or request log
+  contains a ciphertext or a box id; the request log shows the path as
+  `/me/held-shares/:id`. The row-change log `db_change` keeps the box id and
+  the holder's account id like every other row (it must stay
+  reconstructable); neither names the owner of the share.
 - **The holder's own recovery.** The key comes from the holder's 12 words,
   not from the passkey. A holder who recovers their own account rebuilds the
   old words, opens the boxes with them and stores them again under the key of
@@ -617,8 +620,8 @@ Later, not needed for a first version:
   commits.
 - No row contains the 12 words, the 16 bytes, a readable person's share, PRF
   output or a readable 21.gifts share, and no log contains any of them. A
-  person's share is stored only as an opaque `held_share_box` row, and no log
-  contains a box id or a box's ciphertext.
+  person's share is stored only as an opaque `held_share_box` row, and no
+  application log or request log contains a box id or a box's ciphertext.
 - **Social Recovery** is reachable from the settings, and nothing but grant
   payouts needs it.
 - From the release on, no payout goes to a member in the grant program
