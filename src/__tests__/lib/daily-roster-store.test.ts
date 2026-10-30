@@ -511,7 +511,7 @@ describe('PostgresDailyRosterStore', () => {
     expect(sql.queries[11]?.params).toEqual([MOD, 'moderator']);
   });
 
-  it('imports address rows, links them with its host, and only links when written', async () => {
+  it('imports address rows, links them with its host, and still links when already written', async () => {
     const sql = new MockSql();
     const store = new PostgresDailyRosterStore(sql, 'Gifts.Example');
     sql.queryResults = [

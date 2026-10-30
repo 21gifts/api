@@ -104,8 +104,8 @@ export interface DailyRosterPayoutEntry {
   username: string | null;
   /**
    * The account's receiving address at read time (`receivingAddress`), or
-   * `null` when it has no verified wallet: the row then has no wallet and is
-   * not payable.
+   * `null` when the account is missing, has no verified wallet, or the LNURL
+   * server is off: the row is then not payable.
    */
   address: string | null;
   /** USD amount for this account. */
