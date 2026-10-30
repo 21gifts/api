@@ -55,7 +55,8 @@ export function assertDistinctDebugTokens(
 
 /**
  * Classify a Bearer header for `GET /debug/db` and, through
- * {@link isOperatorBearer}, for the operator reads on staff GET routes.
+ * {@link isOperatorBearer}, for the operator reads on staff GET routes and
+ * `GET /funding/daily-roster/links`.
  *
  * Trim both tokens. Both empty → `unconfigured`. Otherwise the write token
  * is tried first, then the read token. A configured token that does not
@@ -86,11 +87,12 @@ export function classifyDebugDbBearer(
 }
 
 /**
- * Whether a Bearer header carries an operator token for a staff read route.
+ * Whether a Bearer header carries an operator token for an operator read.
  *
  * True only when {@link classifyDebugDbBearer} returns `'write'` or `'read'`.
- * Both tokens unset, or a header that matches neither, is false, so the
- * caller falls through to its normal session check.
+ * Both tokens unset, or a header that matches neither, is false: a staff read
+ * route falls through to its normal session check, and the operator-only
+ * `GET /funding/daily-roster/links` answers 401.
  *
  * @param writeToken - Operator write token, or `undefined` when unset.
  * @param readToken - Operator read token, or `undefined` when unset.

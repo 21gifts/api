@@ -7,8 +7,9 @@ import { logEvent } from '@/lib/log';
  * Operator debug surface for the whole database.
  * Authenticated by `DEBUG_TOKEN` or `DEBUG_READ_TOKEN` (Bearer), not by an
  * end-user session. `DEBUG_READ_TOKEN` is GET and HEAD on this route, and
- * otherwise opens only `GET /funding/goal` and the operator reads on staff GET
- * routes (`isOperatorBearer`).
+ * otherwise opens only `GET /funding/goal`, the operator reads on staff GET
+ * routes, and the operator-only `GET /funding/daily-roster/links`
+ * (`isOperatorBearer`).
  * `GET /` lists ordinary public tables or one keyset page. It does not
  * create or update rows.
  */

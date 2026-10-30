@@ -90,9 +90,9 @@ export interface FundingRouteDeps {
   gifts: GiftStore;
   /** Admission round for `POST /admit` and `GET /places`. Omitted → {@link CURRENT_GRANT_ROUND}. */
   grantRound?: GrantRound;
-  /** Operator write token. Unset → no operator read on the staff GET routes. */
+  /** Operator write token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
   debugToken?: string;
-  /** Operator read-only token. Unset → no operator read on the staff GET routes. */
+  /** Operator read-only token. Unset → no operator read on the staff GET routes or `GET /daily-roster/links`. */
   debugReadToken?: string;
 }
 

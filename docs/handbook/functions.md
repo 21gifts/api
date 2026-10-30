@@ -672,14 +672,14 @@
 
 ## Function: classifyDebugDbBearer
 
-- **Purpose:** Classify a Bearer header for `GET /debug/db` and, through `isOperatorBearer`, for the operator reads on the staff GET routes. The read token opens no write route.
+- **Purpose:** Classify a Bearer header for `GET /debug/db` and, through `isOperatorBearer`, for the operator reads on the staff GET routes and `GET /funding/daily-roster/links`. The read token opens no write route.
 - **Inputs:** Write token and read token (each `string | undefined`, both trimmed) and the raw `Authorization` header or `undefined`.
 - **Returns / side effects:** `'unconfigured'` when both trimmed tokens are empty. Otherwise the write token is tried first, then the read token. No match returns `'unauthorized'`. No I/O.
-- **Used by:** `debugDbRoutes` for `GET /debug/db`. HEAD uses that same GET handler. `isOperatorBearer` for the operator reads on staff GET routes.
+- **Used by:** `debugDbRoutes` for `GET /debug/db`. HEAD uses that same GET handler. `isOperatorBearer` for the operator reads on staff GET routes and `GET /funding/daily-roster/links`.
 
 ## Function: isOperatorBearer
 
-- **Purpose:** Whether an `Authorization` header carries the operator write or read token, so a staff GET route can serve the same body without a session. True only when `classifyDebugDbBearer` returns `'write'` or `'read'`. Both tokens unset, a missing header, or a bearer that matches neither is false, and the route falls through to its normal session and role check.
+- **Purpose:** Whether an `Authorization` header carries the operator write or read token, so a staff GET route can serve the same body without a session and the operator-only `GET /funding/daily-roster/links` can answer. True only when `classifyDebugDbBearer` returns `'write'` or `'read'`. Both tokens unset, a missing header, or a bearer that matches neither is false: a staff route falls through to its normal session and role check, and `GET /funding/daily-roster/links` answers 401.
 - **Inputs:** Write token and read token (each `string | undefined`) and the raw `Authorization` header or `undefined`.
 - **Returns / side effects:** `boolean`. No I/O.
 - **Used by:** `grantContinuationRoutes` (`GET /funding/goal`), `fundingRoutes` (`GET /funding/applications`, `GET /funding/applications/:accountId`, `GET /funding/payout-days`, `GET /funding/daily-roster`, and `GET /funding/daily-roster/links`, which has no session fallback and answers 401 without an operator token), `trustRoutes` (`GET /trust/proposals`), `membersRoutes` (`GET /members/:accountId/activity`), and `messagesRoutes` (`GET /messages/hidden`, `GET /messages/:id/edits`).
