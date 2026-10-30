@@ -852,8 +852,8 @@ box id or the ciphertext.
 indexed), `ciphertext`, `created_at`, `updated_at`. `ciphertext` is a secret
 column: `db_change` keeps only its SHA-256 and `GET /debug/db` only its
 length. Written in one locked step per account. A recovery commit keeps the
-account id and so the boxes; an account merge moves them to the surviving
-account. Migrated with the auth schema when `DATABASE_URL` is set and covered
+account id and so the boxes; an account merge deletes the merged-away
+account's boxes. Migrated with the auth schema when `DATABASE_URL` is set and covered
 by `db_change`; in memory otherwise.
 
 ### `DELETE /me/held-shares/:id`
@@ -4575,8 +4575,9 @@ Sessions of the source are deleted. The source's social recovery rows are
 deleted, not moved: its `recovery_share` rows, its `pending_recovery` row,
 its `previous_wallet` rows, and its `recovery` passkey challenges. They
 belong to the source's wallets, which go with the source row, and a share's
-additional data is the source id. The source's `held_share_box` rows move to
-the survivor with the other rows; the survivor cannot open them. Messages, invoice rows, edit
+additional data is the source id. The source's `held_share_box` rows are
+deleted too: each is sealed to the source id and the source's words, so the
+survivor could never open them. Messages, invoice rows, edit
 history, contacts, push subscriptions, and the other foreign keys to
 `account(id)` are moved. Those foreign keys are read from the catalog
 inside the transaction, so a later table is moved too. A conversation

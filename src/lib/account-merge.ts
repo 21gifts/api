@@ -75,9 +75,9 @@ function quoteIdentifier(identifier: string): string {
  * Before the passkey challenges and the catalog-listed rows move, it deletes
  * the merged account's `recovery_share`, `pending_recovery`, and
  * `previous_wallet` rows and its `recovery` passkey challenges: they belong
- * to the merged account's wallets, which go with its row. Its
- * `held_share_box` rows are not deleted; the catalog update moves them like
- * every other per-account row.
+ * to the merged account's wallets, which go with its row. It also deletes the
+ * merged account's `held_share_box` rows: each box is sealed to the merged
+ * account's id and words, so the surviving account could never open it.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -334,9 +334,12 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
 
     // The source's social recovery rows belong to its own wallets, which go
     // with the source row, and a share's additional data is the source id:
-    // delete them before the moves below would hand them to the survivor.
+    // delete them before the moves below would hand them to the survivor. A
+    // held-share box is sealed to the source id and the source's words, so
+    // the survivor could never open it either.
     for (const statement of [
       'DELETE FROM recovery_share WHERE account_id = $1',
+      'DELETE FROM held_share_box WHERE account_id = $1',
       'DELETE FROM pending_recovery WHERE account_id = $1',
       'DELETE FROM previous_wallet WHERE account_id = $1',
       "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",

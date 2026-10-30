@@ -198,12 +198,13 @@ username>:<20 SLIP-39 words>`), with the additional data
   the new words (`PUT` of the same ids). The recovery commit keeps the account
   id, so the boxes stay where they are.
 - **Account deletion and merge.** Deleting the holder's account deletes its
-  boxes (`ON DELETE CASCADE`). An account merge moves them to the surviving
-  account like every other row of the merged account. The surviving account
-  cannot open them: the additional data names the merged account and the key
-  comes from the merged account's words.
+  boxes (`ON DELETE CASCADE`). An account merge deletes the boxes of the
+  merged-away account (`mergeAccounts`), with its other social recovery rows:
+  each box is sealed to that account's id and its words, so the surviving
+  account could never open them.
 - **Accepted risk.** A holder who loses their passkey for good and never
-  recovers loses the boxes, and nobody is told. There is no machinery for
+  recovers loses the boxes, and nobody is told. The same holds for a holder
+  whose account is merged away: its held shares are dropped. There is no machinery for
   this; the owner sets up shares with someone else.
 
 ## Grant payouts
@@ -568,7 +569,8 @@ holder's account id as it does for every row.
   already take the holder's whole account; with the boxes they also get the
   shares that holder keeps, one share per owner.
 - **A holder who loses their passkey** for good and never recovers loses the
-  boxes, and nobody is told. This is accepted; the owner sets up shares with
+  boxes, and nobody is told. A holder account that an operator merges into
+  another account loses its held shares the same way. This is accepted; the owner sets up shares with
   someone else when a holder can no longer show the QR code.
 - **21.gifts and one person** could rebuild the words, by hand and outside
   the api. No release is planned.
