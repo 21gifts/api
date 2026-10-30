@@ -6,6 +6,7 @@ import { inspectBolt11, invoiceStillOpen, isNip57Invoice } from '@/lib/bolt11';
 import {
   dueDayCount,
   formatCents,
+  parseRepaymentDescription,
   payerDebtUnits,
   repaymentDescription,
   repaymentDueDate,
@@ -107,12 +108,14 @@ interface DueShare {
   /** Whole sats or whole cents. */
   units: bigint;
   canReceive: boolean;
+  /** The giver cannot receive, or had no verified wallet yet on the share's day: never behind. */
+  excused: boolean;
 }
 
 /** Schedule state of one funded credit at `nowMs`. */
 interface DuePlan {
   daysDue: number;
-  /** Leading due days with no unpaid share. */
+  /** Leading due days with no unpaid share that is not excused. */
   daysPaid: number;
   schedule: RepaymentSlice[];
   paid: Awaited<ReturnType<MessageStore['listRepayments']>>;
@@ -121,21 +124,26 @@ interface DuePlan {
 }
 
 /**
- * Whether each account can receive (`receivingAddress(...) !== null`).
+ * Since when each account can receive (`receivingAddress(...) !== null`).
  *
  * @param deps - Auth store and the optional LNURL server.
  * @param accountIds - Accounts to check; repeats are read once.
- * @returns Account id → can receive.
+ * @returns Account id → `sparkPubkeyVerifiedAt`, or null when it cannot receive.
  */
 async function receiverMap(
   deps: RepaymentDeps,
   accountIds: readonly string[],
-): Promise<Map<string, boolean>> {
-  const result = new Map<string, boolean>();
+): Promise<Map<string, number | null>> {
+  const result = new Map<string, number | null>();
   for (const id of accountIds) {
     if (!result.has(id)) {
       const account = await deps.authStore.getAccount(id);
-      result.set(id, account !== undefined && receivingAddress(account, deps.lnurlServer) !== null);
+      result.set(
+        id,
+        account === undefined || receivingAddress(account, deps.lnurlServer) === null
+          ? null
+          : (account.sparkPubkeyVerifiedAt as number),
+      );
     }
   }
   return result;
@@ -171,22 +179,25 @@ async function duePlan(
     deps,
     unpaid.map((slice) => slice.accountId),
   );
-  let daysPaid = 0;
-  while (daysPaid < daysDue && !unpaid.some((slice) => slice.dayIndex === daysPaid)) {
-    daysPaid += 1;
-  }
-  return {
-    daysDue,
-    daysPaid,
-    schedule,
-    paid,
-    due: unpaid.map((slice) => ({
+  const startMs = repaymentStartMs(fundedAt.getTime());
+  const due = unpaid.map((slice) => {
+    const since = receivers.get(slice.accountId) as number | null;
+    return {
       dayIndex: slice.dayIndex,
       accountId: slice.accountId,
       units: slice.units,
-      canReceive: receivers.get(slice.accountId) as boolean,
-    })),
-  };
+      canReceive: since !== null,
+      excused: since === null || slice.dayIndex < Math.floor((since - startMs) / 86_400_000),
+    };
+  });
+  let daysPaid = 0;
+  while (
+    daysPaid < daysDue &&
+    !due.some((share) => share.dayIndex === daysPaid && !share.excused)
+  ) {
+    daysPaid += 1;
+  }
+  return { daysDue, daysPaid, schedule, paid, due };
 }
 
 /**
@@ -286,6 +297,8 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
           };
   }
   const price = lines.some((line) => line.status === 'due') ? await sharePricer(deps, row) : null;
+  const waits = (line: (typeof lines)[number]): boolean =>
+    line.status === 'due' && !(names.get(line.accountId) as { canReceive: boolean }).canReceive;
   return c.json(
     {
       currency: fiat ? row.goalCurrency : 'BTC',
@@ -294,6 +307,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
       termDays: row.goalTermDays,
       daysDue,
       daysPaid,
+      waitingShares: lines.filter(waits).length,
       unassignedSats,
       givers: payers.map((payer) => {
         const identity = names.get(payer.accountId) as {
@@ -324,6 +338,7 @@ export async function repaymentStatus(routeDeps: RepaymentDeps, c: Context): Pro
           amount: fiat ? formatCents(line.units) : null,
           sats: fiat ? (settled ?? null) : Number(line.units),
           status: line.status,
+          waiting: waits(line),
           via: 'lightning',
           dueSats: line.status === 'due' && price !== null ? price(line.units) : null,
         };
@@ -848,13 +863,17 @@ async function loanRow(
     }
     // Sats with no account are not repaid, as in the schedule.
     const named = owed.filter((payer) => payer.accountId !== '');
+    // The rate is read only when there is a debt to price. A failing loader is 503; a missing rate leaves sats null.
+    const price = named.length === 0 ? undefined : await sharePricer(deps, row).catch(() => null);
+    if (price === null) {
+      return 'unavailable';
+    }
     return {
       ...base,
       daysDue: 0,
       daysPaid: 0,
       repaidSats: 0,
-      // The rate is read only when there is a debt to price.
-      totalSats: named.length === 0 ? 0 : pricedSum(await sharePricer(deps, row), named),
+      totalSats: price === undefined ? 0 : pricedSum(price, named),
       due: {
         payableSats: 0,
         payableAmount: cents(0n),
@@ -862,6 +881,7 @@ async function loanRow(
         waitingSats: 0,
         waitingAmount: cents(0n),
         waitingPeople: 0,
+        waitingShares: 0,
         behindDays: 0,
         lastPayment: false,
       },
@@ -879,8 +899,11 @@ async function loanRow(
   if (open.length === 0) {
     return null;
   }
-  // Read the rate only now: a repaid loan is left out without it.
-  const price = await sharePricer(deps, row);
+  // Read the rate only now: a repaid loan is left out without it. A failing loader is 503; a missing rate leaves sats null.
+  const price = await sharePricer(deps, row).catch(() => null);
+  if (price === null) {
+    return 'unavailable';
+  }
   const repaidSats = plan.paid.reduce((sum, item) => sum + item.dueSats, 0);
   const openSats = pricedSum(price, open);
   const payable = plan.due.filter((share) => share.canReceive);
@@ -891,7 +914,9 @@ async function loanRow(
     new Set(shares.map((share) => share.accountId)).size;
   const today = Math.floor((nowMs - repaymentStartMs(fundedAt.getTime())) / 86_400_000);
   const behind = new Set(
-    plan.due.filter((share) => share.dayIndex < today).map((share) => share.dayIndex),
+    plan.due
+      .filter((share) => !share.excused && share.dayIndex < today)
+      .map((share) => share.dayIndex),
   );
   const nextDay = open.find((slice) => slice.dayIndex >= plan.daysDue)?.dayIndex;
   const nextShares = open.filter((slice) => slice.dayIndex === nextDay);
@@ -908,6 +933,7 @@ async function loanRow(
       waitingSats: pricedSum(price, waiting),
       waitingAmount: cents(units(waiting)),
       waitingPeople: people(waiting),
+      waitingShares: waiting.length,
       behindDays: behind.size,
       lastPayment: payable.length > 0 && payable.length === open.length,
     },
@@ -919,6 +945,72 @@ async function loanRow(
             sats: pricedSum(price, nextShares),
             amount: cents(units(nextShares)),
           },
+  };
+}
+
+/**
+ * Due, unpaid shares owed to a caller who cannot receive, over every live
+ * funded loan the caller gave to: found through the caller's in-app invoices,
+ * kept only when the caller is one of its payers.
+ *
+ * @param deps - Store, auth, rate loader, and the optional LNURL server.
+ * @param account - The caller.
+ * @param nowMs - Clock.
+ * @returns Share and loan counts and their sats (null when a fiat share has no
+ *   rate), or `unavailable` when a loan's debt cannot be computed.
+ */
+async function lenderWaiting(
+  deps: MyLoansRouteDeps,
+  account: Account,
+  nowMs: number,
+): Promise<{ shares: number; loans: number; sats: number | null } | 'unavailable'> {
+  if (receivingAddress(account, deps.lnurlServer) !== null) {
+    return { shares: 0, loans: 0, sats: 0 };
+  }
+  const invoices = await deps.store.listInvoiceAttemptsForPayer(account.id);
+  const messageIds = new Set(
+    invoices
+      .filter((invoice) => parseRepaymentDescription(invoice.description) === null)
+      .map((invoice) => invoice.messageId),
+  );
+  let shares = 0;
+  const loanSats: (number | null)[] = [];
+  for (const id of messageIds) {
+    const row = await deps.store.getById(id);
+    if (
+      row === undefined ||
+      row.deletedAt !== null ||
+      row.goalRepayable !== true ||
+      typeof row.goalTermDays !== 'number' ||
+      !(row.goalFundedAt instanceof Date)
+    ) {
+      continue;
+    }
+    const payers = await deps.store.listCreditPayers(id);
+    if (!payers.some((payer) => payer.accountId === account.id)) {
+      continue;
+    }
+    const plan = await duePlan(deps, row, nowMs);
+    if (plan === 'unavailable') {
+      return 'unavailable';
+    }
+    const mine = plan.due.filter((share) => share.accountId === account.id);
+    if (mine.length === 0) {
+      continue;
+    }
+    const price = await sharePricer(deps, row).catch(() => null);
+    if (price === null) {
+      return 'unavailable';
+    }
+    shares += mine.length;
+    loanSats.push(pricedSum(price, mine));
+  }
+  return {
+    shares,
+    loans: loanSats.length,
+    sats: loanSats.includes(null)
+      ? null
+      : loanSats.reduce<number>((sum, sats) => sum + (sats as number), 0),
   };
 }
 
@@ -958,8 +1050,16 @@ export function myLoansRoutes(deps: MyLoansRouteDeps): Hono {
           loans.push(loan);
         }
       }
+      const waiting = await lenderWaiting(oneRate, account, nowMs);
+      if (waiting === 'unavailable') {
+        return c.json({ error: 'Ask amount is unavailable' }, 503);
+      }
       return c.json(
-        { sundayRest: isSundayRestHeader(nowMs, c.req.header('Time-Zone')), loans },
+        {
+          sundayRest: isSundayRestHeader(nowMs, c.req.header('Time-Zone')),
+          loans,
+          lenderWaiting: waiting,
+        },
         200,
       );
     } catch {

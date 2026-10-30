@@ -3715,7 +3715,11 @@ test('Function: myLoansRoutes — GET /me/loans lists no loans for a new member'
     headers: { authorization: member.authorization, 'Time-Zone': 'Not/AZone' },
   });
   expect(res.status()).toBe(200);
-  expect(await res.json()).toEqual({ sundayRest: false, loans: [] });
+  expect(await res.json()).toEqual({
+    sundayRest: false,
+    loans: [],
+    lenderWaiting: { shares: 0, loans: 0, sats: 0 },
+  });
 });
 
 test('Function: repaymentLedger — GET /healthz is ok', async ({ request }) => {
