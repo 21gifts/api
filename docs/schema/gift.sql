@@ -1,6 +1,8 @@
 -- Outbound gifts recorded for public statistics (GET /gifts/stats).
 -- The api reads paid_at, amount_sats, recipient_wos_user, kind, description
--- (the welcome check counts only `21gifts welcome`), and the fiat_* snapshots.
+-- (the welcome check counts `21gifts welcome` under a username, and any
+-- `welcome` gift to an account's legacy external address), and the fiat_*
+-- snapshots.
 
 CREATE TABLE IF NOT EXISTS gift (
   id                 bigserial PRIMARY KEY,
