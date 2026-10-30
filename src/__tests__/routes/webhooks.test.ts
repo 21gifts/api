@@ -64,15 +64,15 @@ async function subscribedStore(): Promise<InMemoryPushStore> {
 }
 
 describe('POST /webhooks/lnurl', () => {
-  it('refuses a missing or wrong signature and a body above 64 KiB', async () => {
+  it('refuses a missing or wrong signature and ignores a body above 64 KiB', async () => {
     const app = mount(new InMemoryPushStore());
     expect((await post(app, PAYMENT)).status).toBe(401);
     const wrong = await post(app, PAYMENT, sign(`${PAYMENT} `));
     expect(wrong.status).toBe(401);
     expect(await wrong.json()).toEqual({ error: 'Unauthorized' });
     const large = await post(app, 'x'.repeat(64 * 1024 + 1), sign('x'));
-    expect(large.status).toBe(413);
-    expect(await large.json()).toEqual({ error: 'Request body is too large' });
+    expect(large.status).toBe(200);
+    expect(await large.json()).toEqual({ outcome: 'ignored' });
   });
 
   it('answers 200 ignored for a signed body it cannot use', async () => {

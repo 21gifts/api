@@ -1004,13 +1004,13 @@
 
 - **Purpose:** Enqueue one Web Push to the receiver of a payment, at most once per payment hash.
 - **Inputs:** `PaymentReceivedDeps` (`auth`, `messages`, `pushStore`, `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
-- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and no `amount` tag other than the received amount in millisats; otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`; one with an `e` tag of a stored forum note returns `zap`. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription returns `no_device`.
+- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and no `amount` tag other than the received amount in millisats; otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`; one whose `e` tag (normalized to lowercase hex) is a visible forum note of the receiver, other than the platform fee note, returns `zap`, because the zap index notifies that zap; a hidden note, another author's note, or the fee note still gets this push. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription returns `no_device`.
 - **Returns / side effects:** `queued` after `PushStore.enqueuePaymentReceived` wrote the claim and the outbox row (`unreadCount` is in-app plus listed inbox unread), `duplicate` when the hash was already claimed, or the skip reason above. Throws when a store call rejects.
 - **Used by:** `webhookRoutes`.
 
 ## Function: webhookRoutes
 
-- **Purpose:** Build the `/webhooks` group with `POST /webhooks/lnurl` (see the endpoint section).
+- **Purpose:** Build the `/webhooks` group with `POST /webhooks/lnurl` (see the endpoint section). A body above 64 KiB answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end.
 - **Inputs:** `WebhookRouteDeps`: `secret` plus `PaymentReceivedDeps`.
 - **Returns / side effects:** A Hono app. Logs `payment_received` with the outcome, `payment_received.ignored`, or `payment_received.failed` with `errorLogFields`; never the body, hash, or pubkey.
 - **Used by:** `createApp` when `resolvePaymentWebhookSecret` returns a secret.

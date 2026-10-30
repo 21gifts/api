@@ -170,7 +170,10 @@ function verifiedZapRequest(
   }
   return {
     pubkey: shape.pubkey.toLowerCase(),
-    noteEventIds: tags.filter((tag) => tag[0] === 'e').map((tag) => tag[1] as string),
+    noteEventIds: tags
+      .filter((tag) => tag[0] === 'e')
+      .map((tag) => normalizeHex32(tag[1] as string))
+      .filter((id): id is string => id !== null),
   };
 }
 
@@ -181,8 +184,9 @@ function verifiedZapRequest(
  * request counts only when it is signed, names the receiver's Nostr pubkey in
  * a `p` tag, and any `amount` tag equals the received amount. Nothing is
  * enqueued when the zap request comes from the receiver, when it targets a
- * forum note this api stores (that zap is notified by `notifyZap` or
- * `notifyHeart`), when the receiver's notification level is `none`, or when
+ * visible forum note of the receiver other than the platform fee note (the
+ * zap index notifies that zap with `notifyZap` or `notifyHeart`), when the
+ * receiver's notification level is `none`, or when
  * the receiver has no push subscription. The push names a sender only when
  * the zap request's signer is a 21.gifts account with a name.
  *
@@ -211,7 +215,14 @@ export async function notifyPaymentReceived(
       return 'self';
     }
     for (const eventId of zap.noteEventIds) {
-      if ((await deps.messages.getByEventId(eventId)) !== undefined) {
+      const note = await deps.messages.getByEventId(eventId);
+      // The zap index notifies the author of a visible note that is not the platform fee note.
+      if (
+        note !== undefined &&
+        note.accountId === account.id &&
+        note.deletedAt === null &&
+        !(account.isPlatform === true && account.profileMessageId === note.id)
+      ) {
         return 'zap';
       }
     }

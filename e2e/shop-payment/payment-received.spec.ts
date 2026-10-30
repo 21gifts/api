@@ -94,6 +94,7 @@ test('Function: buildPaymentReceivedPushPayload — no payload without a push su
     data: { endpoint: 'https://push.example/e2e', keys: { p256dh: 'p', auth: 'a' } },
   });
   expect(subscribe.status()).toBe(503);
+  expect(await subscribe.json()).toEqual({ error: 'Push is not configured' });
   const res = await postWebhook(request, paymentBody(shop.sparkPubkey));
   expect(await res.json()).toEqual({ outcome: 'no_device' });
 });

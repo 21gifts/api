@@ -25,10 +25,10 @@ export interface WebhookRouteDeps extends PaymentReceivedDeps {
 /**
  * Build the `/webhooks` route group.
  *
- * `POST /webhooks/lnurl` answers 413 above 64 KiB and 401 when
- * `X-Breez-Signature` does not match. A signed body that is not a usable
- * `spark_payment_received` answers 200 `ignored`, so the LNURL server does
- * not retry it. A failed store call answers 503, so it retries; the push is
+ * `POST /webhooks/lnurl` answers 401 when `X-Breez-Signature` does not
+ * match. A body above 64 KiB, and a signed body that is not a usable
+ * `spark_payment_received`, answer 200 `ignored` without writing anything,
+ * because the LNURL server retries every other answer without end. A failed store call answers 503, so it retries; the push is
  * enqueued at most once per payment hash.
  *
  * @param deps - Secret, stores, and clock.
@@ -38,7 +38,8 @@ export function webhookRoutes(deps: WebhookRouteDeps): Hono {
   return new Hono().post('/lnurl', async (c) => {
     const body = await readCappedText(c.req.raw, WEBHOOK_BODY_LIMIT_BYTES);
     if (body === null) {
-      return c.json({ error: 'Request body is too large' }, 413);
+      logEvent('payment_received.ignored');
+      return c.json({ outcome: 'ignored' }, 200);
     }
     if (!breezSignatureValid(deps.secret, body, c.req.header('x-breez-signature') ?? null)) {
       return c.json({ error: 'Unauthorized' }, 401);

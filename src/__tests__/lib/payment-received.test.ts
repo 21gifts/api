@@ -46,7 +46,8 @@ async function setup(
     senderName?: string | null;
     receiverNostr?: string | undefined;
     subscribed?: boolean;
-    note?: boolean;
+    note?: Partial<MessageRow>;
+    receiver?: Partial<Account>;
   } = {},
 ): Promise<{ deps: PaymentReceivedDeps; push: InMemoryPushStore }> {
   const push = new InMemoryPushStore();
@@ -63,6 +64,7 @@ async function setup(
   const receiver = account('receiver', {
     name: args.receiverName ?? 'Bea',
     ...(args.level === undefined ? {} : { notificationLevel: args.level }),
+    ...args.receiver,
   });
   const sender = account('sender', { name: args.senderName ?? 'Ada' });
   const deps: PaymentReceivedDeps = {
@@ -79,7 +81,9 @@ async function setup(
     },
     messages: {
       getByEventId: async (eventId) =>
-        args.note === true && eventId === NOTE_EVENT ? ({ id: 'note' } as MessageRow) : undefined,
+        args.note !== undefined && eventId === NOTE_EVENT
+          ? ({ id: 'note', accountId: 'receiver', deletedAt: null, ...args.note } as MessageRow)
+          : undefined,
     },
     pushStore: push,
     notifications: { unreadCount: async () => 2 },
@@ -236,6 +240,30 @@ describe('notifyPaymentReceived', () => {
     expect(await payloads(noKey.push)).toMatchObject([{ title: '21.gifts' }]);
   });
 
+  it('pushes a note zap that the zap index does not notify to the receiver', async () => {
+    const noteZap = zapRequest(senderKey, [
+      ['p', RECEIVER_PUBKEY],
+      ['e', NOTE_EVENT],
+    ]);
+    const cases = [
+      setup({ note: { deletedAt: new Date(0) } }),
+      setup({ note: { accountId: 'someone-else' } }),
+      setup({ note: {}, receiver: { isPlatform: true, profileMessageId: 'note' } }),
+    ];
+    for (const pending of cases) {
+      const { deps, push } = await pending;
+      expect(await notifyPaymentReceived(deps, payment({ zapRequest: noteZap }))).toBe('queued');
+      expect(await payloads(push)).toMatchObject([{ title: 'Ada' }]);
+    }
+    const platform = await setup({
+      note: {},
+      receiver: { isPlatform: true, profileMessageId: 'other' },
+    });
+    expect(await notifyPaymentReceived(platform.deps, payment({ zapRequest: noteZap }))).toBe(
+      'zap',
+    );
+  });
+
   it('skips an unknown receiver, a self payment, a note zap, level none, and no device', async () => {
     const unknown = await setup();
     expect(await notifyPaymentReceived(unknown.deps, payment({ userPubkey: 'other' }))).toBe(
@@ -245,10 +273,11 @@ describe('notifyPaymentReceived', () => {
     expect(
       await notifyPaymentReceived(self.deps, payment({ zapRequest: zapRequest(receiverKey) })),
     ).toBe('self');
-    const note = await setup({ note: true });
+    const note = await setup({ note: {} });
     const noteZap = zapRequest(senderKey, [
       ['p', RECEIVER_PUBKEY],
-      ['e', NOTE_EVENT],
+      ['e', 'not-hex'],
+      ['e', NOTE_EVENT.toUpperCase()],
     ]);
     expect(await notifyPaymentReceived(note.deps, payment({ zapRequest: noteZap }))).toBe('zap');
     const off = await setup({ level: 'none' });
