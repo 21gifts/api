@@ -4262,7 +4262,7 @@ process has no SQL client → **Response** `503`
 absent. `bytea` cells, including `nostr_nsec_ciphertext`,
 `recovery_share_ciphertext`, and `held_share_box.ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, `delivered_endpoints`, `skip_endpoints`, `session_token`, and `ciphertext` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`

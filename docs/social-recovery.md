@@ -615,8 +615,10 @@ Later, not needed for a first version:
   previous wallets, the same username and Lightning address.
 - The rules for the implementation hold, and at most one recovery per old key
   commits.
-- No row contains the 12 words, the 16 bytes, a person's share, PRF output or
-  a readable 21.gifts share, and no log contains any of them.
+- No row contains the 12 words, the 16 bytes, a readable person's share, PRF
+  output or a readable 21.gifts share, and no log contains any of them. A
+  person's share is stored only as an opaque `held_share_box` row, and no log
+  contains a box id or a box's ciphertext.
 - **Social Recovery** is reachable from the settings, and nothing but grant
   payouts needs it.
 - From the release on, no payout goes to a member in the grant program
