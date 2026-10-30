@@ -694,7 +694,7 @@ describe('daily payout roster routes', () => {
     expect(JSON.stringify(parsedEvents(warn))).not.toContain('hide-me');
   });
 
-  it('refuses an edit key on another host when the LNURL server is off', async () => {
+  it('refuses an edit key with a host when the LNURL server is off', async () => {
     const authStore = await seeded();
     await authStore.createAccount(
       account({

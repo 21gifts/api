@@ -103,7 +103,7 @@ describe('linkDailyRosterAccounts', () => {
     expect(sql.queries[0]?.params).toEqual([null]);
   });
 
-  it('links only rows without an account, by legacy address or in-app address, one per bucket', () => {
+  it('links only rows without an account, by legacy address or in-app address, one per account and bucket', () => {
     expect(DAILY_ROSTER_ACCOUNT_LINK_SQL).toMatch(
       /WHERE e\.account_id IS NULL AND e\.address IS NOT NULL/,
     );
