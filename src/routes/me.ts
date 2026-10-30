@@ -50,7 +50,7 @@ import type { PushStore } from '@/lib/push-store';
  * and, when the LNURL server is configured, the wallet public-key bind
  * (`PUT /wallet`), the 21.gifts recovery share (`PUT /recovery-share`), and the
  * previous wallets of a social recovery (`GET /previous-wallets`,
- * `DELETE /previous-wallets/:sparkPubkey`), and the holder's own encrypted
+ * `DELETE /previous-wallets/:sparkPubkey`); always, the holder's own encrypted
  * held-share boxes (`GET /held-shares`, `PUT /held-shares/:id`,
  * `DELETE /held-shares/:id`). The verified wallet is the
  * member's only receiving address. Shares the {@link AuthStore} instance with
@@ -389,7 +389,7 @@ async function pingAfterShareStored(
  * Build the `/me` route group.
  *
  * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet`, the recovery share and previous-wallet routes, and the receiving address, optional `recoveryShareKek` for the share, and optional `fetchImpl` for the explorer balance.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, optional recovery share and previous wallets, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, optional recovery share and previous wallets, held-share boxes, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
  * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
