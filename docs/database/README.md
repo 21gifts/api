@@ -5,8 +5,8 @@
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
 - Tables: 60
-- Columns: 575
-- Foreign keys: 58
+- Columns: 577
+- Foreign keys: 59
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
 | -------------------------------------------------------------------------------- | ---------------------------------------------------------------------- | ------- | ------------ |
@@ -30,6 +30,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`diagnostic_event`](tables/diagnostic_event.md)                                 | [src/lib/diagnostic-log.ts](../../src/lib/diagnostic-log.ts)           | 5       | 0            |
 | [`funding_grant`](tables/funding_grant.md)                                       | [src/lib/funding-store.ts](../../src/lib/funding-store.ts)             | 8       | 2            |
 | [`gift`](tables/gift.md)                                                         | [docs/schema/gift.sql](../../docs/schema/gift.sql)                     | 19      | 0            |
+| [`held_share_box`](tables/held_share_box.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 5       | 1            |
 | [`login_allowlist`](tables/login_allowlist.md)                                   | [src/lib/login-gate-store.ts](../../src/lib/login-gate-store.ts)       | 2       | 1            |
 | [`member_event`](tables/member_event.md)                                         | [src/lib/member-event-store.ts](../../src/lib/member-event-store.ts)   | 7       | 1            |
 | [`member_habit`](tables/member_habit.md)                                         | [src/lib/member-habit-store.ts](../../src/lib/member-habit-store.ts)   | 11      | 1            |
@@ -56,7 +57,6 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
 | [`previous_wallet`](tables/previous_wallet.md)                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 12      | 1            |
-| [`push_payment_received`](tables/push_payment_received.md)                       | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 3       | 0            |
 | [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 6       | 1            |
 | [`recovery_share`](tables/recovery_share.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`shop_identity`](tables/shop_identity.md)                                       | [src/lib/shop-identity.ts](../../src/lib/shop-identity.ts)             | 17      | 1            |

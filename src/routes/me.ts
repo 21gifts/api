@@ -8,7 +8,7 @@ import { ensureProfileMessage } from '@/lib/auth/profile-message';
 import { encryptRecoveryShare, RECOVERY_SHARE_TEXT } from '@/lib/auth/recovery-share';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
-import type { Account, AuthStore, PreviousWallet } from '@/lib/auth/store';
+import type { Account, AuthStore, HeldShareBoxPutResult, PreviousWallet } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
@@ -50,7 +50,9 @@ import type { PushStore } from '@/lib/push-store';
  * and, when the LNURL server is configured, the wallet public-key bind
  * (`PUT /wallet`), the 21.gifts recovery share (`PUT /recovery-share`), and the
  * previous wallets of a social recovery (`GET /previous-wallets`,
- * `DELETE /previous-wallets/:sparkPubkey`). The verified wallet is the
+ * `DELETE /previous-wallets/:sparkPubkey`), and the holder's own encrypted
+ * held-share boxes (`GET /held-shares`, `PUT /held-shares/:id`,
+ * `DELETE /held-shares/:id`). The verified wallet is the
  * member's only receiving address. Shares the {@link AuthStore} instance with
  * `/auth`.
  */
@@ -191,6 +193,60 @@ const RECOVERY_SHARE_BODY_ERROR = 'Expected a JSON body with sparkPubkey and a r
 
 /** 503 copy when the share cannot be stored (no `RECOVERY_SHARE_KEK`, or a store or crypto failure). */
 const RECOVERY_SHARE_UNAVAILABLE = 'Social recovery is unavailable';
+
+/** A held-share box id: 16 random bytes as 32 lowercase hex, chosen by the app. */
+const HELD_SHARE_BOX_ID = /^[0-9a-f]{32}$/;
+
+/** 400 copy for a box id that is not 32 lowercase hex characters. */
+const HELD_SHARE_BOX_ID_ERROR = 'Expected a box id of 32 lowercase hex characters';
+
+/** Most held-share boxes one account may have (checked on create only). */
+const HELD_SHARE_BOX_LIMIT = 50;
+
+/** Smallest box: version byte, 12-byte IV, and the 16-byte AES-GCM tag. */
+const HELD_SHARE_MIN_BYTES = 29;
+
+/** Largest box in bytes. */
+const HELD_SHARE_MAX_BYTES = 1024;
+
+/** Box format version, the first ciphertext byte. */
+const HELD_SHARE_VERSION = 0x01;
+
+/** Unpadded base64url of at most {@link HELD_SHARE_MAX_BYTES} bytes. */
+const HELD_SHARE_BASE64URL = /^[A-Za-z0-9_-]{1,1366}$/;
+
+/** Body schema for storing a held-share box. Unknown keys are 400. */
+const heldShareBody = z.object({ ciphertext: z.string() }).strict();
+
+/** Single 400 copy for a missing or invalid held-share box body. */
+const HELD_SHARE_BODY_ERROR = 'Expected a JSON body with a held share ciphertext';
+
+/** 503 copy when the held-share store fails. */
+const HELD_SHARES_UNAVAILABLE = 'Held shares are unavailable';
+
+/**
+ * Decode a held-share ciphertext from canonical unpadded base64url and check
+ * its size and version byte. The content stays opaque.
+ *
+ * @param text - Ciphertext as sent by the app.
+ * @returns The bytes, or `null` when the text is not canonical base64url, the
+ *   size is outside 29–1024 bytes, or the first byte is not `0x01`.
+ */
+function decodeHeldShareCiphertext(text: string): Uint8Array | null {
+  if (!HELD_SHARE_BASE64URL.test(text)) {
+    return null;
+  }
+  const bytes = Buffer.from(text, 'base64url');
+  if (
+    bytes.toString('base64url') !== text ||
+    bytes.length < HELD_SHARE_MIN_BYTES ||
+    bytes.length > HELD_SHARE_MAX_BYTES ||
+    bytes[0] !== HELD_SHARE_VERSION
+  ) {
+    return null;
+  }
+  return new Uint8Array(bytes);
+}
 
 /** 503 copy of the previous-wallet routes, shared with `POST /me/wallet/report` (src/routes/wallet-report.ts). */
 const WALLET_DATA_UNAVAILABLE = 'Wallet data is unavailable';
@@ -1223,6 +1279,95 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       return c.body(null, 204);
     });
   }
+
+  // Held-share boxes need no LNURL server: the api keeps opaque bytes for the
+  // holder and never learns whose share a box holds. Logs carry neither a box
+  // id nor a ciphertext.
+  app.get('/held-shares', async (c) => {
+    const account = await authedAccount(deps, c.req.header('authorization'));
+    if (account === null) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    try {
+      const boxes = await deps.store.listHeldShareBoxes(account.id);
+      return c.json(
+        {
+          boxes: boxes.map((box) => ({
+            id: box.id,
+            ciphertext: Buffer.from(box.ciphertext).toString('base64url'),
+            updatedAt: new Date(box.updatedAt).toISOString(),
+          })),
+        },
+        200,
+      );
+    } catch (error) {
+      logEvent('account.held_shares.failed', { accountId: account.id, ...errorLogFields(error) });
+      return c.json({ error: HELD_SHARES_UNAVAILABLE }, 503);
+    }
+  });
+
+  app.put('/held-shares/:id', async (c) => {
+    const account = await authedAccount(deps, c.req.header('authorization'));
+    if (account === null) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const id = c.req.param('id');
+    if (!HELD_SHARE_BOX_ID.test(id)) {
+      return c.json({ error: HELD_SHARE_BOX_ID_ERROR }, 400);
+    }
+    const parsed = heldShareBody.safeParse(await c.req.json().catch(() => null));
+    const ciphertext = parsed.success ? decodeHeldShareCiphertext(parsed.data.ciphertext) : null;
+    if (ciphertext === null) {
+      return c.json({ error: HELD_SHARE_BODY_ERROR }, 400);
+    }
+    const nowMs = deps.now();
+    let result: HeldShareBoxPutResult;
+    try {
+      result = await deps.store.putHeldShareBox({
+        accountId: account.id,
+        id,
+        ciphertext,
+        now: nowMs,
+        limit: HELD_SHARE_BOX_LIMIT,
+      });
+    } catch (error) {
+      logEvent('account.held_shares.failed', { accountId: account.id, ...errorLogFields(error) });
+      return c.json({ error: HELD_SHARES_UNAVAILABLE }, 503);
+    }
+    if (result === 'taken') {
+      return c.json({ error: 'Box id in use' }, 409);
+    }
+    if (result === 'full') {
+      return c.json({ error: 'Too many held shares' }, 409);
+    }
+    logEvent('account.held_share.stored', {
+      accountId: account.id,
+      replaced: result === 'replaced',
+    });
+    return c.json(
+      { id, updatedAt: new Date(nowMs).toISOString() },
+      result === 'created' ? 201 : 200,
+    );
+  });
+
+  app.delete('/held-shares/:id', async (c) => {
+    const account = await authedAccount(deps, c.req.header('authorization'));
+    if (account === null) {
+      return c.json({ error: 'Unauthorized' }, 401);
+    }
+    const id = c.req.param('id');
+    if (!HELD_SHARE_BOX_ID.test(id)) {
+      return c.json({ error: HELD_SHARE_BOX_ID_ERROR }, 400);
+    }
+    try {
+      await deps.store.deleteHeldShareBox(account.id, id);
+    } catch (error) {
+      logEvent('account.held_shares.failed', { accountId: account.id, ...errorLogFields(error) });
+      return c.json({ error: HELD_SHARES_UNAVAILABLE }, 503);
+    }
+    logEvent('account.held_share.deleted', { accountId: account.id });
+    return c.body(null, 204);
+  });
 
   return app;
 }

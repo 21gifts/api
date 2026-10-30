@@ -794,6 +794,81 @@ that key (`docs/schema/recovery_share.sql`) in one statement. Migrated with
 the auth schema when `DATABASE_URL` is set and covered by `db_change`; in
 memory otherwise.
 
+### `GET /me/held-shares`
+
+Bearer session. The caller's own held-share boxes: social recovery shares
+this member keeps for other members, each encrypted in the holder's browser
+under a key from the holder's own 12 words (docs/social-recovery.md,
+Held-share boxes). The api never opens a box and does not know whose share it
+holds. Always mounted, also without the LNURL server.
+
+Missing/invalid bearer, or a `session_refused` account → **Response** `401`
+`{ "error": "Unauthorized" }`.
+
+Store throw → **Response** `503` `{ "error": "Held shares are unavailable" }`
+and `account.held_shares.failed` `{ accountId }` with the error name and code.
+
+Success → **Response** `200`
+`{ "boxes": [ { "id", "ciphertext", "updatedAt" } ] }`, oldest first
+(creation time, then id). `id` is 32 lowercase hex, `ciphertext` the stored
+bytes as base64url without padding, `updatedAt` ISO 8601. No boxes →
+`{ "boxes": [] }`.
+
+### `PUT /me/held-shares/:id`
+
+Bearer session. Creates or replaces one of the caller's boxes. `:id` is the
+box id the app chose (16 random bytes as 32 lowercase hex). Body
+`{ "ciphertext": "<base64url without padding>" }`; unknown keys are refused.
+Always mounted.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+`:id` does not match `^[0-9a-f]{32}$` → **Response** `400`
+`{ "error": "Expected a box id of 32 lowercase hex characters" }`.
+
+Bad JSON, another shape, text that is not canonical base64url without
+padding, decoded bytes outside 29–1024, or a first byte other than `0x01` →
+**Response** `400` `{ "error": "Expected a JSON body with a held share ciphertext" }`.
+
+The id belongs to another account → **Response** `409`
+`{ "error": "Box id in use" }`; nothing changes.
+
+A new id while the account already has 50 boxes → **Response** `409`
+`{ "error": "Too many held shares" }`. Replacing one of the 50 is allowed.
+
+Store throw → **Response** `503` `{ "error": "Held shares are unavailable" }`
+and `account.held_shares.failed` `{ accountId }`.
+
+Success → **Response** `201` (new box) or `200` (replaced)
+`{ "id", "updatedAt" }`. A replace keeps the creation time, so the list order
+stays. Logs `account.held_share.stored` `{ accountId, replaced }`; never the
+box id or the ciphertext.
+
+**Storage.** `held_share_box` (`docs/schema/held_share_box.sql`): primary key
+`id`, `account_id` (foreign key to `account` with `ON DELETE CASCADE`,
+indexed), `ciphertext`, `created_at`, `updated_at`. `ciphertext` is a secret
+column: `db_change` keeps only its SHA-256 and `GET /debug/db` only its
+length. Written in one locked step per account. A recovery commit keeps the
+account id and so the boxes; an account merge moves them to the surviving
+account. Migrated with the auth schema when `DATABASE_URL` is set and covered
+by `db_change`; in memory otherwise.
+
+### `DELETE /me/held-shares/:id`
+
+Bearer session. Deletes one of the caller's boxes. Always mounted.
+
+Missing/invalid bearer → **Response** `401` `{ "error": "Unauthorized" }`.
+
+`:id` does not match `^[0-9a-f]{32}$` → **Response** `400`
+`{ "error": "Expected a box id of 32 lowercase hex characters" }`.
+
+Store throw → **Response** `503` `{ "error": "Held shares are unavailable" }`
+and `account.held_shares.failed` `{ accountId }`.
+
+Success → **Response** `204` with no body, also for an unknown id and for
+another account's id, which stays unchanged. Logs
+`account.held_share.deleted` `{ accountId }`; never the box id.
+
 ### `POST /lnurlpay/:pubkey`
 
 Forward wallet name registration to the self-hosted LNURL server.
@@ -4184,10 +4259,10 @@ process has no SQL client → **Response** `503`
 `{ "error": "Database is not configured" }`. No `table` returns
 `{ tables: [{ name, rowCount }] }`. `table` returns 200 rows and
 `nextCursor` when another page exists. Follow `nextCursor` until it is
-absent. `bytea` cells, including `nostr_nsec_ciphertext` and
-`recovery_share_ciphertext`, are octet lengths.
+absent. `bytea` cells, including `nostr_nsec_ciphertext`,
+`recovery_share_ciphertext`, and `held_share_box.ciphertext`, are octet lengths.
 Text in `token`, `challenge`, `nonce`, `view_key`, `endpoint`, `p256dh`,
-`auth`, `delivered_endpoints`, `skip_endpoints`, and `session_token` is the string `"redacted"`. A primary key
+`auth`, `delivered_endpoints`, `skip_endpoints`, `session_token`, and `ciphertext` is the string `"redacted"`. A primary key
 that is one of those columns is paged by `ctid`, so the cursor is not the
 secret. A cursor that does not match the key is **Response** `400`
 `{ "error": "Invalid cursor" }`. An unknown table is **Response** `404`
@@ -4700,7 +4775,7 @@ not a finite `Date.parse` time, or a `beforeId` that is not a UUID is
 the newest 200; the full history is this endpoint. The log never stores
 OPTIONS, `/healthz`, the query string, request bodies, or the Authorization
 header. Paths pass through `requestLogPath` (`/view/<segment>` →
-`/view/:viewKey`). The response is sent without waiting for the insert.
+`/view/:viewKey`, `/me/held-shares/<segment>` → `/me/held-shares/:id`). The response is sent without waiting for the insert.
 Write failure on the request path logs `api_log.write.failed` and does not
 replace the response.
 
@@ -4798,7 +4873,8 @@ but invalid:
 - `stage` — `register`, `authenticate`, `seed`, `login`, or `unhandled`.
 - `status` — integer from 100 through 599.
 - `path` — string. `requestLogPath` rewrites a `/view/<segment>` prefix to
-  `/view/:viewKey`. The result is rejected when it contains `?` or 32 or
+  `/view/:viewKey` and a `/me/held-shares/<segment>` prefix to
+  `/me/held-shares/:id`. The result is rejected when it contains `?` or 32 or
   more lowercase hex digits (`0-9`, `a-f`) in a row. Uppercase letters are
   not treated as hex.
 

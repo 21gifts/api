@@ -75,7 +75,9 @@ function quoteIdentifier(identifier: string): string {
  * Before the passkey challenges and the catalog-listed rows move, it deletes
  * the merged account's `recovery_share`, `pending_recovery`, and
  * `previous_wallet` rows and its `recovery` passkey challenges: they belong
- * to the merged account's wallets, which go with its row.
+ * to the merged account's wallets, which go with its row. Its
+ * `held_share_box` rows are not deleted; the catalog update moves them like
+ * every other per-account row.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.

@@ -349,6 +349,29 @@ export type RecoveryCommitResult = 'committed' | 'gone' | 'changed';
  */
 export type RecoveryShareResult = 'stored' | 'replaced' | 'changed';
 
+/**
+ * One social recovery share a holder keeps for another member, as an opaque
+ * box encrypted in the holder's browser (docs/social-recovery.md). The api
+ * never reads its content and never learns whose share it holds.
+ */
+export interface HeldShareBox {
+  /** Box id chosen by the app, 32 lowercase hex characters. */
+  id: string;
+  /** Opaque ciphertext bytes (version byte, IV, AES-GCM ciphertext and tag). */
+  ciphertext: Uint8Array;
+  /** Creation time (epoch ms); the list order. */
+  createdAt: number;
+  /** Time of the last create or replace (epoch ms). */
+  updatedAt: number;
+}
+
+/**
+ * Result of {@link AuthStore.putHeldShareBox}: `created` or `replaced` wrote
+ * the caller's box, `taken` means the id belongs to another account and
+ * `full` that the account already has `limit` boxes (both without a write).
+ */
+export type HeldShareBoxPutResult = 'created' | 'replaced' | 'taken' | 'full';
+
 /** Stage of a passkey renew ceremony. */
 export type PasskeyRenewStage = 'begin' | 'ceremony' | 'finish';
 
@@ -959,6 +982,39 @@ export interface AuthStore {
    * @returns `true` only in that case.
    */
   hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean>;
+  /**
+   * The account's held-share boxes, oldest first (creation time, then id).
+   *
+   * @param accountId - Holder account id.
+   * @returns Copies of the boxes; empty when there are none.
+   */
+  listHeldShareBoxes(accountId: string): Promise<HeldShareBox[]>;
+  /**
+   * Create or replace one held-share box of the account as one locked step
+   * per account. A replace keeps the creation time and sets the update time
+   * to `now`.
+   *
+   * @param input - Holder account, box id, ciphertext, epoch ms, and the
+   *   most boxes an account may have.
+   * @returns `created`, `replaced`, `taken` when another account has that id,
+   *   or `full` when a create would exceed `limit` (no write for either).
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  putHeldShareBox(input: {
+    accountId: string;
+    id: string;
+    ciphertext: Uint8Array;
+    now: number;
+    limit: number;
+  }): Promise<HeldShareBoxPutResult>;
+  /**
+   * Delete one held-share box of the account. A box of another account or an
+   * unknown id changes nothing.
+   *
+   * @param accountId - Holder account id.
+   * @param id - Box id.
+   */
+  deleteHeldShareBox(accountId: string, id: string): Promise<void>;
 }
 
 /** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
@@ -1012,6 +1068,8 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #previousWallets = new Map<string, PreviousWallet>();
   /** Recovery share envelopes by `${accountId}:${sparkPubkey}`. */
   readonly #recoveryShares = new Map<string, { ciphertext: Uint8Array; storedAt: number }>();
+  /** Held-share boxes by box id, with their holder account id. */
+  readonly #heldShareBoxes = new Map<string, HeldShareBox & { accountId: string }>();
   /** Push subscriptions a recovery commit deletes; unset until {@link usePushStore}. */
   #pushStore: InMemoryPushStore | undefined;
 
@@ -1373,6 +1431,11 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.delete(id);
     this.#nostrKeys.delete(id);
     this.#accountsByViewKey.delete(previous.viewKey);
+    for (const box of this.#heldShareBoxes.values()) {
+      if (box.accountId === id) {
+        this.#heldShareBoxes.delete(box.id);
+      }
+    }
     if (previous.linkingKey !== null) {
       this.#accountsByLinkingKey.delete(previous.linkingKey);
     }
@@ -2056,6 +2119,56 @@ export class InMemoryAuthStore implements AuthStore {
       return false;
     }
     return this.#recoveryShares.has(`${accountId}:${account.sparkPubkey}`);
+  }
+
+  async listHeldShareBoxes(accountId: string): Promise<HeldShareBox[]> {
+    return [...this.#heldShareBoxes.values()]
+      .filter((box) => box.accountId === accountId)
+      .sort((a, b) => a.createdAt - b.createdAt || (a.id < b.id ? -1 : 1))
+      .map((box) => ({
+        id: box.id,
+        ciphertext: box.ciphertext.slice(),
+        createdAt: box.createdAt,
+        updatedAt: box.updatedAt,
+      }));
+  }
+
+  async putHeldShareBox(input: {
+    accountId: string;
+    id: string;
+    ciphertext: Uint8Array;
+    now: number;
+    limit: number;
+  }): Promise<HeldShareBoxPutResult> {
+    const existing = this.#heldShareBoxes.get(input.id);
+    if (existing !== undefined && existing.accountId !== input.accountId) {
+      return 'taken';
+    }
+    if (existing === undefined) {
+      let count = 0;
+      for (const box of this.#heldShareBoxes.values()) {
+        if (box.accountId === input.accountId) {
+          count += 1;
+        }
+      }
+      if (count >= input.limit) {
+        return 'full';
+      }
+    }
+    this.#heldShareBoxes.set(input.id, {
+      id: input.id,
+      accountId: input.accountId,
+      ciphertext: input.ciphertext.slice(),
+      createdAt: existing?.createdAt ?? input.now,
+      updatedAt: input.now,
+    });
+    return existing === undefined ? 'created' : 'replaced';
+  }
+
+  async deleteHeldShareBox(accountId: string, id: string): Promise<void> {
+    if (this.#heldShareBoxes.get(id)?.accountId === accountId) {
+      this.#heldShareBoxes.delete(id);
+    }
   }
 
   /** The account when it holds `sparkPubkey` as its verified wallet key and is not session-refused. */

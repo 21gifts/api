@@ -27,6 +27,7 @@ export const DEBUG_DB_SECRET_COLUMNS: readonly string[] = [
   'skip_endpoints',
   'session_token',
   'recovery_share_ciphertext',
+  'ciphertext',
 ];
 
 /** One ordinary public table and its row count. */
