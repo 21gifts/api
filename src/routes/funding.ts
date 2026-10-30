@@ -202,9 +202,10 @@ function rosterAddLookup(
 
 /**
  * The account a roster key names: `<username>@<host of PUBLIC_BASE_URL>`
- * (any other domain is no account), a bare username, or, when no account has
- * that username, an account id (the edit key of an account without one).
- * The wallet does not matter.
+ * (any other domain, or any key with `@` while the LNURL server is off, is no
+ * account), a bare username, or, when no account has that username, an
+ * account id (the edit key of an account without one). The wallet does not
+ * matter.
  *
  * @param deps - Route collaborators.
  * @param key - Username, in-app address, or account id.
