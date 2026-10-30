@@ -85,7 +85,8 @@ Spend's `POST /funding/daily-roster/document` import writes only when the
 roster has never been written; after that it returns the stored document, and
 spend pays the addresses it returns. Each row's address is the account's
 receiving address at that moment (`<username>@<host>` once its wallet is
-verified, `null` before). Spend's own local list (what
+verified, `null` before, and `null` without a username or with the LNURL
+server off). Spend's own local list (what
 `gifts-debug spend` prints) is not used for payment decisions once the API
 roster exists.
 

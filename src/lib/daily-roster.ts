@@ -104,8 +104,8 @@ export interface DailyRosterPayoutEntry {
   username: string | null;
   /**
    * The account's receiving address at read time (`receivingAddress`), or
-   * `null` when the account is missing, has no verified wallet, or the LNURL
-   * server is off: the row is then not payable.
+   * `null` when the account is missing, has no username or no verified
+   * wallet, or the LNURL server is off: the row is then not payable.
    */
   address: string | null;
   /** USD amount for this account. */
@@ -277,8 +277,8 @@ async function attachPayoutAddress(
  * resolved now from the account's verified wallet through
  * `receivingAddress`, and its username.
  *
- * A missing account, an account without a verified wallet, or the LNURL
- * server being off gives `address: null`. Lookup is called once per row, in
+ * A missing account, an account without a username or a verified wallet,
+ * or the LNURL server being off gives `address: null`. Lookup is called once per row, in
  * parallel. Order, account id, and amountUsd are unchanged. Lookup errors are
  * not caught.
  *

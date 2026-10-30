@@ -1318,7 +1318,7 @@
 
 ## Function: withPayoutAddresses
 
-- **Purpose:** Copy a stored daily roster for spend and attach to each row its `username` and `address`, the address it is paid on, resolved at read time from the account through `receivingAddress` (`<username>@<host of PUBLIC_BASE_URL>` with a verified wallet). A missing account, an account without a verified wallet, or the LNURL server being off gives `address: null`: the row has no wallet and is not payable. Lookup runs once per row, in parallel. Lookup errors are not caught.
+- **Purpose:** Copy a stored daily roster for spend and attach to each row its `username` and `address`, the address it is paid on, resolved at read time from the account through `receivingAddress` (`<username>@<host of PUBLIC_BASE_URL>` with a verified wallet). A missing account, an account without a username or a verified wallet, or the LNURL server being off gives `address: null`: the row has no wallet and is not payable. Lookup runs once per row, in parallel. Lookup errors are not caught.
 - **Inputs:** `roster` (`DailyRosterDocument`), `lookup` (`DailyRosterAccountLookup`), and `lnurlServer` (or `undefined`).
 - **Returns / side effects:** `Promise<DailyRosterPayoutDocument>`: the switches, comment, `defaultAmountUsd`, and rows `{ accountId, username, address, amountUsd }` in stored order. No I/O of its own.
 - **Used by:** `fundingRoutes` for `GET`/`POST /funding/daily-roster/document` and every `/funding/daily-roster/worker/*` write.
