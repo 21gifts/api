@@ -3032,6 +3032,9 @@ describe('PostgresAuthStore social recovery', () => {
       const replaced = put([[holder()], [{ account_id: 'acc' }], [{ id: BOX }]], 0);
       expect(await replaced.result).toBe('replaced');
       expect(replaced.tx.queries).toHaveLength(3);
+      // The third query is the upsert itself, not a count.
+      expect(replaced.tx.queries[2]?.text).toContain('INSERT INTO held_share_box');
+      expect(replaced.tx.queries[2]?.params).toEqual([BOX, 'acc', replaced.ciphertext, NOW]);
     });
 
     it('answers taken for another account’s id, also when one appears before the write', async () => {
