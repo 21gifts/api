@@ -263,4 +263,50 @@ describe('PostgresDebugDbStore', () => {
       DebugDbCursorError,
     );
   });
+
+  it('shows the recovery share envelope only as its octet length', async () => {
+    const calls: Call[] = [];
+    const sql: SqlClient = {
+      query: <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        calls.push({ text, params });
+        if (text.includes('relkind')) {
+          return Promise.resolve([{ name: 'recovery_share' }] as T[]);
+        }
+        if (text.includes('pg_index')) {
+          return Promise.resolve([{ name: 'account_id' }, { name: 'spark_pubkey' }] as T[]);
+        }
+        if (text.includes('pg_attribute')) {
+          return Promise.resolve([
+            { name: 'account_id', type: 'uuid' },
+            { name: 'spark_pubkey', type: 'text' },
+            { name: 'recovery_share_ciphertext', type: 'bytea' },
+            { name: 'stored_at', type: 'timestamptz' },
+          ] as T[]);
+        }
+        return Promise.resolve([
+          {
+            account_id: 'acc',
+            spark_pubkey: `02${'1'.repeat(64)}`,
+            recovery_share_ciphertext: '83',
+            stored_at: '2026-10-29T00:00:00.000Z',
+          },
+        ] as T[]);
+      },
+      execute: () => Promise.resolve(),
+    };
+    expect(DEBUG_DB_SECRET_COLUMNS).toContain('recovery_share_ciphertext');
+    const page = await new PostgresDebugDbStore(sql).readPage('recovery_share', null);
+    expect(page?.rows).toEqual([
+      {
+        account_id: 'acc',
+        spark_pubkey: `02${'1'.repeat(64)}`,
+        recovery_share_ciphertext: 83,
+        stored_at: '2026-10-29T00:00:00.000Z',
+      },
+    ]);
+    const select = calls.find((call) => call.text.includes('FROM "recovery_share"'));
+    expect(select?.text).toContain(
+      'octet_length("recovery_share_ciphertext") AS "recovery_share_ciphertext"',
+    );
+  });
 });

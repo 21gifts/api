@@ -1,20 +1,26 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
-import type { InvoicePayer, PayInvoiceResult } from '@/lib/invoice-payer';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
-import { SESSION_TTL_MS, VERIFICATION_TTL_MS } from '@/lib/config';
-import type { FetchFn } from '@/lib/lnurlp';
+import { SESSION_TTL_MS } from '@/lib/config';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
-import { LIGHTNING_ADDRESS_NOT_ZAP } from '@/lib/nip57-probe';
-import { parseNostrKek } from '@/lib/nostr/kek';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
-import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
-import { bearerToken, meRoutes } from '@/routes/me';
 import { createApp } from '@/server';
+import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
+import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import type { FetchFn } from '@/lib/lnurlp';
+import { SPARK_EXPLORER_BASE_URL } from '@/lib/spark-explorer';
+import type { SpendPing } from '@/lib/spend-ping';
+import { bearerToken, meRoutes } from '@/routes/me';
+import {
+  PINNED,
+  RECOVERY_USERNAME,
+  seedPinnedAccount,
+  stagePendingRecovery,
+} from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -24,34 +30,31 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 let warn: ReturnType<typeof vi.spyOn>;
-let nip57: { mockRestore: () => void };
 
-beforeEach(async () => {
+beforeEach(() => {
   warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
-  const bolt11 = await import('@/lib/bolt11');
-  nip57 = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
 });
 
 afterEach(() => {
   warn.mockRestore();
-  nip57.mockRestore();
 });
 
 const now = (): number => 1_000_000;
 const AUTH = { authorization: 'Bearer tok' };
 const LINKING_KEY = `02${'a'.repeat(64)}`;
 const VIEW_KEY = 'a'.repeat(64);
-const ADDRESS = 'alice@walletofsatoshi.com';
-const PR = 'lnbc10n1testinvoice';
-const NOSTR_KEK = parseNostrKek('cd'.repeat(32));
+const ADDRESS = 'alice@example.test';
 
 interface MountOpts {
-  payer?: InvoicePayer;
-  fetchImpl?: FetchFn;
   clock?: () => number;
   messages?: InMemoryMessageStore;
   pushStore?: InMemoryPushStore;
   notificationStore?: InMemoryNotificationStore;
+  walletEnabled?: boolean;
+  recoveryShareKek?: Uint8Array;
+  fetchImpl?: FetchFn;
+  fundingStore?: FundingStore;
+  spendPing?: SpendPing;
 }
 
 function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
@@ -61,20 +64,25 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       store,
       messages: opts.messages ?? new InMemoryMessageStore(),
       now: opts.clock ?? now,
-      payer: opts.payer ?? new UnconfiguredInvoicePayer(),
-      fetchImpl: opts.fetchImpl ?? globalThis.fetch,
-      nostrKek: NOSTR_KEK,
       ...(opts.pushStore === undefined ? {} : { pushStore: opts.pushStore }),
       ...(opts.notificationStore === undefined
         ? {}
         : { notificationStore: opts.notificationStore }),
+      ...(opts.walletEnabled === true ? { lnurlServer: LNURL_SERVER } : {}),
+      ...(opts.recoveryShareKek === undefined ? {} : { recoveryShareKek: opts.recoveryShareKek }),
+      ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
+      ...(opts.fundingStore === undefined ? {} : { fundingStore: opts.fundingStore }),
+      ...(opts.spendPing === undefined ? {} : { spendPing: opts.spendPing }),
     }),
   );
 }
 
+const SPARK_PUBKEY = `02${'a'.repeat(64)}`;
+const SPARK_PUBKEY_OTHER = `03${'b'.repeat(64)}`;
+
 /** A store with a signed-in account `acc` reachable via session `tok`. */
 async function seededStore(
-  overrides: { lightningAddress?: string | null; verified?: boolean } = {},
+  overrides: { wallet?: boolean; hadExternalWallet?: boolean } = {},
 ): Promise<InMemoryAuthStore> {
   const store = new InMemoryAuthStore();
   await store.createAccount({
@@ -82,50 +90,20 @@ async function seededStore(
     linkingKey: LINKING_KEY,
     role: 'basis',
     name: null,
-    lightningAddress: overrides.lightningAddress ?? null,
-    lightningAddressVerified: overrides.verified ?? false,
     forumLawsDismissed: false,
     location: null,
     viewKey: VIEW_KEY,
     createdAt: 1_000_000,
     rulesAgreedAt: null,
+    ...(overrides.wallet === true ? { username: 'alice', walletRequired: true } : {}),
+    ...(overrides.hadExternalWallet === true ? { hadExternalWallet: true } : {}),
   });
+  if (overrides.wallet === true) {
+    await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'alice', 1);
+  }
   await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
   return store;
-}
-
-function jsonResponse(body: unknown, status = 200): Response {
-  return new Response(JSON.stringify(body), {
-    status,
-    headers: { 'content-type': 'application/json' },
-  });
-}
-
-/** Fake LNURL-pay that always yields zap-capable metadata and a 1-sat invoice. */
-function happyFetch(): FetchFn {
-  return async (input) => {
-    if (String(input).includes('/.well-known/lnurlp/')) {
-      return jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
-        minSendable: 1000,
-        maxSendable: 100_000_000_000,
-        commentAllowed: 255,
-        allowsNostr: true,
-        nostrPubkey: 'aa'.repeat(32),
-      });
-    }
-    return jsonResponse({ pr: PR });
-  };
-}
-
-function okPayer(paid: string[] = []): InvoicePayer {
-  return {
-    isConfigured: () => true,
-    payInvoice: async (bolt11): Promise<PayInvoiceResult> => {
-      paid.push(bolt11);
-      return { ok: true };
-    },
-  };
 }
 
 describe('GET /me', () => {
@@ -171,8 +149,6 @@ describe('GET /me', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -194,8 +170,6 @@ describe('GET /me', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -229,7 +203,8 @@ describe('GET /me', () => {
       setup: 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules' | null;
       missing: string[];
       hasPosted: boolean;
-      notificationLevel: 'all' | 'active' | 'mentions';
+      notificationLevel: 'all' | 'active' | 'mentions' | 'none';
+      notifyHearts: boolean;
       amountUnit: 'btc' | 'fiat';
       locale: 'en' | 'de' | 'es' | 'fil' | null;
       fiat: 'CHF' | 'EUR' | 'USD' | 'PHP' | null;
@@ -252,6 +227,7 @@ describe('GET /me', () => {
     expect(body.missing).toEqual(['name', 'username', 'lightning-address', 'rules']);
     expect(body.hasPosted).toBe(false);
     expect(body.notificationLevel).toBe('all');
+    expect(body.notifyHearts).toBe(true);
     expect(body.amountUnit).toBe('btc');
     expect(body.locale).toBeNull();
     expect(body.fiat).toBeNull();
@@ -293,8 +269,6 @@ describe('GET /me', () => {
       linkingKey: LINKING_KEY,
       role: 'verified',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -571,8 +545,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -622,8 +594,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -680,8 +650,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -710,8 +678,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -735,8 +701,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -772,8 +736,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -826,8 +788,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -856,8 +816,6 @@ describe('POST /me/passkey-renew/report', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -891,8 +849,6 @@ describe('POST /me/passkey-renew/ack', () => {
       linkingKey: LINKING_KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -996,6 +952,119 @@ describe('POST /me/forum-laws-dismissed', () => {
   });
 });
 
+describe('POST /me/wallet-intro-seen', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/wallet-intro-seen', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('is false on GET /me before the first POST', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(false);
+  });
+
+  it('sets walletIntroSeen on first POST and logs', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/wallet-intro-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { walletIntroSeen: boolean; viewKey: string };
+    expect(body.walletIntroSeen).toBe(true);
+    expect(body.viewKey).toBe(VIEW_KEY);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.wallet_intro.seen' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const before = warn.mock.calls.length;
+    const res = await app.request('/me/wallet-intro-seen', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+    const seenLogs = parsedEvents(warn)
+      .slice(before)
+      .filter((e) => e['event'] === 'account.wallet_intro.seen');
+    expect(seenLogs).toHaveLength(0);
+  });
+
+  it('includes walletIntroSeen true on GET /me after the POST', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me', { headers: AUTH });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  });
+
+  it('does not clear walletIntroSeen when setting a name', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    await app.request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    const res = await app.request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { name: string; walletIntroSeen: boolean };
+    expect(body.name).toBe('Ada');
+    expect(body.walletIntroSeen).toBe(true);
+    expect((await store.getAccount('acc'))?.walletIntroSeen).toBe(true);
+  });
+
+  it('does not clear walletIntroSeen when a stale snapshot is written', async () => {
+    const store = await seededStore();
+    const stale = await store.getAccount('acc');
+    await mount(store).request('/me/wallet-intro-seen', { method: 'POST', headers: AUTH });
+    await store.updateAccount({ ...stale!, name: 'Stale' });
+    const stored = await store.getAccount('acc');
+    expect(stored?.name).toBe('Stale');
+    expect(stored?.walletIntroSeen).toBe(true);
+  });
+});
+
+describe('GET /me hadExternalWallet', () => {
+  it('is false when the account has no stored external payout address', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(false);
+  });
+
+  it('is true when the account has a stored external payout address', async () => {
+    const store = await seededStore({ hadExternalWallet: true });
+    const res = await mount(store).request('/me', { headers: AUTH });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(true);
+  });
+
+  it('stays true when the account is written', async () => {
+    const store = await seededStore({ hadExternalWallet: true });
+    const res = await mount(store).request('/me/name', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'Ada' }),
+    });
+    expect(((await res.json()) as { hadExternalWallet: boolean }).hadExternalWallet).toBe(true);
+    expect((await store.getAccount('acc'))?.hadExternalWallet).toBe(true);
+  });
+});
+
 describe('POST /me/notification-level', () => {
   it('returns 401 without a valid session', async () => {
     const res = await mount(new InMemoryAuthStore()).request('/me/notification-level', {
@@ -1012,7 +1081,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, or mentions',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1024,7 +1093,7 @@ describe('POST /me/notification-level', () => {
     });
     expect(res.status).toBe(400);
     expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a level of all, active, or mentions',
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
     });
   });
 
@@ -1072,6 +1141,94 @@ describe('POST /me/notification-level', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { notificationLevel: string }).notificationLevel).toBe('active');
     expect((await store.getAccount('acc'))?.notificationLevel).toBe('active');
+  });
+
+  it('rejects messages', async () => {
+    const res = await mount(await seededStore()).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'messages' }),
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with a level of all, active, mentions, or none',
+    });
+  });
+
+  it('sets notificationLevel none and reads it back from the store', async () => {
+    const store = await seededStore();
+    const res = await mount(store).request('/me/notification-level', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ level: 'none' }),
+    });
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { notificationLevel: string };
+    expect(body.notificationLevel).toBe('none');
+    expect((await store.getAccount('acc'))?.notificationLevel).toBe('none');
+  });
+});
+
+describe('POST /me/heart-notifications', () => {
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/heart-notifications', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body', async () => {
+    const res = await mount(await seededStore()).request('/me/heart-notifications', {
+      method: 'POST',
+      headers: AUTH,
+    });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with an enabled boolean',
+    });
+  });
+
+  it('writes true and false and owner JSON shows the value', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const off = await app.request('/me/heart-notifications', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(off.status).toBe(200);
+    expect(((await off.json()) as { notifyHearts: boolean }).notifyHearts).toBe(false);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(false);
+    const on = await app.request('/me/heart-notifications', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(on.status).toBe(200);
+    expect(((await on.json()) as { notifyHearts: boolean }).notifyHearts).toBe(true);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(true);
+    expect(
+      parsedEvents(warn).some(
+        (e) =>
+          e['event'] === 'account.heart_notifications.set' &&
+          e['accountId'] === 'acc' &&
+          e['enabled'] === false,
+      ),
+    ).toBe(true);
+  });
+
+  it('is idempotent on a second POST of the same value', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const body = JSON.stringify({ enabled: false });
+    await app.request('/me/heart-notifications', { method: 'POST', headers, body });
+    const res = await app.request('/me/heart-notifications', { method: 'POST', headers, body });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { notifyHearts: boolean }).notifyHearts).toBe(false);
+    expect((await store.getAccount('acc'))?.notifyHearts).toBe(false);
   });
 });
 
@@ -1421,40 +1578,20 @@ describe('POST /me/rules-agreement', () => {
     expect(agreeEvents).toHaveLength(1);
   });
 
-  it('keeps the timestamp when the name or address changes', async () => {
+  it('keeps the timestamp when the name changes', async () => {
     const store = await seededStore();
     const agreedAt = 2_000_000;
     await mount(store, { clock: () => agreedAt }).request('/me/rules-agreement', {
       method: 'POST',
       headers: AUTH,
     });
-    const named = await mount(store, { fetchImpl: happyFetch() }).request('/me/name', {
+    const named = await mount(store).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Ada' }),
     });
     expect(named.status).toBe(200);
     expect(((await named.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(agreedAt);
-    const linked = await mount(store, { fetchImpl: happyFetch() }).request(
-      '/me/lightning-address',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ address: ADDRESS }),
-      },
-    );
-    expect(linked.status).toBe(200);
-    expect(((await linked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
-      agreedAt,
-    );
-    const unlinked = await mount(store).request('/me/lightning-address', {
-      method: 'DELETE',
-      headers: AUTH,
-    });
-    expect(unlinked.status).toBe(200);
-    expect(((await unlinked.json()) as { rulesAgreedAt: number | null }).rulesAgreedAt).toBe(
-      agreedAt,
-    );
     expect((await store.getAccount('acc'))?.rulesAgreedAt).toBe(agreedAt);
   });
 });
@@ -1519,7 +1656,7 @@ describe('POST /me/name', () => {
     expect(await res.json()).toEqual({ error: 'Name must be 1–80 characters' });
   });
 
-  it('trims, stores, and returns the name without a profile note when LN is missing', async () => {
+  it('trims, stores, and returns the name without a profile note when no wallet is verified', async () => {
     const store = await seededStore();
     const messages = new InMemoryMessageStore();
     const res = await mount(store, { messages }).request('/me/name', {
@@ -1541,8 +1678,8 @@ describe('POST /me/name', () => {
     ).toBe(true);
   });
 
-  it('creates a profile note when setting a name with Lightning Address already linked', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
+  it('creates a profile note when setting a name with a verified wallet', async () => {
+    const store = await seededStore({ wallet: true });
     const messages = new InMemoryMessageStore();
     const res = await mount(store, { messages }).request('/me/name', {
       method: 'POST',
@@ -1557,8 +1694,8 @@ describe('POST /me/name', () => {
     expect(note?.parentId).toBeNull();
   });
 
-  it('does not enqueue forum pushes when a name is set with LN already linked', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
+  it('does not enqueue forum pushes when a name is set with a verified wallet', async () => {
+    const store = await seededStore({ wallet: true });
     const messages = new InMemoryMessageStore();
     const pushStore = new InMemoryPushStore();
     await pushStore.upsertSubscription({
@@ -1584,7 +1721,7 @@ describe('POST /me/name', () => {
   });
 
   it('does not create a second profile note or change its text on rename', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
+    const store = await seededStore({ wallet: true });
     const messages = new InMemoryMessageStore();
     const first = await mount(store, { messages }).request('/me/name', {
       method: 'POST',
@@ -1605,9 +1742,9 @@ describe('POST /me/name', () => {
     expect((await messages.listLatest(10)).filter((row) => row.parentId === null)).toHaveLength(1);
   });
 
-  it('keeps a previously stored lightning address when setting a name', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    const res = await mount(store).request('/me/name', {
+  it('keeps the wallet receiving address when setting a name', async () => {
+    const store = await seededStore({ wallet: true });
+    const res = await mount(store, { walletEnabled: true }).request('/me/name', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ name: 'Ada' }),
@@ -1658,8 +1795,6 @@ describe('POST /me/name', () => {
       name: 'Other',
       username: 'ada',
       location: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
@@ -1692,8 +1827,6 @@ describe('POST /me/name', () => {
       name: 'Other',
       username: 'ada',
       location: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
@@ -1814,8 +1947,6 @@ describe('POST /me/username', () => {
       name: 'Other',
       username: 'ada',
       location: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       viewKey: 'b'.repeat(64),
       createdAt: 1,
@@ -1841,6 +1972,206 @@ describe('POST /me/username', () => {
     });
     expect(res.status).toBe(200);
     expect(((await res.json()) as { username: string }).username).toBe('ada');
+  });
+
+  it('returns 409 once the wallet is connected', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    await store.claimSparkPubkey('acc', SPARK_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', SPARK_PUBKEY, 'ada', 1_000_000);
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada2' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Username is fixed once the wallet is connected',
+    });
+  });
+
+  it('returns 409 when setUsername reports the username taken after the pre-check', async () => {
+    const store = await seededStore();
+    vi.spyOn(store, 'getAccountByUsername').mockResolvedValue(undefined);
+    vi.spyOn(store, 'setUsername').mockResolvedValue({ ok: false, reason: 'taken' });
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Username is already in use' });
+  });
+
+  it('returns 409 when setUsername reports the username frozen after the pre-check', async () => {
+    const store = await seededStore();
+    vi.spyOn(store, 'setUsername').mockResolvedValue({ ok: false, reason: 'frozen' });
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Username is fixed once the wallet is connected',
+    });
+  });
+
+  it('returns 401 when setUsername reports the account missing after auth', async () => {
+    const store = await seededStore();
+    vi.spyOn(store, 'setUsername').mockResolvedValue({ ok: false, reason: 'missing' });
+    const res = await mount(store).request('/me/username', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ username: 'ada' }),
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+});
+
+describe('PUT /me/wallet', () => {
+  async function walletReadyStore(
+    overrides: { username?: string | null; walletRequired?: boolean } = {},
+  ): Promise<InMemoryAuthStore> {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: LINKING_KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: overrides.username === undefined ? 'ada' : overrides.username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1_000_000,
+      rulesAgreedAt: null,
+      walletRequired: overrides.walletRequired ?? true,
+    });
+    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
+    return store;
+  }
+
+  it('returns 404 when walletEnabled is not true', async () => {
+    const store = await walletReadyStore();
+    const res = await mount(store).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(await walletReadyStore(), { walletEnabled: true }).request(
+      '/me/wallet',
+      {
+        method: 'PUT',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+      },
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 400 for bad JSON, a missing field, or a bad key', async () => {
+    const store = await walletReadyStore();
+    const app = mount(store, { walletEnabled: true });
+    for (const body of ['{', '{}', JSON.stringify({ sparkPubkey: 'nope' })]) {
+      const res = await app.request('/me/wallet', {
+        method: 'PUT',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters',
+      });
+    }
+  });
+
+  it('returns 409 when the username is missing', async () => {
+    const store = await walletReadyStore({ username: null });
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'missing_requirements',
+      missing: ['username'],
+    });
+  });
+
+  it('returns 409 when walletRequired is not true', async () => {
+    const store = await walletReadyStore({ walletRequired: false });
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet is not set up' });
+  });
+
+  it('claims the key, overwrites while unverified, and returns owner JSON', async () => {
+    const store = await walletReadyStore();
+    const app = mount(store, { walletEnabled: true });
+    const first = await app.request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY }),
+    });
+    expect(first.status).toBe(200);
+    const firstBody = (await first.json()) as {
+      sparkPubkey: string | null;
+      sparkWalletVerified: boolean;
+    };
+    expect(firstBody.sparkPubkey).toBe(SPARK_PUBKEY);
+    expect(firstBody.sparkWalletVerified).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(SPARK_PUBKEY);
+    expect(
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'account.wallet.claimed' && e['accountId'] === 'acc',
+      ),
+    ).toBe(true);
+
+    const second = await app.request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY_OTHER }),
+    });
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as { sparkPubkey: string }).sparkPubkey).toBe(SPARK_PUBKEY_OTHER);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(SPARK_PUBKEY_OTHER);
+  });
+
+  it('returns 409 once the wallet is verified', async () => {
+    const store = await walletReadyStore();
+    await store.claimSparkPubkey('acc', SPARK_PUBKEY);
+    await store.markSparkPubkeyVerified('acc', SPARK_PUBKEY, 'ada', 1_000_000);
+    const res = await mount(store, { walletEnabled: true }).request('/me/wallet', {
+      method: 'PUT',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ sparkPubkey: SPARK_PUBKEY_OTHER }),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet is already connected' });
   });
 });
 
@@ -1950,775 +2281,70 @@ describe('POST /me/location', () => {
   });
 });
 
-describe('POST /me/lightning-address', () => {
-  it('returns 401 without a valid session', async () => {
-    const res = await mount(new InMemoryAuthStore()).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('links a valid Lightning Address', async () => {
-    const store = await seededStore();
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      lightningAddress: string;
-      lightningAddressVerified: boolean;
-    };
-    expect(body.lightningAddress).toBe(ADDRESS);
-    expect(body.lightningAddressVerified).toBe(false);
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe(ADDRESS);
-    expect(
-      parsedEvents(warn).some(
-        (e) =>
-          e['event'] === 'account.lightning_address.linked' &&
-          e['accountId'] === 'acc' &&
-          e['address'] === ADDRESS,
-      ),
-    ).toBe(true);
-  });
-
-  it('creates a profile note when linking Lightning Address after a name is set', async () => {
-    const store = await seededStore();
-    const messages = new InMemoryMessageStore();
-    const pushStore = new InMemoryPushStore();
-    const named = await mount(store, { messages }).request('/me/name', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ name: 'Ada' }),
-    });
-    expect(named.status).toBe(200);
-    expect((await store.getAccount('acc'))?.profileMessageId).toBeUndefined();
-    expect(await messages.listLatest(10)).toHaveLength(0);
-    const res = await mount(store, {
-      messages,
-      pushStore,
-      notificationStore: new InMemoryNotificationStore(),
-      fetchImpl: happyFetch(),
-    }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(200);
-    const stored = await store.getAccount('acc');
-    expect(typeof stored?.profileMessageId).toBe('string');
-    const note = await messages.getById(stored!.profileMessageId!);
-    expect(note?.text).toBe('Ada');
-    expect(note?.parentId).toBeNull();
-  });
-
-  it('does not create a profile note when linking Lightning Address without a name', async () => {
-    const store = await seededStore();
-    const messages = new InMemoryMessageStore();
-    const res = await mount(store, { messages, fetchImpl: happyFetch() }).request(
-      '/me/lightning-address',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ address: ADDRESS }),
-      },
-    );
-    expect(res.status).toBe(200);
-    expect((await store.getAccount('acc'))?.profileMessageId).toBeUndefined();
-    expect(await messages.listLatest(10)).toHaveLength(0);
-  });
-
-  it('returns 409 when the Lightning Address belongs to another account', async () => {
-    const store = await seededStore();
-    await store.createAccount({
-      id: 'other',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Other',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('returns 409 when updateAccount silently refuses a taken address', async () => {
-    class SilentStore extends InMemoryAuthStore {
-      override async getAccountByLightningAddress(): Promise<undefined> {
-        return undefined;
-      }
-      override async updateAccount(): Promise<void> {
-        return;
-      }
-    }
-    const store = new SilentStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: LINKING_KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: VIEW_KEY,
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
-    await store.createSession({ token: 'tok', accountId: 'acc', createdAt: 1_000_000 });
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Lightning Address is already in use' });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('clears a pending verification when linking', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: 'bob@getalby.com' }),
-    });
-    expect(res.status).toBe(200);
-    expect(await store.getVerification('acc')).toBeUndefined();
-  });
-
-  it('rejects a malformed JSON body', async () => {
-    const res = await mount(await seededStore()).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: 'not json',
-    });
-    expect(res.status).toBe(400);
-  });
-
-  it('rejects an invalid Lightning Address without calling fetch', async () => {
-    const fetchCalls: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
-      fetchCalls.push(String(input));
-      return jsonResponse({});
-    };
-    const res = await mount(await seededStore(), { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: 'not-an-address' }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Not a valid Lightning Address (expected name@domain)',
-    });
-    expect(fetchCalls).toEqual([]);
-  });
-
-  it('rejects an unreachable well-known without saving', async () => {
-    const store = await seededStore({ lightningAddress: 'keep@example.com' });
-    const fetchImpl: FetchFn = async () => jsonResponse({}, 502);
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('keep@example.com');
-    expect(
-      parsedEvents(warn).some(
-        (e) =>
-          e['event'] === 'account.lightning_address.resolve_failed' &&
-          e['accountId'] === 'acc' &&
-          e['address'] === ADDRESS,
-      ),
-    ).toBe(true);
-  });
-
-  it('rejects metadata without allowsNostr without saving', async () => {
-    const store = await seededStore();
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          commentAllowed: 255,
-        });
-      }
-      return jsonResponse({ pr: PR });
-    };
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('rejects allowsNostr without nostrPubkey without saving', async () => {
-    const store = await seededStore();
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          allowsNostr: true,
-        });
-      }
-      return jsonResponse({ pr: PR });
-    };
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('rejects allowsNostr with empty nostrPubkey without saving', async () => {
-    const store = await seededStore();
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          allowsNostr: true,
-          nostrPubkey: '',
-        });
-      }
-      return jsonResponse({ pr: PR });
-    };
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('rejects allowsNostr with whitespace-only nostrPubkey without saving', async () => {
-    const store = await seededStore();
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          allowsNostr: true,
-          nostrPubkey: '   ',
-        });
-      }
-      return jsonResponse({ pr: PR });
-    };
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('rejects a zap-incapable invoice from the NIP-57 probe without saving', async () => {
-    const bolt11 = await import('@/lib/bolt11');
-    vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(false);
-    const store = await seededStore();
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: LIGHTNING_ADDRESS_NOT_ZAP });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'account.lightning_address.not_zap' && e['accountId'] === 'acc',
-      ),
-    ).toBe(true);
-  });
-
-  it('returns 503 when nostrKek is unset', async () => {
-    const store = await seededStore();
-    const app = new Hono().route(
-      '/me',
-      meRoutes({
-        store,
-        messages: new InMemoryMessageStore(),
-        now,
-        payer: new UnconfiguredInvoicePayer(),
-        fetchImpl: happyFetch(),
-      }),
-    );
-    const res = await app.request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBeNull();
-  });
-
-  it('returns 503 when ensureAccountNostrKey throws', async () => {
-    const store = await seededStore();
-    store.setNostrKeyIfAbsent = async () => {
-      throw new Error('keygen boom');
-    };
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-  });
-
-  it('returns 503 when getNostrPublicKey is missing after ensure', async () => {
-    const store = await seededStore();
-    store.getNostrPublicKey = async () => undefined;
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-  });
-
-  it('returns 503 when getNostrPublicKey is empty after ensure', async () => {
-    const store = await seededStore();
-    store.getNostrPublicKey = async () => '';
-    const res = await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-  });
-
-  it('rejects when the NIP-57 probe cannot mint after metadata resolved', async () => {
-    const store = await seededStore({ lightningAddress: 'keep@example.com' });
-    const fetchImpl: FetchFn = async (input) => {
-      if (String(input).includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          commentAllowed: 255,
-          allowsNostr: true,
-          nostrPubkey: 'aa'.repeat(32),
-        });
-      }
-      return jsonResponse({}, 500);
-    };
-    const res = await mount(store, { fetchImpl }).request('/me/lightning-address', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address could not be resolved',
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('keep@example.com');
-    expect(
-      parsedEvents(warn).some(
-        (e) =>
-          e['event'] === 'account.lightning_address.resolve_failed' &&
-          e['accountId'] === 'acc' &&
-          e['address'] === ADDRESS,
-      ),
-    ).toBe(true);
-  });
-});
-
-describe('DELETE /me/lightning-address', () => {
-  it('returns 401 without a valid session', async () => {
-    const res = await mount(new InMemoryAuthStore()).request('/me/lightning-address', {
-      method: 'DELETE',
-    });
-    expect(res.status).toBe(401);
-  });
-
-  it('unlinks the address and clears pending verification', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    const existing = await store.getAccount('acc');
-    await store.updateAccount({
-      ...existing!,
-      name: 'Ada',
-      username: 'ada',
-      lightningAddressSkippedAt: 99,
-    });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store).request('/me/lightning-address', {
-      method: 'DELETE',
-      headers: AUTH,
-    });
+describe('receiving wallet on owner JSON', () => {
+  it('shows the wallet address and clears the posting requirement only once verified', async () => {
+    const store = await seededStore({ wallet: true });
+    const res = await mount(store, { walletEnabled: true }).request('/me', { headers: AUTH });
     expect(res.status).toBe(200);
     const body = (await res.json()) as {
       lightningAddress: string | null;
-      setup: 'name' | 'username' | 'lightning-address' | 'rules' | null;
-    };
-    expect(body.lightningAddress).toBeNull();
-    expect(body.setup).toBe('lightning-address');
-    const stored = await store.getAccount('acc');
-    expect(stored?.lightningAddress).toBeNull();
-    expect(stored?.lightningAddressSkippedAt).toBeNull();
-    expect(await store.getVerification('acc')).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'account.lightning_address.unlinked' && e['accountId'] === 'acc',
-      ),
-    ).toBe(true);
-  });
-});
-
-describe('POST /me/lightning-address/verification', () => {
-  it('returns 401 without a valid session', async () => {
-    const res = await mount(new InMemoryAuthStore()).request('/me/lightning-address/verification', {
-      method: 'POST',
-    });
-    expect(res.status).toBe(401);
-    expect(await res.json()).toEqual({ error: 'Unauthorized' });
-  });
-
-  it('returns 409 when no address is linked', async () => {
-    const res = await mount(await seededStore(), {
-      payer: okPayer(),
-      fetchImpl: happyFetch(),
-    }).request('/me/lightning-address/verification', {
-      method: 'POST',
-      headers: AUTH,
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No Lightning Address linked' });
-  });
-
-  it('returns 409 when already verified', async () => {
-    const res = await mount(await seededStore({ lightningAddress: ADDRESS, verified: true }), {
-      payer: okPayer(),
-      fetchImpl: happyFetch(),
-    }).request('/me/lightning-address/verification', {
-      method: 'POST',
-      headers: AUTH,
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Lightning Address already verified' });
-  });
-
-  it('returns 503 when the payer is not configured without calling LNURL', async () => {
-    const fetchCalls: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
-      fetchCalls.push(String(input));
-      return jsonResponse({});
-    };
-    const res = await mount(await seededStore({ lightningAddress: ADDRESS }), {
-      payer: new UnconfiguredInvoicePayer(),
-      fetchImpl,
-    }).request('/me/lightning-address/verification', {
-      method: 'POST',
-      headers: AUTH,
-    });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({
-      error: 'Verification payments are not configured',
-    });
-    expect(fetchCalls).toEqual([]);
-  });
-
-  it('returns 502 when the address is unreachable', async () => {
-    const fetchImpl: FetchFn = async () => jsonResponse({}, 502);
-    const res = await mount(await seededStore({ lightningAddress: ADDRESS }), {
-      payer: okPayer(),
-      fetchImpl,
-    }).request('/me/lightning-address/verification', {
-      method: 'POST',
-      headers: AUTH,
-    });
-    expect(res.status).toBe(502);
-    expect(await res.json()).toEqual({
-      error: 'Lightning Address did not accept the verification payment',
-    });
-  });
-
-  it('returns 200 sent with expiresInSeconds and sats (no nonce)', async () => {
-    const paid: string[] = [];
-    const callbackUrls: string[] = [];
-    const fetchImpl: FetchFn = async (input) => {
-      const url = String(input);
-      if (url.includes('/.well-known/lnurlp/')) {
-        return jsonResponse({
-          callback: 'https://walletofsatoshi.com/lnurlp/callback',
-          minSendable: 1000,
-          maxSendable: 100_000_000_000,
-          commentAllowed: 255,
-        });
-      }
-      callbackUrls.push(url);
-      return jsonResponse({ pr: PR });
-    };
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    const res = await mount(store, { payer: okPayer(paid), fetchImpl }).request(
-      '/me/lightning-address/verification',
-      { method: 'POST', headers: AUTH },
-    );
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as Record<string, unknown>;
-    expect(body).toEqual({
-      status: 'sent',
-      expiresInSeconds: Math.floor(VERIFICATION_TTL_MS / 1000),
-      sats: 1,
-    });
-    expect(body).not.toHaveProperty('nonce');
-    expect(paid).toEqual([PR]);
-    const callbackUrl = callbackUrls[0];
-    expect(callbackUrl).toBeDefined();
-    expect(new URL(callbackUrl ?? '').searchParams.get('comment')).toMatch(
-      /^21gifts [0-9a-f]{32}$/,
-    );
-    expect(await store.getVerification('acc')).toBeDefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'account.verification.started' && e['accountId'] === 'acc',
-      ),
-    ).toBe(true);
-    expect(parsedEvents(warn).every((e) => !('nonce' in e))).toBe(true);
-  });
-});
-
-describe('POST /me/lightning-address/verification/confirm', () => {
-  it('returns 401 without a valid session', async () => {
-    const res = await mount(new InMemoryAuthStore()).request(
-      '/me/lightning-address/verification/confirm',
-      {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ nonce: 'a'.repeat(32) }),
-      },
-    );
-    expect(res.status).toBe(401);
-  });
-
-  it('returns 400 for a missing nonce string', async () => {
-    const res = await mount(await seededStore({ lightningAddress: ADDRESS })).request(
-      '/me/lightning-address/verification/confirm',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({}),
-      },
-    );
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({
-      error: 'Expected a JSON body with a "nonce" string',
-    });
-  });
-
-  it('returns 400 for an incorrect nonce', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: 'b'.repeat(32) }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Incorrect verification code' });
-  });
-
-  it('returns 400 for an empty nonce after trim', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: '   ' }),
-    });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'Incorrect verification code' });
-  });
-
-  it('returns 409 when no verification is in progress', async () => {
-    const res = await mount(await seededStore({ lightningAddress: ADDRESS })).request(
-      '/me/lightning-address/verification/confirm',
-      {
-        method: 'POST',
-        headers: { ...AUTH, 'content-type': 'application/json' },
-        body: JSON.stringify({ nonce: 'a'.repeat(32) }),
-      },
-    );
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No verification in progress' });
-  });
-
-  it('returns 409 when the verification has expired', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store, {
-      clock: () => 1_000_000 + VERIFICATION_TTL_MS + 1,
-    }).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: 'a'.repeat(32) }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'Verification expired' });
-  });
-
-  it('returns 200 and flips lightningAddressVerified on success', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'c'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    const res = await mount(store).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: 'c'.repeat(32) }),
-    });
-    expect(res.status).toBe(200);
-    const body = (await res.json()) as {
-      lightningAddress: string;
       lightningAddressVerified: boolean;
+      setup: string | null;
+      missing: string[];
     };
     expect(body.lightningAddress).toBe(ADDRESS);
     expect(body.lightningAddressVerified).toBe(true);
-    expect((await store.getAccount('acc'))?.lightningAddressVerified).toBe(true);
-    expect(await store.getVerification('acc')).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'account.verification.confirmed' && e['accountId'] === 'acc',
-      ),
-    ).toBe(true);
-    expect(parsedEvents(warn).every((e) => !('nonce' in e))).toBe(true);
+    expect(body.missing).not.toContain('lightning-address');
+    expect(body.setup).not.toBe('lightning-address');
+
+    const off = (await (await mount(store).request('/me', { headers: AUTH })).json()) as {
+      lightningAddress: string | null;
+      lightningAddressVerified: boolean;
+    };
+    expect(off.lightningAddress).toBeNull();
+    expect(off.lightningAddressVerified).toBe(false);
   });
 
-  it('returns 409 after link clears a pending verification', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    await mount(store, { fetchImpl: happyFetch() }).request('/me/lightning-address', {
+  it('keeps lightning-address missing after the wallet step is skipped', async () => {
+    const store = await seededStore();
+    const existing = await store.getAccount('acc');
+    await store.updateAccount({ ...existing!, name: 'Ada', username: 'ada', rulesAgreedAt: 1 });
+    const before = (await (await mount(store).request('/me', { headers: AUTH })).json()) as {
+      setup: string | null;
+      missing: string[];
+    };
+    expect(before.setup).toBe('lightning-address');
+    expect(before.missing).toEqual(['lightning-address']);
+    const skipped = await mount(store).request('/me/setup/skip', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ address: ADDRESS }),
+      body: JSON.stringify({ step: 'lightning-address' }),
     });
-    const res = await mount(store).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: 'a'.repeat(32) }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No verification in progress' });
+    const body = (await skipped.json()) as { setup: string | null; missing: string[] };
+    expect(body.setup).toBeNull();
+    expect(body.missing).toEqual(['lightning-address']);
   });
+});
 
-  it('returns 409 after unlink clears a pending verification', async () => {
-    const store = await seededStore({ lightningAddress: ADDRESS });
-    await store.putVerification({
-      accountId: 'acc',
-      address: ADDRESS,
-      nonce: 'a'.repeat(32),
-      createdAt: 1_000_000,
-    });
-    await mount(store).request('/me/lightning-address', {
-      method: 'DELETE',
-      headers: AUTH,
-    });
-    // Re-link so the account has an address again, but no pending record.
-    await store.updateAccount({
-      id: 'acc',
-      linkingKey: LINKING_KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: VIEW_KEY,
-      createdAt: 1_000_000,
-      rulesAgreedAt: null,
-    });
-    const res = await mount(store).request('/me/lightning-address/verification/confirm', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ nonce: 'a'.repeat(32) }),
-    });
-    expect(res.status).toBe(409);
+describe('removed external address routes', () => {
+  it('answers 404 for linking, removing, and verifying an external address', async () => {
+    const store = await seededStore();
+    const app = mount(store, { walletEnabled: true });
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const requests: Array<[string, string, unknown]> = [
+      ['POST', '/me/lightning-address', { address: 'alice@example.com' }],
+      ['DELETE', '/me/lightning-address', undefined],
+      ['POST', '/me/lightning-address/verification', {}],
+      ['POST', '/me/lightning-address/verification/confirm', { nonce: 'a'.repeat(32) }],
+    ];
+    for (const [method, path, body] of requests) {
+      const res = await app.request(path, {
+        method,
+        headers,
+        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      });
+      expect(res.status, `${method} ${path}`).toBe(404);
+    }
   });
 });
 
@@ -2744,6 +2370,632 @@ describe('bearerToken', () => {
   });
 });
 
+/** A 20-word share of a 16-byte secret, from the official SLIP-39 test vectors (vector 1). */
+const RECOVERY_SHARE =
+  'duckling enlarge academic academic agency result length solution fridge kidney ' +
+  'coal piece deal husband erode duke ajar critical decision keyboard';
+const SHARE_KEK = new Uint8Array(32).fill(0xcd);
+/** A day the grant gate is in force. */
+const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
+const gateClock = (): number => GATE_NOW;
+const MEMBER_PHOTO = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+
+/** Open a share envelope in the test only; the api has no decrypt function. */
+async function openShare(envelope: Uint8Array, accountId: string): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', SHARE_KEK, { name: 'AES-GCM' }, false, [
+    'decrypt',
+  ]);
+  const plain = await crypto.subtle.decrypt(
+    {
+      name: 'AES-GCM',
+      iv: envelope.subarray(5, 17),
+      additionalData: new TextEncoder().encode(accountId),
+    },
+    key,
+    envelope.subarray(17),
+  );
+  return new TextDecoder().decode(plain);
+}
+
+/** Verified member `acc` (`alice`) signed in at {@link GATE_NOW}, optionally unverified. */
+async function memberStore(
+  options: { role?: Account['role']; verified?: boolean } = {},
+): Promise<InMemoryAuthStore> {
+  const store = new InMemoryAuthStore();
+  await store.createAccount({
+    id: 'acc',
+    linkingKey: null,
+    role: options.role ?? 'verified',
+    name: 'Alice',
+    username: 'alice',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: VIEW_KEY,
+    createdAt: 1,
+    rulesAgreedAt: 1,
+    walletRequired: true,
+  });
+  await store.claimSparkPubkey('acc', WALLET_PUBKEY);
+  if (options.verified !== false) {
+    await store.markSparkPubkeyVerified('acc', WALLET_PUBKEY, 'alice', 2);
+  }
+  await store.createSession({ token: 'tok', accountId: 'acc', createdAt: GATE_NOW });
+  return store;
+}
+
+function admitted(accountId = 'acc'): InMemoryFundingStore {
+  return new InMemoryFundingStore([
+    {
+      accountId,
+      status: 'admitted',
+      appliedAt: 1,
+      decidedAt: 2,
+      decidedBy: 'staff',
+      trialUtcDate: null,
+      admittedAt: 2,
+      note: null,
+    },
+  ]);
+}
+
+/** A message store with the member's photo post of {@link GATE_NOW}. */
+async function todayPhoto(): Promise<InMemoryMessageStore> {
+  const messages = new InMemoryMessageStore();
+  await messages.create(
+    {
+      id: MEMBER_PHOTO,
+      accountId: 'acc',
+      name: 'Alice',
+      text: 'today',
+      createdAt: new Date(GATE_NOW),
+      hasPhoto: true,
+      ...unsignedNostrDefaults(),
+    },
+    { contentType: 'image/jpeg', bytes: new Uint8Array([0xff, 0xd8, 0xff, 0xd9]) },
+  );
+  return messages;
+}
+
+function putShare(
+  app: Hono,
+  body: unknown,
+  headers: Record<string, string> = AUTH,
+): Promise<Response> {
+  return Promise.resolve(
+    app.request('/me/recovery-share', {
+      method: 'PUT',
+      headers: { ...headers, 'content-type': 'application/json' },
+      body: typeof body === 'string' ? body : JSON.stringify(body),
+    }),
+  );
+}
+
+describe('PUT /me/recovery-share', () => {
+  const body = { sparkPubkey: WALLET_PUBKEY, share: RECOVERY_SHARE };
+
+  it('is not mounted without the LNURL server', async () => {
+    const res = await putShare(
+      mount(await memberStore(), { clock: gateClock, recoveryShareKek: SHARE_KEK }),
+      body,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 without a valid session, before the key check', async () => {
+    const app = mount(await memberStore(), { clock: gateClock, walletEnabled: true });
+    for (const headers of [{}, { authorization: 'Bearer nope' }]) {
+      const res = await putShare(app, body, headers);
+      expect(res.status).toBe(401);
+      expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    }
+  });
+
+  it('returns 503 without RECOVERY_SHARE_KEK (memory boot)', async () => {
+    const store = await memberStore();
+    const res = await putShare(mount(store, { clock: gateClock, walletEnabled: true }), body);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Social recovery is unavailable' });
+    expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+  });
+
+  it('returns 400 for a bad body, key, or share', async () => {
+    const app = mount(await memberStore(), {
+      clock: gateClock,
+      walletEnabled: true,
+      recoveryShareKek: SHARE_KEK,
+    });
+    for (const bad of [
+      '{',
+      'null',
+      {},
+      { sparkPubkey: WALLET_PUBKEY },
+      { share: RECOVERY_SHARE },
+      { ...body, extra: true },
+      { ...body, sparkPubkey: 'nope' },
+      { ...body, share: 42 },
+      { ...body, share: RECOVERY_SHARE.split(' ').slice(0, 19).join(' ') },
+      { ...body, share: RECOVERY_SHARE.toUpperCase() },
+      { ...body, share: `${RECOVERY_SHARE} ` },
+    ]) {
+      const res = await putShare(app, bad);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({
+        error: 'Expected a JSON body with sparkPubkey and a recovery share',
+      });
+    }
+  });
+
+  it('returns 409 while the wallet is not verified', async () => {
+    const store = await memberStore({ verified: false });
+    const put = vi.spyOn(store, 'putRecoveryShare');
+    const res = await putShare(
+      mount(store, { clock: gateClock, walletEnabled: true, recoveryShareKek: SHARE_KEK }),
+      body,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet is not connected' });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 when the key is not the verified wallet key', async () => {
+    const store = await memberStore();
+    const put = vi.spyOn(store, 'putRecoveryShare');
+    const res = await putShare(
+      mount(store, { clock: gateClock, walletEnabled: true, recoveryShareKek: SHARE_KEK }),
+      { ...body, sparkPubkey: SPARK_PUBKEY_OTHER },
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet changed' });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it('accepts the key in upper case', async () => {
+    const res = await putShare(
+      mount(await memberStore(), {
+        clock: gateClock,
+        walletEnabled: true,
+        recoveryShareKek: SHARE_KEK,
+      }),
+      { ...body, sparkPubkey: WALLET_PUBKEY.toUpperCase() },
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it('returns 409 when the wallet changes before the locked write', async () => {
+    const store = await memberStore();
+    vi.spyOn(store, 'putRecoveryShare').mockResolvedValue('changed');
+    const res = await putShare(
+      mount(store, { clock: gateClock, walletEnabled: true, recoveryShareKek: SHARE_KEK }),
+      body,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Wallet changed' });
+    expect(parsedEvents(warn).map((e) => e['event'])).not.toContain(
+      'account.recovery_share.stored',
+    );
+  });
+
+  it('stores the encrypted share, answers owner JSON, and replaces it in one row', async () => {
+    const store = await memberStore();
+    const put = vi.spyOn(store, 'putRecoveryShare');
+    const app = mount(store, {
+      clock: gateClock,
+      walletEnabled: true,
+      recoveryShareKek: SHARE_KEK,
+    });
+    const first = await putShare(app, body);
+    expect(first.status).toBe(200);
+    const json = (await first.json()) as Record<string, unknown>;
+    expect(json['id']).toBe('acc');
+    expect(json['sparkPubkey']).toBe(WALLET_PUBKEY);
+    expect(json['socialRecoverySetUp']).toBe(true);
+    expect(put).toHaveBeenCalledTimes(1);
+    const input = put.mock.calls[0]![0];
+    expect(input).toMatchObject({ accountId: 'acc', sparkPubkey: WALLET_PUBKEY, now: GATE_NOW });
+    expect(await openShare(input.ciphertext, 'acc')).toBe(RECOVERY_SHARE);
+    await expect(openShare(input.ciphertext, 'other')).rejects.toThrow();
+    expect(await put.mock.results[0]!.value).toBe('stored');
+
+    const second = await putShare(app, body);
+    expect(second.status).toBe(200);
+    expect(((await second.json()) as Record<string, unknown>)['socialRecoverySetUp']).toBe(true);
+    expect(await put.mock.results[1]!.value).toBe('replaced');
+    expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(true);
+
+    const stored = parsedEvents(warn).filter((e) => e['event'] === 'account.recovery_share.stored');
+    expect(stored.map((e) => [e['accountId'], e['replaced']])).toEqual([
+      ['acc', false],
+      ['acc', true],
+    ]);
+    const output = warn.mock.calls.map((call) => call.map(String).join(' ')).join('\n');
+    expect(output).not.toContain('duckling');
+  });
+
+  it('returns 503 when encryption or the store fails', async () => {
+    const shortKek = await memberStore();
+    const res = await putShare(
+      mount(shortKek, {
+        clock: gateClock,
+        walletEnabled: true,
+        recoveryShareKek: new Uint8Array(31),
+      }),
+      body,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Social recovery is unavailable' });
+    expect(await shortKek.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+
+    const failing = await memberStore();
+    vi.spyOn(failing, 'putRecoveryShare').mockRejectedValue(
+      Object.assign(new Error('duplicate key value'), { code: '23505' }),
+    );
+    const stored = await putShare(
+      mount(failing, { clock: gateClock, walletEnabled: true, recoveryShareKek: SHARE_KEK }),
+      body,
+    );
+    expect(stored.status).toBe(503);
+    expect(await stored.json()).toEqual({ error: 'Social recovery is unavailable' });
+    const failed = parsedEvents(warn).filter((e) => e['event'] === 'account.recovery_share.failed');
+    expect(failed).toHaveLength(2);
+    expect(failed[1]).toMatchObject({ accountId: 'acc', name: 'Error', code: '23505' });
+    expect(JSON.stringify(failed)).not.toContain('duplicate key value');
+  });
+
+  describe('daily ping after the first share', () => {
+    it("pings today's media post of an eligible member without reading the share again", async () => {
+      const store = await memberStore();
+      const shareReads = vi.spyOn(store, 'hasRecoveryShareForVerifiedWallet');
+      let readsDuringPing = -1;
+      const ping = vi.fn(async () => {
+        readsDuringPing = shareReads.mock.calls.length;
+      });
+      const res = await putShare(
+        mount(store, {
+          clock: gateClock,
+          walletEnabled: true,
+          recoveryShareKek: SHARE_KEK,
+          fundingStore: admitted(),
+          messages: await todayPhoto(),
+          spendPing: { ping },
+        }),
+        body,
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledTimes(1);
+      expect(ping).toHaveBeenCalledWith('alice@example.test', MEMBER_PHOTO, 'daily', 'admitted');
+      expect(readsDuringPing).toBe(0);
+    });
+
+    it('does not ping on a replacement', async () => {
+      const store = await memberStore();
+      const ping = vi.fn(async () => undefined);
+      const app = mount(store, {
+        clock: gateClock,
+        walletEnabled: true,
+        recoveryShareKek: SHARE_KEK,
+        fundingStore: admitted(),
+        messages: await todayPhoto(),
+        spendPing: { ping },
+      });
+      expect((await putShare(app, body)).status).toBe(200);
+      expect((await putShare(app, body)).status).toBe(200);
+      expect(ping).toHaveBeenCalledTimes(1);
+    });
+
+    it('does not ping a member outside the grant program or a basis account', async () => {
+      const ping = vi.fn(async () => undefined);
+      for (const [store, fundingStore] of [
+        [await memberStore(), new InMemoryFundingStore()],
+        [await memberStore({ role: 'basis' }), admitted()],
+      ] as const) {
+        const getGrant = vi.spyOn(fundingStore, 'getByAccountId');
+        const res = await putShare(
+          mount(store, {
+            clock: gateClock,
+            walletEnabled: true,
+            recoveryShareKek: SHARE_KEK,
+            fundingStore,
+            messages: await todayPhoto(),
+            spendPing: { ping },
+          }),
+          body,
+        );
+        expect(res.status).toBe(200);
+        expect(getGrant).toHaveBeenCalledWith('acc');
+      }
+      // Without a funding store there is no grant, so no one is in the program.
+      const noGrants = await putShare(
+        mount(await memberStore(), {
+          clock: gateClock,
+          walletEnabled: true,
+          recoveryShareKek: SHARE_KEK,
+          messages: await todayPhoto(),
+          spendPing: { ping },
+        }),
+        body,
+      );
+      expect(noGrants.status).toBe(200);
+      expect(ping).not.toHaveBeenCalled();
+    });
+
+    it('still answers 200 when the grant read or the ping fails', async () => {
+      // The ping's grant read fails; the owner JSON read after it succeeds.
+      const grantDown = admitted();
+      vi.spyOn(grantDown, 'getByAccountId').mockRejectedValueOnce(new Error('grant down'));
+      const pingDown = vi.fn(async () => {
+        throw new Error('ping down');
+      });
+      for (const [fundingStore, ping] of [
+        [grantDown, vi.fn(async () => undefined)],
+        [admitted(), pingDown],
+      ] as const) {
+        const res = await putShare(
+          mount(await memberStore(), {
+            clock: gateClock,
+            walletEnabled: true,
+            recoveryShareKek: SHARE_KEK,
+            fundingStore,
+            messages: await todayPhoto(),
+            spendPing: { ping },
+          }),
+          body,
+        );
+        expect(res.status).toBe(200);
+        expect(((await res.json()) as Record<string, unknown>)['socialRecoverySetUp']).toBe(true);
+      }
+      expect(pingDown).toHaveBeenCalledTimes(1);
+      const failed = parsedEvents(warn).filter((e) => e['event'] === 'funding.daily_ping.failed');
+      expect(failed.map((e) => e['accountId'])).toEqual(['acc', 'acc']);
+    });
+  });
+});
+
+/** The pinned account after one committed recovery: OLD is its previous wallet. */
+async function recoveredStore(): Promise<InMemoryAuthStore> {
+  const store = new InMemoryAuthStore();
+  await seedPinnedAccount(store);
+  await store.putRecoveryShare({
+    accountId: PINNED.accountId,
+    sparkPubkey: PINNED.oldSparkPubkey,
+    ciphertext: Uint8Array.of(1),
+    now: 1,
+  });
+  await stagePendingRecovery(store, { createdAt: GATE_NOW - 2, forwardedAt: GATE_NOW - 1 });
+  expect(
+    await store.commitRecovery({
+      accountId: PINNED.accountId,
+      newSparkPubkey: PINNED.newSparkPubkey,
+      now: GATE_NOW,
+    }),
+  ).toBe('committed');
+  await store.createSession({ token: 'tok', accountId: PINNED.accountId, createdAt: GATE_NOW });
+  return store;
+}
+
+/** Fake explorer: answers the soft balance per address, or the given failure. */
+function explorer(answer: (address: string) => Response | Error): {
+  fetchImpl: FetchFn;
+  calls: Array<{ url: string; init: RequestInit | undefined }>;
+} {
+  const calls: Array<{ url: string; init: RequestInit | undefined }> = [];
+  const fetchImpl: FetchFn = async (input, init) => {
+    const url = String(input);
+    calls.push({ url, init });
+    const address = decodeURIComponent(url.split('/v1/address/')[1]!.split('?')[0]!);
+    const result = answer(address);
+    if (result instanceof Error) {
+      throw result;
+    }
+    return result;
+  };
+  return { fetchImpl, calls };
+}
+
+describe('GET /me/previous-wallets', () => {
+  it('is not mounted without the LNURL server', async () => {
+    const res = await mount(await recoveredStore(), { clock: gateClock }).request(
+      '/me/previous-wallets',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(await recoveredStore(), {
+      clock: gateClock,
+      walletEnabled: true,
+    }).request('/me/previous-wallets');
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('lists the previous wallets with the explorer soft balance, read anonymously', async () => {
+    const store = await recoveredStore();
+    const [wallet] = await store.listPreviousWallets(PINNED.accountId);
+    const { fetchImpl, calls } = explorer(() =>
+      Response.json({ balance: { btcSoftBalanceSats: 1234, btcHardBalanceSats: 1000 } }),
+    );
+    const res = await mount(store, { clock: gateClock, walletEnabled: true, fetchImpl }).request(
+      '/me/previous-wallets',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      wallets: [
+        {
+          sparkPubkey: PINNED.oldSparkPubkey,
+          sparkAddress: wallet!.sparkAddress,
+          replacedAt: GATE_NOW,
+          balanceSats: 1234,
+        },
+      ],
+    });
+    expect(wallet!.sparkAddress.startsWith('spark1')).toBe(true);
+    expect(calls).toHaveLength(1);
+    expect(calls[0]!.url).toBe(
+      `${SPARK_EXPLORER_BASE_URL}/v1/address/${wallet!.sparkAddress}?network=MAINNET`,
+    );
+    expect(new Headers(calls[0]!.init?.headers).has('authorization')).toBe(false);
+  });
+
+  it('answers null for an unknown balance and an empty list without previous wallets', async () => {
+    const store = await recoveredStore();
+    const { fetchImpl } = explorer(() => new TypeError('fetch failed'));
+    const res = await mount(store, { clock: gateClock, walletEnabled: true, fetchImpl }).request(
+      '/me/previous-wallets',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(200);
+    const json = (await res.json()) as { wallets: Array<{ balanceSats: number | null }> };
+    expect(json.wallets.map((w) => w.balanceSats)).toEqual([null]);
+
+    const fresh = await memberStore();
+    const empty = explorer(() => new Error('never called'));
+    const none = await mount(fresh, {
+      clock: gateClock,
+      walletEnabled: true,
+      fetchImpl: empty.fetchImpl,
+    }).request('/me/previous-wallets', { headers: AUTH });
+    expect(await none.json()).toEqual({ wallets: [] });
+    expect(empty.calls).toEqual([]);
+  });
+
+  it('returns 503 when the store fails', async () => {
+    const store = await recoveredStore();
+    vi.spyOn(store, 'listPreviousWallets').mockRejectedValue(new Error('db down'));
+    const { fetchImpl, calls } = explorer(() => Response.json({}));
+    const res = await mount(store, { clock: gateClock, walletEnabled: true, fetchImpl }).request(
+      '/me/previous-wallets',
+      { headers: AUTH },
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Wallet data is unavailable' });
+    expect(calls).toEqual([]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'account.previous_wallets.failed',
+        accountId: PINNED.accountId,
+      }),
+    );
+  });
+});
+
+describe('DELETE /me/previous-wallets/:sparkPubkey', () => {
+  function drop(app: Hono, key: string, headers: Record<string, string> = AUTH): Promise<Response> {
+    return Promise.resolve(
+      app.request(`/me/previous-wallets/${key}`, { method: 'DELETE', headers }),
+    );
+  }
+
+  it('is not mounted without the LNURL server', async () => {
+    const res = await drop(
+      mount(await recoveredStore(), { clock: gateClock }),
+      PINNED.oldSparkPubkey,
+    );
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 401 without a valid session', async () => {
+    const res = await drop(
+      mount(await recoveredStore(), { clock: gateClock, walletEnabled: true }),
+      PINNED.oldSparkPubkey,
+      {},
+    );
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('returns 404 for a bad key or a key that is not a previous wallet', async () => {
+    const store = await recoveredStore();
+    const app = mount(store, { clock: gateClock, walletEnabled: true });
+    for (const key of ['nope', PINNED.newSparkPubkey, SPARK_PUBKEY_OTHER]) {
+      const res = await drop(app, key);
+      expect(res.status).toBe(404);
+      expect(await res.json()).toEqual({ error: 'Not found' });
+    }
+    expect(await store.listPreviousWallets(PINNED.accountId)).toHaveLength(1);
+  });
+
+  it('drops the previous wallet and its share, then answers 404', async () => {
+    const store = await recoveredStore();
+    const app = mount(store, { clock: gateClock, walletEnabled: true });
+    const res = await drop(app, PINNED.oldSparkPubkey.toUpperCase());
+    expect(res.status).toBe(204);
+    expect(await res.text()).toBe('');
+    expect(await store.listPreviousWallets(PINNED.accountId)).toEqual([]);
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'account.previous_wallet.dropped',
+        accountId: PINNED.accountId,
+      }),
+    );
+    expect((await drop(app, PINNED.oldSparkPubkey)).status).toBe(404);
+
+    // Recover back to the old key: its share went with the previous wallet.
+    const challengeId = 'd'.repeat(64);
+    expect(
+      await store.startRecoveryChallenge({
+        accountId: PINNED.accountId,
+        oldSparkPubkey: PINNED.newSparkPubkey,
+        challenge: {
+          id: challengeId,
+          type: 'recovery',
+          challenge: 'back',
+          accountId: PINNED.accountId,
+          consumed: false,
+          createdAt: GATE_NOW,
+        },
+        now: GATE_NOW,
+      }),
+    ).toBe('started');
+    expect(
+      await store.storePendingRecovery({
+        challengeId,
+        pending: {
+          accountId: PINNED.accountId,
+          oldSparkPubkey: PINNED.newSparkPubkey,
+          newSparkPubkey: PINNED.oldSparkPubkey,
+          credentialId: 'back-credential',
+          publicKey: Uint8Array.of(7),
+          signCount: 0,
+          createdAt: GATE_NOW,
+          forwardedAt: null,
+        },
+        now: GATE_NOW,
+      }),
+    ).toBe('stored');
+    await store.markRecoveryForwarded({
+      newSparkPubkey: PINNED.oldSparkPubkey,
+      oldSparkPubkey: PINNED.newSparkPubkey,
+      username: RECOVERY_USERNAME,
+      now: GATE_NOW,
+    });
+    expect(
+      await store.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.oldSparkPubkey,
+        now: GATE_NOW + 1,
+      }),
+    ).toBe('committed');
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    expect(await store.hasRecoveryShareForVerifiedWallet(PINNED.accountId)).toBe(false);
+  });
+
+  it('returns 503 when the store fails', async () => {
+    const store = await recoveredStore();
+    vi.spyOn(store, 'dropPreviousWallet').mockRejectedValue(new Error('db down'));
+    const res = await drop(
+      mount(store, { clock: gateClock, walletEnabled: true }),
+      PINNED.oldSparkPubkey,
+    );
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Wallet data is unavailable' });
+    expect(await store.listPreviousWallets(PINNED.accountId)).toHaveLength(1);
+    const events = parsedEvents(warn).map((e) => e['event']);
+    expect(events).toContain('account.previous_wallets.failed');
+    expect(events).not.toContain('account.previous_wallet.dropped');
+  });
+});
 describe('shop identity hooks', () => {
   const now = (): number => 1_700_000_000_000;
 

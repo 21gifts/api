@@ -7,6 +7,7 @@ import type { Account, AuthStore } from '@/lib/auth/store';
 import { unsignedConversationDefaults, type ConversationThread } from '@/lib/conversation';
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import type { FundingStore } from '@/lib/funding-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -53,7 +54,6 @@ import {
   replyHintRelay,
   resolvePublicApiBase,
   resolveWriteSet,
-  resolveZapReadRelays,
   resolveZapRelays,
   writeRelayUrls,
   type ResolvedWriteSet,
@@ -68,7 +68,8 @@ import {
 } from '@/lib/shop-identity';
 import { publicShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 import type { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { indexOpenZapReceipts } from '@/lib/nostr/zap-index';
+import { indexOpenZapReceipts, ingestZapReceipt } from '@/lib/nostr/zap-index';
+import { receivingAddress } from '@/lib/receiving-address';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import {
@@ -158,9 +159,31 @@ export interface NostrWorkerDeps {
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
   fiatRates?: FiatRateBook;
+  /** Optional LNURL server; wallet-backed recipients resolve their receipt signer through it. */
+  lnurlServer?: LnurlServerConfig;
   /** Optional shop-key store; omitted on older/unit-only worker surfaces. */
   shopIdentities?: ShopIdentityStore;
 }
+
+/** Worker collaborators the zap receipt ingest uses (no key, no publisher). */
+export type ZapIngestDeps = Pick<
+  NostrWorkerDeps,
+  | 'messages'
+  | 'auth'
+  | 'querier'
+  | 'fetchImpl'
+  | 'verifyReceipt'
+  | 'now'
+  | 'env'
+  | 'pushStore'
+  | 'conversations'
+  | 'notificationStore'
+  | 'spendPing'
+  | 'postLimiter'
+  | 'fundingStore'
+  | 'fiatRates'
+  | 'lnurlServer'
+>;
 
 const externalLimiters = new WeakMap<MessageStore, ExternalIngestLimiter>();
 const externalInFlightEventIds = new WeakMap<MessageStore, Set<string>>();
@@ -234,7 +257,7 @@ function reservedContent(
  * @returns Args object with identical optional collaborators for every call site.
  */
 function indexOpenZapReceiptsArgs(
-  deps: NostrWorkerDeps,
+  deps: ZapIngestDeps,
   urls: readonly string[],
 ): Parameters<typeof indexOpenZapReceipts>[0] {
   return {
@@ -253,7 +276,25 @@ function indexOpenZapReceiptsArgs(
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
+    ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   };
+}
+
+/**
+ * Receipt ingest for one event with the worker's collaborators.
+ *
+ * Runs {@link ingestZapReceipt} with the same arguments as the relay ingest
+ * passes (zap read relays from `deps.env`). Used by the Spark invoice worker.
+ *
+ * @param deps - The worker collaborators the ingest uses.
+ * @returns A function that ingests one kind 9735 event and resolves `true`
+ *   when that receipt is credited.
+ */
+export function zapReceiptIngest(
+  deps: ZapIngestDeps,
+): (event: NostrEventFrame) => Promise<boolean> {
+  const args = indexOpenZapReceiptsArgs(deps, resolveZapRelays(deps.env));
+  return (event) => ingestZapReceipt(event, args);
 }
 
 /**
@@ -314,7 +355,7 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
   if (oldestKeptCreatedAtMs === undefined) {
     return;
   }
-  const urls = resolveZapReadRelays(deps.env);
+  const urls = resolveZapRelays(deps.env);
   const since = Math.floor(oldestKeptCreatedAtMs / 1000) - HOT_ZAP_SINCE_SLACK_S;
   await indexOpenZapReceipts({
     ...indexOpenZapReceiptsArgs(deps, urls),
@@ -367,10 +408,9 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * publish timeouts. `nowMs` for sign/publish leases is sampled only after zap
  * ingest returns, so an overlapping fast tick cannot reclaim with a later
  * clock while this tick still signs/publishes under a stale lease time. Full
- * ingest and the hot lane query kind 9735 on `resolveZapReadRelays` (space plus
- * the public list, then `wss://nostr.wine` and `wss://nostr.bitcoiner.social`
- * when those exact URLs are absent), and those two URLs are not used for the
- * kind 9734 tag or for inbound replies and direct messages. After sign/publish,
+ * ingest and the hot lane query kind 9735 on `resolveZapRelays` (space plus
+ * the public list), the same relays every kind 9734 request names and inbound
+ * replies and direct messages are read from. After sign/publish,
  * `'all'` (and the ingest lane) also REQs kind:1 replies (`#e` = our note event ids) and
  * persists inbound replies whose pubkey maps to a 21.gifts account or to an
  * entitled, unblocked external zapper (even when publish is off). Other npubs
@@ -398,7 +438,8 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * relay and reply inboxes, and a fully successful kind:0 or kind:10002 is
  * copied to the indexer; those NACKs do not change publish state.
  *
- * @param deps - Stores, kek, publisher, querier, fetch, clock, env.
+ * @param deps - Stores, kek, publisher, querier, fetch, clock, env, and the
+ *   optional LNURL server (receipt signer lookup and kind:0 `lud16`).
  * @param mode - Which lane work to run (default `'all'`).
  * @returns Resolves when the selected work has finished (notify failures are
  *   swallowed).
@@ -408,18 +449,17 @@ export async function runNostrWorkerTick(
   mode: NostrWorkerTickMode = 'all',
 ): Promise<void> {
   const writeSet = resolveWriteSet(deps.env);
-  const zapReadUrls = resolveZapReadRelays(deps.env);
-  const replyUrls = resolveZapRelays(deps.env);
+  const readUrls = resolveZapRelays(deps.env);
   if (mode === 'ingest') {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
-    await indexInboundForumReplies(deps, replyUrls);
-    await indexInboundDirectMessages(deps, replyUrls);
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, readUrls));
+    await indexInboundForumReplies(deps, readUrls);
+    await indexInboundDirectMessages(deps, readUrls);
     return;
   }
   if (mode === 'fast') {
     await indexHotZapReceipts(deps, deps.now());
   } else {
-    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, zapReadUrls));
+    await indexOpenZapReceipts(indexOpenZapReceiptsArgs(deps, readUrls));
   }
   const nowMs = deps.now();
   await resignLegacyKind1Tags(deps);
@@ -438,8 +478,8 @@ export async function runNostrWorkerTick(
     await publishConversationBatch(deps, writeSet, nowMs);
   }
   if (mode === 'all') {
-    await indexInboundForumReplies(deps, replyUrls);
-    await indexInboundDirectMessages(deps, replyUrls);
+    await indexInboundForumReplies(deps, readUrls);
+    await indexInboundDirectMessages(deps, readUrls);
   }
   await backfillProfileMessages(deps);
 }
@@ -982,9 +1022,9 @@ async function backfillShopKeys(deps: NostrWorkerDeps): Promise<void> {
 }
 
 /**
- * Create a profile forum note for named accounts with a non-blank Lightning
- * Address that lack one (or whose stored id no longer points at a message
- * row). `ensureProfileMessage` no-ops without LN.
+ * Create a profile forum note for named accounts with a verified wallet that
+ * lack one (or whose stored id no longer points at a message row).
+ * `ensureProfileMessage` no-ops without a verified wallet.
  *
  * @param deps - Auth and message stores (and optional push / notifications).
  */
@@ -1214,7 +1254,8 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       }
     }
     const images = { picture, banner };
-    const content = buildKind0Content(live.name, live.lightningAddress, nip05, about, images);
+    const lud16 = receivingAddress(live, deps.lnurlServer)?.address ?? null;
+    const content = buildKind0Content(live.name, lud16, nip05, about, images);
     if (reservedContent(cache, live.id) === content) {
       continue;
     }
@@ -1241,7 +1282,7 @@ async function publishProfiles(deps: NostrWorkerDeps, writeSet: ResolvedWriteSet
       watermarks.set(live.id, reservation.createdAt);
       const unsigned = buildKind0Event(
         live.name,
-        live.lightningAddress,
+        lud16,
         reservation.createdAt,
         nip05,
         about,
@@ -1477,8 +1518,8 @@ interface ShopKind0Args {
 /**
  * Kind 0 fields of one shop identity (S2). A public shop gets its name,
  * description, photos, `<site origin>/{npub}`, its NIP-05 and the till
- * account's `lud16` (only when the till account has a name, a username and a
- * non-empty Lightning address); a shop that is no longer public keeps `profile_name`
+ * account's `lud16` (only when the till account has a name and a receiving
+ * address: a username and a verified wallet with the LNURL server on); a shop that is no longer public keeps `profile_name`
  * (or `Shop` when the note is hidden or gone), the fixed about for a shop that
  * is not public, and the `website`, without images, NIP-05 or `lud16`. `nip05Entry` is
  * only called for a public shop and only when `domain` is set, before any
@@ -1528,14 +1569,12 @@ async function shopKind0Args(
   }
   const till = await deps.auth.getAccount(shop.tillAccountId);
   // Same rule as `payUsername` on GET /shops/:npub, plus a published
-  // account kind 0 (a name): no lud16 without a username.
+  // account kind 0 (a name): the till account's receiving address, so no
+  // lud16 without a username and a verified wallet.
   const lud16 =
-    till === undefined ||
-    till.name === null ||
-    (till.username ?? '').trim() === '' ||
-    (till.lightningAddress ?? '').trim() === ''
+    till === undefined || till.name === null
       ? null
-      : till.lightningAddress;
+      : (receivingAddress(till, deps.lnurlServer)?.address ?? null);
   let picture: string | null = null;
   let banner: string | null = null;
   const apiBase = resolvePublicApiBase(deps.env);

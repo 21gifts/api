@@ -17,8 +17,6 @@ function account(overrides: Partial<Account> & Pick<Account, 'id'>): Account {
     name: 'Ada',
     username: 'ada',
     location: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     viewKey: overrides.id.replaceAll('-', '').padEnd(64, 'a'),
     createdAt: 1,

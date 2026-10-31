@@ -1,7 +1,10 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import type { MergeDb, MergeTx } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
+import { PAYMENT_HASH_CLAIM_SQL, PAYMENT_HASH_LOCK_NAMESPACE } from '@/lib/payment-hash-claim';
 import { POS_CHARGE_TTL_MS, type PosCharge } from '@/lib/pos-charge';
 import {
+  duplicateInvoiceLogFields,
   InMemoryPosStore,
   POS_SCHEMA_SQL,
   migratePosSchema,
@@ -59,13 +62,21 @@ function charge(partial: Partial<PosCharge> & Pick<PosCharge, 'id'>): PosCharge 
     status: 'pending',
     createdAt: new Date(T0),
     expiresAt: new Date(T0 + POS_CHARGE_TTL_MS),
+    paidAt: null,
+    sparkInvoice: null,
+    amountCurrency: null,
+    amountText: null,
+    fiatUsd: null,
+    fiatChf: null,
+    fiatEur: null,
+    fiatPhp: null,
     ...partial,
   };
 }
 
 describe('POS_SCHEMA_SQL', () => {
   it('creates pos_charge and its account/created_at index', () => {
-    expect(POS_SCHEMA_SQL).toHaveLength(3);
+    expect(POS_SCHEMA_SQL).toHaveLength(18);
     expect(POS_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS pos_charge/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/account_id uuid NOT NULL REFERENCES account/i);
     expect(POS_SCHEMA_SQL[0]).toMatch(/amount_sats bigint NOT NULL CHECK \(amount_sats > 0\)/);
@@ -74,6 +85,55 @@ describe('POS_SCHEMA_SQL', () => {
       /CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx/i,
     );
     expect(POS_SCHEMA_SQL[2]).toMatch(/WHERE status = 'pending'/);
+  });
+
+  it('adds the paid status, paid_at, spark_invoice, and pos_charge_invoice idempotently', () => {
+    expect(POS_SCHEMA_SQL[0]).toMatch(/'pending', 'paid', 'cancelled', 'expired'/);
+    expect(POS_SCHEMA_SQL[3]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS paid_at timestamptz',
+    );
+    expect(POS_SCHEMA_SQL[4]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS spark_invoice text',
+    );
+    expect(POS_SCHEMA_SQL[5]).toBe(
+      'ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_status_check',
+    );
+    expect(POS_SCHEMA_SQL[6]).toMatch(
+      /ADD CONSTRAINT pos_charge_status_check\s+CHECK \(status IN \('pending', 'paid', 'cancelled', 'expired'\)\)/,
+    );
+    expect(POS_SCHEMA_SQL[7]).toMatch(/CREATE INDEX IF NOT EXISTS pos_charge_watch_idx/);
+    expect(POS_SCHEMA_SQL[8]).toMatch(/CREATE TABLE IF NOT EXISTS pos_charge_invoice/);
+    expect(POS_SCHEMA_SQL[8]).toMatch(/payment_hash text PRIMARY KEY/);
+    expect(POS_SCHEMA_SQL[8]).toMatch(/charge_id uuid NOT NULL REFERENCES pos_charge \(id\)/);
+    expect(POS_SCHEMA_SQL[9]).toMatch(/CREATE INDEX IF NOT EXISTS pos_charge_invoice_charge_idx/);
+  });
+
+  it('adds the typed fiat columns and the currency check', () => {
+    expect(POS_SCHEMA_SQL[10]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_currency text',
+    );
+    expect(POS_SCHEMA_SQL[11]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_text text',
+    );
+    expect(POS_SCHEMA_SQL[12]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[13]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[14]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[15]).toBe(
+      'ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)',
+    );
+    expect(POS_SCHEMA_SQL[16]).toBe(
+      'ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_amount_currency_check',
+    );
+    expect(POS_SCHEMA_SQL[17]).toBe(
+      `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_amount_currency_check
+  CHECK (amount_currency IN ('USD', 'CHF', 'EUR', 'PHP'))`,
+    );
   });
 });
 
@@ -268,6 +328,215 @@ describe('InMemoryPosStore', () => {
   });
 });
 
+describe('InMemoryPosStore paid tracking', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('issueSparkInvoice stores the first invoice and returns it again', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    expect(await store.issueSparkInvoice('c1', 'spark1first', T0 + 1)).toBe('spark1first');
+    expect(await store.issueSparkInvoice('c1', 'spark1second', T0 + 2)).toBe('spark1first');
+    expect((await store.listLatest(1))[0]?.sparkInvoice).toBe('spark1first');
+  });
+
+  it('issueSparkInvoice refuses an unknown, expired, or cancelled charge', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.create(charge({ id: 'c2', accountId: 'other', status: 'cancelled' }));
+    expect(await store.issueSparkInvoice('missing', 'spark1x', T0)).toBeNull();
+    expect(await store.issueSparkInvoice('c1', 'spark1x', T0 + POS_CHARGE_TTL_MS)).toBeNull();
+    expect(await store.issueSparkInvoice('c2', 'spark1x', T0)).toBeNull();
+  });
+
+  it('recordInvoice records a hash once and only for a pending, unexpired charge', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.create(charge({ id: 'c2', accountId: 'other', status: 'cancelled' }));
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'recorded',
+    });
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 2)).toEqual({
+      outcome: 'this_charge',
+    });
+    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toEqual({
+      outcome: 'not_open',
+    });
+    expect(await store.recordInvoice('c2', 'c'.repeat(64), T0)).toEqual({ outcome: 'not_open' });
+    expect(await store.recordInvoice('missing', 'd'.repeat(64), T0)).toEqual({
+      outcome: 'not_open',
+    });
+    // Another charge's row holds the hash, even for a charge that is not open.
+    expect(await store.recordInvoice('c2', 'a'.repeat(64), T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c1',
+      holderPaymentId: null,
+    });
+    expect(store.paymentHashClaims.holder('a'.repeat(64))).toEqual({
+      chargeId: 'c1',
+      paymentId: null,
+      paymentChargeId: null,
+    });
+    const watched = await store.listWatched(T0);
+    expect(watched.map((entry) => [entry.charge.id, entry.paymentHashes])).toEqual([
+      ['c1', ['a'.repeat(64)]],
+    ]);
+  });
+
+  it('recordInvoice decides from the shared claim map: a shop payment holds the hash', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    store.paymentHashClaims.claimShop('h-own', 'p1', 'c1');
+    store.paymentHashClaims.claimShop('h-payer', 'p2', null);
+    store.paymentHashClaims.claimShop('h-other', 'p3', 'c9');
+    store.paymentHashClaims.claimCharge('h-mixed', 'c1');
+    store.paymentHashClaims.claimShop('h-mixed', 'p4', 'c9');
+    expect(await store.recordInvoice('c1', 'h-own', T0)).toEqual({ outcome: 'this_charge' });
+    expect(await store.recordInvoice('c1', 'h-payer', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: null,
+      holderPaymentId: 'p2',
+    });
+    expect(await store.recordInvoice('c1', 'h-other', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c9',
+      holderPaymentId: 'p3',
+    });
+    // Another payment wins over this charge's own row.
+    expect(await store.recordInvoice('c1', 'h-mixed', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c9',
+      holderPaymentId: 'p4',
+    });
+    expect(await store.findChargeForPayment({ paymentHash: 'h-own' })).toBeUndefined();
+  });
+
+  it('duplicateInvoiceLogFields names the charge, the holding charge, and a holding payment', () => {
+    expect(
+      duplicateInvoiceLogFields('c1', {
+        outcome: 'other_payment',
+        holderChargeId: 'c2',
+        holderPaymentId: null,
+      }),
+    ).toEqual({ chargeId: 'c1', holderChargeId: 'c2' });
+    expect(
+      duplicateInvoiceLogFields('c1', {
+        outcome: 'other_payment',
+        holderChargeId: null,
+        holderPaymentId: 'p1',
+      }),
+    ).toEqual({ chargeId: 'c1', paymentId: 'p1' });
+  });
+
+  it('findChargeForPayment resolves a recorded hash or charge id and returns copies', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1);
+    const byHash = await store.findChargeForPayment({ paymentHash: 'a'.repeat(64) });
+    const byId = await store.findChargeForPayment({ chargeId: 'c1' });
+    expect(byHash?.id).toBe('c1');
+    expect(byId?.id).toBe('c1');
+    byHash?.createdAt.setTime(0);
+    expect((await store.findChargeForPayment({ chargeId: 'c1' }))?.createdAt).toEqual(new Date(T0));
+    expect(await store.findChargeForPayment({ paymentHash: 'b'.repeat(64) })).toBeUndefined();
+    expect(await store.findChargeForPayment({ chargeId: 'missing' })).toBeUndefined();
+  });
+
+  it('decides by issue time: a charge already marked expired still records an earlier invoice', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.currentPending('acc', T0 + POS_CHARGE_TTL_MS);
+    expect((await store.listLatest(1))[0]?.status).toBe('expired');
+    expect(await store.recordInvoice('c1', 'a'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'recorded',
+    });
+    expect(await store.issueSparkInvoice('c1', 'spark1x', T0 + 1)).toBe('spark1x');
+    expect(await store.recordInvoice('c1', 'b'.repeat(64), T0 + POS_CHARGE_TTL_MS)).toEqual({
+      outcome: 'not_open',
+    });
+    await store.markPaid('c1', T0 + 2);
+    expect(await store.recordInvoice('c1', 'c'.repeat(64), T0 + 1)).toEqual({
+      outcome: 'not_open',
+    });
+    expect(await store.issueSparkInvoice('c1', 'spark1y', T0 + 1)).toBeNull();
+  });
+
+  it('listWatched lists pending and recently expired charges oldest first', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'old', accountId: 'a1', status: 'expired' }));
+    await store.create(
+      charge({
+        id: 'stale',
+        accountId: 'a2',
+        status: 'expired',
+        createdAt: new Date(T0 - 20 * 60_000),
+        expiresAt: new Date(T0 - 15 * 60_000),
+      }),
+    );
+    await store.create(charge({ id: 'paid', accountId: 'a3', status: 'paid' }));
+    await store.create(charge({ id: 'gone', accountId: 'a4', status: 'cancelled' }));
+    await store.create(charge({ id: 'new', accountId: 'a5', createdAt: new Date(T0 + 1_000) }));
+    const watched = await store.listWatched(T0 - 10 * 60_000);
+    expect(watched.map((entry) => entry.charge.id)).toEqual(['old', 'new']);
+    expect(watched[1]?.paymentHashes).toEqual([]);
+  });
+
+  it('markPaid flips a pending or expired charge once and logs pos.paid', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.create(charge({ id: 'c2', accountId: 'other', status: 'expired' }));
+    const paid = await store.markPaid('c1', T0 + 5_000);
+    expect(paid).toEqual(
+      expect.objectContaining({ id: 'c1', status: 'paid', paidAt: new Date(T0 + 5_000) }),
+    );
+    expect(await store.markPaid('c1', T0 + 6_000)).toBeNull();
+    expect((await store.markPaid('c2', T0 + 7_000))?.status).toBe('paid');
+    expect(await store.markPaid('missing', T0)).toBeNull();
+    expect(await store.currentPending('acc', T0 + 8_000)).toBeNull();
+    const events = parsedEvents(warn).filter((e) => e['event'] === 'pos.paid');
+    expect(events).toEqual([
+      expect.objectContaining({ accountId: 'acc' }),
+      expect.objectContaining({ accountId: 'other' }),
+    ]);
+    expect(events[0]).not.toHaveProperty('amountSats');
+  });
+
+  it('markPaid never pays a cancelled charge', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    await store.cancelPending('acc', T0 + 1);
+    expect(await store.markPaid('c1', T0 + 2)).toBeNull();
+  });
+
+  it('copies paidAt so callers cannot mutate store state', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    const paid = await store.markPaid('c1', T0 + 5_000);
+    paid?.paidAt?.setTime(0);
+    expect((await store.listLatest(1))[0]?.paidAt).toEqual(new Date(T0 + 5_000));
+  });
+
+  it('deleteInvoice removes a recorded hash and ignores an unknown one', async () => {
+    const store = new InMemoryPosStore();
+    await store.create(charge({ id: 'c1' }));
+    expect(await store.recordInvoice('c1', 'h1', T0)).toEqual({ outcome: 'recorded' });
+    expect(await store.recordInvoice('c1', 'h2', T0)).toEqual({ outcome: 'recorded' });
+    await store.deleteInvoice('h1');
+    await store.deleteInvoice('unknown');
+    expect(await store.findChargeForPayment({ paymentHash: 'h1' })).toBeUndefined();
+    expect(store.paymentHashClaims.holder('h1')).toBeNull();
+    expect((await store.findChargeForPayment({ paymentHash: 'h2' }))?.id).toBe('c1');
+    expect(await store.recordInvoice('c1', 'h1', T0)).toEqual({ outcome: 'recorded' });
+  });
+});
+
 describe('PostgresPosStore', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
@@ -289,19 +558,23 @@ describe('PostgresPosStore', () => {
         status: 'pending',
         created_at: new Date('2026-09-01T12:00:00.000Z'),
         expires_at: new Date('2026-09-01T12:05:00.000Z'),
+        paid_at: null,
+        spark_invoice: null,
       },
       {
         id: 'c2',
         account_id: 'acc',
         amount_sats: 42n,
-        status: 'cancelled',
+        status: 'paid',
         created_at: '2026-08-31T12:00:00.000Z',
         expires_at: '2026-08-31T12:05:00.000Z',
+        paid_at: '2026-08-31T12:01:00.000Z',
+        spark_invoice: 'spark1x',
       },
     ];
     const listed = await new PostgresPosStore(sql).listLatest(50);
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT id, account_id, amount_sats, status, created_at, expires_at/,
+      /SELECT id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice/,
     );
     expect(sql.queries[0]?.text).toMatch(/ORDER BY created_at DESC, id DESC\s+LIMIT \$1/);
     expect(sql.queries[0]?.text).not.toMatch(/account_id = \$1/);
@@ -314,14 +587,71 @@ describe('PostgresPosStore', () => {
         status: 'pending',
         createdAt: new Date('2026-09-01T12:00:00.000Z'),
         expiresAt: new Date('2026-09-01T12:05:00.000Z'),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
       },
       {
         id: 'c2',
         accountId: 'acc',
         amountSats: 42,
-        status: 'cancelled',
+        status: 'paid',
         createdAt: new Date('2026-08-31T12:00:00.000Z'),
         expiresAt: new Date('2026-08-31T12:05:00.000Z'),
+        paidAt: new Date('2026-08-31T12:01:00.000Z'),
+        sparkInvoice: 'spark1x',
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      },
+    ]);
+  });
+
+  it('maps a PHP typed amount and stored fiat text, leaving a null PHP numeric null', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      {
+        id: 'c-php',
+        account_id: 'acc',
+        amount_sats: 21,
+        status: 'pending',
+        created_at: new Date('2026-09-01T12:00:00.000Z'),
+        expires_at: new Date('2026-09-01T12:05:00.000Z'),
+        paid_at: null,
+        spark_invoice: null,
+        amount_currency: 'PHP',
+        amount_text: '12.00',
+        fiat_usd: '1.00',
+        fiat_chf: '0.90',
+        fiat_eur: '0.85',
+        fiat_php: null,
+      },
+    ];
+    const listed = await new PostgresPosStore(sql).listLatest(10);
+    expect(listed).toEqual([
+      {
+        id: 'c-php',
+        accountId: 'acc',
+        amountSats: 21,
+        status: 'pending',
+        createdAt: new Date('2026-09-01T12:00:00.000Z'),
+        expiresAt: new Date('2026-09-01T12:05:00.000Z'),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: 'PHP',
+        amountText: '12.00',
+        fiatUsd: '1.00',
+        fiatChf: '0.90',
+        fiatEur: '0.85',
+        fiatPhp: null,
       },
     ]);
   });
@@ -374,8 +704,9 @@ describe('PostgresPosStore', () => {
     const created = await new PostgresPosStore(sql).create(row);
     expect(sql.queries[0]?.text).toMatch(/SET status = 'expired'/);
     expect(sql.queries[0]?.params).toEqual(['acc', row.createdAt.toISOString()]);
-    expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO pos_charge \(id, account_id, amount_sats, status, created_at, expires_at\)/,
+    expect(sql.executes[0]?.text).toContain(
+      'INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at, ' +
+        'paid_at, spark_invoice, amount_currency, amount_text, fiat_usd, fiat_chf, fiat_eur, fiat_php)',
     );
     expect(sql.executes[0]?.params).toEqual([
       'c1',
@@ -384,6 +715,14 @@ describe('PostgresPosStore', () => {
       'pending',
       row.createdAt.toISOString(),
       row.expiresAt.toISOString(),
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
     ]);
     expect(typeof sql.executes[0]?.params[2]).toBe('number');
     expect(created).toEqual(row);
@@ -441,6 +780,8 @@ describe('PostgresPosStore', () => {
         status: 'cancelled',
         created_at: '2026-09-01T11:00:00.000Z',
         expires_at: '2026-09-01T11:05:00.000Z',
+        paid_at: null,
+        spark_invoice: null,
       },
       {
         id: 'c1',
@@ -449,6 +790,8 @@ describe('PostgresPosStore', () => {
         status: 'cancelled',
         created_at: '2026-09-01T12:00:00.000Z',
         expires_at: '2026-09-01T12:05:00.000Z',
+        paid_at: null,
+        spark_invoice: null,
       },
     ];
     const cancelled = await new PostgresPosStore(sql).cancelPending('acc', T0);
@@ -463,6 +806,14 @@ describe('PostgresPosStore', () => {
       status: 'cancelled',
       createdAt: new Date('2026-09-01T12:00:00.000Z'),
       expiresAt: new Date('2026-09-01T12:05:00.000Z'),
+      paidAt: null,
+      sparkInvoice: null,
+      amountCurrency: null,
+      amountText: null,
+      fiatUsd: null,
+      fiatChf: null,
+      fiatEur: null,
+      fiatPhp: null,
     });
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.cancel')).toBe(true);
   });
@@ -474,6 +825,233 @@ describe('PostgresPosStore', () => {
     expect(await new PostgresPosStore(sql).cancelPending('acc', T0)).toBeNull();
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.cancel')).toBe(false);
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.expired')).toBe(true);
+  });
+
+  it('issueSparkInvoice keeps an existing invoice and binds id, invoice, and ISO now', async () => {
+    const sql = new MockSql();
+    sql.listRows = [{ spark_invoice: 'spark1first' }];
+    const store = new PostgresPosStore(sql);
+    expect(await store.issueSparkInvoice('c1', 'spark1second', T0)).toBe('spark1first');
+    expect(sql.queries[0]?.text).toMatch(/SET spark_invoice = COALESCE\(spark_invoice, \$2\)/);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE id = \$1 AND status IN \('pending', 'expired'\) AND expires_at > \$3/,
+    );
+    expect(sql.queries[0]?.params).toEqual(['c1', 'spark1second', new Date(T0).toISOString()]);
+    sql.listRows = [];
+    expect(await store.issueSparkInvoice('c1', 'spark1second', T0)).toBeNull();
+  });
+
+  /** A transaction port whose statements answer from `respond` and are recorded. */
+  function claimDb(respond: (text: string) => unknown[]): {
+    db: MergeDb;
+    calls: { text: string; params: readonly unknown[] }[];
+    begins: { n: number };
+  } {
+    const calls: { text: string; params: readonly unknown[] }[] = [];
+    const begins = { n: 0 };
+    const tx: MergeTx = {
+      async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+        calls.push({ text, params });
+        return respond(text) as T[];
+      },
+    };
+    return {
+      db: {
+        begin: (run) => {
+          begins.n += 1;
+          return run(tx);
+        },
+      },
+      calls,
+      begins,
+    };
+  }
+
+  it('recordInvoice claims the hash, reads its holders, then inserts in one transaction', async () => {
+    const sql = new MockSql();
+    const hash = `80000000${'a'.repeat(56)}`;
+    let inserted: unknown[] = [{ payment_hash: hash }];
+    const { db, calls, begins } = claimDb((text) =>
+      text.startsWith('INSERT INTO pos_charge_invoice') ? inserted : [],
+    );
+    const store = new PostgresPosStore(sql, db);
+    expect(await store.recordInvoice('c1', hash, T0)).toEqual({ outcome: 'recorded' });
+    expect(begins.n).toBe(1);
+    expect(sql.queries).toEqual([]);
+    expect(calls.map((call) => call.text.split('\n')[0])).toEqual([
+      PAYMENT_HASH_CLAIM_SQL,
+      'SELECT charge_id FROM pos_charge_invoice WHERE payment_hash = $1',
+      'SELECT id, pos_charge_id FROM shop_payment WHERE payment_hash = $1',
+      'INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at)',
+    ]);
+    expect(calls[0]?.params).toEqual([PAYMENT_HASH_LOCK_NAMESPACE, -2147483648]);
+    expect(calls[1]?.params).toEqual([hash]);
+    expect(calls[2]?.params).toEqual([hash]);
+    expect(calls[3]?.text).toMatch(
+      /status IN \('pending', 'expired'\) AND expires_at > \$3::timestamptz/,
+    );
+    expect(calls[3]?.text).toMatch(/ON CONFLICT \(payment_hash\) DO NOTHING/);
+    expect(calls[3]?.params).toEqual(['c1', hash, new Date(T0).toISOString()]);
+    inserted = [];
+    expect(await store.recordInvoice('c1', hash, T0)).toEqual({ outcome: 'not_open' });
+  });
+
+  it('recordInvoice answers a held hash from its rows without inserting', async () => {
+    const sql = new MockSql();
+    let invoiceRows: unknown[] = [{ charge_id: 'c1' }];
+    let paymentRows: unknown[] = [];
+    const { db, calls } = claimDb((text) => {
+      if (text.includes('FROM pos_charge_invoice')) return invoiceRows;
+      if (text.includes('FROM shop_payment')) return paymentRows;
+      return [];
+    });
+    const store = new PostgresPosStore(sql, db);
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({ outcome: 'this_charge' });
+    expect(await store.recordInvoice('c2', 'h', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: 'c1',
+      holderPaymentId: null,
+    });
+    invoiceRows = [];
+    paymentRows = [{ id: 'p1', pos_charge_id: 'c1' }];
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({ outcome: 'this_charge' });
+    paymentRows = [{ id: 'p2', pos_charge_id: null }];
+    expect(await store.recordInvoice('c1', 'h', T0)).toEqual({
+      outcome: 'other_payment',
+      holderChargeId: null,
+      holderPaymentId: 'p2',
+    });
+    expect(calls.some((call) => call.text.startsWith('INSERT'))).toBe(false);
+  });
+
+  it('recordInvoice lets a statement error through and needs a transaction port', async () => {
+    const sql = new MockSql();
+    const { db } = claimDb((text) => {
+      if (text.startsWith('INSERT')) throw new Error('fk');
+      return [];
+    });
+    await expect(new PostgresPosStore(sql, db).recordInvoice('c1', 'h', T0)).rejects.toThrow('fk');
+    await expect(new PostgresPosStore(sql).recordInvoice('c1', 'h', T0)).rejects.toThrow(
+      'pos transactions are not configured',
+    );
+  });
+
+  it('findChargeForPayment queries by hash or valid UUID and refuses a malformed id', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      {
+        id: '11111111-1111-4111-8111-111111111111',
+        account_id: 'acc',
+        amount_sats: '21',
+        status: 'paid',
+        created_at: '2026-09-01T12:00:00.000Z',
+        expires_at: '2026-09-01T12:05:00.000Z',
+        paid_at: new Date('2026-09-01T12:01:00.000Z'),
+        spark_invoice: null,
+      },
+    ];
+    const store = new PostgresPosStore(sql);
+    expect((await store.findChargeForPayment({ paymentHash: 'a'.repeat(64) }))?.amountSats).toBe(
+      21,
+    );
+    expect(sql.queries[0]?.text).toMatch(/FROM pos_charge_invoice i\s+JOIN pos_charge c/);
+    expect(sql.queries[0]?.params).toEqual(['a'.repeat(64)]);
+    expect(
+      (await store.findChargeForPayment({ chargeId: '11111111-1111-4111-8111-111111111111' }))?.id,
+    ).toBe('11111111-1111-4111-8111-111111111111');
+    expect(sql.queries[1]?.text).toMatch(/FROM pos_charge\s+WHERE id = \$1/);
+    expect(sql.queries[1]?.params).toEqual(['11111111-1111-4111-8111-111111111111']);
+    const queryCount = sql.queries.length;
+    expect(await store.findChargeForPayment({ chargeId: 'not-a-uuid' })).toBeUndefined();
+    expect(sql.queries).toHaveLength(queryCount);
+    sql.listRows = [];
+    expect(await store.findChargeForPayment({ paymentHash: 'b'.repeat(64) })).toBeUndefined();
+  });
+
+  it('listWatched groups joined payment hashes per charge in query order', async () => {
+    const sql = new MockSql();
+    const base = {
+      account_id: 'acc',
+      amount_sats: '21',
+      status: 'pending',
+      created_at: '2026-09-01T12:00:00.000Z',
+      expires_at: '2026-09-01T12:05:00.000Z',
+      paid_at: null,
+      spark_invoice: null,
+    };
+    sql.listRows = [
+      { ...base, id: 'c1', payment_hash: 'a'.repeat(64) },
+      { ...base, id: 'c1', payment_hash: 'b'.repeat(64) },
+      { ...base, id: 'c2', status: 'expired', spark_invoice: 'spark1x', payment_hash: null },
+    ];
+    const watched = await new PostgresPosStore(sql).listWatched(T0);
+    expect(sql.queries[0]?.text).toMatch(/LEFT JOIN pos_charge_invoice i ON i.charge_id = c.id/);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE c.status IN \('pending', 'expired'\) AND c.expires_at > \$1/,
+    );
+    expect(sql.queries[0]?.params).toEqual([new Date(T0).toISOString()]);
+    expect(watched).toEqual([
+      {
+        charge: expect.objectContaining({ id: 'c1', amountSats: 21, sparkInvoice: null }),
+        paymentHashes: ['a'.repeat(64), 'b'.repeat(64)],
+      },
+      {
+        charge: expect.objectContaining({ id: 'c2', status: 'expired', sparkInvoice: 'spark1x' }),
+        paymentHashes: [],
+      },
+    ]);
+  });
+
+  it('markPaid updates pending or expired once and logs pos.paid', async () => {
+    const sql = new MockSql();
+    sql.listRows = [
+      {
+        id: 'c1',
+        account_id: 'acc',
+        amount_sats: 21,
+        status: 'paid',
+        created_at: '2026-09-01T12:00:00.000Z',
+        expires_at: '2026-09-01T12:05:00.000Z',
+        paid_at: '2026-09-01T12:01:00.000Z',
+        spark_invoice: null,
+      },
+    ];
+    const store = new PostgresPosStore(sql);
+    const paid = await store.markPaid('c1', T0 + 60_000);
+    expect(sql.queries[0]?.text).toMatch(/SET status = 'paid', paid_at = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/WHERE id = \$1 AND status IN \('pending', 'expired'\)/);
+    expect(sql.queries[0]?.params).toEqual(['c1', new Date(T0 + 60_000).toISOString()]);
+    expect(paid).toEqual(
+      expect.objectContaining({ status: 'paid', paidAt: new Date('2026-09-01T12:01:00.000Z') }),
+    );
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'pos.paid', accountId: 'acc' }),
+    );
+    sql.listRows = [];
+    warn.mockClear();
+    expect(await store.markPaid('c1', T0)).toBeNull();
+    expect(parsedEvents(warn).some((e) => e['event'] === 'pos.paid')).toBe(false);
+  });
+
+  it('create binds paid_at and spark_invoice of a row that carries them', async () => {
+    const sql = new MockSql();
+    const row = charge({
+      id: 'c1',
+      status: 'paid',
+      paidAt: new Date(T0 + 1_000),
+      sparkInvoice: 'spark1x',
+    });
+    await new PostgresPosStore(sql).create(row);
+    expect(sql.executes[0]?.params.slice(6)).toEqual([
+      new Date(T0 + 1_000).toISOString(),
+      'spark1x',
+      null,
+      null,
+      null,
+      null,
+      null,
+      null,
+    ]);
   });
 
   it('propagates list query errors', async () => {
@@ -489,5 +1067,13 @@ describe('PostgresPosStore', () => {
       'create boom',
     );
     expect(parsedEvents(warn).some((e) => e['event'] === 'pos.create')).toBe(false);
+  });
+
+  it('deleteInvoice runs one DELETE bound to the payment hash', async () => {
+    const sql = new MockSql();
+    await new PostgresPosStore(sql).deleteInvoice('h1');
+    expect(sql.executes).toEqual([
+      { text: 'DELETE FROM pos_charge_invoice WHERE payment_hash = $1', params: ['h1'] },
+    ]);
   });
 });

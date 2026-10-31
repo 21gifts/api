@@ -81,13 +81,15 @@ interface ListedShopFixture {
   /** 64-hex shop public key. */
   pubkey: string;
   /** Till account username. */
-  tillUsername: string;
 }
 
 /**
  * Provision a moderator author and a till account through `/debug/accounts`,
- * then post a complete `#21GiftsShop` note with a pin, the till account and
- * two photos (3×2 and 4×5 PNG). The memory boot creates the shop key.
+ * then build a complete `#21GiftsShop` note without `POST /messages`, which
+ * needs a verified wallet that the default boot cannot confirm: the author
+ * saves the shop text with one 3×2 PNG as About me (`PUT /me/about`), then
+ * sets the pin (`PATCH /messages/:id/place`) and the till account
+ * (`PATCH /messages/:id/shop-account`). The memory boot creates the shop key.
  */
 async function listedShop(request: APIRequestContext, tag: string): Promise<ListedShopFixture> {
   const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
@@ -97,8 +99,8 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
     headers: DEBUG,
     data: {
       accounts: [
-        { name: authorName, lightningAddress: `e2e-shopmod-${stamp}@walletofsatoshi.com` },
-        { name: tillName, lightningAddress: `e2e-till-${stamp}@walletofsatoshi.com` },
+        { name: authorName, username: `e2e-shopmod-${stamp}`.slice(0, 32) },
+        { name: tillName, username: `e2e-till-${stamp}`.slice(0, 32) },
       ],
     },
   });
@@ -126,40 +128,63 @@ async function listedShop(request: APIRequestContext, tag: string): Promise<List
   expect(promoted.status()).toBe(200);
 
   const name = `Cafe ${tag} ${stamp}`;
-  const posted = await request.post('/messages', {
-    headers: { ...auth, 'content-type': 'application/json' },
+  const saved = await request.put('/me/about', {
+    headers: auth,
     data: {
       text: `Coffee roasted on site and served at the bar every morning by ${name}.\n\n#21GiftsShop`,
-      place: { lat: 47.3769, lng: 8.5417, label: name, address: ADDRESS },
-      shopUsername: till?.username,
-      photos: [
-        { contentType: 'image/png', data: pngBase64(3, 2) },
-        { contentType: 'image/png', data: pngBase64(4, 5) },
-      ],
+      photo: { contentType: 'image/png', data: pngBase64(3, 2) },
     },
   });
-  expect(posted.status()).toBe(200);
-  const note = (await posted.json()) as { id: string; shopNpub: string | null };
+  expect(saved.status()).toBe(200);
+  const noteId = await profileNoteId(request, author?.id as string);
+  const pinned = await request.patch(`/messages/${noteId}/place`, {
+    headers: auth,
+    data: { place: { lat: 47.3769, lng: 8.5417, label: name, address: ADDRESS } },
+  });
+  expect(pinned.status()).toBe(200);
+  const assigned = await request.patch(`/messages/${noteId}/shop-account`, {
+    headers: auth,
+    data: { username: till?.username },
+  });
+  expect(assigned.status()).toBe(200);
+  const note = (await assigned.json()) as { id: string; shopNpub: string | null };
   expect(note.shopNpub).toMatch(/^npub1[02-9ac-hj-np-z]{58}$/);
   const npub = note.shopNpub as string;
   const pubkey = nip19.decode(npub as nip19.NPub).data;
-  return { auth, noteId: note.id, name, npub, pubkey, tillUsername: till?.username as string };
+  return { auth, noteId: note.id, name, npub, pubkey };
 }
 
 /**
- * A moderator who has not posted yet. `listedShop` already spends the author's
- * one burst slot, so a second text note in the same test needs its own account.
+ * The About-me note id of one account, read from `GET /debug/accounts`.
+ *
+ * @param request - Playwright request context.
+ * @param accountId - Account whose profile note is wanted.
+ * @returns The profile note id.
+ */
+async function profileNoteId(request: APIRequestContext, accountId: string): Promise<string> {
+  const listed = await request.get('/debug/accounts', { headers: DEBUG });
+  expect(listed.status()).toBe(200);
+  const row = (
+    (await listed.json()) as { accounts: Array<{ id: string; profileMessageId: string | null }> }
+  ).accounts.find((item) => item.id === accountId);
+  expect(typeof row?.profileMessageId).toBe('string');
+  return row?.profileMessageId as string;
+}
+
+/**
+ * A second moderator with its own About-me note, so a test can hold a tagged
+ * note next to the listed shop of `listedShop`.
  */
 async function freshModerator(
   request: APIRequestContext,
   tag: string,
-): Promise<{ authorization: string }> {
+): Promise<{ auth: { authorization: string }; id: string }> {
   const stamp = `${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
   const name = `E2eTagMod${tag}${stamp}`;
   const provision = await request.post('/debug/accounts', {
     headers: DEBUG,
     data: {
-      accounts: [{ name, lightningAddress: `e2e-tagmod-${stamp}@walletofsatoshi.com` }],
+      accounts: [{ name, username: `e2e-tagmod-${stamp}`.slice(0, 32) }],
     },
   });
   expect(provision.status()).toBe(200);
@@ -178,7 +203,7 @@ async function freshModerator(
     data: { role: 'moderator' },
   });
   expect(promoted.status()).toBe(200);
-  return auth;
+  return { auth, id: author?.id as string };
 }
 
 async function getShop(request: APIRequestContext, segment: string): Promise<ShopBody> {
@@ -220,17 +245,17 @@ test('GET /shops lists a keyed shop and omits a tagged note that is not listed',
   const shop = await listedShop(request, 'List');
   const other = await freshModerator(request, 'List');
   const label = `Unlisted ${Date.now().toString(36)}${Math.random().toString(16).slice(2, 8)}`;
-  // A top-level shop tag needs an account, so this note is a reply. It keeps
-  // the tag and stays off GET /shops.
-  const tagged = await request.post('/messages', {
-    headers: { ...other, 'content-type': 'application/json' },
-    data: {
-      text: `${label} is tagged as a shop and not listed.\n\n#21GiftsShop`,
-      inReplyTo: shop.noteId,
-    },
+  // A tagged About-me note with no pin and no till account keeps the tag and
+  // stays off GET /shops.
+  const tagged = await request.put('/me/about', {
+    headers: other.auth,
+    data: { text: `${label} is tagged as a shop and not listed.\n\n#21GiftsShop` },
   });
   expect(tagged.status()).toBe(200);
-  const taggedNote = (await tagged.json()) as { id: string; shopNpub: string | null };
+  const taggedId = await profileNoteId(request, other.id);
+  const taggedNote = (await (await request.get(`/messages/${taggedId}`)).json()) as {
+    shopNpub: string | null;
+  };
   expect(taggedNote.shopNpub).toBeNull();
 
   const response = await request.get('/shops');
@@ -268,8 +293,8 @@ async function shopWithoutPin(
     headers: DEBUG,
     data: {
       accounts: [
-        { name: authorName, lightningAddress: `e2e-openmod-${stamp}@walletofsatoshi.com` },
-        { name: tillName, lightningAddress: `e2e-opentill-${stamp}@walletofsatoshi.com` },
+        { name: authorName, username: `e2e-openmod-${stamp}`.slice(0, 32) },
+        { name: tillName, username: `e2e-opentill-${stamp}`.slice(0, 32) },
       ],
     },
   });
@@ -366,11 +391,13 @@ test('e2e: listed shop is 200, hex is 301, hide is 410, restore is 200 again', a
 test('Function: shopRoutes — GET /shops/:npub answers the listed shop', async ({ request }) => {
   const shop = await listedShop(request, 'Route');
   const body = await getShop(request, shop.npub);
+  // The default boot has no LNURL server, so the till account cannot receive
+  // and the shop carries no pay username.
   expect(body.shop).toMatchObject({
     npub: shop.npub,
     messageId: shop.noteId,
     name: shop.name,
-    payUsername: shop.tillUsername,
+    payUsername: null,
     nip05: null,
   });
   expect(body.shop.createdAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
@@ -534,11 +561,6 @@ test('Function: imageHeaderSize — GET /shops/:npub reports each photo size', a
       width: 3,
       height: 2,
     },
-    {
-      url: expect.stringMatching(new RegExp(`/messages/${shop.noteId}/photo/1\\.png$`)),
-      width: 4,
-      height: 5,
-    },
   ]);
   const cover = await request.get(`/messages/${shop.noteId}/photo`);
   expect(cover.status()).toBe(200);
@@ -571,7 +593,7 @@ test('Function: signEventForShop — no publisher, the shop is served without a 
 
 async function servedWithoutMap(request: APIRequestContext, tag: string): Promise<void> {
   const shop = await listedShop(request, tag);
-  expect((await getShop(request, shop.npub)).shop.photos).toHaveLength(2);
+  expect((await getShop(request, shop.npub)).shop.photos).toHaveLength(1);
 }
 
 test('Function: runOcpPlaceOutboxPass — OCP map target blank, the listed shop is still served', ({

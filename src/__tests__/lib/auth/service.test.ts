@@ -16,8 +16,6 @@ async function seedAccount(
     linkingKey: null,
     role: 'basis',
     name: null,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),

@@ -60,8 +60,8 @@ function pending(
 }
 
 describe('PUSH_SCHEMA_SQL', () => {
-  it('creates push_subscription and push_outbox with indexes', () => {
-    expect(PUSH_SCHEMA_SQL).toHaveLength(9);
+  it('creates push_subscription, push_outbox, and push_payment_received with indexes', () => {
+    expect(PUSH_SCHEMA_SQL).toHaveLength(10);
     expect(PUSH_SCHEMA_SQL[0]).toMatch(/CREATE TABLE IF NOT EXISTS push_subscription/i);
     expect(PUSH_SCHEMA_SQL[1]).toMatch(/push_subscription_account_id_idx/i);
     expect(PUSH_SCHEMA_SQL[2]).toMatch(
@@ -79,6 +79,9 @@ describe('PUSH_SCHEMA_SQL', () => {
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/push_outbox_type_check/);
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/'conversation'/);
     expect(PUSH_SCHEMA_SQL[8]).toMatch(/'dismiss'/);
+    expect(PUSH_SCHEMA_SQL[9]).toMatch(
+      /CREATE TABLE IF NOT EXISTS push_payment_received \(\n {2}payment_hash text PRIMARY KEY,/,
+    );
   });
 });
 
@@ -149,6 +152,23 @@ describe('InMemoryPushStore', () => {
     expect(await store.listByAccount('acc-a')).toHaveLength(1);
     expect(await store.deleteStaleSubscription({ ...SUB, sessionToken: 'tok-new' })).toBe(true);
     expect(await store.listByAccount('acc-a')).toEqual([]);
+  });
+
+  it('removeAccountSubscriptions deletes every subscription of one account and counts them', async () => {
+    const store = new InMemoryPushStore();
+    expect(store.removeAccountSubscriptions('acc-a')).toBe(0);
+    await store.upsertSubscription(SUB);
+    await store.upsertSubscription({ ...SUB, endpoint: 'https://push.example/b' });
+    await store.upsertSubscription({
+      ...SUB,
+      endpoint: 'https://push.example/c',
+      accountId: 'acc-b',
+    });
+    expect(store.removeAccountSubscriptions('acc-a')).toBe(2);
+    expect(await store.listByAccount('acc-a')).toEqual([]);
+    expect((await store.listByAccount('acc-b')).map((row) => row.endpoint)).toEqual([
+      'https://push.example/c',
+    ]);
   });
 
   it('lists distinct account ids with subscriptions', async () => {
@@ -282,6 +302,49 @@ describe('InMemoryPushStore', () => {
       'https://push.example/a',
       'https://push.example/b',
     ]);
+  });
+});
+
+describe('enqueuePaymentReceived', () => {
+  it('enqueues in memory once per payment hash', async () => {
+    const store = new InMemoryPushStore();
+    const first = pending({ id: 'p1', accountId: 'a', messageId: null });
+    expect(await store.enqueuePaymentReceived('hash', first)).toBe(true);
+    expect(await store.enqueuePaymentReceived('hash', pending({ id: 'p2', accountId: 'a' }))).toBe(
+      false,
+    );
+    expect(await store.enqueuePaymentReceived('other', pending({ id: 'p3', accountId: 'a' }))).toBe(
+      true,
+    );
+    expect((await store.listAllOutbox(10)).map((row) => row.id).sort()).toEqual(['p1', 'p3']);
+  });
+
+  it('claims the hash and inserts the row in one Postgres statement', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    const row = pending({ id: 'p1', accountId: 'a', messageId: null, skipEndpoints: ['x'] });
+    sql.nextRows = [{ id: 'p1' }];
+    expect(await store.enqueuePaymentReceived('hash', row)).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(
+      /INSERT INTO push_payment_received[\s\S]*ON CONFLICT \(payment_hash\) DO NOTHING[\s\S]*INSERT INTO push_outbox[\s\S]*FROM claim/,
+    );
+    expect(sql.queries[0]?.params).toEqual([
+      'hash',
+      'p1',
+      'a',
+      'forum',
+      null,
+      '{}',
+      'pending',
+      0,
+      null,
+      row.createdAt,
+      null,
+      '[]',
+      '["x"]',
+    ]);
+    sql.nextRows = [];
+    expect(await store.enqueuePaymentReceived('hash', row)).toBe(false);
   });
 });
 
@@ -740,5 +803,81 @@ describe('PostgresPushStore', () => {
     expect((await store.claimPending(1, 1, 1000))[0]?.deliveredEndpoints).toEqual([
       'https://push.example/a',
     ]);
+  });
+});
+
+describe('countBroadcastOutbox', () => {
+  it('counts in-memory rows of one broadcast by outcome', async () => {
+    const store = new InMemoryPushStore();
+    const tagged = (
+      overrides: Partial<PushOutboxRow> & Pick<PushOutboxRow, 'id' | 'accountId'>,
+    ): PushOutboxRow => pending({ payload: '{"tag":"broadcast:b"}', ...overrides });
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 0,
+      pending: 0,
+      delivered: 0,
+      dropped: 0,
+      failed: 0,
+    });
+    await store.enqueue(tagged({ id: '1', accountId: 'a', messageId: 'b' }));
+    await store.enqueue(
+      tagged({
+        id: '2',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'sent',
+        deliveredEndpoints: ['x'],
+      }),
+    );
+    await store.enqueue(tagged({ id: '3', accountId: 'a', messageId: 'b', status: 'sent' }));
+    await store.enqueue(tagged({ id: '4', accountId: 'a', messageId: 'b', status: 'failed' }));
+    await store.enqueue(
+      tagged({
+        id: '6',
+        accountId: 'a',
+        messageId: 'b',
+        status: 'failed',
+        deliveredEndpoints: ['y'],
+      }),
+    );
+    await store.enqueue(
+      tagged({ id: '7', accountId: 'a', messageId: 'b', deliveredEndpoints: ['z'] }),
+    );
+    await store.enqueue(
+      tagged({ id: '5', accountId: 'a', messageId: 'other', payload: '{"tag":"broadcast:other"}' }),
+    );
+    await store.enqueue(
+      pending({ id: '8', accountId: 'a', messageId: 'b', payload: '{"tag":"zap:b"}' }),
+    );
+    await store.enqueue(pending({ id: '9', accountId: 'a', messageId: 'b', payload: 'not json' }));
+    await store.enqueue(pending({ id: '10', accountId: 'a', messageId: 'b', payload: 'null' }));
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 6,
+      pending: 2,
+      delivered: 2,
+      dropped: 1,
+      failed: 1,
+    });
+  });
+
+  it('groups Postgres rows by status and splits sent rows by delivered endpoints', async () => {
+    const sql = new MockSql();
+    const store = new PostgresPushStore(sql);
+    sql.nextRows = [
+      { status: 'pending', n: 2, reached: 0 },
+      { status: 'sent', n: 5, reached: 3 },
+      { status: 'failed', n: 3, reached: 1 },
+    ];
+    expect(await store.countBroadcastOutbox('b')).toEqual({
+      queued: 10,
+      pending: 2,
+      delivered: 4,
+      dropped: 2,
+      failed: 2,
+    });
+    expect(sql.queries.at(-1)?.text).toMatch(
+      /WHERE message_id = \$1 AND payload::jsonb ->> 'tag' = \$2/,
+    );
+    expect(sql.queries.at(-1)?.params).toEqual(['b', 'broadcast:b']);
   });
 });

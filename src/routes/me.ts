@@ -5,19 +5,20 @@ import { buildAccountActivity } from '@/lib/account-activity';
 import { serializeOwnerAccountWithPosts, type OwnerAccountResponse } from '@/lib/auth/account-json';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import { ensureProfileMessage } from '@/lib/auth/profile-message';
+import { encryptRecoveryShare, RECOVERY_SHARE_TEXT } from '@/lib/auth/recovery-share';
 import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
-import type { Account, AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore, PreviousWallet } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
-import { SESSION_TTL_MS } from '@/lib/config';
+import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
-import type { InvoicePayer } from '@/lib/invoice-payer';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { normalizeLightningAddress } from '@/lib/lightning-address';
+import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { pingTodayMedia } from '@/lib/funding-ping';
 import { normalizeLocation } from '@/lib/location';
-import { logEvent } from '@/lib/log';
-import { resolveLnurlp, type FetchFn } from '@/lib/lnurlp';
+import type { FetchFn } from '@/lib/lnurlp';
+import { errorLogFields, logEvent } from '@/lib/log';
 import {
   MESSAGE_MAX_LENGTH,
   decodeForumPhoto,
@@ -33,39 +34,35 @@ import type { SpendPing } from '@/lib/spend-ping';
 import type { ShopIdentityStore } from '@/lib/shop-identity';
 import { syncWelcomePing } from '@/lib/welcome-media';
 import { normalizeDisplayName } from '@/lib/name';
+import { fetchSparkAddressBalance } from '@/lib/spark-explorer';
+import { normalizeSparkPubkey } from '@/lib/spark-pubkey';
 import { normalizeUsername, usernameFromDisplayName } from '@/lib/username';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { notifyForumPost } from '@/lib/notification';
-import { LIGHTNING_ADDRESS_NOT_ZAP, probeNip57Mint } from '@/lib/nip57-probe';
-import { ensureAccountNostrKey } from '@/lib/nostr/keys';
-import { signEventForAccount } from '@/lib/nostr/sign';
 import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
-import { confirmVerification, startVerification } from '@/lib/verification';
 
 /**
  * `/me` — the authenticated account and its editable profile (display name,
  * unique username, optional location, About me, welcome-forum laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, wallet backup seen,
- * and the receiver's Lightning Address), including proof-of-control
- * verification. Shares the {@link AuthStore} instance with `/auth`.
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, wallet backup seen,
+ * and, when the LNURL server is configured, the wallet public-key bind
+ * (`PUT /wallet`), the 21.gifts recovery share (`PUT /recovery-share`), and the
+ * previous wallets of a social recovery (`GET /previous-wallets`,
+ * `DELETE /previous-wallets/:sparkPubkey`). The verified wallet is the
+ * member's only receiving address. Shares the {@link AuthStore} instance with
+ * `/auth`.
  */
 
 /** Collaborators the `/me` routes need. */
 export interface MeRouteDeps {
   /** Shared auth persistence port. */
   store: AuthStore;
-  /** Forum persistence (About me without LN, activity zaps/invoices, profile notes). */
+  /** Forum persistence (About me with or without a verified wallet, activity zaps/invoices, profile notes). */
   messages: MessageStore;
   /** Clock returning epoch milliseconds (injected for testability). */
   now: () => number;
-  /** Pays the verification micro-payment invoice. */
-  payer: InvoicePayer;
-  /** Injected `fetch` for LNURL-pay resolution. */
-  fetchImpl: FetchFn;
-  /** AES KEK for signing the NIP-57 mint probe; omit when unset. */
-  nostrKek?: Uint8Array;
   /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
   /** Optional in-app notification store for profile-note create. */
@@ -74,7 +71,9 @@ export interface MeRouteDeps {
   conversationStore?: ConversationStore;
   /**
    * Outbound house gifts (default: empty {@link InMemoryGiftStore}).
-   * Used by `GET /activity`.
+   * Used by `GET /activity` and by the About-me welcome ping, where a
+   * `welcome` gift with description `21gifts welcome` recorded under the username at or after the wallet
+   * verification stops a second ping.
    */
   giftStore?: GiftStore;
   /**
@@ -88,15 +87,35 @@ export interface MeRouteDeps {
    */
   fiatRates?: FiatRateBook;
   /**
-   * Funding grants for owner JSON (default: empty {@link InMemoryFundingStore}).
+   * Funding grants for owner JSON and for the daily ping after the first
+   * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
   /**
    * Optional spend ping. After About me is saved, a verified account with a
    * live top-level photo or video (including this note) is welcome-pinged.
+   * After the first recovery share of the current wallet is stored, an
+   * account eligible today gets the daily ping of today's newest media post.
    * Omitted → skip. Failures do not fail the 200.
    */
   spendPing?: SpendPing;
+  /**
+   * LNURL server config. When set, mounts `PUT /wallet`, `PUT /recovery-share`,
+   * `GET /previous-wallets`, and `DELETE /previous-wallets/:sparkPubkey`, and
+   * resolves the receiving address in owner JSON and the welcome ping.
+   * Omitted → off.
+   */
+  lnurlServer?: LnurlServerConfig;
+  /**
+   * `RECOVERY_SHARE_KEK` that encrypts the 21.gifts recovery share. Omitted
+   * (memory boot) → `PUT /recovery-share` answers 503.
+   */
+  recoveryShareKek?: Uint8Array;
+  /**
+   * Fetch for the anonymous explorer balance of previous wallets (default
+   * `globalThis.fetch`).
+   */
+  fetchImpl?: FetchFn;
   /**
    * Shop identities. With `shopKek` (or `nostrKek`), `PUT /me/about` creates
    * the key when the profile note becomes a public shop. Omitted → no shop keys.
@@ -104,6 +123,8 @@ export interface MeRouteDeps {
   shopIdentities?: ShopIdentityStore;
   /** KEK for new shop keys. Default `nostrKek`. */
   shopKek?: Uint8Array;
+  /** Custodial nsec KEK; the default for `shopKek`. Omitted with `shopKek` → no shop keys. */
+  nostrKek?: Uint8Array;
 }
 
 /**
@@ -159,13 +180,22 @@ const usernameBody = z.object({ username: z.string() });
 /** Body schema for setting a free-text profile location. */
 const locationBody = z.object({ location: z.string() });
 
-/** Body schema for linking a Lightning Address. */
-const addressBody = z.object({ address: z.string() });
+/** Body schema for binding the member's wallet public key. */
+const walletBody = z.object({ sparkPubkey: z.string() });
 
-/** Body schema for confirming address verification. */
-const confirmBody = z.object({ nonce: z.string() });
+/** Body schema for storing the 21.gifts recovery share. Unknown keys are 400. */
+const recoveryShareBody = z.object({ sparkPubkey: z.string(), share: z.string() }).strict();
 
-/** Body schema for skipping a wizard step. */
+/** Single 400 copy for a missing or invalid recovery share body. */
+const RECOVERY_SHARE_BODY_ERROR = 'Expected a JSON body with sparkPubkey and a recovery share';
+
+/** 503 copy when the share cannot be stored (no `RECOVERY_SHARE_KEK`, or a store or crypto failure). */
+const RECOVERY_SHARE_UNAVAILABLE = 'Social recovery is unavailable';
+
+/** 503 copy of the previous-wallet routes, shared with `POST /me/wallet/report` (src/routes/wallet-report.ts). */
+const WALLET_DATA_UNAVAILABLE = 'Wallet data is unavailable';
+
+/** Body schema for skipping a wizard step (`lightning-address` is the receiving-wallet step). */
 const skipBody = z.object({ step: z.enum(['name', 'lightning-address']) });
 
 /** Body schema for writing About me (required text; optional photo tri-state). */
@@ -186,9 +216,17 @@ const aboutBody = z.object({
 /** Same decode-failure string as `POST /messages`. */
 const ABOUT_PHOTO_ERROR = 'Photo must be a JPEG, PNG, or WebP under 1 MiB';
 
+/** Empty About me with no photo or video and no live note to clear. */
+const ABOUT_EMPTY_ERROR = 'Write something about yourself';
+
 /** Body schema for setting the owner notification level. */
 const notificationLevelBody = z.object({
-  level: z.enum(['all', 'active', 'mentions']),
+  level: z.enum(['all', 'active', 'mentions', 'none']),
+});
+
+/** Body schema for setting heart-tip notifications. */
+const heartNotificationsBody = z.object({
+  enabled: z.boolean(),
 });
 
 /** Body schema for setting the owner amount-entry unit. */
@@ -238,26 +276,72 @@ const PASSKEY_RENEW_REPORT_ERROR =
 
 /** Owner JSON including the live funding grant. */
 function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountResponse> {
-  return serializeOwnerAccountWithPosts(account, deps.messages, {
-    store: deps.fundingStore ?? new InMemoryFundingStore(),
-    nowMs: deps.now(),
-    authStore: deps.store,
-  });
+  return serializeOwnerAccountWithPosts(
+    account,
+    deps.messages,
+    {
+      store: deps.fundingStore ?? new InMemoryFundingStore(),
+      nowMs: deps.now(),
+      authStore: deps.store,
+    },
+    deps.lnurlServer,
+  );
+}
+
+/**
+ * Daily ping after the first recovery share of the current wallet is stored:
+ * reads the grant and, when the account is eligible today with that share,
+ * pings today's newest media post through {@link pingTodayMedia} (no second
+ * share read). No-op without a spend ping. A grant read failure logs
+ * `funding.daily_ping.failed`; the route's answer never depends on this.
+ *
+ * @param deps - `/me` collaborators.
+ * @param lnurlServer - LNURL server config (the share routes exist only with it).
+ * @param account - The account, read before the share write.
+ * @param nowMs - Clock of the share write.
+ */
+async function pingAfterShareStored(
+  deps: MeRouteDeps,
+  lnurlServer: LnurlServerConfig,
+  account: Account,
+  nowMs: number,
+): Promise<void> {
+  const spendPing = deps.spendPing;
+  if (spendPing === undefined) {
+    return;
+  }
+  try {
+    const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
+      account.id,
+    );
+    if (!eligibleToday(account.role, grant, nowMs, true)) {
+      return;
+    }
+    await pingTodayMedia(
+      { spendPing, lnurlServer, messageStore: deps.messages, authStore: deps.store },
+      account,
+      nowMs,
+      effectiveStatus(grant, nowMs),
+      false,
+    );
+  } catch {
+    logEvent('funding.daily_ping.failed', { accountId: account.id });
+  }
 }
 
 /**
  * Build the `/me` route group.
  *
- * @param deps - Shared store, message store, clock, payer, fetch, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, and optional `nostrKek` for the NIP-57 mint probe.
- * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss,
- * living-room rules agreement, notification level, amount-entry unit, locale, fiat, link/unlink, and verification routes.
+ * @param deps - Shared store, message store, clock, optional push, optional notification and conversation stores, optional gift/rate/fiat stores for activity, optional funding store, optional `lnurlServer` for `PUT /wallet`, the recovery share and previous-wallet routes, and the receiving address, optional `recoveryShareKek` for the share, and optional `fetchImpl` for the explorer balance.
+ * @returns A Hono app exposing account, activity, display-name, username, location, About me, wallet-backup-seen, optional wallet bind, optional recovery share and previous wallets, passkey-renew/report, passkey-renew/ack, setup skip, forum-laws dismiss, wallet-intro seen,
+ * living-room rules agreement, notification level, `POST /heart-notifications`, amount-entry unit, locale, and fiat routes.
  */
 export function meRoutes(deps: MeRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const rates = deps.rates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
-  return new Hono()
+  const app = new Hono()
     .get('/', async (c) => {
       const token = bearerToken(c.req.header('authorization'));
       if (token === null) {
@@ -491,24 +575,27 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
+      if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+        return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
+      }
       const owner = await deps.store.getAccountByUsername(username);
       if (owner !== undefined && owner.id !== current.id) {
         return c.json({ error: 'Username is already in use' }, 409);
       }
-      const latest = await storedAccount(deps, current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (latest === null) {
+      const result = await deps.store.setUsername(current.id, username);
+      if (!result.ok) {
+        if (result.reason === 'taken') {
+          return c.json({ error: 'Username is already in use' }, 409);
+        }
+        if (result.reason === 'frozen') {
+          return c.json({ error: 'Username is fixed once the wallet is connected' }, 409);
+        }
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      await deps.store.updateAccount({ ...latest, username });
       const stored = await storedAccount(deps, current.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (stored === null) {
         return c.json({ error: 'Unauthorized' }, 401);
-      }
-      /* v8 ignore next 3 -- unique-index race: update no-ops and the stored handle stays taken */
-      if ((stored.username ?? '').trim().toLowerCase() !== username) {
-        return c.json({ error: 'Username is already in use' }, 409);
       }
       logEvent('account.username.set', { accountId: current.id });
       return c.json(await ownerJson(deps, stored), 200);
@@ -617,11 +704,20 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         let owner = current;
         let noteId: string | undefined;
         let createdThisRequest = false;
+        let textToWrite = normalized;
         const existingId = owner.profileMessageId;
         if (typeof existingId === 'string' && existingId.trim() !== '') {
           const existing = await deps.messages.getById(existingId);
           if (existing !== undefined && existing.deletedAt === null) {
             noteId = existingId;
+            const keepsMedia =
+              existing.hasVideo === true ||
+              Number(existing.photoCount) > Number(existing.hasPhoto) ||
+              (decodedPhoto === undefined ? existing.hasPhoto : decodedPhoto !== null);
+            if (normalized === '' && !keepsMedia) {
+              // Removal: back to the auto name-copy, never an empty note.
+              textToWrite = existing.name.trim() === '' ? displayName : existing.name;
+            }
           }
         }
         if (
@@ -629,13 +725,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
           normalized === '' &&
           (decodedPhoto === undefined || decodedPhoto === null)
         ) {
-          const latest = await storedAccount(deps, owner.id);
-          /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-          if (latest === null) {
-            return c.json({ error: 'Unauthorized' }, 401);
-          }
-          logEvent('account.about.set', { accountId: latest.id });
-          return c.json(await ownerJson(deps, latest), 200);
+          return c.json({ error: ABOUT_EMPTY_ERROR }, 400);
         }
         if (noteId === undefined) {
           const messageId = crypto.randomUUID();
@@ -731,7 +821,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
             }
           }
         }
-        const written = await deps.messages.updateText(noteId, normalized);
+        const written = await deps.messages.updateText(noteId, textToWrite);
         if (typeof written === 'string') {
           return c.json({ error: written }, 400);
         }
@@ -783,7 +873,10 @@ export function meRoutes(deps: MeRouteDeps): Hono {
         await syncWelcomePing({
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           messages: deps.messages,
+          auth: deps.store,
+          gifts: giftStore,
           account: latest,
+          ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });
         return c.json(await ownerJson(deps, latest), 200);
       } catch {
@@ -809,6 +902,24 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.forum_laws.dismissed', { accountId: current.id });
       return c.json(await ownerJson(deps, updated), 200);
     })
+    .post('/wallet-intro-seen', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      if (current.walletIntroSeen === true) {
+        return c.json(await ownerJson(deps, current), 200);
+      }
+      const updated: Account = { ...current, walletIntroSeen: true };
+      await deps.store.updateAccount(updated);
+      logEvent('account.wallet_intro.seen', { accountId: current.id });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
     .post('/notification-level', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -817,7 +928,7 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       const parsed = notificationLevelBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
         return c.json(
-          { error: 'Expected a JSON body with a level of all, active, or mentions' },
+          { error: 'Expected a JSON body with a level of all, active, mentions, or none' },
           400,
         );
       }
@@ -831,6 +942,28 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.notification_level.set', {
         accountId: current.id,
         level: parsed.data.level,
+      });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/heart-notifications', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = heartNotificationsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: 'Expected a JSON body with an enabled boolean' }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, notifyHearts: parsed.data.enabled };
+      await deps.store.updateAccount(updated);
+      logEvent('account.heart_notifications.set', {
+        accountId: current.id,
+        enabled: parsed.data.enabled,
       });
       return c.json(await ownerJson(deps, updated), 200);
     })
@@ -929,194 +1062,167 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       await deps.store.updateAccount(updated);
       logEvent('account.rules_agreement.set', { accountId: current.id });
       return c.json(await ownerJson(deps, updated), 200);
-    })
-    .post('/lightning-address', async (c) => {
+    });
+
+  if (deps.lnurlServer !== undefined) {
+    app.put('/wallet', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      const parsed = addressBody.safeParse(await c.req.json().catch(() => null));
+      const parsed = walletBody.safeParse(await c.req.json().catch(() => null));
       if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with an "address" string' }, 400);
+        return c.json(
+          { error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters' },
+          400,
+        );
       }
-      const address = normalizeLightningAddress(parsed.data.address);
-      if (address === null) {
-        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
-      }
-      const resolved = await resolveLnurlp({ address, fetchImpl: deps.fetchImpl });
-      const zapPubkey =
-        resolved.ok && resolved.metadata.allowsNostr === true
-          ? resolved.metadata.nostrPubkey
-          : undefined;
-      if (zapPubkey === undefined || zapPubkey.trim() === '') {
-        logEvent('account.lightning_address.resolve_failed', {
-          accountId: account.id,
-          address,
-        });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
-      }
-      const kek = deps.nostrKek;
-      if (kek === undefined) {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      try {
-        await ensureAccountNostrKey(deps.store, account.id, kek);
-      } catch {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      const accountPubkey = await deps.store.getNostrPublicKey(account.id);
-      if (accountPubkey === undefined || accountPubkey === '') {
-        return c.json({ error: 'Lightning Address could not be resolved' }, 503);
-      }
-      const probe = await probeNip57Mint({
-        address,
-        recipientPubkey: accountPubkey,
-        sign: async (unsigned) => {
-          const signed = await signEventForAccount(deps.store, account.id, kek, unsigned);
-          return { ...signed };
-        },
-        fetchImpl: deps.fetchImpl,
-        env: process.env,
-      });
-      if (probe === 'not_zap') {
-        logEvent('account.lightning_address.not_zap', { accountId: account.id });
-        return c.json({ error: LIGHTNING_ADDRESS_NOT_ZAP }, 400);
-      }
-      if (probe === 'unreachable') {
-        logEvent('account.lightning_address.resolve_failed', {
-          accountId: account.id,
-          address,
-        });
-        return c.json({ error: 'Lightning Address could not be resolved' }, 400);
+      const pubkey = normalizeSparkPubkey(parsed.data.sparkPubkey);
+      if (pubkey === null) {
+        return c.json(
+          { error: 'Expected a JSON body with a "sparkPubkey" of 66 hex characters' },
+          400,
+        );
       }
       const current = await storedAccount(deps, account.id);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
       if (current === null) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      // Linking a (new) address resets any prior verified state; proof of control
-      // is a separate step. Any in-flight verification is dropped with the link.
-      const owner = await deps.store.getAccountByLightningAddress(address);
-      if (owner !== undefined && owner.id !== current.id) {
-        return c.json({ error: 'Lightning Address is already in use' }, 409);
+      const usernameBlank =
+        current.username === null ||
+        current.username === undefined ||
+        current.username.trim() === '';
+      if (usernameBlank) {
+        return c.json({ error: MISSING_REQUIREMENTS_ERROR, missing: ['username'] }, 409);
       }
-      const updated: Account = {
-        ...current,
-        lightningAddress: address,
-        lightningAddressVerified: false,
-      };
-      await deps.store.updateAccount(updated);
-      const stored = await storedAccount(deps, current.id);
+      if (current.walletRequired !== true) {
+        return c.json({ error: 'Wallet is not set up' }, 409);
+      }
+      if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+        return c.json({ error: 'Wallet is already connected' }, 409);
+      }
+      const result = await deps.store.claimSparkPubkey(current.id, pubkey);
       /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (stored === null) {
+      if (result === undefined) {
         return c.json({ error: 'Unauthorized' }, 401);
       }
-      if ((stored.lightningAddress ?? '').trim().toLowerCase() !== address.trim().toLowerCase()) {
-        return c.json({ error: 'Lightning Address is already in use' }, 409);
+      /* v8 ignore next 3 -- concurrent verification: claim refuses once sparkPubkeyVerifiedAt is set */
+      if (result.wrote === false) {
+        return c.json({ error: 'Wallet is already connected' }, 409);
       }
-      await deps.store.deleteVerification(current.id);
-      await ensureProfileMessage({
-        auth: deps.store,
-        messages: deps.messages,
-        account: stored,
-        now: deps.now,
-        ...(deps.pushStore === undefined ? {} : { pushStore: deps.pushStore }),
-        ...(deps.notificationStore === undefined ? {} : { notifications: deps.notificationStore }),
-        /* v8 ignore next -- createApp always injects conversationStore */
-        ...(deps.conversationStore === undefined ? {} : { conversations: deps.conversationStore }),
-      });
-      const live = await deps.store.getAccount(current.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (live === null || live === undefined) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      logEvent('account.lightning_address.linked', {
-        accountId: account.id,
-        address,
-      });
-      return c.json(await ownerJson(deps, live), 200);
-    })
-    .delete('/lightning-address', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const current = await storedAccount(deps, account.id);
-      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
-      if (current === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const updated: Account = {
-        ...current,
-        lightningAddress: null,
-        lightningAddressVerified: false,
-        lightningAddressSkippedAt: null,
-      };
-      await deps.store.updateAccount(updated);
-      await deps.store.deleteVerification(account.id);
-      logEvent('account.lightning_address.unlinked', { accountId: account.id });
-      return c.json(await ownerJson(deps, updated), 200);
-    })
-    .post('/lightning-address/verification', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const result = await startVerification({
-        store: deps.store,
-        payer: deps.payer,
-        fetchImpl: deps.fetchImpl,
-        now: deps.now(),
-        account,
-      });
-      if (!result.ok) {
-        switch (result.code) {
-          case 'no_address':
-            return c.json({ error: 'No Lightning Address linked' }, 409);
-          case 'already_verified':
-            return c.json({ error: 'Lightning Address already verified' }, 409);
-          case 'not_configured':
-            return c.json({ error: 'Verification payments are not configured' }, 503);
-          case 'unreachable':
-            return c.json(
-              { error: 'Lightning Address did not accept the verification payment' },
-              502,
-            );
-        }
-      }
-      // Do not return the nonce — the user must read it from the wallet history.
-      logEvent('account.verification.started', { accountId: account.id });
-      return c.json(
-        {
-          status: 'sent',
-          expiresInSeconds: result.expiresInSeconds,
-          sats: result.sats,
-        },
-        200,
-      );
-    })
-    .post('/lightning-address/verification/confirm', async (c) => {
-      const account = await authedAccount(deps, c.req.header('authorization'));
-      if (account === null) {
-        return c.json({ error: 'Unauthorized' }, 401);
-      }
-      const parsed = confirmBody.safeParse(await c.req.json().catch(() => null));
-      if (!parsed.success) {
-        return c.json({ error: 'Expected a JSON body with a "nonce" string' }, 400);
-      }
-      const result = await confirmVerification(deps.store, deps.now(), account, parsed.data.nonce);
-      if (!result.ok) {
-        switch (result.code) {
-          case 'bad_nonce':
-          case 'mismatch':
-            return c.json({ error: 'Incorrect verification code' }, 400);
-          case 'no_pending':
-            return c.json({ error: 'No verification in progress' }, 409);
-          case 'expired':
-            return c.json({ error: 'Verification expired' }, 409);
-        }
-      }
-      logEvent('account.verification.confirmed', { accountId: account.id });
+      logEvent('account.wallet.claimed', { accountId: current.id });
       return c.json(await ownerJson(deps, result.account), 200);
     });
+
+    const lnurlServer = deps.lnurlServer;
+    const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
+
+    app.put('/recovery-share', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const kek = deps.recoveryShareKek;
+      if (kek === undefined) {
+        return c.json({ error: RECOVERY_SHARE_UNAVAILABLE }, 503);
+      }
+      const parsed = recoveryShareBody.safeParse(await c.req.json().catch(() => null));
+      const sparkPubkey = parsed.success ? normalizeSparkPubkey(parsed.data.sparkPubkey) : null;
+      if (!parsed.success || sparkPubkey === null || !RECOVERY_SHARE_TEXT.test(parsed.data.share)) {
+        return c.json({ error: RECOVERY_SHARE_BODY_ERROR }, 400);
+      }
+      try {
+        const current = await storedAccount(deps, account.id);
+        /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+        if (current === null) {
+          return c.json({ error: 'Unauthorized' }, 401);
+        }
+        if (typeof current.sparkPubkeyVerifiedAt !== 'number') {
+          return c.json({ error: 'Wallet is not connected' }, 409);
+        }
+        if (sparkPubkey !== current.sparkPubkey) {
+          return c.json({ error: 'Wallet changed' }, 409);
+        }
+        const ciphertext = await encryptRecoveryShare(parsed.data.share, kek, current.id);
+        const nowMs = deps.now();
+        const result = await deps.store.putRecoveryShare({
+          accountId: current.id,
+          sparkPubkey,
+          ciphertext,
+          now: nowMs,
+        });
+        if (result === 'changed') {
+          return c.json({ error: 'Wallet changed' }, 409);
+        }
+        logEvent('account.recovery_share.stored', {
+          accountId: current.id,
+          replaced: result === 'replaced',
+        });
+        if (result === 'stored') {
+          await pingAfterShareStored(deps, lnurlServer, current, nowMs);
+        }
+        return c.json(await ownerJson(deps, current), 200);
+      } catch (error) {
+        logEvent('account.recovery_share.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: RECOVERY_SHARE_UNAVAILABLE }, 503);
+      }
+    });
+
+    app.get('/previous-wallets', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      let wallets: PreviousWallet[];
+      try {
+        wallets = await deps.store.listPreviousWallets(account.id);
+      } catch (error) {
+        logEvent('account.previous_wallets.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: WALLET_DATA_UNAVAILABLE }, 503);
+      }
+      // The explorer balance is information only; an unknown one is null.
+      const listed = await Promise.all(
+        wallets.map(async (wallet) => ({
+          sparkPubkey: wallet.sparkPubkey,
+          sparkAddress: wallet.sparkAddress,
+          replacedAt: wallet.replacedAt,
+          balanceSats: await fetchSparkAddressBalance(fetchImpl, wallet.sparkAddress),
+        })),
+      );
+      return c.json({ wallets: listed }, 200);
+    });
+
+    app.delete('/previous-wallets/:sparkPubkey', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const sparkPubkey = normalizeSparkPubkey(c.req.param('sparkPubkey'));
+      if (sparkPubkey === null) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      try {
+        if (!(await deps.store.dropPreviousWallet(account.id, sparkPubkey))) {
+          return c.json({ error: 'Not found' }, 404);
+        }
+      } catch (error) {
+        logEvent('account.previous_wallets.failed', {
+          accountId: account.id,
+          ...errorLogFields(error),
+        });
+        return c.json({ error: WALLET_DATA_UNAVAILABLE }, 503);
+      }
+      logEvent('account.previous_wallet.dropped', { accountId: account.id });
+      return c.body(null, 204);
+    });
+  }
+
+  return app;
 }

@@ -1,23 +1,44 @@
-import { afterEach, describe, it, expect, vi } from 'vitest';
+import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS } from '@/lib/config';
 import type { WebAuthnRuntimeConfig } from '@/lib/config';
 import {
   credentialIdFrom,
   finishPasskeyAuthentication,
+  finishPasskeyRecovery,
   finishPasskeyRegistration,
   finishPasskeyReplace,
   finishPasskeySeed,
+  RECOVERY_PENDING_ERROR,
   startPasskeyAuthentication,
   startPasskeyClaim,
+  startPasskeyRecovery,
   startPasskeyRegistration,
   startPasskeyReplace,
   startPasskeySeed,
 } from '@/lib/auth/passkey';
+import { RECOVERY_SETTLE_AFTER_MS } from '@/lib/auth/recovery';
 import * as authService from '@/lib/auth/service';
 import { WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
 import { accountSetup } from '@/lib/auth/account-setup';
-import { FakePasskeyCeremony } from '@/__tests__/helpers/fake-passkey';
+import { LOGINS_CLOSED_ERROR } from '@/lib/login-gate';
+import type { FetchFn } from '@/lib/lnurlp';
+import { FakePasskeyCeremony, RECOVERY_CREDENTIAL_ID } from '@/__tests__/helpers/fake-passkey';
+import { recoveryMessage } from '@/lib/recovery-signature';
+import {
+  PINNED,
+  PINNED_PRIVATE_KEYS,
+  RECOVERY_USERNAME,
+  STAGED_CHALLENGE_ID,
+  lookupHolds,
+  lookupUserNotFound,
+  scriptedLnurlFetch,
+  seedPinnedAccount,
+  seedRecoverableAccount,
+  signCompact,
+  stagePendingRecovery,
+} from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 const T0 = 1_000_000;
 const REFUSED_ID = '00000000-0000-4000-8000-0000000000ff';
@@ -310,8 +331,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -363,8 +382,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -398,7 +415,7 @@ describe('passkey claim', () => {
     );
   });
 
-  it('finish after claim keeps name, lightningAddress, viewKey, and id', async () => {
+  it('finish after claim keeps name, viewKey, and id', async () => {
     const store = await provisionedStore();
     const begin = await startPasskeyClaim(store, new FakePasskeyCeremony(), CONFIG, T0, VIEW_KEY);
     expect(begin.ok).toBe(true);
@@ -421,7 +438,6 @@ describe('passkey claim', () => {
     expect(finish.value.account).toMatchObject({
       id: 'provisioned',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
       viewKey: VIEW_KEY,
       walletRequired: true,
     });
@@ -472,8 +488,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -585,8 +599,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -625,8 +637,6 @@ describe('passkey claim', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -812,8 +822,6 @@ describe('passkey authentication', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -862,8 +870,6 @@ describe('passkey authentication', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -953,8 +959,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1020,8 +1024,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1307,8 +1309,6 @@ describe('passkey replace', () => {
       linkingKey: null,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1373,8 +1373,6 @@ describe('passkey seed', () => {
       linkingKey: null;
       role: 'basis';
       name: null;
-      lightningAddress: null;
-      lightningAddressVerified: boolean;
       forumLawsDismissed: boolean;
       location: null;
       viewKey: string;
@@ -1391,8 +1389,6 @@ describe('passkey seed', () => {
       linkingKey: null,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1421,8 +1417,6 @@ describe('passkey seed', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1736,5 +1730,741 @@ describe('passkey seed', () => {
       ok: false,
       error: 'This account already has a recovery phrase',
     });
+  });
+});
+
+describe('passkey recovery begin', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  const LOOKUP = { signature: 'ab'.repeat(36), timestamp: 1_700_000_000 };
+  const FORWARDED_AT = T0 + 1_000;
+  const AFTER_WINDOW = FORWARDED_AT + RECOVERY_SETTLE_AFTER_MS + 1;
+
+  function begin(
+    store: InMemoryAuthStore,
+    fetchImpl: FetchFn,
+    options: { now?: number; admit?: () => Promise<boolean>; sparkPubkey?: string } = {},
+  ): ReturnType<typeof startPasskeyRecovery> {
+    return startPasskeyRecovery(
+      {
+        store,
+        ceremony: new FakePasskeyCeremony({ challenge: PINNED.challenge }),
+        config: CONFIG,
+        lnurlServer: LNURL_SERVER,
+        fetchImpl,
+        now: () => options.now ?? T0,
+        ...(options.admit === undefined ? {} : { admit: options.admit }),
+      },
+      { sparkPubkey: options.sparkPubkey ?? PINNED.oldSparkPubkey, lookup: LOOKUP },
+    );
+  }
+
+  function warnEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
+    return warn.mock.calls
+      .map((call) => call[0])
+      .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+      .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+  }
+
+  it('issues seed-style creation options and stores a recovery challenge', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const { fetchImpl, calls } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const result = await begin(store, fetchImpl);
+    if (!result.ok) {
+      throw new Error(`begin refused: ${result.reason}`);
+    }
+    expect(result.accountId).toBe(PINNED.accountId);
+    expect(result.username).toBe(RECOVERY_USERNAME);
+    expect(result.challengeId).toMatch(/^[0-9a-f]{64}$/);
+    expect(result.options).toEqual({
+      challenge: PINNED.challenge,
+      rp: { id: 'localhost', name: '21.gifts' },
+      user: { id: PINNED.accountId, name: PINNED.accountId, displayName: RECOVERY_USERNAME },
+      pubKeyCredParams: [],
+    });
+    expect(await store.getPasskeyChallenge(result.challengeId)).toEqual({
+      id: result.challengeId,
+      type: 'recovery',
+      challenge: PINNED.challenge,
+      accountId: PINNED.accountId,
+      consumed: false,
+      createdAt: T0,
+    });
+    expect(calls.map((call) => [call.route, call.pubkey])).toEqual([
+      ['recover', PINNED.oldSparkPubkey],
+    ]);
+    expect(warnEvents(warn)).toEqual([
+      expect.objectContaining({
+        event: 'auth.passkey.recovery.begin',
+        accountId: PINNED.accountId,
+        challengeId: result.challengeId,
+      }),
+    ]);
+    expect(JSON.stringify(warnEvents(warn))).not.toContain(PINNED.oldSparkPubkey);
+  });
+
+  it('uses 21.gifts as display name for an account without a name', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const account = await store.getAccount(PINNED.accountId);
+    vi.spyOn(store, 'getAccountByVerifiedSparkPubkey').mockResolvedValue({
+      ...(account as NonNullable<typeof account>),
+      name: null,
+    });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const result = await begin(store, fetchImpl);
+    expect(
+      result.ok && (result.options as { user: { displayName: string } }).user.displayName,
+    ).toBe('21.gifts');
+  });
+
+  it('consumes earlier recovery challenges and drops an unforwarded pending recovery', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0 });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const first = await begin(store, fetchImpl);
+    const second = await begin(store, fetchImpl);
+    if (!first.ok || !second.ok) {
+      throw new Error('begin refused');
+    }
+    expect((await store.getPasskeyChallenge(first.challengeId))?.consumed).toBe(true);
+    expect((await store.getPasskeyChallenge(second.challengeId))?.consumed).toBe(false);
+    expect(await store.getPendingRecovery(PINNED.accountId, T0)).toBeUndefined();
+  });
+
+  it('answers not_found for an unknown key without calling the LNURL server', async () => {
+    const { fetchImpl, calls } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    expect(await begin(new InMemoryAuthStore(), fetchImpl)).toEqual({
+      ok: false,
+      reason: 'not_found',
+    });
+    expect(calls).toEqual([]);
+  });
+
+  it("answers done for a previous wallet's key once its lookup is verified", async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    expect(
+      await store.commitRecovery({
+        accountId: PINNED.accountId,
+        newSparkPubkey: PINNED.newSparkPubkey,
+        now: FORWARDED_AT,
+      }),
+    ).toBe('committed');
+    const notFound = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+    expect(await begin(store, notFound.fetchImpl)).toEqual({ ok: false, reason: 'done' });
+    expect(notFound.calls).toHaveLength(1);
+    const holds = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    expect(await begin(store, holds.fetchImpl)).toEqual({ ok: false, reason: 'done' });
+    const down = scriptedLnurlFetch({ recover: () => new Response('', { status: 502 }) });
+    expect(await begin(store, down.fetchImpl)).toEqual({ ok: false, reason: 'unavailable' });
+  });
+
+  it('refuses a session-refused account and a closed login switch before the lookup', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const { fetchImpl, calls } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    expect(await begin(store, fetchImpl, { admit: async () => false })).toEqual({
+      ok: false,
+      reason: 'logins_closed',
+    });
+    expect((await begin(store, fetchImpl, { admit: async () => true })).ok).toBe(true);
+    await store.setSessionRefused(PINNED.accountId, true);
+    expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'wrong_account' });
+    expect(calls).toHaveLength(1);
+  });
+
+  it('answers unavailable while the lookup is not verified', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    for (const answer of [
+      () => new Response('"invalid signature"', { status: 400 }),
+      () => new Response('', { status: 404 }),
+      () => new Response('"internal server error"', { status: 500 }),
+    ]) {
+      const { fetchImpl } = scriptedLnurlFetch({ recover: answer });
+      expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'unavailable' });
+    }
+    expect(await store.listPasskeyChallenges()).toEqual([]);
+  });
+
+  it('answers operator when the old key no longer holds the username', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    for (const answer of [() => lookupUserNotFound(), () => lookupHolds('bob')]) {
+      const { fetchImpl } = scriptedLnurlFetch({ recover: answer });
+      expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'operator' });
+    }
+    expect(warnEvents(warn)).toEqual([
+      expect.objectContaining({
+        event: 'auth.passkey.recovery.fail',
+        stage: 'begin',
+        accountId: PINNED.accountId,
+        error: 'operator',
+      }),
+      expect.objectContaining({ event: 'auth.passkey.recovery.fail', error: 'operator' }),
+    ]);
+    expect(await store.listPasskeyChallenges()).toEqual([]);
+  });
+
+  it('answers operator for an account without a username', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const account = await store.getAccount(PINNED.accountId);
+    vi.spyOn(store, 'getAccountByVerifiedSparkPubkey').mockResolvedValue({
+      ...(account as NonNullable<typeof account>),
+      username: null,
+    });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'operator' });
+  });
+
+  it('answers done when a commit lands while the lookup runs', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({
+      recover: async () => {
+        expect(
+          await store.commitRecovery({
+            accountId: PINNED.accountId,
+            newSparkPubkey: PINNED.newSparkPubkey,
+            now: FORWARDED_AT,
+          }),
+        ).toBe('committed');
+        return lookupUserNotFound();
+      },
+    });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'done',
+    });
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    expect(warnEvents(warn).some((e) => e['error'] === 'operator')).toBe(false);
+  });
+
+  it('answers operator when the account left the key during the lookup without a commit', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const byKey = vi.spyOn(store, 'getAccountByVerifiedSparkPubkey');
+    const { fetchImpl } = scriptedLnurlFetch({
+      recover: () => {
+        byKey.mockResolvedValue(undefined);
+        return lookupUserNotFound();
+      },
+    });
+    expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'operator' });
+    expect(byKey).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps a forwarded pending recovery inside the settling window', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+    expect(await begin(store, fetchImpl, { now: FORWARDED_AT + RECOVERY_SETTLE_AFTER_MS })).toEqual(
+      { ok: false, reason: 'unavailable' },
+    );
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+  });
+
+  it('commits a forwarded pending recovery after the window when the old key lost the name', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'done',
+    });
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.newSparkPubkey);
+    expect(warnEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'account.recovery.committed',
+        accountId: PINNED.accountId,
+        via: 'begin',
+      }),
+    );
+  });
+
+  it('answers unavailable when the settling commit does not land', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    vi.spyOn(store, 'commitRecovery').mockResolvedValue('changed');
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupUserNotFound() });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'unavailable',
+    });
+  });
+
+  it('drops a forwarded pending recovery after the window when the old key still holds the name, then starts', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const result = await begin(store, fetchImpl, { now: AFTER_WINDOW });
+    expect(result.ok).toBe(true);
+    expect(await store.getPendingRecovery(PINNED.accountId, AFTER_WINDOW)).toBeUndefined();
+    expect((await store.getPasskeyChallenge(STAGED_CHALLENGE_ID))?.consumed).toBe(true);
+    expect(warnEvents(warn)).toContainEqual(
+      expect.objectContaining({
+        event: 'account.recovery.dropped',
+        accountId: PINNED.accountId,
+        via: 'begin',
+      }),
+    );
+  });
+
+  it('answers unavailable after the window for an unverified lookup of a forwarded recovery', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => new Response('', { status: 503 }) });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'unavailable',
+    });
+    expect((await store.getPendingRecovery(PINNED.accountId, AFTER_WINDOW))?.forwardedAt).toBe(
+      FORWARDED_AT,
+    );
+  });
+
+  it('answers unavailable when the drop did not land and the forwarded recovery remains', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: FORWARDED_AT });
+    vi.spyOn(store, 'dropPendingRecovery').mockResolvedValue(false);
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    expect(await begin(store, fetchImpl, { now: AFTER_WINDOW })).toEqual({
+      ok: false,
+      reason: 'unavailable',
+    });
+    expect(warnEvents(warn).some((e) => e['event'] === 'account.recovery.dropped')).toBe(false);
+  });
+
+  it('answers unavailable when the store does not start the challenge', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    for (const outcome of ['forwarded', 'changed'] as const) {
+      vi.spyOn(store, 'startRecoveryChallenge').mockResolvedValueOnce(outcome);
+      expect(await begin(store, fetchImpl)).toEqual({ ok: false, reason: 'unavailable' });
+    }
+  });
+
+  it('propagates a store failure', async () => {
+    const store = new InMemoryAuthStore();
+    vi.spyOn(store, 'getAccountByVerifiedSparkPubkey').mockRejectedValue(new Error('db'));
+    const { fetchImpl } = scriptedLnurlFetch({});
+    await expect(begin(store, fetchImpl)).rejects.toThrow('db');
+  });
+});
+
+describe('passkey recovery finish', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  const ceremony = new FakePasskeyCeremony({ challenge: PINNED.challenge });
+
+  async function started(): Promise<{ store: InMemoryAuthStore; challengeId: string }> {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    const { fetchImpl } = scriptedLnurlFetch({ recover: () => lookupHolds('ada') });
+    const result = await startPasskeyRecovery(
+      { store, ceremony, config: CONFIG, lnurlServer: LNURL_SERVER, fetchImpl, now: () => T0 },
+      { sparkPubkey: PINNED.oldSparkPubkey, lookup: { signature: 'ab'.repeat(36), timestamp: 1 } },
+    );
+    if (!result.ok) {
+      throw new Error(`begin refused: ${result.reason}`);
+    }
+    return { store, challengeId: result.challengeId };
+  }
+
+  function finish(
+    store: InMemoryAuthStore,
+    challengeId: string,
+    overrides: {
+      origin?: string | undefined;
+      credential?: unknown;
+      newSparkPubkey?: string;
+      signature?: { pubkey: string; signature: string };
+      now?: number;
+      admit?: () => Promise<boolean>;
+    } = {},
+  ): ReturnType<typeof finishPasskeyRecovery> {
+    return finishPasskeyRecovery(
+      {
+        store,
+        ceremony,
+        config: CONFIG,
+        now: () => overrides.now ?? T0,
+        ...(overrides.admit === undefined ? {} : { admit: overrides.admit }),
+      },
+      {
+        origin: 'origin' in overrides ? overrides.origin : ORIGIN,
+        challengeId,
+        credential: overrides.credential ?? { test: 'recovery', id: PINNED.credentialId },
+        newSparkPubkey: overrides.newSparkPubkey ?? PINNED.newSparkPubkey,
+        signature: overrides.signature ?? {
+          pubkey: PINNED.oldSparkPubkey,
+          signature: PINNED.signature,
+        },
+      },
+    );
+  }
+
+  it('stores the pending recovery with the pinned SDK signature and consumes the challenge', async () => {
+    const { store, challengeId } = await started();
+    expect(RECOVERY_CREDENTIAL_ID).toBe(PINNED.credentialId);
+    expect(await finish(store, challengeId)).toEqual({ ok: true, accountId: PINNED.accountId });
+    expect(await store.getPendingRecovery(PINNED.accountId, T0)).toEqual({
+      accountId: PINNED.accountId,
+      oldSparkPubkey: PINNED.oldSparkPubkey,
+      newSparkPubkey: PINNED.newSparkPubkey,
+      credentialId: PINNED.credentialId,
+      publicKey: Uint8Array.of(4, 5, 6),
+      signCount: 0,
+      createdAt: T0,
+      forwardedAt: null,
+    });
+    expect((await store.getPasskeyChallenge(challengeId))?.consumed).toBe(true);
+    expect(await store.getPasskeyCredential(PINNED.credentialId)).toBeUndefined();
+    expect((await store.getAccount(PINNED.accountId))?.sparkPubkey).toBe(PINNED.oldSparkPubkey);
+    const events = warn.mock.calls.map(
+      (call) => JSON.parse(String(call[0])) as Record<string, unknown>,
+    );
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        event: 'auth.passkey.recovery.finish',
+        accountId: PINNED.accountId,
+      }),
+    );
+    expect(JSON.stringify(events)).not.toContain(PINNED.signature);
+  });
+
+  it('answers a repeat of the stored finish again without a write', async () => {
+    const { store, challengeId } = await started();
+    expect((await finish(store, challengeId)).ok).toBe(true);
+    const storedBefore = await store.getPendingRecovery(PINNED.accountId, T0);
+    expect(await finish(store, challengeId, { now: T0 + 5_000 })).toEqual({
+      ok: true,
+      accountId: PINNED.accountId,
+    });
+    expect(await store.getPendingRecovery(PINNED.accountId, T0 + 5_000)).toEqual(storedBefore);
+  });
+
+  it('refuses a used challenge with another credential', async () => {
+    const { store, challengeId } = await started();
+    expect((await finish(store, challengeId)).ok).toBe(true);
+    // A valid old-key signature for the fake attestation `{ test: 'ok' }` (credential cred-1).
+    const otherCredential = signCompact(
+      recoveryMessage({
+        accountId: PINNED.accountId,
+        challenge: PINNED.challenge,
+        credentialId: 'cred-1',
+        newSparkPubkey: PINNED.newSparkPubkey,
+      }),
+      PINNED_PRIVATE_KEYS.old,
+    );
+    expect(
+      await finish(store, challengeId, {
+        credential: { test: 'ok' },
+        signature: { pubkey: PINNED.oldSparkPubkey, signature: otherCredential },
+      }),
+    ).toEqual({ ok: false, error: 'Challenge already used', accountId: PINNED.accountId });
+    expect((await store.getPendingRecovery(PINNED.accountId, T0))?.credentialId).toBe(
+      PINNED.credentialId,
+    );
+  });
+
+  it('uses the credential id verifyRegistration returns, never the browser id', async () => {
+    const { store, challengeId } = await started();
+    expect(
+      await finish(store, challengeId, { credential: { test: 'ok', id: PINNED.credentialId } }),
+    ).toEqual({ ok: false, error: 'Invalid recovery signature', accountId: PINNED.accountId });
+    expect((await store.getPasskeyChallenge(challengeId))?.consumed).toBe(false);
+    expect(
+      await finish(store, challengeId, { credential: { test: 'recovery', id: 'browser-id' } }),
+    ).toEqual({ ok: true, accountId: PINNED.accountId });
+  });
+
+  it('refuses a missing or foreign origin', async () => {
+    const { store, challengeId } = await started();
+    expect(await finish(store, challengeId, { origin: undefined })).toEqual({
+      ok: false,
+      error: 'Invalid origin',
+    });
+    expect(await finish(store, challengeId, { origin: 'https://evil.test' })).toEqual({
+      ok: false,
+      error: 'Invalid origin',
+    });
+  });
+
+  it('refuses unknown, expired, and foreign-type challenges', async () => {
+    const { store, challengeId } = await started();
+    expect(await finish(store, 'f'.repeat(64))).toEqual({
+      ok: false,
+      error: 'Unknown or expired challenge',
+    });
+    expect(await finish(store, challengeId, { now: T0 + CHALLENGE_TTL_MS + 1 })).toEqual({
+      ok: false,
+      error: 'Challenge expired',
+    });
+    const register = await startPasskeyRegistration(store, ceremony, CONFIG, T0);
+    expect(await finish(store, register.challengeId)).toEqual({
+      ok: false,
+      error: 'Wrong challenge type',
+    });
+  });
+
+  it('refuses a recovery challenge without an account or for a missing account', async () => {
+    const store = new InMemoryAuthStore();
+    for (const [id, accountId] of [
+      ['1'.repeat(64), null],
+      ['2'.repeat(64), 'missing-account'],
+    ] as const) {
+      await store.createPasskeyChallenge({
+        id,
+        type: 'recovery',
+        challenge: PINNED.challenge,
+        accountId,
+        consumed: false,
+        createdAt: T0,
+      });
+      expect(await finish(store, id)).toEqual({ ok: false, error: 'Unknown or expired challenge' });
+    }
+  });
+
+  it('refuses a session-refused account and a closed login switch', async () => {
+    const { store, challengeId } = await started();
+    expect(await finish(store, challengeId, { admit: async () => false })).toEqual({
+      ok: false,
+      error: LOGINS_CLOSED_ERROR,
+      accountId: PINNED.accountId,
+    });
+    await store.setSessionRefused(PINNED.accountId, true);
+    expect(await finish(store, challengeId)).toEqual({
+      ok: false,
+      error: WRONG_ACCOUNT_ERROR,
+      accountId: PINNED.accountId,
+    });
+    expect(await store.getPendingRecovery(PINNED.accountId, T0)).toBeUndefined();
+  });
+
+  it('refuses a signer that is not the verified wallet key', async () => {
+    const { store, challengeId } = await started();
+    expect(
+      await finish(store, challengeId, {
+        signature: { pubkey: PINNED.newSparkPubkey, signature: PINNED.signature },
+      }),
+    ).toEqual({ ok: false, error: 'Invalid recovery signature', accountId: PINNED.accountId });
+    expect(
+      await finish(store, challengeId, {
+        signature: { pubkey: PINNED.oldSparkPubkey, signature: PINNED.signatureHighS },
+      }),
+    ).toEqual({ ok: false, error: 'Invalid recovery signature', accountId: PINNED.accountId });
+  });
+
+  it('refuses an account whose wallet key is missing or not verified', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: PINNED.accountId,
+      linkingKey: null,
+      role: 'verified',
+      name: 'ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'd'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: 1,
+      walletRequired: true,
+    });
+    const challenge = {
+      id: '3'.repeat(64),
+      type: 'recovery' as const,
+      challenge: PINNED.challenge,
+      accountId: PINNED.accountId,
+      consumed: false,
+      createdAt: T0,
+    };
+    await store.createPasskeyChallenge(challenge);
+    const refused = {
+      ok: false,
+      error: 'Invalid recovery signature',
+      accountId: PINNED.accountId,
+    };
+    expect(await finish(store, challenge.id)).toEqual(refused);
+    await store.claimSparkPubkey(PINNED.accountId, PINNED.oldSparkPubkey);
+    expect(await finish(store, challenge.id)).toEqual(refused);
+  });
+
+  it('refuses the old key as the new wallet key', async () => {
+    const { store, challengeId } = await started();
+    expect(await finish(store, challengeId, { newSparkPubkey: PINNED.oldSparkPubkey })).toEqual({
+      ok: false,
+      error: 'Wallet key is already in use',
+      accountId: PINNED.accountId,
+    });
+  });
+
+  it('refuses an attestation that does not verify', async () => {
+    const { store, challengeId } = await started();
+    expect(await finish(store, challengeId, { credential: { test: 'nope' } })).toEqual({
+      ok: false,
+      error: 'Invalid passkey',
+      accountId: PINNED.accountId,
+    });
+  });
+
+  it('maps a new key held by another account to Wallet key is already in use', async () => {
+    const { store, challengeId } = await started();
+    await seedRecoverableAccount(store, {
+      id: '00000000-0000-4000-8000-0000000000b2',
+      username: 'bob',
+      sparkPubkey: PINNED.newSparkPubkey,
+    });
+    expect(await finish(store, challengeId)).toEqual({
+      ok: false,
+      error: 'Wallet key is already in use',
+      accountId: PINNED.accountId,
+    });
+    expect((await store.getPasskeyChallenge(challengeId))?.consumed).toBe(false);
+  });
+
+  it('maps a credential id held by a stored passkey to Invalid passkey', async () => {
+    const { store, challengeId } = await started();
+    await store.createPasskeyCredential({
+      credentialId: PINNED.credentialId,
+      publicKey: Uint8Array.of(9),
+      signCount: 0,
+      accountId: '00000000-0000-4000-8000-0000000000b3',
+      createdAt: T0,
+    });
+    expect(await finish(store, challengeId)).toEqual({
+      ok: false,
+      error: 'Invalid passkey',
+      accountId: PINNED.accountId,
+    });
+  });
+
+  it('maps the remaining store refusals', async () => {
+    const { store, challengeId } = await started();
+    const spy = vi.spyOn(store, 'storePendingRecovery');
+    spy.mockResolvedValueOnce('changed');
+    expect(await finish(store, challengeId)).toEqual({
+      ok: false,
+      error: 'Invalid recovery signature',
+      accountId: PINNED.accountId,
+    });
+    spy.mockResolvedValueOnce('pending');
+    expect(await finish(store, challengeId)).toEqual({
+      ok: false,
+      error: 'A recovery is already pending',
+      accountId: PINNED.accountId,
+    });
+  });
+
+  it('propagates a store failure', async () => {
+    const { store, challengeId } = await started();
+    vi.spyOn(store, 'storePendingRecovery').mockRejectedValue(
+      Object.assign(new Error('duplicate key'), { code: '23505' }),
+    );
+    await expect(finish(store, challengeId)).rejects.toThrow('duplicate key');
+  });
+});
+
+describe('passkey authentication of a pending recovery passkey', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('answers Recovery is not finished, and Unknown credential once it expired', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0 });
+    const ceremony = new FakePasskeyCeremony();
+    const first = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
+    expect(
+      await finishPasskeyAuthentication(store, ceremony, CONFIG, T0, ORIGIN, first.challengeId, {
+        test: 'ok',
+        id: PINNED.credentialId,
+      }),
+    ).toEqual({ ok: false, error: RECOVERY_PENDING_ERROR });
+    const later = T0 + CHALLENGE_TTL_MS + 1;
+    const second = await startPasskeyAuthentication(store, ceremony, CONFIG, later);
+    expect(
+      await finishPasskeyAuthentication(
+        store,
+        ceremony,
+        CONFIG,
+        later,
+        ORIGIN,
+        second.challengeId,
+        {
+          test: 'ok',
+          id: PINNED.credentialId,
+        },
+      ),
+    ).toEqual({ ok: false, error: 'Unknown credential' });
+  });
+
+  it('signs in when the commit lands between the credential and the pending reads', async () => {
+    const store = new InMemoryAuthStore();
+    await seedPinnedAccount(store);
+    await stagePendingRecovery(store, { createdAt: T0, forwardedAt: T0 + 1_000 });
+    const at = T0 + 2_000;
+    const readPending = store.getPendingRecoveryByCredentialId.bind(store);
+    vi.spyOn(store, 'getPendingRecoveryByCredentialId').mockImplementationOnce(
+      async (credentialId, now) => {
+        expect(
+          await store.commitRecovery({
+            accountId: PINNED.accountId,
+            newSparkPubkey: PINNED.newSparkPubkey,
+            now,
+          }),
+        ).toBe('committed');
+        return readPending(credentialId, now);
+      },
+    );
+    const ceremony = new FakePasskeyCeremony();
+    const started = await startPasskeyAuthentication(store, ceremony, CONFIG, at);
+    const result = await finishPasskeyAuthentication(
+      store,
+      ceremony,
+      CONFIG,
+      at,
+      ORIGIN,
+      started.challengeId,
+      { test: 'ok', id: PINNED.credentialId },
+    );
+    expect(result.ok && result.value.account.id).toBe(PINNED.accountId);
+    expect((await store.getPasskeyCredential(PINNED.credentialId))?.signCount).toBe(1);
   });
 });

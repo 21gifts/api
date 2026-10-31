@@ -10,6 +10,7 @@ test('Function: isOperatorBearer — DEBUG_TOKEN reads the staff GETs without a 
     '/funding/payout-days',
     '/funding/applications',
     '/funding/daily-roster',
+    '/funding/daily-roster/links',
     '/trust/proposals',
     '/messages/hidden',
   ]) {
@@ -33,6 +34,7 @@ test('Function: isOperatorBearer — a wrong bearer still gets 401 on the staff 
     '/funding/payout-days',
     '/funding/applications',
     '/funding/daily-roster',
+    '/funding/daily-roster/links',
     '/trust/proposals',
     '/messages/hidden',
     `/members/${UNKNOWN_ID}/activity`,

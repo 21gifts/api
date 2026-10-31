@@ -7,6 +7,7 @@
 import { Hono } from 'hono';
 import { nip19 } from 'nostr-tools';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { logEvent } from '@/lib/log';
 import type { ForumPhoto } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
@@ -15,6 +16,7 @@ import { imageHeaderSize } from '@/lib/nostr/image';
 import { resolvePublicApiBase } from '@/lib/nostr/relays';
 import { nip05Directory, nip05Domain } from '@/lib/nip05';
 import { shopNpub, type ShopDirectoryCursor, type ShopIdentityStore } from '@/lib/shop-identity';
+import { receivingAddress } from '@/lib/receiving-address';
 import { publicShop, shopDescription, shopListingFingerprint } from '@/lib/shop-place';
 
 /** Collaborators for `GET /shops/:npub`. */
@@ -29,6 +31,8 @@ export interface ShopRouteDeps {
   env?: Record<string, string | undefined>;
   /** Clock in epoch milliseconds for the NIP-05 directory cache. Default `Date.now`. */
   now?: () => number;
+  /** LNURL server; without it no till account can receive, so `payUsername` is `null`. */
+  lnurlServer?: LnurlServerConfig;
 }
 
 const PUBLIC_CACHE = { 'Cache-Control': 'public, max-age=60' } as const;
@@ -275,7 +279,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
           .map(({ index, photo }) => photoRow(apiBase, note.id, index, photo));
         const till = await deps.authStore.getAccount(shop.tillAccountId);
         const username = till?.username?.trim() ?? '';
-        const address = till?.lightningAddress?.trim() ?? '';
+        const canReceive = till !== undefined && receivingAddress(till, deps.lnurlServer) !== null;
         return c.json(
           {
             shop: {
@@ -285,7 +289,7 @@ export function shopRoutes(deps: ShopRouteDeps): Hono {
               description: shopDescription(note.text),
               place: shop.place,
               photos,
-              payUsername: username !== '' && address !== '' ? username : null,
+              payUsername: username !== '' && canReceive ? username : null,
               nip05,
               createdAt: note.createdAt.toISOString(),
             },

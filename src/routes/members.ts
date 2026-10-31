@@ -1,33 +1,35 @@
 import { Hono, type Context } from 'hono';
-import { aboutMeFromNote } from '@/lib/about-me';
 import { buildAccountActivity } from '@/lib/account-activity';
 import { resolveSession } from '@/lib/auth/service';
 import { MISSING_REQUIREMENTS_ERROR, requireAction } from '@/lib/auth/requirements';
 import { staffTagOf, type Account, type AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 import { isOperatorBearer } from '@/lib/debug-token';
 import { logEvent } from '@/lib/log';
-import { MESSAGE_LIST_LIMIT, serializeMessage, type MessageRow } from '@/lib/message';
+import { loadMemberProfileNote, memberPublicMessages } from '@/lib/member-public-feed';
 import type { MessageStore } from '@/lib/message-store';
 import { fundingReviewedAt, fundingReviewedByName } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { receivingAddress } from '@/lib/receiving-address';
 import { accountTrust } from '@/lib/trust';
 import type { TrustStore } from '@/lib/trust-store';
-import { forumVideoFilePresent, resolveMediaDir } from '@/lib/video';
 import { bearerToken } from '@/routes/me';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * `/members` — signed-in member profile cards (live identity + profile note + About me),
- * given/received activity, and on-demand latest-200 post/reply feeds.
+ * given/received activity, and on-demand latest-200 post/shop/reply feeds.
  */
 
 /** Collaborators the `/members` routes need. */
 export interface MembersRouteDeps {
   /** Shared auth persistence port. */
   authStore: AuthStore;
+  /** LNURL server; omitted when off. A verified wallet makes a member's notes payable. */
+  lnurlServer?: LnurlServerConfig;
   /** Forum persistence (About me, member feeds, and activity zaps/invoices). */
   messageStore: MessageStore;
   /** Stored trust edges for the `trust` object on GET JSON. */
@@ -62,39 +64,6 @@ export interface MembersRouteDeps {
 
 /** Auth or member-load outcome. */
 type MemberLoad = { ok: true; account: Account } | { ok: false; response: Response };
-
-/**
- * Delete a `hasVideo` row whose file is missing or empty. Notes without video
- * are unchanged.
- *
- * @param store - Message store.
- * @param row - Store row.
- * @returns The row, or `null` when it was deleted. A row the store keeps, such as a
- *   credit with sats, is read again and returned while it is live; `null` when
- *   it is gone or hidden.
- */
-async function dropMissingVideoRow(
-  store: MessageStore,
-  row: MessageRow,
-): Promise<MessageRow | null> {
-  if (
-    row.hasVideo !== true ||
-    row.videoContentType === undefined ||
-    row.videoContentType === null
-  ) {
-    return row;
-  }
-  const present = await forumVideoFilePresent(resolveMediaDir(), row.id, row.videoContentType);
-  if (present) {
-    return row;
-  }
-  if (!(await store.deleteById(row.id))) {
-    const kept = await store.getById(row.id);
-    return kept !== undefined && kept.deletedAt === null ? kept : null;
-  }
-  logEvent('messages.video.dropped');
-  return null;
-}
 
 /** Resolve the account behind a request's bearer session, or `null`. */
 async function authedAccount(
@@ -153,12 +122,14 @@ async function loadMember(deps: MembersRouteDeps, c: Context): Promise<MemberLoa
  * Build the `/members` route group.
  *
  * Mounted at `/members` so the public paths are `GET /members/:accountId`,
- * `GET /members/:accountId/activity`, `GET /members/:accountId/posts`, and
- * `GET /members/:accountId/replies`. More-specific paths register before
- * `/:accountId`.
+ * `GET /members/:accountId/activity`, `GET /members/:accountId/posts`,
+ * `GET /members/:accountId/shops`, `GET /members/:accountId/credits`, and
+ * `GET /members/:accountId/replies`.
+ * More-specific paths register before `/:accountId`.
  *
- * @param deps - Auth store, message store, trust store, funding store, clock, and optional gift/rate/fiat stores.
- * @returns A Hono app with activity, posts, replies, and member GET.
+ * @param deps - Auth store, message store, trust store, clock, optional
+ *   funding/gift/rate/fiat stores, and optional LNURL server.
+ * @returns A Hono app with activity, posts, shops, credits, replies, and member GET.
  */
 export function membersRoutes(deps: MembersRouteDeps): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
@@ -204,42 +175,65 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const account = member.account;
-        const rows = await deps.messageStore.listPostsByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          const children = await deps.messageStore.listReplies(kept.id, MESSAGE_LIST_LIMIT);
-          let dropped = 0;
-          for (const child of children) {
-            const keptChild = await dropMissingVideoRow(deps.messageStore, child);
-            if (keptChild === null) {
-              dropped += 1;
-            }
-          }
-          const payable =
-            kept.eventId !== null &&
-            kept.eventId !== '' &&
-            account.lightningAddress !== null &&
-            account.lightningAddress.trim() !== '';
-          messages.push(
-            serializeMessage(
-              kept,
-              payable,
-              account.role,
-              Math.max(0, row.replyCount - dropped),
-              true,
-              undefined,
-              staffTagOf(account.staffTag),
-            ),
-          );
-        }
+        const messages = await memberPublicMessages({
+          kind: 'posts',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
         return c.json({ messages }, 200);
       } catch {
         logEvent('members.posts.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:accountId/shops', async (c) => {
+      const auth = await requireForumRead(deps, c);
+      if (!auth.ok) {
+        return auth.response;
+      }
+      try {
+        const member = await loadMember(deps, c);
+        if (!member.ok) {
+          return member.response;
+        }
+        const messages = await memberPublicMessages({
+          kind: 'shops',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
+      } catch {
+        logEvent('members.shops.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:accountId/credits', async (c) => {
+      const auth = await requireForumRead(deps, c);
+      if (!auth.ok) {
+        return auth.response;
+      }
+      try {
+        const member = await loadMember(deps, c);
+        if (!member.ok) {
+          return member.response;
+        }
+        const messages = await memberPublicMessages({
+          kind: 'credits',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        return c.json({ messages }, 200);
+      } catch {
+        logEvent('members.credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
@@ -253,35 +247,14 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
         if (!member.ok) {
           return member.response;
         }
-        const account = member.account;
-        const rows = await deps.messageStore.listRepliesByAccount(account.id, MESSAGE_LIST_LIMIT);
-        const messages = [];
-        for (const row of rows) {
-          const kept = await dropMissingVideoRow(deps.messageStore, row);
-          if (kept === null) {
-            continue;
-          }
-          try {
-            const payable =
-              kept.eventId !== null &&
-              kept.eventId !== '' &&
-              account.lightningAddress !== null &&
-              account.lightningAddress.trim() !== '';
-            messages.push(
-              serializeMessage(
-                kept,
-                payable,
-                account.role,
-                undefined,
-                true,
-                undefined,
-                staffTagOf(account.staffTag),
-              ),
-            );
-          } catch {
-            continue;
-          }
-        }
+        const messages = await memberPublicMessages({
+          kind: 'replies',
+          account: member.account,
+          messageStore: deps.messageStore,
+          authStore: deps.authStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
         return c.json({ messages }, 200);
       } catch {
         logEvent('members.replies.failed');
@@ -299,33 +272,18 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
           return member.response;
         }
         const account = member.account;
-        let profileMessage: ReturnType<typeof serializeMessage> | null = null;
-        let aboutMe: string | null = null;
-        let aboutMeHasPhoto = false;
-        const profileId = account.profileMessageId;
-        if (typeof profileId === 'string' && profileId.trim() !== '') {
-          const row = await deps.messageStore.getById(profileId);
-          if (row !== undefined && row.deletedAt === null) {
-            const payable =
-              row.eventId !== null &&
-              row.eventId !== '' &&
-              account.lightningAddress !== null &&
-              account.lightningAddress.trim() !== '';
-            const children = await deps.messageStore.listReplies(row.id, MESSAGE_LIST_LIMIT);
-            profileMessage = serializeMessage(
-              row,
-              payable,
-              account.role,
-              children.length,
-              true,
-              undefined,
-              staffTagOf(account.staffTag),
-            );
-            aboutMe = aboutMeFromNote(account.name, row.text, row.name);
-            aboutMeHasPhoto = row.hasPhoto === true;
-          }
-        }
+        const note = await loadMemberProfileNote({
+          account,
+          messageStore: deps.messageStore,
+          lnurlServer: deps.lnurlServer,
+          viewerAccountId: auth.account.id,
+        });
+        const profileMessage = note?.profileMessage ?? null;
+        const aboutMe = note?.aboutMe ?? null;
+        const aboutMeHasPhoto = note?.aboutMeHasPhoto ?? false;
         const counts = await deps.messageStore.countByAccount(account.id);
+        const shopCount = await deps.messageStore.countShopsByAccount(account.id);
+        const creditCount = await deps.messageStore.countCreditsByAccount(account.id);
         const edges = await deps.trustStore.listEdgesForSubject(account.id);
         const accounts = await deps.authStore.listAccounts();
         const grant = await fundingStore.getByAccountId(account.id);
@@ -337,13 +295,15 @@ export function membersRoutes(deps: MembersRouteDeps): Hono {
             username: account.username ?? null,
             location: account.location,
             role: account.role,
-            lightningAddress: account.lightningAddress,
+            lightningAddress: receivingAddress(account, deps.lnurlServer)?.address ?? null,
             createdAt: new Date(account.createdAt).toISOString(),
             profileMessage,
             aboutMe,
             aboutMeHasPhoto,
             postCount: counts.postCount,
             replyCount: counts.replyCount,
+            shopCount,
+            creditCount,
             trust: accountTrust(account.id, accounts, edges),
             fundingReviewedAt: fundingReviewedAt(grant, deps.now()),
             fundingReviewedByName: await fundingReviewedByName(grant, deps.now(), (accountId) =>

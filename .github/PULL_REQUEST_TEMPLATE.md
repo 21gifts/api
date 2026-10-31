@@ -1,3 +1,5 @@
+<!-- Changes the database or database access? Put the exact line "⚠️ 🗄️ Attention: database change" in the visible summary below (not inside <details>), or the "Database change notice" check fails. -->
+
 ## Summary
 
 <!-- One or two sentences describing the change. -->

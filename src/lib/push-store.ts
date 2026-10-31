@@ -35,7 +35,10 @@ export interface PushOutboxRow {
   accountId: string;
   /** Notification kind. */
   type: 'forum' | 'zap' | 'conversation' | 'dismiss';
-  /** Forum or conversation message id when applicable; null for debug pings and dismiss rows. */
+  /**
+   * Forum or conversation message id when applicable; the broadcast id for an
+   * operator broadcast; null for debug pings and dismiss rows.
+   */
   messageId: string | null;
   /** JSON string payload. */
   payload: string;
@@ -126,6 +129,17 @@ export interface PushStore {
   enqueue(row: PushOutboxRow): Promise<void>;
 
   /**
+   * Append a pending outbox row for a received payment, once per payment
+   * hash. The claim on the hash and the row are written together.
+   *
+   * @param paymentHash - BOLT11 payment hash (lowercase hex).
+   * @param row - Fully formed outbox row.
+   * @returns `true` when the row was enqueued; `false` when the hash was
+   *   already claimed and nothing was written.
+   */
+  enqueuePaymentReceived(paymentHash: string, row: PushOutboxRow): Promise<boolean>;
+
+  /**
    * Claim pending outbox rows with a lease (oldest first).
    *
    * @param limit - Max rows.
@@ -170,6 +184,31 @@ export interface PushStore {
    * @param endpoints - Endpoint URLs that received the payload.
    */
   recordDelivered(id: string, endpoints: readonly string[]): Promise<void>;
+
+  /**
+   * Count the outbox rows of one operator broadcast by delivery outcome:
+   * rows whose `messageId` is the broadcast id and whose payload tag is
+   * `broadcast:<broadcastId>`. Rows of a forum or conversation message with
+   * the same id are not counted.
+   *
+   * @param broadcastId - Broadcast id (UUID).
+   * @returns Row counts; all zero when no broadcast row has this id.
+   */
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts>;
+}
+
+/** Outbox rows of one operator broadcast by delivery outcome. */
+export interface PushOutboxCounts {
+  /** Every row with this id. */
+  queued: number;
+  /** Rows the worker has not finished yet (first try or retry). */
+  pending: number;
+  /** Finished rows that reached at least one subscription (also when another one failed for good). */
+  delivered: number;
+  /** Sent rows that reached no subscription (removed or gone before the send). */
+  dropped: number;
+  /** Rows that failed for good after the retry limit without reaching any subscription. */
+  failed: number;
 }
 
 /** Idempotent DDL for push tables (matches `docs/schema/push.sql`). */
@@ -207,6 +246,11 @@ BEGIN
     CHECK (type IN ('forum', 'zap', 'conversation', 'dismiss'));
 END
 $push_outbox_type$;`,
+  `CREATE TABLE IF NOT EXISTS push_payment_received (
+  payment_hash text PRIMARY KEY,
+  outbox_id uuid NOT NULL,
+  created_at timestamptz NOT NULL
+)`,
 ];
 
 /**
@@ -267,6 +311,18 @@ function unionDeliveredEndpoints(
   return out;
 }
 
+/** The `tag` of a JSON outbox payload, or `undefined` when it has none. */
+function payloadTagOf(payload: string): unknown {
+  try {
+    const parsed: unknown = JSON.parse(payload);
+    return parsed !== null && typeof parsed === 'object'
+      ? (parsed as { tag?: unknown }).tag
+      : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 /** Copy a subscription so callers cannot mutate store state. */
 function copySub(row: PushSubscriptionRecord): PushSubscriptionRecord {
   return {
@@ -294,6 +350,7 @@ function copyOutbox(row: PushOutboxRow): PushOutboxRow {
 export class InMemoryPushStore implements PushStore {
   readonly #subs = new Map<string, PushSubscriptionRecord>();
   readonly #outbox: PushOutboxRow[] = [];
+  readonly #paymentHashes = new Set<string>();
 
   /**
    * Insert or rebind by endpoint; keep original `createdAt` on conflict.
@@ -352,6 +409,24 @@ export class InMemoryPushStore implements PushStore {
     }
     this.#subs.delete(sub.endpoint);
     return Promise.resolve(true);
+  }
+
+  /**
+   * Remove every subscription of one account, synchronously, so the in-memory
+   * social recovery commit deletes them in the same step.
+   *
+   * @param accountId - Owning account.
+   * @returns How many subscriptions were removed.
+   */
+  removeAccountSubscriptions(accountId: string): number {
+    let removed = 0;
+    for (const [endpoint, row] of this.#subs) {
+      if (row.accountId === accountId) {
+        this.#subs.delete(endpoint);
+        removed += 1;
+      }
+    }
+    return removed;
   }
 
   /**
@@ -416,6 +491,22 @@ export class InMemoryPushStore implements PushStore {
   enqueue(row: PushOutboxRow): Promise<void> {
     this.#outbox.push(copyOutbox(row));
     return Promise.resolve();
+  }
+
+  /**
+   * Append a copy of the outbox row unless `paymentHash` is already claimed.
+   *
+   * @param paymentHash - Payment hash.
+   * @param row - Outbox row.
+   * @returns Whether the row was appended.
+   */
+  enqueuePaymentReceived(paymentHash: string, row: PushOutboxRow): Promise<boolean> {
+    if (this.#paymentHashes.has(paymentHash)) {
+      return Promise.resolve(false);
+    }
+    this.#paymentHashes.add(paymentHash);
+    this.#outbox.push(copyOutbox(row));
+    return Promise.resolve(true);
   }
 
   /**
@@ -525,6 +616,33 @@ export class InMemoryPushStore implements PushStore {
     }
     row.deliveredEndpoints = unionDeliveredEndpoints(row.deliveredEndpoints, endpoints);
     return Promise.resolve();
+  }
+
+  /**
+   * Count in-memory outbox rows of one broadcast by delivery outcome.
+   *
+   * @param broadcastId - Broadcast id.
+   * @returns Row counts.
+   */
+  countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    const tag = `broadcast:${broadcastId}`;
+    for (const row of this.#outbox) {
+      if (row.messageId !== broadcastId || payloadTagOf(row.payload) !== tag) {
+        continue;
+      }
+      counts.queued += 1;
+      if (row.status === 'pending') {
+        counts.pending += 1;
+      } else if (row.deliveredEndpoints.length > 0) {
+        counts.delivered += 1;
+      } else if (row.status === 'failed') {
+        counts.failed += 1;
+      } else {
+        counts.dropped += 1;
+      }
+    }
+    return Promise.resolve(counts);
   }
 }
 
@@ -750,6 +868,46 @@ export class PostgresPushStore implements PushStore {
   }
 
   /**
+   * Claim `paymentHash` and insert the outbox row in one statement.
+   *
+   * @param paymentHash - Payment hash.
+   * @param row - Outbox row.
+   * @returns Whether the row was inserted.
+   */
+  async enqueuePaymentReceived(paymentHash: string, row: PushOutboxRow): Promise<boolean> {
+    const rows = await this.#sql.query<{ id: string }>(
+      `WITH claim AS (
+         INSERT INTO push_payment_received (payment_hash, outbox_id, created_at)
+         VALUES ($1, $2, $10)
+         ON CONFLICT (payment_hash) DO NOTHING
+         RETURNING outbox_id
+       )
+       INSERT INTO push_outbox
+         (id, account_id, type, message_id, payload, status, attempts, claimed_until, created_at, finished_at, delivered_endpoints, skip_endpoints)
+       SELECT outbox_id, $3::uuid, $4::text, $5::uuid, $6::text, $7::text, $8::integer, $9::timestamptz,
+              $10::timestamptz, $11::timestamptz, $12::text, $13::text
+       FROM claim
+       RETURNING id`,
+      [
+        paymentHash,
+        row.id,
+        row.accountId,
+        row.type,
+        row.messageId,
+        row.payload,
+        row.status,
+        row.attempts,
+        row.claimedUntil,
+        row.createdAt,
+        row.finishedAt,
+        JSON.stringify(row.deliveredEndpoints),
+        JSON.stringify(row.skipEndpoints),
+      ],
+    );
+    return rows.length > 0;
+  }
+
+  /**
    * Claim pending rows with `FOR UPDATE SKIP LOCKED`.
    *
    * @param limit - Max rows.
@@ -854,5 +1012,40 @@ export class PostgresPushStore implements PushStore {
       JSON.stringify(next),
       id,
     ]);
+  }
+
+  /**
+   * Count outbox rows of one broadcast (`message_id` and payload tag) by
+   * status; a finished (sent or
+   * failed) row counts as delivered when its `delivered_endpoints` list is
+   * not empty.
+   *
+   * @param broadcastId - Broadcast id (UUID).
+   * @returns Row counts.
+   */
+  async countBroadcastOutbox(broadcastId: string): Promise<PushOutboxCounts> {
+    const rows = await this.#sql.query<{ status: string; n: number; reached: number }>(
+      `SELECT status, count(*)::int AS n,
+         count(*) FILTER (WHERE delivered_endpoints <> '[]')::int AS reached
+       FROM push_outbox
+       WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2
+       GROUP BY status`,
+      [broadcastId, `broadcast:${broadcastId}`],
+    );
+    const counts: PushOutboxCounts = { queued: 0, pending: 0, delivered: 0, dropped: 0, failed: 0 };
+    for (const row of rows) {
+      counts.queued += row.n;
+      if (row.status === 'pending') {
+        counts.pending += row.n;
+        continue;
+      }
+      counts.delivered += row.reached;
+      if (row.status === 'failed') {
+        counts.failed += row.n - row.reached;
+      } else {
+        counts.dropped += row.n - row.reached;
+      }
+    }
+    return counts;
   }
 }

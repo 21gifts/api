@@ -8,6 +8,7 @@ import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryShopIdentityStore, shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
 import { NIP05_DIRECTORY_REFRESH_MS, NIP05_DIRECTORY_TTL_MS } from '@/lib/nip05';
 import { shopRoutes } from '@/routes/shops';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 import { wellKnownRoutes } from '@/routes/well-known';
 
 const ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
@@ -22,8 +23,9 @@ function account(overrides: Partial<Account> = {}): Account {
     role: 'basis',
     name: 'Coffee',
     username: 'coffee',
-    lightningAddress: 'coffee@example.com',
-    lightningAddressVerified: true,
+    walletRequired: true,
+    sparkPubkey: WALLET_PUBKEY,
+    sparkPubkeyVerifiedAt: 1,
     forumLawsDismissed: false,
     location: null,
     viewKey: '11'.repeat(32),
@@ -31,6 +33,25 @@ function account(overrides: Partial<Account> = {}): Account {
     rulesAgreedAt: null,
     ...overrides,
   } as Account;
+}
+
+/**
+ * Store the till account; a wallet key in the fixture is claimed and, with
+ * `sparkPubkeyVerifiedAt`, verified as the app does (`createAccount` keeps no wallet).
+ */
+async function addTill(auth: InMemoryAuthStore, till: Account): Promise<void> {
+  const { sparkPubkey, sparkPubkeyVerifiedAt, ...rest } = till;
+  await auth.createAccount(rest);
+  if (typeof sparkPubkey !== 'string') return;
+  await auth.claimSparkPubkey(till.id, sparkPubkey);
+  if (typeof sparkPubkeyVerifiedAt === 'number') {
+    await auth.markSparkPubkeyVerified(
+      till.id,
+      sparkPubkey,
+      till.username ?? '',
+      sparkPubkeyVerifiedAt,
+    );
+  }
 }
 
 function note(overrides: Partial<MessageRow> = {}): MessageRow {
@@ -72,6 +93,8 @@ async function setup(
   options: {
     env?: Record<string, string | undefined>;
     till?: Account | null;
+    /** LNURL server for the till's receiving check; `null` leaves it off. Default {@link LNURL_SERVER}. */
+    lnurlServer?: typeof LNURL_SERVER | null;
     photos?: ForumPhoto[];
     row?: Partial<MessageRow>;
     now?: () => number;
@@ -88,7 +111,7 @@ async function setup(
   const photos = options.photos ?? [];
   await messages.create(note(options.row), photos[0], undefined, photos.slice(1));
   const auth = new InMemoryAuthStore();
-  if (options.till !== null) await auth.createAccount(options.till ?? account());
+  if (options.till !== null) await addTill(auth, options.till ?? account());
   const identities = new InMemoryShopIdentityStore(messages);
   const identity = (await identities.ensureListed(ID, KEK, {
     generateSecretKey: () => SECRET.slice(),
@@ -101,6 +124,7 @@ async function setup(
       identities,
       env: options.env ?? {},
       ...(options.now === undefined ? {} : { now: options.now }),
+      ...(options.lnurlServer === null ? {} : { lnurlServer: options.lnurlServer ?? LNURL_SERVER }),
     }),
   );
   return { app, messages, auth, identities, npub: shopNpub(identity), hex: identity.nostrPubkey };
@@ -177,7 +201,7 @@ describe('GET /shops/:npub', () => {
       created ??= shopNpub(identity);
     }
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(account());
+    await addTill(auth, account());
     const app = new Hono().route(
       '/shops',
       shopRoutes({
@@ -238,14 +262,15 @@ describe('GET /shops/:npub', () => {
     },
   );
 
-  it('answers payUsername null without a username, a Lightning address, or the account', async () => {
-    for (const till of [
-      account({ username: null }),
-      account({ lightningAddress: null }),
-      account({ lightningAddress: '  ' }),
-      null,
-    ]) {
-      const { app, npub } = await setup({ till });
+  it('answers payUsername null without a username, a verified wallet, the LNURL server, or the account', async () => {
+    for (const [till, lnurlServer] of [
+      [account({ username: null }), LNURL_SERVER],
+      [account({ sparkPubkeyVerifiedAt: null }), LNURL_SERVER],
+      [account({ sparkPubkey: null }), LNURL_SERVER],
+      [account(), null],
+      [null, LNURL_SERVER],
+    ] as const) {
+      const { app, npub } = await setup({ till, lnurlServer });
       const body = (await (await app.request(`/shops/${npub}`)).json()) as {
         shop: { payUsername: unknown; photos: unknown[] };
       };

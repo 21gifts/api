@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { createHmac } from 'node:crypto';
 import type { MiddlewareHandler } from 'hono';
 import type { ApiLogStore } from '@/lib/api-log';
 import type { AuthStore } from '@/lib/auth/store';
@@ -25,14 +26,74 @@ export function setDiagnosticSink(next: DiagnosticSink | null): void {
   diagnosticSink = next;
 }
 
+/** Printed in place of an email-shaped value, and of `address` when no key is set. */
+const ADDRESS_MARKER = '[address]';
+/**
+ * `local@domain.tld` anywhere in a value, with the `@` literal or
+ * percent-encoded (`%40`). Bounded repeats keep the scan linear; 255 is the
+ * longest address `normalizeLightningAddress` accepts.
+ */
+const EMAIL_SHAPED = /[A-Za-z0-9._%+-]{1,255}(?:@|%40)[A-Za-z0-9.-]{1,253}\.[A-Za-z]{2,}/g;
+/** Hex characters of the HMAC kept as `addressRef`. */
+const ADDRESS_REF_LENGTH = 12;
+
+let addressRefKey: string | null = null;
+
+/**
+ * Install or clear the key that turns `address` into `addressRef` on the
+ * console line of {@link logEvent}.
+ *
+ * The key is trimmed. `undefined`, `null`, and a blank value clear it; the
+ * console line then prints the fixed marker `[address]` for `address`.
+ *
+ * @param key - Server secret (`SPEND_API_TOKEN`), or nothing to clear.
+ * @returns void
+ */
+export function setAddressRefKey(key: string | null | undefined): void {
+  const trimmed = key?.trim() ?? '';
+  addressRefKey = trimmed === '' ? null : trimmed;
+}
+
+/**
+ * Caller fields as the console line prints them. A string `address` becomes
+ * `addressRef` (first 12 hex characters of HMAC-SHA256 over the lower-cased
+ * value) or, without a key, the marker. Every other string has each
+ * email-shaped part replaced by the marker.
+ */
+function consoleFields(fields: LogFields): LogFields {
+  const out: { [key: string]: string | number | boolean } = {};
+  for (const [key, value] of Object.entries(fields)) {
+    if (typeof value !== 'string') {
+      out[key] = value;
+    } else if (key !== 'address') {
+      out[key] =
+        value.includes('@') || value.includes('%40')
+          ? value.replace(EMAIL_SHAPED, ADDRESS_MARKER)
+          : value;
+    } else if (addressRefKey === null) {
+      out[key] = ADDRESS_MARKER;
+    } else {
+      out['addressRef'] = createHmac('sha256', addressRefKey)
+        .update(value.toLowerCase())
+        .digest('hex')
+        .slice(0, ADDRESS_REF_LENGTH);
+    }
+  }
+  return out;
+}
+
 /**
  * Write one operator-facing JSON line.
  *
  * Uses `console.warn` (CONTRIBUTING forbids `console.log`).
- * Always includes `ts` (ISO-8601) and `event`. When a sink is set and this
- * call is not already inside a sink, the sink runs after the console line.
- * A throwing sink does not escape. A sink that calls {@link logEvent} still
- * prints, but does not re-enter the sink.
+ * Always includes `ts` (ISO-8601) and `event`. The console line never carries
+ * a Lightning Address: a string `address` field is printed as `addressRef`
+ * (see {@link setAddressRefKey}), and an email-shaped part of any other
+ * string field is printed as `[address]`. Request client fields are printed
+ * unchanged. When a sink is set and this call is not already inside a sink,
+ * the sink runs after the console line and receives the fields as passed,
+ * including `address`. A throwing sink does not escape. A sink that calls
+ * {@link logEvent} still prints, but does not re-enter the sink.
  *
  * @param event - Dotted event name, e.g. `auth.login.ok`.
  * @param fields - Extra fields; omit rather than passing empty strings unless the spec says otherwise.
@@ -41,7 +102,14 @@ export function setDiagnosticSink(next: DiagnosticSink | null): void {
 export function logEvent(event: string, fields?: LogFields): void {
   const storedFields = requestClientFields.getStore();
   const merged = storedFields === undefined ? fields : { ...storedFields, ...fields };
-  console.warn(JSON.stringify({ ts: new Date().toISOString(), event, ...merged }));
+  console.warn(
+    JSON.stringify({
+      ts: new Date().toISOString(),
+      event,
+      ...storedFields,
+      ...(fields === undefined ? undefined : consoleFields(fields)),
+    }),
+  );
   if (diagnosticSink === null || diagnosticSinkDepth !== 0) {
     return;
   }

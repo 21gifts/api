@@ -1,5 +1,10 @@
+import type { MergeDb } from '@/lib/account-merge';
 import { InMemoryAuthStore, type AuthStore } from '@/lib/auth/store';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
 import { backfillAccountUsernames } from '@/lib/username';
 
@@ -7,20 +12,24 @@ import { backfillAccountUsernames } from '@/lib/username';
  * Factory for the process AuthStore.
  *
  * Blank or unset `DATABASE_URL` yields the in-memory adapter (tests, local
- * boots without Postgres). The in-memory path does not backfill usernames.
- * A set URL migrates the auth schema, backfills account usernames
+ * boots without Postgres). The in-memory path does not backfill usernames or
+ * Spark addresses. A set URL migrates the auth schema, stores missing or outdated
+ * Spark addresses ({@link backfillSparkAddresses}), backfills account usernames
  * ({@link backfillAccountUsernames}), then returns the Postgres adapter.
  * The SQL client factory is required when a URL is set so unit tests never
  * import the Bun SQL runtime.
  *
  * @param databaseUrl - `postgres://` URL, or `undefined` / blank for memory.
  * @param createClient - SQL client factory; required when `databaseUrl` is set.
+ * @param transactions - Optional transaction port handed to {@link PostgresAuthStore} for
+ *   the social recovery steps; the in-memory adapter does not need it.
  * @returns The store to inject into {@link createApp}.
  * @throws If `databaseUrl` is set and `createClient` is omitted.
  */
 export async function openAuthStore(
   databaseUrl: string | undefined,
   createClient?: (url: string) => SqlClient,
+  transactions?: MergeDb,
 ): Promise<AuthStore> {
   if (databaseUrl === undefined || databaseUrl.trim() === '') {
     return new InMemoryAuthStore();
@@ -30,7 +39,8 @@ export async function openAuthStore(
   }
   const sql = createClient(databaseUrl.trim());
   await migrateAuthSchema(sql);
-  const store = new PostgresAuthStore(sql);
+  await backfillSparkAddresses(sql);
+  const store = new PostgresAuthStore(sql, transactions);
   await backfillAccountUsernames(store);
   return store;
 }

@@ -1,6 +1,9 @@
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import { DB_CHANGE_SCHEMA_SQL, listDbChanges, migrateDbChangeSchema } from '@/lib/db-change';
+import { DEBUG_DB_SECRET_COLUMNS } from '@/lib/debug-db';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -41,7 +44,7 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(joined).toMatch(/auth/);
     expect(joined).toMatch(/delivered_endpoints/);
     expect(joined).toMatch(/skip_endpoints/);
-    expect(joined).toMatch(/'skip_endpoints', 'session_token'\]/);
+    expect(joined).toMatch(/'skip_endpoints', 'session_token', 'recovery_share_ciphertext'\]/);
     const guardBlock = joined.slice(joined.indexOf('$guard$'));
     const dropAt = guardBlock.indexOf('DROP TRIGGER IF EXISTS db_change_immutable');
     const afterMatchAt = guardBlock.indexOf("a.view_key = d.after ->> 'view_key'");
@@ -89,6 +92,19 @@ describe('DB_CHANGE_SCHEMA_SQL', () => {
     expect(insertBranch).not.toContain('unchanged');
     expect(deleteBranch).not.toContain('unchanged');
     expect(logFn.split('pg_attribute').length - 1).toBe(1);
+  });
+});
+
+describe('secret column lists', () => {
+  it('keep docs/schema/db_change.sql and DEBUG_DB_SECRET_COLUMNS in step with db_change_redact', () => {
+    const redact = DB_CHANGE_SCHEMA_SQL[4] ?? '';
+    expect(redact).toContain('CREATE OR REPLACE FUNCTION db_change_redact');
+    const doc = readFileSync(join(process.cwd(), 'docs/schema/db_change.sql'), 'utf8');
+    expect(doc).toContain(redact.replace(/;$/, ''));
+    const listed = /ARRAY\[('[^\]]+')\]/.exec(redact)?.[1] ?? '';
+    const names = listed.split(', ').map((name) => name.replace(/'/g, ''));
+    expect(names).toEqual([...DEBUG_DB_SECRET_COLUMNS]);
+    expect(names).toContain('recovery_share_ciphertext');
   });
 });
 

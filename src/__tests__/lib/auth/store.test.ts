@@ -6,8 +6,13 @@ import {
   parseStoredFiat,
   parseStoredLocale,
   staffTagOf,
+  type PasskeyChallenge,
+  type PasskeyCredential,
+  type PendingRecovery,
 } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { InMemoryPushStore } from '@/lib/push-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 const KEY = `02${'a'.repeat(64)}`;
 const T0 = 1_000_000;
@@ -67,8 +72,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -82,6 +85,24 @@ describe('InMemoryAuthStore', () => {
     expect((await store.listAccounts()).map((row) => row.id)).toEqual(['acc-1']);
   });
 
+  it('getAccounts returns each known account once and skips unknown ids', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null,
+      role: 'basis' as const,
+      name: null,
+      forumLawsDismissed: false,
+      location: null,
+      createdAt: 1,
+      rulesAgreedAt: null,
+    };
+    await store.createAccount({ ...base, id: 'acc-a', viewKey: 'a'.repeat(64) });
+    await store.createAccount({ ...base, id: 'acc-b', viewKey: 'b'.repeat(64) });
+    const found = await store.getAccounts(['acc-b', 'acc-gone', 'acc-a', 'acc-b']);
+    expect(found.map((row) => row.id)).toEqual(['acc-b', 'acc-a']);
+    expect(await store.getAccounts([])).toEqual([]);
+  });
+
   it('stores an account and finds it by id and by linkingKey', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -89,8 +110,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -108,8 +127,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -120,16 +137,14 @@ describe('InMemoryAuthStore', () => {
       id: 'acc',
       linkingKey: KEY,
       role: 'basis',
-      name: null,
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: false,
+      name: 'Ada',
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
+    expect((await store.getAccount('acc'))?.name).toBe('Ada');
   });
 
   it('persists walletRequired and walletBackupSeenAt on create and update', async () => {
@@ -139,8 +154,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -157,8 +170,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -178,8 +189,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -192,8 +201,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'f'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: true,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -206,8 +213,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'e'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: true,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -224,8 +229,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'One',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -238,8 +241,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Two',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'f'.repeat(64),
@@ -270,8 +271,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'b'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -283,8 +282,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'c'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -298,8 +295,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `02${'d'.repeat(64)}`,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -314,8 +309,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -338,6 +331,16 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getSession('tok'))?.accountId).toBe('acc');
   });
 
+  it('deleteAllSessions removes every session and returns the count', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createSession({ token: 'a', accountId: 'acc', createdAt: 1 });
+    await store.createSession({ token: 'b', accountId: 'other', createdAt: 1 });
+    expect(await store.deleteAllSessions()).toBe(2);
+    expect(await store.getSession('a')).toBeUndefined();
+    expect(await store.listSessions()).toEqual([]);
+    expect(await store.deleteAllSessions()).toBe(0);
+  });
+
   it('tryCreateSession writes only when the account is not refused', async () => {
     const store = new InMemoryAuthStore();
     const account = {
@@ -345,8 +348,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -377,8 +378,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -421,51 +420,6 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getSession('a'))?.token).toBe('a');
   });
 
-  it('stores and retrieves a pending address verification', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    expect((await store.getVerification('acc'))?.nonce).toBe('a'.repeat(32));
-  });
-
-  it('upserts verification by accountId', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'bob@getalby.com',
-      nonce: 'b'.repeat(32),
-      createdAt: T0 + 1,
-    });
-    expect((await store.getVerification('acc'))?.address).toBe('bob@getalby.com');
-    expect((await store.getVerification('acc'))?.nonce).toBe('b'.repeat(32));
-  });
-
-  it('returns undefined for an unknown verification account', async () => {
-    expect(await new InMemoryAuthStore().getVerification('missing')).toBeUndefined();
-  });
-
-  it('deletes a pending verification', async () => {
-    const store = new InMemoryAuthStore();
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'alice@walletofsatoshi.com',
-      nonce: 'a'.repeat(32),
-      createdAt: T0,
-    });
-    await store.deleteVerification('acc');
-    expect(await store.getVerification('acc')).toBeUndefined();
-  });
-
   it('stores two passkey accounts without clobbering the linkingKey index', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -473,8 +427,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -486,8 +438,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -499,8 +449,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '3'.repeat(64),
@@ -512,37 +460,6 @@ describe('InMemoryAuthStore', () => {
     expect((await store.getAccount('ln'))?.id).toBe('ln');
   });
 
-  it('keeps the LNURL index when updateAccount only changes the address', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await store.updateAccount({
-      id: 'acc',
-      linkingKey: KEY,
-      role: 'basis',
-      name: null,
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect((await store.getAccount('acc'))?.lightningAddress).toBe('a@b.com');
-  });
-
   it('drops the linkingKey index when updateAccount clears it', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -550,8 +467,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -563,8 +478,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -581,8 +494,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -594,8 +505,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -781,8 +690,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -794,8 +701,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -807,8 +712,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -827,8 +730,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -839,27 +740,6 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByViewKey('0'.repeat(64))).toBeUndefined();
   });
 
-  it('finds an account by lightningAddress with mixed case and whitespace', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect((await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  '))?.id).toBe(
-      'acc',
-    );
-    expect(await store.getAccountByLightningAddress('missing@example.com')).toBeUndefined();
-  });
-
   it('looks up an account by nostr pubkey case-insensitively', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -867,8 +747,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       location: null,
       forumLawsDismissed: false,
       viewKey: 'a'.repeat(64),
@@ -886,57 +764,6 @@ describe('InMemoryAuthStore', () => {
     expect(await store.getAccountByPubkey('')).toBeUndefined();
   });
 
-  it('updateAccountNameByLightningAddress changes only name', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'nameless',
-      linkingKey: null,
-      role: 'basis',
-      name: 'Skip',
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'moderator',
-      name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: true,
-      forumLawsDismissed: true,
-      location: null,
-      viewKey: 'a'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: 9_000,
-    });
-    const named = await store.updateAccountNameByLightningAddress(
-      '  Guest@WalletOfSatoshi.com  ',
-      'Ada Lovelace',
-    );
-    expect(named).toMatchObject({
-      id: 'acc',
-      name: 'Ada Lovelace',
-      role: 'moderator',
-      rulesAgreedAt: 9_000,
-      viewKey: 'a'.repeat(64),
-      lightningAddressVerified: true,
-      location: null,
-      forumLawsDismissed: true,
-    });
-    const stored = await store.getAccount('acc');
-    expect(stored?.name).toBe('Ada Lovelace');
-    expect(stored?.role).toBe('moderator');
-    expect(stored?.rulesAgreedAt).toBe(9_000);
-    expect(
-      await store.updateAccountNameByLightningAddress('missing@example.com', 'X'),
-    ).toBeUndefined();
-  });
-
   it('refuses createAccount and updateAccount when the username is taken', async () => {
     const store = new InMemoryAuthStore();
     const base = {
@@ -944,8 +771,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada',
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -961,7 +786,6 @@ describe('InMemoryAuthStore', () => {
       id: 'b',
       name: 'Bob',
       username: '  Ada  ',
-      lightningAddress: 'bob@walletofsatoshi.com',
       viewKey: 'b'.repeat(64),
     });
     expect(await store.getAccount('b')).toBeUndefined();
@@ -970,7 +794,6 @@ describe('InMemoryAuthStore', () => {
       id: 'c',
       name: 'Cara',
       username: 'cara',
-      lightningAddress: 'cara@walletofsatoshi.com',
       viewKey: 'c'.repeat(64),
     });
     expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
@@ -984,7 +807,25 @@ describe('InMemoryAuthStore', () => {
       ...(await store.getAccount('c'))!,
       username: '   ',
     });
-    expect(await store.getAccountByUsername('cara')).toBeUndefined();
+    expect((await store.getAccountByUsername('cara'))?.id).toBe('c');
+  });
+
+  it('skips blank usernames on lookup and does not fill a blank one with a taken name', async () => {
+    const store = new InMemoryAuthStore();
+    const base = {
+      linkingKey: null,
+      role: 'basis' as const,
+      name: 'Ada',
+      location: null as string | null,
+      forumLawsDismissed: false,
+      createdAt: 1,
+      rulesAgreedAt: null as number | null,
+    };
+    await store.createAccount({ ...base, id: 'blank', username: '   ', viewKey: 'd'.repeat(64) });
+    await store.createAccount({ ...base, id: 'ada', username: 'ada', viewKey: 'e'.repeat(64) });
+    expect((await store.getAccountByUsername('ada'))?.id).toBe('ada');
+    await store.updateAccount({ ...(await store.getAccount('blank'))!, username: 'ada' });
+    expect((await store.getAccount('blank'))?.username).toBe('   ');
   });
 
   it('listAccountsByUsernamePrefix skips null, undefined, and blank usernames', async () => {
@@ -994,8 +835,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1035,8 +874,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1070,8 +907,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null as string | null,
       role: 'basis' as const,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1111,8 +946,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1156,8 +989,6 @@ describe('InMemoryAuthStore', () => {
       role: 'basis' as const,
       name: 'Ada' as string | null,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1185,8 +1016,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null as string | null,
       role: 'basis' as const,
       location: null as string | null,
-      lightningAddress: null as string | null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       createdAt: 1,
       rulesAgreedAt: null as number | null,
@@ -1218,67 +1047,6 @@ describe('InMemoryAuthStore', () => {
     ]);
   });
 
-  it('refuses createAccount and updateAccount when the lightningAddress is taken', async () => {
-    const store = new InMemoryAuthStore();
-    const base = {
-      linkingKey: null as string | null,
-      role: 'basis' as const,
-      name: 'Ada',
-      location: null as string | null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      createdAt: 1,
-      rulesAgreedAt: null as number | null,
-    };
-    await store.createAccount({
-      ...base,
-      id: 'a',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      viewKey: 'a'.repeat(64),
-    });
-    await store.createAccount({
-      ...base,
-      id: 'b',
-      name: 'Bob',
-      lightningAddress: '  Guest@WalletOfSatoshi.com  ',
-      viewKey: 'b'.repeat(64),
-    });
-    expect(await store.getAccount('b')).toBeUndefined();
-    await store.createAccount({
-      ...base,
-      id: 'c',
-      name: 'Cara',
-      lightningAddress: 'cara@walletofsatoshi.com',
-      viewKey: 'c'.repeat(64),
-    });
-    await store.updateAccount({
-      ...base,
-      id: 'c',
-      name: 'Cara',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      viewKey: 'c'.repeat(64),
-    });
-    expect((await store.getAccount('c'))?.lightningAddress).toBe('cara@walletofsatoshi.com');
-  });
-
-  it('skips null lightningAddress rows when looking up by address', async () => {
-    const store = new InMemoryAuthStore();
-    await store.createAccount({
-      id: 'acc',
-      linkingKey: null,
-      role: 'basis',
-      name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
-      forumLawsDismissed: false,
-      location: null,
-      viewKey: 'b'.repeat(64),
-      createdAt: 1,
-      rulesAgreedAt: null,
-    });
-    expect(await store.getAccountByLightningAddress('null@example.com')).toBeUndefined();
-  });
-
   it('reports whether an account has a passkey credential', async () => {
     const store = new InMemoryAuthStore();
     await store.createAccount({
@@ -1286,8 +1054,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1429,8 +1195,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1475,8 +1239,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1502,8 +1264,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1515,8 +1275,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1551,8 +1309,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1609,8 +1365,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1624,8 +1378,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1639,8 +1391,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1652,8 +1402,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -1689,8 +1437,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1725,8 +1471,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1761,8 +1505,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1794,8 +1536,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1830,8 +1570,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1858,8 +1596,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1871,8 +1607,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: `03${'b'.repeat(64)}`,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1937,8 +1671,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1970,8 +1702,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1992,8 +1722,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2030,8 +1758,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2067,8 +1793,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2096,8 +1820,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2117,8 +1839,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2140,8 +1860,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2153,8 +1871,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2175,8 +1891,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: oldKey,
@@ -2188,8 +1902,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: newKey,
@@ -2207,8 +1919,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -2220,8 +1930,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '2'.repeat(64),
@@ -2233,8 +1941,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'stolen',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: '1'.repeat(64),
@@ -2254,8 +1960,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2269,8 +1973,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey,
@@ -2287,8 +1989,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2303,8 +2003,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: KEY,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2435,8 +2133,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2460,8 +2156,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2491,8 +2185,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2513,8 +2205,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2543,8 +2233,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: 'Founder',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2556,8 +2244,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'moderator',
       name: 'Mod',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2569,8 +2255,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'initiator',
       name: 'Initiator',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'e'.repeat(64),
@@ -2582,8 +2266,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Basis',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2595,8 +2277,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Verified',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'd'.repeat(64),
@@ -2618,8 +2298,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2638,8 +2316,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2658,8 +2334,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2676,8 +2350,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2694,8 +2366,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2707,8 +2377,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2720,8 +2388,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -2743,8 +2409,6 @@ describe('InMemoryAuthStore', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -2760,5 +2424,984 @@ describe('InMemoryAuthStore', () => {
     expect(await store.claimProfileMessageId('acc', 'note-1', 'note-3')).toBe(true);
     expect((await store.getAccount('acc'))?.profileMessageId).toBe('note-3');
     expect((await store.getAccount('acc'))?.name).toBe('Ada');
+  });
+});
+
+describe('InMemoryAuthStore spark pubkey', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+  const OTHER_KEY = `03${'b'.repeat(64)}`;
+
+  async function walletAccount(
+    store: InMemoryAuthStore,
+    id: string,
+    opts: { username?: string | null; walletRequired?: boolean; viewKey?: string } = {},
+  ) {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      username: opts.username === undefined ? 'ada' : opts.username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: opts.viewKey ?? `${id.replace(/-/g, '').padEnd(64, 'a').slice(0, 64)}`,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: opts.walletRequired ?? true,
+    });
+  }
+
+  it('createAccount ignores wallet fields from the input', async () => {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      id: 'acc',
+      linkingKey: KEY,
+      role: 'basis',
+      name: 'Ada',
+      username: 'ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      sparkPubkey: PUBKEY,
+      sparkPubkeyVerifiedAt: 99,
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBeNull();
+    expect(stored?.sparkPubkeyVerifiedAt).toBeNull();
+  });
+
+  it('claimSparkPubkey writes while unverified and overwrites', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    const first = await store.claimSparkPubkey('acc', PUBKEY);
+    expect(first?.wrote).toBe(true);
+    expect(first?.account.sparkPubkey).toBe(PUBKEY);
+    const second = await store.claimSparkPubkey('acc', OTHER_KEY);
+    expect(second?.wrote).toBe(true);
+    expect(second?.account.sparkPubkey).toBe(OTHER_KEY);
+  });
+
+  it('claimSparkPubkey returns wrote false without walletRequired, without username, and once verified', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'no-wallet', {
+      walletRequired: false,
+      username: 'nowallet',
+      viewKey: 'b'.repeat(64),
+    });
+    expect((await store.claimSparkPubkey('no-wallet', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'no-name', { username: null, viewKey: 'c'.repeat(64) });
+    expect((await store.claimSparkPubkey('no-name', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'blank', { username: '  ', viewKey: 'd'.repeat(64) });
+    expect((await store.claimSparkPubkey('blank', PUBKEY))?.wrote).toBe(false);
+    await walletAccount(store, 'acc', { username: 'carol', viewKey: 'e'.repeat(64) });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'carol', 10);
+    expect((await store.claimSparkPubkey('acc', OTHER_KEY))?.wrote).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkey).toBe(PUBKEY);
+  });
+
+  it('claimSparkPubkey returns undefined for an unknown id', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.claimSparkPubkey('missing', PUBKEY)).toBeUndefined();
+  });
+
+  it('allows two accounts to hold the same unverified key', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect((await store.claimSparkPubkey('acc-1', PUBKEY))?.wrote).toBe(true);
+    expect((await store.claimSparkPubkey('acc-2', PUBKEY))?.wrote).toBe(true);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+  });
+
+  it('markSparkPubkeyVerified succeeds exactly once', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(true);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 11)).toBe(false);
+    expect((await store.getAccount('acc'))?.sparkPubkeyVerifiedAt).toBe(10);
+  });
+
+  it('markSparkPubkeyVerified refuses wrong key, wrong username, unknown id, and a key verified by another account', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc-1', { username: 'ada', viewKey: 'a'.repeat(64) });
+    await walletAccount(store, 'acc-2', { username: 'grace', viewKey: 'b'.repeat(64) });
+    await store.claimSparkPubkey('acc-1', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-1', OTHER_KEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'wrong', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('missing', PUBKEY, 'ada', 10)).toBe(false);
+    expect(await store.markSparkPubkeyVerified('acc-1', PUBKEY, 'ada', 10)).toBe(true);
+    await store.claimSparkPubkey('acc-2', PUBKEY);
+    expect(await store.markSparkPubkeyVerified('acc-2', PUBKEY, 'grace', 11)).toBe(false);
+  });
+
+  it('getAccountByVerifiedSparkPubkey and isSparkPubkeyClaimed cover claimed, verified, and unknown keys', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(false);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.claimSparkPubkey('acc', PUBKEY);
+    expect(await store.isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+    expect(await store.getAccountByVerifiedSparkPubkey(PUBKEY)).toBeUndefined();
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect((await store.getAccountByVerifiedSparkPubkey(PUBKEY))?.id).toBe('acc');
+    expect(await store.getAccountByVerifiedSparkPubkey(OTHER_KEY)).toBeUndefined();
+    expect(await store.isSparkPubkeyClaimed(OTHER_KEY)).toBe(false);
+  });
+
+  it('updateAccount keeps verified username but writes other fields', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    expect(await store.setUsername('acc', 'grace')).toMatchObject({ ok: true });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'grace', 10);
+    await walletAccount(store, 'other', { username: 'ada', viewKey: 'b'.repeat(64) });
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({ ...verified!, username: 'ada', name: 'New' });
+    const afterVerified = await store.getAccount('acc');
+    expect(afterVerified?.username).toBe('grace');
+    expect(afterVerified?.name).toBe('New');
+    await walletAccount(store, 'unverified', {
+      username: 'bob',
+      viewKey: 'c'.repeat(64),
+    });
+    const unverified = await store.getAccount('unverified');
+    await store.updateAccount({ ...unverified!, username: 'carol' });
+    expect((await store.getAccount('unverified'))?.username).toBe('bob');
+  });
+
+  it('updateAccount never alters the two wallet fields', async () => {
+    const store = new InMemoryAuthStore();
+    await walletAccount(store, 'acc');
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    const verified = await store.getAccount('acc');
+    await store.updateAccount({
+      ...verified!,
+      sparkPubkey: OTHER_KEY,
+      sparkPubkeyVerifiedAt: null,
+      name: 'Changed',
+    });
+    const stored = await store.getAccount('acc');
+    expect(stored?.sparkPubkey).toBe(PUBKEY);
+    expect(stored?.sparkPubkeyVerifiedAt).toBe(10);
+    expect(stored?.name).toBe('Changed');
+  });
+});
+
+describe('InMemoryAuthStore setUsername', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+
+  async function account(
+    store: InMemoryAuthStore,
+    id: string,
+    opts: { username?: string | null; viewKey?: string } = {},
+  ): Promise<void> {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: opts.viewKey ?? `${id.replace(/-/g, '').padEnd(64, 'a').slice(0, 64)}`,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+      ...(opts.username === undefined ? {} : { username: opts.username }),
+    });
+  }
+
+  it('returns previous null when no username was set', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc');
+    expect(await store.setUsername('acc', 'ada')).toEqual({ ok: true, previous: null });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns the previous username and stores the new one', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: true, previous: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('grace');
+  });
+
+  it('keeps a renamed username when a write from an older snapshot arrives', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    const stale = await store.getAccount('acc');
+    if (stale === undefined) {
+      throw new Error('expected account');
+    }
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: true, previous: 'ada' });
+    await store.updateAccount({ ...stale, location: 'Zurich' });
+    expect(await store.getAccount('acc')).toMatchObject({ username: 'grace', location: 'Zurich' });
+  });
+
+  it('lets updateAccount fill a blank username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: '  ' });
+    const current = await store.getAccount('acc');
+    if (current === undefined) {
+      throw new Error('expected account');
+    }
+    await store.updateAccount({ ...current, username: 'ada' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns frozen when the wallet is verified and leaves the username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await store.claimSparkPubkey('acc', PUBKEY);
+    await store.markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10);
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: false, reason: 'frozen' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns taken when another account owns the username', async () => {
+    const store = new InMemoryAuthStore();
+    await account(store, 'acc', { username: 'ada' });
+    await account(store, 'other', { username: 'grace', viewKey: 'b'.repeat(64) });
+    expect(await store.setUsername('acc', 'grace')).toEqual({ ok: false, reason: 'taken' });
+    expect((await store.getAccount('acc'))?.username).toBe('ada');
+  });
+
+  it('returns missing when the account does not exist', async () => {
+    const store = new InMemoryAuthStore();
+    expect(await store.setUsername('missing', 'ada')).toEqual({ ok: false, reason: 'missing' });
+  });
+});
+
+describe('InMemoryAuthStore social recovery', () => {
+  const OLD = `02${'1'.repeat(64)}`;
+  const NEW = `03${'2'.repeat(64)}`;
+  const THIRD = `02${'3'.repeat(64)}`;
+  const NOW = 50_000_000;
+
+  async function recoverable(
+    store: InMemoryAuthStore,
+    id: string,
+    username: string,
+    sparkPubkey = OLD,
+  ): Promise<void> {
+    await store.createAccount({
+      id,
+      linkingKey: null,
+      role: 'basis',
+      name: null,
+      username,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: `${id}`.padEnd(64, '0').slice(0, 64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      walletRequired: true,
+    });
+    await store.claimSparkPubkey(id, sparkPubkey);
+    expect(await store.markSparkPubkeyVerified(id, sparkPubkey, username.toLowerCase(), 10)).toBe(
+      true,
+    );
+  }
+
+  function challenge(id: string, accountId: string, createdAt = NOW): PasskeyChallenge {
+    return {
+      id,
+      type: 'recovery',
+      challenge: `challenge-${id}`,
+      accountId,
+      consumed: false,
+      createdAt,
+    };
+  }
+
+  function pending(accountId: string, overrides: Partial<PendingRecovery> = {}): PendingRecovery {
+    return {
+      accountId,
+      oldSparkPubkey: OLD,
+      newSparkPubkey: NEW,
+      credentialId: 'new-credential',
+      publicKey: Uint8Array.of(4, 5, 6),
+      signCount: 0,
+      createdAt: NOW,
+      forwardedAt: null,
+      ...overrides,
+    };
+  }
+
+  /** Begin, finish, and admit one recovery of `accountId`. */
+  async function forwarded(
+    store: InMemoryAuthStore,
+    accountId: string,
+    username: string,
+    from = OLD,
+    to = NEW,
+    credentialId = 'new-credential',
+  ): Promise<void> {
+    const id = `c-${accountId}-${to}`;
+    expect(
+      await store.startRecoveryChallenge({
+        accountId,
+        oldSparkPubkey: from,
+        challenge: challenge(id, accountId),
+        now: NOW,
+      }),
+    ).toBe('started');
+    expect(
+      await store.storePendingRecovery({
+        challengeId: id,
+        pending: pending(accountId, { oldSparkPubkey: from, newSparkPubkey: to, credentialId }),
+        now: NOW,
+      }),
+    ).toBe('stored');
+    expect(
+      await store.markRecoveryForwarded({
+        newSparkPubkey: to,
+        oldSparkPubkey: from,
+        username,
+        now: NOW + 1,
+      }),
+    ).toBeDefined();
+  }
+
+  describe('startRecoveryChallenge', () => {
+    it('refuses an unknown account, another key, an unverified key, and a refused account', async () => {
+      const store = new InMemoryAuthStore();
+      const start = (accountId: string, oldSparkPubkey = OLD) =>
+        store.startRecoveryChallenge({
+          accountId,
+          oldSparkPubkey,
+          challenge: challenge(`c-${accountId}`, accountId),
+          now: NOW,
+        });
+      expect(await start('missing')).toBe('changed');
+      await recoverable(store, 'acc', 'ada');
+      expect(await start('acc', NEW)).toBe('changed');
+      await store.createAccount({
+        id: 'claimed',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'claimed',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'c'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await store.claimSparkPubkey('claimed', THIRD);
+      expect(await start('claimed', THIRD)).toBe('changed');
+      await store.setSessionRefused('acc', true);
+      expect(await start('acc')).toBe('changed');
+      expect(await store.getPasskeyChallenge('c-acc')).toBeUndefined();
+    });
+
+    it('consumes earlier recovery challenges, drops an unforwarded pending recovery, evicts expired challenges, and stores the new one', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge({ ...challenge('old-expired', 'acc'), createdAt: 1 });
+      await store.createPasskeyChallenge(challenge('first', 'acc'));
+      await store.createPasskeyChallenge({ ...challenge('seed', 'acc'), type: 'seed' });
+      await store.createPasskeyChallenge(challenge('foreign', 'other'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'first',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('stored');
+      await store.createPasskeyChallenge(challenge('second', 'acc'));
+      const next = challenge('third', 'acc', NOW + 5);
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: 'acc',
+          oldSparkPubkey: OLD,
+          challenge: next,
+          now: NOW + CHALLENGE_TTL_MS - 1,
+        }),
+      ).toBe('started');
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect((await store.getPasskeyChallenge('second'))?.consumed).toBe(true);
+      expect((await store.getPasskeyChallenge('first'))?.consumed).toBe(true);
+      expect((await store.getPasskeyChallenge('seed'))?.consumed).toBe(false);
+      expect((await store.getPasskeyChallenge('foreign'))?.consumed).toBe(false);
+      expect(await store.getPasskeyChallenge('old-expired')).toBeUndefined();
+      expect(await store.getPasskeyChallenge('third')).toBe(next);
+    });
+
+    it('answers forwarded and writes nothing while a forwarded pending recovery remains', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('open', 'acc'));
+      expect(
+        await store.startRecoveryChallenge({
+          accountId: 'acc',
+          oldSparkPubkey: OLD,
+          challenge: challenge('next', 'acc'),
+          now: NOW + 10 * CHALLENGE_TTL_MS,
+        }),
+      ).toBe('forwarded');
+      expect(await store.getPasskeyChallenge('next')).toBeUndefined();
+      expect((await store.getPasskeyChallenge('open'))?.consumed).toBe(false);
+      expect(
+        (await store.getPendingRecovery('acc', NOW + 10 * CHALLENGE_TTL_MS))?.forwardedAt,
+      ).toBe(NOW + 1);
+    });
+  });
+
+  describe('storePendingRecovery', () => {
+    it('refuses an account that left the old key and a missing, foreign, other-type, or expired challenge', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.createPasskeyChallenge({ ...challenge('seed', 'acc'), type: 'seed' });
+      const store1 = (challengeId: string, now = NOW, value = pending('acc')) =>
+        store.storePendingRecovery({ challengeId, pending: value, now });
+      expect(await store1('mine', NOW, pending('acc', { oldSparkPubkey: THIRD }))).toBe('changed');
+      expect(await store1('missing')).toBe('challenge');
+      expect(await store1('theirs')).toBe('challenge');
+      expect(await store1('seed')).toBe('challenge');
+      expect(await store1('mine', NOW + CHALLENGE_TTL_MS + 1)).toBe('challenge');
+      expect(await store1('mine', NOW + CHALLENGE_TTL_MS)).toBe('stored');
+    });
+
+    it('stores once, keeps the byte array by reference, consumes the challenge, and answers same for the repeat', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      const value = pending('acc', { forwardedAt: 99 });
+      expect(
+        await store.storePendingRecovery({ challengeId: 'mine', pending: value, now: NOW }),
+      ).toBe('stored');
+      expect((await store.getPasskeyChallenge('mine'))?.consumed).toBe(true);
+      const stored = await store.getPendingRecovery('acc', NOW);
+      expect(stored).toEqual({ ...value, forwardedAt: null });
+      expect(stored?.publicKey).toBe(value.publicKey);
+      expect(await store.getPendingRecoveryByNewSparkPubkey(NEW, NOW)).toBe(stored);
+      expect(await store.getPendingRecoveryByCredentialId('new-credential', NOW)).toBe(stored);
+      expect(await store.getPendingRecoveryByNewSparkPubkey(THIRD, NOW)).toBeUndefined();
+      expect(await store.getPendingRecoveryByCredentialId('other', NOW)).toBeUndefined();
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('same');
+      expect(await store.getPendingRecovery('acc', NOW)).toBe(stored);
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { credentialId: 'other' }),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+      await store.createPasskeyChallenge(challenge('again', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'again',
+          pending: pending('acc', { credentialId: 'other', newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('pending');
+      expect((await store.getPasskeyChallenge('again'))?.consumed).toBe(false);
+    });
+
+    it('answers challenge for a used challenge when the account has no pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge({ ...challenge('used', 'acc'), consumed: true });
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'used',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('challenge');
+    });
+
+    it('treats an expired unforwarded pending recovery as absent and a forwarded one as present', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      const later = NOW + CHALLENGE_TTL_MS + 1;
+      expect(await store.getPendingRecovery('acc', NOW + CHALLENGE_TTL_MS)).toBeDefined();
+      expect(await store.getPendingRecovery('acc', later)).toBeUndefined();
+      expect(await store.getPendingRecoveryByNewSparkPubkey(NEW, later)).toBeUndefined();
+      expect(await store.getPendingRecoveryByCredentialId('new-credential', later)).toBeUndefined();
+      await store.createPasskeyChallenge(challenge('later', 'acc', later));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'later',
+          pending: pending('acc', { createdAt: later }),
+          now: later,
+        }),
+      ).toBe('stored');
+      await store.markRecoveryForwarded({
+        newSparkPubkey: NEW,
+        oldSparkPubkey: OLD,
+        username: 'ada',
+        now: later,
+      });
+      expect(await store.getPendingRecovery('acc', later + 100 * CHALLENGE_TTL_MS)).toBeDefined();
+    });
+
+    it('evicts expired pending recoveries of other accounts before the key and credential checks', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.storePendingRecovery({
+        challengeId: 'theirs',
+        pending: pending('other', { oldSparkPubkey: THIRD }),
+        now: NOW,
+      });
+      const later = NOW + CHALLENGE_TTL_MS + 1;
+      await store.createPasskeyChallenge(challenge('mine', 'acc', later));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { createdAt: later }),
+          now: later,
+        }),
+      ).toBe('stored');
+    });
+
+    it('refuses a new key held by an account, a previous wallet, or another pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW,
+        }),
+      ).toBe('key');
+      await forwarded(store, 'other', 'bob', THIRD, NEW, 'their-credential');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('key');
+      expect(
+        await store.commitRecovery({ accountId: 'other', newSparkPubkey: NEW, now: NOW + 2 }),
+      ).toBe('committed');
+      const fourth = `03${'4'.repeat(64)}`;
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: fourth, credentialId: 'their-credential' }),
+          now: NOW + 3,
+        }),
+      ).toBe('credential');
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc', { newSparkPubkey: THIRD }),
+          now: NOW + 3,
+        }),
+      ).toBe('key');
+      expect((await store.getPasskeyChallenge('mine'))?.consumed).toBe(false);
+    });
+
+    it('refuses a credential id held by another pending recovery', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyChallenge(challenge('theirs', 'other'));
+      await store.storePendingRecovery({
+        challengeId: 'theirs',
+        pending: pending('other', { oldSparkPubkey: THIRD, newSparkPubkey: `03${'5'.repeat(64)}` }),
+        now: NOW,
+      });
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      expect(
+        await store.storePendingRecovery({
+          challengeId: 'mine',
+          pending: pending('acc'),
+          now: NOW,
+        }),
+      ).toBe('credential');
+    });
+  });
+
+  describe('markRecoveryForwarded', () => {
+    it('admits only an open, unexpired pending recovery of the old verified key and the username', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'Ada');
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      const admit = (
+        overrides: Partial<{
+          newSparkPubkey: string;
+          oldSparkPubkey: string;
+          username: string;
+          now: number;
+        }> = {},
+      ) =>
+        store.markRecoveryForwarded({
+          newSparkPubkey: NEW,
+          oldSparkPubkey: OLD,
+          username: 'ada',
+          now: NOW + 1,
+          ...overrides,
+        });
+      expect(await admit({ newSparkPubkey: THIRD })).toBeUndefined();
+      expect(await admit({ oldSparkPubkey: THIRD })).toBeUndefined();
+      expect(await admit({ username: 'bob' })).toBeUndefined();
+      expect(await admit({ now: NOW + CHALLENGE_TTL_MS + 1 })).toBeUndefined();
+      await store.setSessionRefused('acc', true);
+      expect(await admit()).toBeUndefined();
+      await store.setSessionRefused('acc', false);
+      const admitted = await admit();
+      expect(admitted).toEqual({ ...pending('acc'), forwardedAt: NOW + 1 });
+      expect(await store.getPendingRecovery('acc', NOW)).toEqual(admitted);
+      expect(await admit({ now: NOW + 2 })).toBeUndefined();
+    });
+  });
+
+  describe('commitRecovery', () => {
+    it('answers gone without a forwarded pending recovery with that new key', async () => {
+      const store = new InMemoryAuthStore();
+      expect(
+        await store.commitRecovery({ accountId: 'missing', newSparkPubkey: NEW, now: NOW }),
+      ).toBe('gone');
+      await recoverable(store, 'acc', 'ada');
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'gone',
+      );
+      await store.createPasskeyChallenge(challenge('mine', 'acc'));
+      await store.storePendingRecovery({ challengeId: 'mine', pending: pending('acc'), now: NOW });
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'gone',
+      );
+      await store.markRecoveryForwarded({
+        newSparkPubkey: NEW,
+        oldSparkPubkey: OLD,
+        username: 'ada',
+        now: NOW,
+      });
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW }),
+      ).toBe('gone');
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+    });
+
+    it('replaces credentials, sessions, push subscriptions, and the wallet key in one step', async () => {
+      const store = new InMemoryAuthStore();
+      const push = new InMemoryPushStore();
+      store.usePushStore(push);
+      await recoverable(store, 'acc', 'Ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await store.createPasskeyCredential({
+        credentialId: 'login',
+        publicKey: Uint8Array.of(1),
+        signCount: 3,
+        accountId: 'acc',
+        createdAt: 5,
+      });
+      await store.createPasskeyCredential({
+        credentialId: 'seed',
+        publicKey: Uint8Array.of(2),
+        signCount: 0,
+        accountId: 'other',
+        createdAt: 5,
+      });
+      await store.createSession({ token: 'a'.repeat(64), accountId: 'acc', createdAt: NOW });
+      await store.createSession({ token: 'b'.repeat(64), accountId: 'other', createdAt: NOW });
+      const sub = (endpoint: string, accountId: string) => ({
+        endpoint,
+        accountId,
+        p256dh: 'p',
+        auth: 'a',
+        createdAt: new Date(NOW),
+        sessionToken: null,
+      });
+      await push.upsertSubscription(sub('https://push.example/1', 'acc'));
+      await push.upsertSubscription(sub('https://push.example/2', 'acc'));
+      await push.upsertSubscription(sub('https://push.example/3', 'other'));
+      expect(
+        await store.putRecoveryShare({
+          accountId: 'acc',
+          sparkPubkey: OLD,
+          ciphertext: new Uint8Array(40),
+          now: NOW,
+        }),
+      ).toBe('stored');
+      await store.createPasskeyChallenge(challenge('stale', 'acc'));
+      await forwarded(store, 'acc', 'ada');
+      await store.createPasskeyChallenge(challenge('late', 'acc'));
+      const before = await store.getAccount('acc');
+
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 9 }),
+      ).toBe('committed');
+
+      const after = await store.getAccount('acc');
+      expect(after).toEqual({ ...before, sparkPubkey: NEW, walletRequired: true });
+      expect(after?.sparkPubkeyVerifiedAt).toBe(10);
+      expect(after?.username).toBe('Ada');
+      expect((await store.listPasskeyCredentials()).map((c) => c.credentialId).sort()).toEqual([
+        'new-credential',
+        'seed',
+      ]);
+      expect(await store.getPasskeyCredential('new-credential')).toEqual({
+        credentialId: 'new-credential',
+        publicKey: Uint8Array.of(4, 5, 6),
+        signCount: 0,
+        accountId: 'acc',
+        createdAt: NOW + 9,
+      });
+      expect((await store.listSessions()).map((session) => session.accountId)).toEqual(['other']);
+      expect(await push.listByAccount('acc')).toEqual([]);
+      expect(await push.listByAccount('other')).toHaveLength(1);
+      expect(await store.listPreviousWallets('acc')).toEqual([
+        {
+          accountId: 'acc',
+          sparkPubkey: OLD,
+          sparkAddress: encodeSparkAddress(OLD),
+          replacedAt: NOW + 9,
+        },
+      ]);
+      expect((await store.getPasskeyChallenge('late'))?.consumed).toBe(true);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+      expect(await store.getAccountByVerifiedSparkPubkey(NEW)).toEqual(after);
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 10 }),
+      ).toBe('gone');
+    });
+
+    it('commits without a linked push store', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'committed',
+      );
+    });
+
+    it('drops the pending recovery when the account no longer holds the old verified key', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await store.deleteAccount('acc');
+      await recoverable(store, 'acc', 'ada', THIRD);
+      expect(await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW })).toBe(
+        'changed',
+      );
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(THIRD);
+
+      const unverified = new InMemoryAuthStore();
+      await recoverable(unverified, 'acc', 'ada');
+      await forwarded(unverified, 'acc', 'ada');
+      await unverified.deleteAccount('acc');
+      await unverified.createAccount({
+        id: 'acc',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'ada',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'd'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      await unverified.claimSparkPubkey('acc', OLD);
+      expect(
+        await unverified.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW }),
+      ).toBe('changed');
+    });
+
+    it('throws, writing nothing, when another account verified the new key meanwhile', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', NEW);
+      await expect(
+        store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW }),
+      ).rejects.toThrow(/verified wallet key of another account/);
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
+      expect(await store.listPreviousWallets('acc')).toEqual([]);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+    });
+
+    it('throws, writing nothing, when another account took the pending credential id meanwhile', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await recoverable(store, 'other', 'bob', THIRD);
+      await forwarded(store, 'acc', 'ada');
+      const theirs: PasskeyCredential = {
+        credentialId: 'new-credential',
+        publicKey: Uint8Array.of(7, 8, 9),
+        signCount: 3,
+        accountId: 'other',
+        createdAt: NOW + 2,
+      };
+      expect(await store.createPasskeyCredential(theirs)).toBe(true);
+      await expect(
+        store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 3 }),
+      ).rejects.toThrow(/passkey of another account/);
+      expect((await store.getAccount('acc'))?.sparkPubkey).toBe(OLD);
+      expect(await store.listPreviousWallets('acc')).toEqual([]);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeDefined();
+      expect(await store.getPasskeyCredential('new-credential')).toEqual(theirs);
+    });
+  });
+
+  describe('dropPendingRecovery', () => {
+    it('deletes only the account pending recovery with that new key', async () => {
+      const store = new InMemoryAuthStore();
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(
+        false,
+      );
+      await recoverable(store, 'acc', 'ada');
+      await forwarded(store, 'acc', 'ada');
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: THIRD })).toBe(
+        false,
+      );
+      expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(true);
+      expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+    });
+  });
+
+  describe('previous wallets', () => {
+    it('lists newest first, then by key, and drops a wallet together with its share', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada');
+      await store.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: OLD,
+        ciphertext: new Uint8Array(40),
+        now: 1,
+      });
+      await forwarded(store, 'acc', 'ada', OLD, NEW, 'cred-1');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW });
+      await store.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: NEW,
+        ciphertext: new Uint8Array(40),
+        now: 2,
+      });
+      await forwarded(store, 'acc', 'ada', NEW, THIRD, 'cred-2');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW });
+      const fourth = `03${'4'.repeat(64)}`;
+      await forwarded(store, 'acc', 'ada', THIRD, fourth, 'cred-3');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: fourth, now: NOW + 5 });
+      expect((await store.listPreviousWallets('acc')).map((wallet) => wallet.sparkPubkey)).toEqual([
+        THIRD,
+        OLD,
+        NEW,
+      ]);
+      expect(await store.listPreviousWallets('other')).toEqual([]);
+      expect(await store.dropPreviousWallet('acc', fourth)).toBe(false);
+      expect(await store.dropPreviousWallet('acc', OLD)).toBe(true);
+      expect(await store.dropPreviousWallet('acc', OLD)).toBe(false);
+      expect(await store.getPreviousWalletBySparkPubkey(OLD)).toBeUndefined();
+      expect(await store.dropPreviousWallet('acc', NEW)).toBe(true);
+      await forwarded(store, 'acc', 'ada', fourth, OLD, 'cred-4');
+      expect(
+        await store.commitRecovery({ accountId: 'acc', newSparkPubkey: OLD, now: NOW + 6 }),
+      ).toBe('committed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+    });
+
+    it('orders previous wallets of the same commit time by key whatever the commit order', async () => {
+      const store = new InMemoryAuthStore();
+      await recoverable(store, 'acc', 'ada', NEW);
+      await forwarded(store, 'acc', 'ada', NEW, OLD, 'cred-1');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: OLD, now: NOW });
+      await forwarded(store, 'acc', 'ada', OLD, THIRD, 'cred-2');
+      await store.commitRecovery({ accountId: 'acc', newSparkPubkey: THIRD, now: NOW });
+      expect((await store.listPreviousWallets('acc')).map((wallet) => wallet.sparkPubkey)).toEqual([
+        OLD,
+        NEW,
+      ]);
+    });
+
+    it('returns the newest previous wallet of a key, then the larger account id', async () => {
+      const shared = `03${'6'.repeat(64)}`;
+      const build = async (first: [string, number], second: [string, number]) => {
+        const store = new InMemoryAuthStore();
+        for (const [id, at] of [first, second]) {
+          await recoverable(store, id, `user-${id}`, shared);
+          await forwarded(store, id, `user-${id}`, shared, `02${id.repeat(64)}`, `cred-${id}`);
+          await store.commitRecovery({
+            accountId: id,
+            newSparkPubkey: `02${id.repeat(64)}`,
+            now: at,
+          });
+        }
+        return (await store.getPreviousWalletBySparkPubkey(shared))?.accountId;
+      };
+      expect(await build(['a', 5], ['b', 5])).toBe('b');
+      expect(await build(['b', 5], ['a', 5])).toBe('b');
+      expect(await build(['a', 9], ['b', 5])).toBe('a');
+      expect(await build(['b', 5], ['a', 9])).toBe('a');
+      expect(await new InMemoryAuthStore().getPreviousWalletBySparkPubkey(shared)).toBeUndefined();
+    });
+  });
+
+  describe('recovery shares', () => {
+    it('stores, replaces, and reports a share only for the current verified wallet', async () => {
+      const store = new InMemoryAuthStore();
+      const put = (accountId: string, sparkPubkey = OLD) =>
+        store.putRecoveryShare({
+          accountId,
+          sparkPubkey,
+          ciphertext: new Uint8Array(40),
+          now: NOW,
+        });
+      expect(await put('missing')).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('missing')).toBe(false);
+      await recoverable(store, 'acc', 'ada');
+      expect(await put('acc', THIRD)).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+      expect(await put('acc')).toBe('stored');
+      expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(true);
+      expect(await put('acc')).toBe('replaced');
+      await store.createAccount({
+        id: 'claimed',
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        username: 'claimed',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'e'.repeat(64),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+      });
+      expect(await store.hasRecoveryShareForVerifiedWallet('claimed')).toBe(false);
+      await store.claimSparkPubkey('claimed', THIRD);
+      expect(await put('claimed', THIRD)).toBe('changed');
+      expect(await store.hasRecoveryShareForVerifiedWallet('claimed')).toBe(false);
+    });
   });
 });

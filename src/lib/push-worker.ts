@@ -219,6 +219,65 @@ export async function enqueueDebugPush(
   return 1;
 }
 
+/** Operator broadcast text and in-app path of {@link enqueueBroadcastPush}. */
+export interface BroadcastPushMessage {
+  /** Broadcast id: outbox `messageId` of every row and the payload tag. */
+  broadcastId: string;
+  /** Notification title. */
+  title: string;
+  /** Notification body. */
+  body: string;
+  /** Same-site path to open. */
+  url: string;
+}
+
+/**
+ * Enqueue one operator broadcast row per account. Each row carries the
+ * broadcast id as outbox `messageId` and the payload tag `broadcast:<id>`, so
+ * {@link PushStore.countBroadcastOutbox} reports its delivery. The payload uses the debug ping's `zap` type.
+ *
+ * @param store - Push store.
+ * @param accountIds - Recipient account ids (each enqueued once).
+ * @param message - Broadcast id, title, body, and path.
+ * @param nowMs - Enqueue clock.
+ * @returns Number of rows enqueued.
+ * @throws If `enqueue` rejects.
+ */
+export async function enqueueBroadcastPush(
+  store: PushStore,
+  accountIds: readonly string[],
+  message: BroadcastPushMessage,
+  nowMs: number,
+): Promise<number> {
+  const payload: PushPayload = {
+    type: 'zap',
+    title: message.title,
+    body: message.body,
+    url: message.url,
+    tag: `broadcast:${message.broadcastId}`,
+  };
+  const text = JSON.stringify(payload);
+  const createdAt = new Date(nowMs);
+  const unique = [...new Set(accountIds)];
+  for (const accountId of unique) {
+    await store.enqueue({
+      id: crypto.randomUUID(),
+      accountId,
+      type: 'zap',
+      messageId: message.broadcastId,
+      payload: text,
+      status: 'pending',
+      attempts: 0,
+      claimedUntil: null,
+      finishedAt: null,
+      createdAt,
+      deliveredEndpoints: [],
+      skipEndpoints: [],
+    });
+  }
+  return unique.length;
+}
+
 /** Collaborators for one push worker tick. */
 export interface PushWorkerDeps {
   /** Shared push store (same instance as HTTP). */
@@ -245,6 +304,57 @@ async function subscriptionSessionLive(
   }
   const account = await resolveSession(authStore, nowMs, sub.sessionToken);
   return account !== null && account.id === sub.accountId;
+}
+
+/**
+ * Whether one account has a subscription whose session still authenticates
+ * it: whether {@link runPushWorkerTick} would send that account anything.
+ *
+ * @param store - Push store.
+ * @param authStore - Auth store whose sessions the subscriptions are bound to.
+ * @param nowMs - Clock for session expiry.
+ * @param accountId - Account to check.
+ * @returns `true` when at least one of its subscriptions is live.
+ * @throws If a push store or auth store read rejects.
+ */
+export async function accountHasLiveSubscription(
+  store: PushStore,
+  authStore: AuthStore,
+  nowMs: number,
+  accountId: string,
+): Promise<boolean> {
+  for (const sub of await store.listByAccount(accountId)) {
+    if (await subscriptionSessionLive(authStore, nowMs, sub)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Account ids with at least one subscription whose session still
+ * authenticates its account: the accounts {@link runPushWorkerTick} would
+ * send to. Does not delete stale subscriptions; the worker and
+ * {@link sweepPushStore} do.
+ *
+ * @param store - Push store.
+ * @param authStore - Auth store whose sessions the subscriptions are bound to.
+ * @param nowMs - Clock for session expiry.
+ * @returns Distinct account ids.
+ * @throws If a push store or auth store read rejects.
+ */
+export async function listAccountIdsWithLiveSubscriptions(
+  store: PushStore,
+  authStore: AuthStore,
+  nowMs: number,
+): Promise<string[]> {
+  const ids = new Set<string>();
+  for (const sub of await store.listAllSubscriptions()) {
+    if (!ids.has(sub.accountId) && (await subscriptionSessionLive(authStore, nowMs, sub))) {
+      ids.add(sub.accountId);
+    }
+  }
+  return [...ids];
 }
 
 function payloadTag(payload: string): string | undefined {

@@ -8,7 +8,8 @@
 > paths, JSON fields, or status codes**. When a journey has no route in
 > `SPEC.md`, say so and stop.
 
-**Status**: living document. Last revised 2026-09-28.
+**Status**: living document. Last revised 2026-10-29 (securing and
+recovering the account: social recovery). Before that, 2026-09-28.
 
 ---
 
@@ -56,79 +57,123 @@ clears the token; a transient failure does not.
 
 Login is passkey-only. LNURL-auth has been removed.
 
-A recovery phrase is never replaced. `POST /auth/passkey/replace/begin` and
-`/finish` with a valid Bearer return 409
-`{ "error": "A recovery phrase cannot be replaced" }` and delete nothing.
+A recovery phrase is never replaced, except by a social recovery commit
+([`docs/social-recovery.md`](./docs/social-recovery.md)), which replaces the
+account's passkey and wallet key (see
+[Securing and recovering the account](#securing-and-recovering-the-account--shipped)).
+`POST /auth/passkey/replace/begin` and `/finish` with a valid Bearer return
+409 `{ "error": "A recovery phrase cannot be replaced" }` and delete nothing.
 An account whose `walletRequired` is not true can add one seed passkey via
 `POST /auth/passkey/seed/begin` then `/finish`. The login credential stays.
 The session stays. `walletBackupSeenAt` does not decide whether a seed exists.
 `walletRequired` true means a seed passkey exists.
 
 The signed-in view currently lives on `/login` — there is no separate
-`/profile` route yet. It shows a name form, a username form, a Lightning
-Address form, and **Sign out**. Name and Lightning Address are each
-skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
+`/profile` route yet. It shows a name form, a username form, the in-app
+wallet set-up, and **Sign out**. Name and the receiving-wallet step
+(`lightning-address`) are each skippable via `POST /me/setup/skip`. Username cannot skip; the app sets
 the handle with `POST /me/username`. Living-room rules stay required.
 An existing member records that the account can show a recovery phrase via
 `POST /me/wallet-backup-seen` after activating a phrase-capable passkey. That
 is not a confirmation and not a setup step.
 
 `GET /me` `setup` order is name, then username (unskippable), then
-lightning-address, then rules. The recovery phrase is not a setup step
+lightning-address (the receiving wallet), then rules. The recovery phrase is not a setup step
 and does not change `setup` or `missing`. When username is still blank,
 `POST /me/name` auto-assigns `usernameFromDisplayName` if that handle is
 free; a collision or uniqueness race leaves username null and `setup` at
 username.
 
-After name/skip, username, and address/skip,
+After name/skip, username, and wallet/skip,
 the app records living-room rules agreement via `POST /me/rules-agreement`.
 `GET /me` carries `setup` (wizard; skip counts as done for name and
-Lightning Address, not username), `missing` (facts; skip does
-not), `walletRequired`, `walletBackupSeenAt`, and `rulesAgreedAt` (epoch
+the receiving wallet, not username), `missing` (facts; skip does
+not; `lightning-address` stays until the wallet is verified), `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen` (set once by
+`POST /me/wallet-intro-seen`), `hadExternalWallet` (read-only), and `rulesAgreedAt` (epoch
 ms of the first agreement, or `null`).
 
 No email, no password. Losing the passkey (and platform sync) loses the
-account.
+account unless social recovery or the 12 words restore it.
 
 HTTP cited: `/auth/passkey/register/begin`, `/auth/passkey/register/finish`,
 `/auth/passkey/authenticate/begin`, `/auth/passkey/authenticate/finish`,
 `/auth/passkey/replace/begin`, `/auth/passkey/replace/finish`,
 `/auth/passkey/seed/begin`, `/auth/passkey/seed/finish`,
-`/me`, `/me/wallet-backup-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
+`/me`, `/me/wallet-backup-seen`, `/me/wallet-intro-seen`, `/me/setup/skip`, `/me/name`, `/me/username`,
 `/me/rules-agreement`.
+
+### Securing and recovering the account — **Shipped**
+
+Optional, in the settings, for a member with a verified wallet
+([`docs/social-recovery.md`](./docs/social-recovery.md)). A member in the
+grant program is funding-eligible only with it (journeys 4 and 5).
+
+**Mein Konto absichern.** The owner's app splits the 12 words 2-of-3 and
+hands share 1 and share 2 by QR code to two people. Each holder scans it in
+their own signed-in app, which keeps it in that browser under the holder's
+account; no person's share reaches the api. The app then stores share 3 with
+`PUT /me/recovery-share` (`{ sparkPubkey, share }`); the api keeps it
+encrypted and answers the owner JSON with `socialRecoverySetUp: true`. A
+second setup replaces that share. Without the LNURL server the route is not
+mounted (404).
+
+**Recovery.** On a new phone, signed out, the owner scans the two holders'
+QR codes or types the old 12 words, and the app opens the old wallet.
+
+1. `POST /auth/passkey/recovery/begin` with the old wallet key and its signed
+   address lookup. 200 gives WebAuthn creation options for a new passkey on
+   that account, its `accountId` and `username`. 404 means no account or
+   previous wallet has that key; 409 `recovery_done` means the account was
+   already recovered (sign in with the new passkey); 409 `recovery_operator`
+   means the old key no longer holds the name; 503 means the lookup could
+   not be verified yet, and the app tries again after the forward window.
+   403 `app_outdated` and 503 `logins_closed` work as for sign-in.
+2. The browser creates the new passkey; the app derives the new 12 words
+   from it and opens the new wallet.
+3. **Übertragen.** `POST /auth/passkey/recovery/finish` with the attestation,
+   the new wallet key and the old wallet's signature over the recovery
+   message answers `{ "status": "pending" }` and mints no session. The Breez
+   SDK then moves the Lightning address: the old wallet authorizes it and
+   the new wallet's claim goes to `POST /lnurlpay/:pubkey/transfer`, which
+   commits the recovery when the LNURL server accepts it. Until then,
+   `POST /auth/passkey/authenticate/finish` answers 409 `recovery_pending`
+   for the new passkey, and `POST /lnurlpay/:pubkey/recover` lookups settle a
+   claim whose answer was lost.
+4. The app signs in with the new passkey (`POST /auth/passkey/authenticate/begin`
+   and `/finish`), sends `recovery_done` (`POST /me/events`), and moves the
+   old wallet's whole balance to the new wallet. It shows the new 12 words
+   and asks the owner to set up new shares.
+
+After the commit the account has one passkey, no old session or push
+subscription, the new wallet key verified, and the same username and
+Lightning address. A balance that did not move is listed in the settings
+with `GET /me/previous-wallets` (`balanceSats` from the explorer, or `null`;
+information only). **Restguthaben übertragen** opens that wallet with its
+words again and sends the rest; once that wallet reads 0, the owner drops it
+with `DELETE /me/previous-wallets/:sparkPubkey` (204), which also deletes
+its 21.gifts share.
+
+HTTP cited: `/me/recovery-share`, `/auth/passkey/recovery/begin`,
+`/auth/passkey/recovery/finish`, `/lnurlpay/:pubkey/transfer`,
+`/lnurlpay/:pubkey/recover`, `/auth/passkey/authenticate/begin`,
+`/auth/passkey/authenticate/finish`, `/me/events`, `/me/previous-wallets`,
+`/me/previous-wallets/:sparkPubkey`.
 
 ---
 
-## 2. Profile — **Shipped** (address, name) + **Sketch** (photo / story)
+## 2. Profile — **Shipped** (wallet address, name) + **Sketch** (photo / story)
 
 ### Address — **Shipped**
 
-Every account can receive. From the signed-in view the user can link, replace,
-or unlink a LUD-16 Lightning Address:
-
-- `POST /me/lightning-address` — link or replace after a live well-known
-  resolve that requires zap metadata (`allowsNostr` + `nostrPubkey`). Always
-  leaves the address **unverified**. Unreachable or non-zap addresses are
-  rejected and not stored.
-- `DELETE /me/lightning-address` — unlink (also clears the LN skip timestamp;
-  does not clear `username`). After unlink, `setup` is `username` if the
-  handle is blank; `setup` is `lightning-address` when name is done or
-  skipped **and** username is set. The recovery phrase is not a setup
-  step and does not change `setup` or `missing`.
-
-Proof-of-control of the linked Lightning Address is the flag
-`lightningAddressVerified` (not the forum role **Verified**):
-
-1. `POST /me/lightning-address/verification` (no body). The api pays 1 sat, or
-   the provider's `minSendable` when higher, capped at 10 sat, with a LUD-12
-   comment `21gifts <32-hex-nonce>`. The nonce is never returned to the client.
-2. The user types the code from wallet history into
-   `POST /me/lightning-address/verification/confirm`.
-
-Until an invoice payer is injected, start returns **503**
-`{ "error": "Verification payments are not configured" }`. The process still
-boots. Live verification payments do **not** work today. Edit or unlink clears
-any pending verification (`SPEC.md`).
+A member's only receiving address is their in-app wallet, at the
+wallet-backed `<username>@<host of PUBLIC_BASE_URL>`. The app binds the
+wallet key with `PUT /me/wallet`; the LNURL server registration verifies it.
+There is no route to link, change, verify, or remove an external Lightning
+address. A member without a verified wallet cannot receive and cannot post
+(`missing` contains `lightning-address`) until they set one up; reading the
+forum still works. Owner JSON `lightningAddress` is the wallet address or
+`null`, and `lightningAddressVerified` is true exactly when it is set (names
+kept for app compatibility).
 
 ### Identity copy — **Shipped** (name / location / About me / About me photo)
 
@@ -137,15 +182,19 @@ location is stored on the account (`POST /me/location`); empty or whitespace
 after trim stores `null`. Location is public on member and view cards. It is
 not a setup step, not a posting requirement, not a profile forum note, and
 not Nostr `kind:0`. About me is `PUT /me/about` (Bearer `{ text, photo? }`): a
-non-blank name is required (409 otherwise); Lightning Address is not; empty
-text clears the bio (`aboutMe` null; a live note row is kept). Optional
-`photo` uses the same JPEG/PNG/WebP decode as a forum post (`omitted` keeps,
-`null` clears, object sets). When no live note exists, empty text without a
+non-blank name is required (409 otherwise); a verified wallet is not; empty
+text clears the bio (`aboutMe` null; a live note row is kept, and without a
+photo, extra still, or video its text goes back to the name-copy, never
+empty). Empty text without a photo and without a live note is 400 `Write
+something about yourself`. Optional `photo` uses the same JPEG/PNG/WebP
+decode as a forum post (`omitted` keeps, `null` clears, object sets). When no live note exists, empty text without a
 new photo does not create or notify; a photo-only or non-empty write against
-a missing or hidden note creates a live note without LN and notifies after
+a missing or hidden note creates a live note, with or without a verified
+wallet, and notifies after
 the write. Auto name-copy is not a bio (`aboutMe` is `null`); a photo still
-sets `aboutMeHasPhoto`. `POST /me/name` still no-ops the note without LN;
-`POST /me/lightning-address` still creates the name-copy note. Rename does
+sets `aboutMeHasPhoto`. `POST /me/name` still no-ops the note without a
+verified wallet; once the wallet is verified the worker backfill creates the
+name-copy note. Rename does
 not create a second note. Other members read live identity plus `aboutMe`
 and `aboutMeHasPhoto` via `GET /members/:accountId` (Bearer; rules required).
 Kind:0 `picture` stays the brand icon. **Do not invent** `POST /me/profile`.
@@ -153,8 +202,9 @@ Kind:0 `picture` stays the brand icon. **Do not invent** `POST /me/profile`.
 ### View-key link — **Shipped**
 
 The owner can copy a view-key link from `viewKey` on `GET /me`. The URL is
-`GET /view/:viewKey`. Opening that URL shows a read-only public profile card.
-It cannot write and cannot mint a session. Do not invent extra paths.
+`GET /view/:viewKey`. Opening that URL shows the same public profile as the
+member card, including the post, shop, credit, and reply lists. It cannot
+write and cannot mint a session. The moderator trust graph stays off this URL.
 
 ---
 
@@ -162,13 +212,16 @@ It cannot write and cannot mint a session. Do not invent extra paths.
 
 Guest / one-off giving: the donor clicks **Donate** on a receiver and pays
 through browser LNURL-pay (resolve the Lightning Address → invoice → wallet
-pays). The api is **not** in the payment path. This works without an account
+pays). For a member's wallet address the api forwards the LNURL-pay metadata
+and invoice callback to the self-hosted LNURL server, so it sees the amount and
+the invoice, but it never pays the invoice or holds the funds; an address on
+any other domain keeps its provider's callback. This works without an account
 (CONCEPT Donations).
 
 Public `GET /lightning-address` now resolves and caches LUD-16 metadata
 (callback, min/max sendable, optional commentAllowed). There is still no
-Donate button; for this guest path the api still does not fetch or pay the
-gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
+Donate button; for this guest path the api at most forwards a member wallet's
+callback and does not pay the gift invoice (spend-worker invoice fetch is §4 / `POST /invoices`).
 
 There is no campaign feed and no Donate button in the app today. Do not invent
 `/feed` or `/campaigns` paths.
@@ -193,7 +246,7 @@ worker holds lightning.space LNDHub credentials and calls:
 
 1. `POST /invoices` — this api fetches the BOLT11 from the recipient via LNURL-pay
 2. LNDHub `payinvoice` (spend, not this api)
-3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts daily`.
+3. `POST /invoices/proof` — preimage (`sha256` = payment hash); the api records the gift for `GET /gifts/stats` and `GET /gifts?day=`. After recording the gift, when the invoice has `messageId` the api inserts a platform-account gift-reply under a top-level post first, then `addSats`. This path does not notify (no in-app rows, no Web Push). When `messageId` is already a reply, it hides a deterministic spend marker and `addSats`s that reply (no nested gift-reply). When the invoice has `groupMessageId`, the api also inserts a platform-account conversation message in the closed Moderators group (text + paid sats, name `21.gifts`) after the triggering group message, at payment time; a missing or mismatched group reference is ignored and does not block the 200. Recorded description is `21gifts moderator` when `groupMessageId` is stored, else `21gifts welcome` when the comment is exactly `Welcome`, else `21gifts daily`.
 
 Recurring **USD** gifts are paid by the external spend worker **when the
 recipient posts a top-level note with a photo or video**, not on a daily timer, and only when
@@ -207,6 +260,10 @@ media (else 403 `Forum post required`); omitted
 is the spend lookup and returns 200 `{ eligible, status }` (`status` is
 `effectiveStatus`; unknown/`basis` are `{ eligible: false, status: "none" }`).
 `POST /invoices/proof` does not check the grant.
+Every spend lookup and `POST /invoices` match `address` only as a member's
+wallet-backed `<username>@<host of PUBLIC_BASE_URL>` (case-insensitive,
+verified wallet); any other domain is the not-found answer, and the invoice
+is fetched from the LNURL server internally.
 Recurring donor UI is still a sketch. **Do not invent** `/me/donor`,
 `/me/recurring`, or scheduler paths. HTTP that exists today is the
 spend-worker invoice surface in `SPEC.md`.
@@ -217,22 +274,27 @@ spend-worker invoice surface in `SPEC.md`.
 
 Public comment / encouragement is a v1 surface. The composer POSTs
 `{ text }` and/or `{ photo: { contentType, data } }` to `POST /messages`
-(requires rules + name + username + Lightning Address — missing requirements are
+(requires rules + name + username + a verified in-app wallet — missing requirements are
 **409** `missing_requirements`);
 a **new top-level** persist pings spend (`POST {SPEND_URL}/ping` with
-`{ address, messageId }` and Bearer `SPEND_API_TOKEN`) only when the author
+`{ address, messageId }`, `address` being the author's wallet address, and Bearer `SPEND_API_TOKEN`) only when the author
 is funding-eligible today and the new row has media (`hasPhoto` /
 `hasVideo` / `photoCount > 0`); otherwise log `spend.ping.skipped` /
 `not_eligible` or `no_media` and still 200; when `role === 'verified'` and any live top-level photo or video exists, including About me, the api also pings `{ address, messageId, kind: "welcome" }`
 for the newest live top-level photo or video, including an About-me note,
 independent of `eligibleToday` (the new row itself need not have media;
-Spend pays once per Lightning Address; this API may ping again; becoming
-verified and saving About me while verified also welcome-ping; boot and a
-15-minute timer welcome-ping every verified account that already has a photo or video post;
+the welcome gift is once per account: an account that already has a
+platform `Welcome` reply under one of its notes, a recorded `welcome` gift paid to its legacy
+external address, or a recorded `welcome` gift with description `21gifts welcome`
+under its username at or after its wallet verification, is not pinged again; becoming
+verified and saving About me while verified also welcome-ping; while an operator has turned
+the welcome sweep on (`PUT /debug/welcome-sweep`; it starts off on every boot, so the run at
+boot pings nobody), a 15-minute timer welcome-pings every verified account that already has a
+photo or video post;
 replies and any role other than `verified` do not welcome-ping); replies and media replay do
 not ping; unset/blank env skips the ping and still returns 200;
 the public thread is listed via `GET /messages` (requires rules; newest first, optional `hashtag` query (name without `#`; token filter on `text`), name
-snapshotted at post, `sats`, `payable`, `hasPhoto`, and live author `role`
+snapshotted at post, `sats`, `payable`, `authorCanReceive`, `hasPhoto`, and live author `role`
 — never photo bytes). Bytes are public `GET /messages/:id/photo` (Nostr `imeta`). Staff hide is a public-API filter **and** a best-effort NIP-09 (`kind: 5`, signed with the note author's custodial nsec) on the durability relay plus the public relay list, plus a best-effort Cloudflare purge of public photo/video URLs. Unsigned/public GET of a hidden row stays 404. A founder/moderator session may GET the hidden row (and photo/video) so the app can show who hid it and when. Hiding a note also retracts in-app notifications whose parent or reply is that note or a direct child. `GET /notifications` drops remaining rows whose parent or reply message is missing or hidden. Operator `GET /debug/messages` (Bearer `DEBUG_TOKEN`) still lists and fetches soft-hidden forum rows and their photo bytes. Restore does not undelete Nostr. The shipped UI
 is a messenger-group thread: oldest notes at the top, newest at the bottom,
 composer under the newest note. The welcome-forum living-room laws hint is
@@ -244,10 +306,15 @@ validated kind:9735 is indexed, a payer gift-reply is inserted only when the
 paid row is top-level (`parentId` null) and is not the official platform
 profile note. A zap on a signed reply credits that
 reply and does not nest a gift-reply. Gift-only (empty text) replies are not published to Nostr. Unpaid
-posts and replies from `basis` (including the parent author) are **403** until
+replies on someone else's note, and text-only top-level posts after the first, from `basis` are **403** until
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
-unpaid-write exempt. A member/invoice zap on that platform note with a comment becomes the
+unpaid-write exempt. A text reply on the member's own note is free for every
+role (`POST /messages` with `inReplyTo`, still behind the post limiter and the
+Sunday rule), because a wallet cannot pay itself; a paid reply there is refused
+with 400 (attempt `self_reply`). A member's first top-level post is free: while
+`GET /messages/compose-target` reports `firstPostFree: true`, the app posts
+directly with `POST /messages` and pays nothing. A member/invoice zap on that platform note with a comment becomes the
 payer’s top-level post (`sats` 0). An external zap on that same note still
 inserts a gift-reply under it. The worker always queries that profile
 note’s event id, even after the note ages out of `listLatest`. A comment `inReplyTo:<uuid>\n<body>` becomes
@@ -404,12 +471,14 @@ notification unread plus listed inbox unread.
 
 The worker sends when VAPID is configured. On outbox retry it does not re-send
 an endpoint that already succeeded for that outbox row. Open focused tabs skip
-a second banner (service worker). Owners set one of three levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = a reply or zap on the recipient's own note, or an @username mark (`forum_mention`) for that recipient (a staff or platform actor does not satisfy mentions)). Filter applies to in-app writes, Web Push, and `GET /notifications` (list + unreadCount). A marked account is not also sent the post or reply notification for that same note. The list shows the mention only when that `forum_mention` is inside the same newest 1000 rows; a generic row whose matching mention is outside that scan stays.
+a second banner (service worker). Owners set one of four levels via POST /me/notification-level (`all` default = current behaviour; `active` = related top-level post sats>0, zaps also when amountSats>0; `mentions` = a reply or zap on the recipient's own note, or an @username mark (`forum_mention`) for that recipient (a staff or platform actor does not satisfy mentions); `none` = none of that living-room stream, including the dedicated @username channel). Filter applies to in-app writes, Web Push, and `GET /notifications` (list + unreadCount). A marked account is not also sent the post or reply notification for that same note. Level none receives neither the stream nor the mention channel. The list shows the mention only when that `forum_mention` is inside the same newest 1000 rows; a generic row whose matching mention is outside that scan stays.
 
 Opening a forum note (explicit expand, translate, or the message page) or opening Notifications stamps the matching unread in-app rows on the server. `POST /notifications/read-by-message` stamps unread `forum_post`, `forum_reply`, `forum_mention`, and `zap` whose parent or reply id is that note and returns `{ ok: true, tags }`. A fully shown note uses `POST /notifications/read-visible`, which stamps only unread `forum_post`, `forum_reply`, and `forum_mention` whose `replyId` is that note; expand, translate, and open still use `POST /notifications/read-by-message`. `POST /notifications/read-all` returns the same shape, including `moderator_appointed` and excluding `moderator_proposal`. A freshly stamped `POST /notifications/:id/read` still returns the public notification and enqueues that row's tag; an already-read notification, including one whose stamp equals the route clock, does not enqueue. Those tags are a dismiss push to the account's other subscriptions; the calling endpoint is skipped only when it belongs to the account. `moderator_proposal` stays unread and is not dismissed. `conversation:` pushes are not closed by dismiss.
 
+An operator broadcast (`POST /debug/push-broadcast`) queues one push per account with a live subscription, or per listed username, through the same outbox and worker; level `none` is skipped. `GET /debug/push-broadcast/:id` reports how many were delivered, dropped, failed, or are still pending.
+
 HTTP cited: `/push/vapid-public`, `/me/push-subscriptions`, `/me/notification-level`, `/debug/push-ping`,
-`/notifications`, `/notifications/read-by-message`, `/notifications/read-visible`, `/notifications/read-all`, `/notifications/:id/read`.
+`/debug/push-broadcast`, `/debug/push-broadcast/:id`, `/notifications`, `/notifications/read-by-message`, `/notifications/read-visible`, `/notifications/read-all`, `/notifications/:id/read`.
 
 ---
 

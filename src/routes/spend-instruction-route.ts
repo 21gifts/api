@@ -1,19 +1,22 @@
 /**
- * Spend-worker daily instruction: collect passkey, post, media, funding,
- * welcome-paid, and roster facts, then return the daily pay-or-skip decision.
- * The api does not pay. Nothing is logged.
+ * Spend-worker daily instruction: collect passkey, post, media, funding (grant
+ * and recovery share), welcome-paid, and roster facts, then return the daily
+ * pay-or-skip decision. The api does not pay. Nothing is logged.
  */
 
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { DailyRosterRequestError, DAILY_ROSTER_UNAVAILABLE } from '@/lib/daily-roster';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
+import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   decideCliDailyInstruction,
@@ -38,9 +41,18 @@ export interface SpendInstructionRouteDeps {
   /** `SPEND_API_TOKEN` (blank/undefined → 503). */
   spendApiToken: string | undefined;
   /**
-   * Auth store for Lightning Address → account and passkey lookup.
+   * Auth store for receiving address → account (by username), passkey, and
+   * recovery share lookup.
    */
-  authStore: Pick<AuthStore, 'getAccountByLightningAddress' | 'accountHasPasskey'>;
+  authStore: Pick<
+    AuthStore,
+    'getAccountByUsername' | 'accountHasPasskey' | 'hasRecoveryShareForVerifiedWallet'
+  >;
+  /**
+   * LNURL server config. A member is looked up by their wallet-backed
+   * `<username>@<host of PUBLIC_BASE_URL>`; omitted → no member is found.
+   */
+  lnurlServer?: LnurlServerConfig;
   /**
    * Forum store for live top-level post, media, and the newest payable note id.
    */
@@ -120,7 +132,8 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
     }
 
     const nowMs = deps.now();
-    const account = await deps.authStore.getAccountByLightningAddress(address);
+    const account = (await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer))
+      ?.account;
     let hasPasskey = false;
     let hasPosted = false;
     let hasMedia = false;
@@ -138,9 +151,14 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
         messageId = newestMedia === undefined ? null : newestMedia.id;
       }
       if (account.role !== 'basis') {
-        const grant = await deps.fundingStore.getByAccountId(account.id);
-        eligible = eligibleToday(account.role, grant, nowMs);
-        grantStatus = effectiveStatus(grant, nowMs);
+        const payout = await loadPayoutEligibility(
+          deps.fundingStore,
+          deps.authStore,
+          account,
+          nowMs,
+        );
+        eligible = payout.eligible;
+        grantStatus = effectiveStatus(payout.grant, nowMs);
       }
     }
 
@@ -174,6 +192,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
 
     const decision = decideCliDailyInstruction({
       address,
+      ...(account === undefined ? {} : { accountId: account.id }),
       hasPasskey,
       hasPosted,
       hasMedia,

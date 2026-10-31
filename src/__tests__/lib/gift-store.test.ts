@@ -34,6 +34,14 @@ describe('InMemoryGiftStore', () => {
 
   it('lists nothing when constructed empty', async () => {
     expect(await new InMemoryGiftStore().listOutbound()).toEqual([]);
+    expect(await new InMemoryGiftStore().listLegacyWelcomeAccountIds()).toEqual([]);
+  });
+
+  it('returns a copy of the seeded legacy welcome accounts', async () => {
+    const seed = ['acc-a'];
+    const listed = await new InMemoryGiftStore([], seed).listLegacyWelcomeAccountIds();
+    expect(listed).toEqual(['acc-a']);
+    expect(listed).not.toBe(seed);
   });
 
   it('dumps stored gift fields newest-first', async () => {
@@ -44,17 +52,38 @@ describe('InMemoryGiftStore', () => {
         direction: 'outbound',
         recipientWosUser: 'b',
         paidAt: EARLY.paidAt.toISOString(),
+        description: null,
       }),
     );
+  });
+
+  it('dumps the stored description when the row carries it', async () => {
+    const welcome = { ...EARLY, kind: 'welcome' as const, description: '21gifts welcome' };
+    const [listed] = await new InMemoryGiftStore([welcome]).listDebug(10);
+    expect(listed?.description).toBe('21gifts welcome');
+    const [queried] = await new QueryGiftStore(async () => [welcome]).listDebug(10);
+    expect(queried?.description).toBe('21gifts welcome');
   });
 });
 
 describe('QueryGiftStore', () => {
+  it('runs the legacy welcome query, or lists nothing without one', async () => {
+    expect(await new QueryGiftStore(async () => []).listLegacyWelcomeAccountIds()).toEqual([]);
+    const store = new QueryGiftStore(
+      async () => [],
+      undefined,
+      async () => ['acc-a'],
+    );
+    expect(await store.listLegacyWelcomeAccountIds()).toEqual(['acc-a']);
+  });
+
   it('returns the injected query result', async () => {
     const store = new QueryGiftStore(async () => [LATE]);
     expect(await store.listOutbound()).toEqual([LATE]);
     const dumped = await store.listDebug(10);
-    expect(dumped[0]).toEqual(expect.objectContaining({ amountSats: 1, direction: 'outbound' }));
+    expect(dumped[0]).toEqual(
+      expect.objectContaining({ amountSats: 1, direction: 'outbound', description: null }),
+    );
   });
 
   it('uses the injected full-column debug query', async () => {
@@ -91,31 +120,17 @@ describe('QueryGiftStore', () => {
 });
 
 describe('migrateGiftSchema fiat backfill', () => {
-  function sqlFor(
-    candidates: unknown[],
-    rates: unknown[],
-    siblings: unknown[] = [],
-  ): SqlClient & {
-    executes: { text: string; params: readonly unknown[] }[];
-  } {
+  it('does not update fiat_usd, fiat_chf, fiat_eur, or fiat_php', async () => {
     const executes: { text: string; params: readonly unknown[] }[] = [];
-    const sql: SqlClient & { executes: { text: string; params: readonly unknown[] }[] } = {
-      executes,
+    const sql: SqlClient = {
       query: async <T>(text: string): Promise<T[]> => {
         if (text.includes('btc_usd_daily')) {
-          return rates as T[];
-        }
-        if (text.includes('kind IS NULL') && text.includes('LIMIT 1')) {
-          return [] as T[];
-        }
-        if (text.includes('pg_constraint') || text.includes('gift_kind_check')) {
-          return [] as T[];
-        }
-        if (text.includes('paid_at >=') && text.includes('fiat_usd IS NOT NULL')) {
-          return siblings as T[];
-        }
-        if (text.includes('fiat_usd IS NULL')) {
-          return candidates as T[];
+          return [
+            { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
+            { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
+            { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
+            { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
+          ] as T[];
         }
         return [] as T[];
       },
@@ -123,216 +138,17 @@ describe('migrateGiftSchema fiat backfill', () => {
         executes.push({ text, params });
       },
     };
-    return sql;
-  }
-
-  function updates(sql: { executes: { text: string; params: readonly unknown[] }[] }): {
-    text: string;
-    params: readonly unknown[];
-  }[] {
-    return sql.executes.filter(
-      (row) =>
-        row.text.includes('UPDATE') &&
-        (row.text.includes('fiat_usd') || row.text.includes('SET fiat')),
-    );
-  }
-
-  it('writes stored fiat for a priced gift and skips a bad timestamp and a day without a rate', async () => {
-    const sql = sqlFor(
-      [
-        { id: 1, paid_at: new Date('2026-06-01T12:00:00.000Z'), amount_sats: 1000 },
-        { id: 2, paid_at: 'not-a-date', amount_sats: 1000 },
-        { id: 3, paid_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 },
-      ],
-      [
-        { day: '2026-06-01', usd_per_btc: null, quote: 'CHF', rate: '0.80' },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: null },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
-        { day: '2026-06-01', usd_per_btc: '100000', quote: 'JPY', rate: '150' },
-      ],
-    );
     await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([
-      expect.objectContaining({
-        params: [1, '1.00', '0.80', null, '50.00'],
-      }),
-    ]);
-  });
-
-  it('does not update when every paid_at is invalid', async () => {
-    const sql = sqlFor([{ id: 9, paid_at: 'nope', amount_sats: 1000 }], []);
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([]);
-  });
-
-  it('does not update when the day has no BTC rate', async () => {
-    const sql = sqlFor(
-      [{ id: 4, paid_at: new Date('2026-06-01T00:00:00.000Z'), amount_sats: 1000 }],
-      [],
-    );
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([]);
-  });
-
-  it('does not price a missing USD amount from an earlier bitcoin rate', async () => {
-    const sql = sqlFor(
-      [{ id: 7, paid_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 }],
-      [{ day: '2026-06-30', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' }],
-    );
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([]);
-  });
-
-  it('leaves a legacy row alone when its own day has no bitcoin price', async () => {
-    const sql = sqlFor(
-      [{ id: 12, paid_at: '2026-06-30T00:00:00.000Z', amount_sats: 1000 }],
-      [{ day: '2026-06-30', usd_per_btc: null, quote: 'CHF', rate: '0.80' }],
-    );
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([]);
-  });
-
-  it('fills null crosses from the previous published day without changing USD', async () => {
-    const rates = [
-      { day: '2026-10-07', usd_per_btc: null, quote: 'CHF', rate: '0.80' },
-      { day: '2026-10-07', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
-      { day: '2026-10-07', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
-    ];
-    const sql = sqlFor(
-      [
-        {
-          id: 8,
-          paid_at: '2026-10-08T00:08:39.982Z',
-          amount_sats: 1201,
-          fiat_usd: '1.00',
-          fiat_chf: null,
-          fiat_eur: null,
-          fiat_php: null,
-        },
-        {
-          id: 9,
-          paid_at: '2026-10-08T01:00:00.000Z',
-          amount_sats: 1201,
-          fiat_usd: '1.00',
-          fiat_chf: '9.00',
-          fiat_eur: null,
-          fiat_php: null,
-        },
-        {
-          id: 10,
-          paid_at: '2026-09-01T00:00:00.000Z',
-          amount_sats: 1201,
-          fiat_usd: '1.00',
-          fiat_chf: null,
-          fiat_eur: null,
-          fiat_php: null,
-        },
-      ],
-      rates,
-    );
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([
-      expect.objectContaining({
-        params: [8, '0.80', '0.90', '50.00'],
-      }),
-      expect.objectContaining({
-        params: [9, '0.80', '0.90', '50.00'],
-      }),
-    ]);
-    expect(updates(sql).every((row) => row.text.includes('fiat_usd IS NOT NULL'))).toBe(true);
-  });
-
-  it('prefers the largest same-day gift over the rate book and ignores another day', async () => {
-    const sql = sqlFor(
-      [
-        {
-          id: 8,
-          paid_at: '2026-10-08T00:08:39.982Z',
-          amount_sats: 1201,
-          fiat_usd: '1.00',
-          fiat_chf: null,
-          fiat_eur: null,
-          fiat_php: null,
-        },
-      ],
-      [
-        { day: '2026-10-07', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
-        { day: '2026-10-07', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
-        { day: '2026-10-07', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
-      ],
-      [
-        {
-          paid_at: 'not-a-date',
-          fiat_usd: '1.00',
-          fiat_chf: '1.00',
-          fiat_eur: '1.00',
-          fiat_php: '1.00',
-        },
-        {
-          paid_at: '2026-10-08T00:01:00.000Z',
-          fiat_usd: null,
-          fiat_chf: '1.00',
-          fiat_eur: '1.00',
-          fiat_php: '1.00',
-        },
-        {
-          paid_at: '2026-10-08T00:02:00.000Z',
-          fiat_usd: '0.50',
-          fiat_chf: '0.40',
-          fiat_eur: null,
-          fiat_php: null,
-        },
-        {
-          paid_at: '2026-10-08T00:10:00.000Z',
-          fiat_usd: '1.00',
-          fiat_chf: '0.70',
-          fiat_eur: '0.80',
-          fiat_php: '60.00',
-        },
-        {
-          paid_at: '2026-10-08T00:16:05.934Z',
-          fiat_usd: '3.00',
-          fiat_chf: '2.50',
-          fiat_eur: '2.68',
-          fiat_php: '188.43',
-        },
-        {
-          paid_at: '2026-10-07T12:00:00.000Z',
-          fiat_usd: '10.00',
-          fiat_chf: '9.00',
-          fiat_eur: '9.00',
-          fiat_php: '1000.00',
-        },
-      ],
-    );
-    await migrateGiftSchema(sql);
-    expect(updates(sql)).toEqual([
-      expect.objectContaining({
-        params: [8, '0.83', '0.89', '62.81'],
-      }),
-    ]);
-    expect(updates(sql)[0]?.text.includes('fiat_usd =')).toBe(false);
-  });
-
-  it('skips a stored amount that cannot be priced', async () => {
-    const sql = sqlFor(
-      [
-        {
-          id: 11,
-          paid_at: '2026-06-01T00:00:00.000Z',
-          amount_sats: 1000,
-          fiat_usd: 'nope',
-          fiat_chf: null,
-          fiat_eur: null,
-          fiat_php: null,
-        },
-      ],
-      [{ day: '2026-06-01', usd_per_btc: '0', quote: 'CHF', rate: '0.80' }],
-    );
-    await expect(migrateGiftSchema(sql)).resolves.toBeUndefined();
-    expect(updates(sql)).toEqual([]);
+    expect(
+      executes.filter(
+        (row) =>
+          row.text.includes('UPDATE') &&
+          (row.text.includes('fiat_usd') ||
+            row.text.includes('fiat_chf') ||
+            row.text.includes('fiat_eur') ||
+            row.text.includes('fiat_php')),
+      ),
+    ).toEqual([]);
   });
 });
 

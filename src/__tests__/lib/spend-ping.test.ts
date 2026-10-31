@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { DailyRosterDocument } from '@/lib/daily-roster';
+import type { Account } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import {
   DAILY_ROSTER_DEFAULT_AMOUNT_USD,
   InMemoryDailyRosterStore,
@@ -7,12 +8,51 @@ import {
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
+import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
+import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
-const ADDRESS = 'ada@walletofsatoshi.com';
+const ADDRESS = 'ada@example.com';
 const MESSAGE_ID = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
 const TOKEN = 'spend-secret-token';
 const SPEND_URL = 'https://spend.example';
+const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
+
+const LNURL: LnurlServerConfig = {
+  baseUrl: 'http://lnurl.test',
+  publicBaseUrl: 'https://example.com',
+  host: 'example.com',
+};
+
+/** Account id of each verified-wallet username in these tests. */
+const ACCOUNT_IDS: Record<string, string> = {
+  ada: '11111111-1111-4111-8111-111111111111',
+  other: '22222222-2222-4222-8222-222222222222',
+};
+
+/** Accounts that receive on `<username>@example.com`. */
+const LOOKUP = {
+  accounts: {
+    getAccountByUsername: async (username: string): Promise<Account | undefined> => {
+      const id = ACCOUNT_IDS[username];
+      return id === undefined
+        ? undefined
+        : ({ id, username, sparkPubkey: WALLET_PUBKEY, sparkPubkeyVerifiedAt: 1 } as Account);
+    },
+  },
+  lnurlServer: LNURL,
+};
+
+/** Roster rows named by the address their account receives on. */
+type AddressRows = { address: string; amountUsd: number }[];
+
+function accountRows(rows: AddressRows = []): { accountId: string; amountUsd: number }[] {
+  return rows.map((row) => ({
+    accountId: ACCOUNT_IDS[row.address.toLowerCase().split('@')[0] ?? ''] ?? row.address,
+    amountUsd: row.amountUsd,
+  }));
+}
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -27,14 +67,22 @@ function abortError(): Error {
   return err;
 }
 
-function writtenStore(partial: Partial<DailyRosterDocument> = {}): InMemoryDailyRosterStore {
+function writtenStore(
+  partial: {
+    comment?: string;
+    paymentsEnabled?: boolean;
+    moderatorPaymentsEnabled?: boolean;
+    recipients?: AddressRows;
+    moderators?: AddressRows;
+  } = {},
+): InMemoryDailyRosterStore {
   return new InMemoryDailyRosterStore({
     comment: partial.comment ?? '',
     paymentsEnabled: partial.paymentsEnabled ?? true,
     moderatorPaymentsEnabled: partial.moderatorPaymentsEnabled ?? true,
     defaultAmountUsd: DAILY_ROSTER_DEFAULT_AMOUNT_USD,
-    recipients: partial.recipients ?? [],
-    moderators: partial.moderators ?? [],
+    recipients: accountRows(partial.recipients),
+    moderators: accountRows(partial.moderators),
   });
 }
 
@@ -101,7 +149,10 @@ describe('resolveSpendPing', () => {
     const ping = resolveSpendPing(
       { SPEND_URL: ' https://spend.example/// ', SPEND_API_TOKEN: ` ${TOKEN} ` },
       recording,
-      { rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }) },
+      {
+        ...LOOKUP,
+        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+      },
     );
     expect(ping).toBeInstanceOf(HttpSpendPing);
     await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
@@ -111,6 +162,7 @@ describe('resolveSpendPing', () => {
   it('accepts an options object that omits the gift ledger and the clock', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -125,6 +177,7 @@ describe('resolveSpendPing', () => {
   it('uses the current clock when the gift ledger is set and now is omitted', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -138,6 +191,7 @@ describe('resolveSpendPing', () => {
 
   it('forwards the gift ledger and the clock into the daily decision', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
     const nowMs = Date.parse('2026-09-20T12:00:00.000Z');
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
     const welcomeToday: GiftRow = {
@@ -147,6 +201,7 @@ describe('resolveSpendPing', () => {
       kind: 'welcome',
     };
     const ping = resolveSpendPing({ SPEND_URL, SPEND_API_TOKEN: TOKEN }, fetchImpl, {
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -160,10 +215,11 @@ describe('resolveSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
+    setAddressRefKey(null);
     warn.mockRestore();
   });
 });
@@ -172,12 +228,42 @@ describe('HttpSpendPing', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
+    setAddressRefKey(TOKEN);
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    setDiagnosticSink(null);
+    setAddressRefKey(null);
   });
+
+  it.each([
+    ['spend.ping.ok', 200, true],
+    ['spend.ping.failed', 500, true],
+    ['spend.ping.skipped', 200, false],
+  ])(
+    'prints %s with addressRef and no address, and the sink keeps the address',
+    async (event, pingStatus, listed) => {
+      const sink = vi.fn();
+      setDiagnosticSink(sink);
+      await new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl: pingFetch({ pingStatus }),
+        ...LOOKUP,
+        rosterStore: writtenStore(
+          listed ? { recipients: [{ address: ADDRESS, amountUsd: 2 }] } : {},
+        ),
+      }).ping(ADDRESS, MESSAGE_ID);
+      const lines = parsedEvents(warn).filter((e) => e['event'] === event);
+      expect(lines).toHaveLength(1);
+      expect(lines[0]?.['addressRef']).toBe(ADDRESS_REF);
+      expect('address' in (lines[0] ?? {})).toBe(false);
+      expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
+      expect(sink).toHaveBeenCalledWith(event, expect.objectContaining({ address: ADDRESS }));
+    },
+  );
 
   it('does not POST daily when the roster is undecided and logs spend.ping.skipped', async () => {
     const fetchImpl = vi.fn<FetchFn>(pingFetch());
@@ -185,6 +271,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -192,7 +279,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -206,6 +293,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok')).toBe(true);
@@ -218,6 +306,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(timeoutSpy).toHaveBeenCalledWith(5000);
@@ -225,6 +314,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
       timeoutMs: 1_000,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
@@ -239,6 +329,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -246,7 +337,7 @@ describe('HttpSpendPing', () => {
     expect(String(fetchImpl.mock.calls[0]?.[0])).toBe(`${SPEND_URL}/ping`);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -259,6 +350,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -273,6 +365,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore(),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted'),
     ).resolves.toBeUndefined();
@@ -285,15 +378,18 @@ describe('HttpSpendPing', () => {
     const rosterStore = writtenStore();
     vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('network down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
-        ADDRESS,
-        MESSAGE_ID,
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -304,15 +400,18 @@ describe('HttpSpendPing', () => {
     const rosterStore = new InMemoryDailyRosterStore();
     vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).ping(
-        ADDRESS,
-        MESSAGE_ID,
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).ping(ADDRESS, MESSAGE_ID),
     ).resolves.toBeUndefined();
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
@@ -324,6 +423,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -331,7 +431,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'not_listed',
       ),
     ).toBe(true);
@@ -349,6 +449,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(seenInit?.method).toBe('POST');
@@ -364,7 +465,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -374,6 +477,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -381,7 +485,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -394,6 +498,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -401,7 +506,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -413,6 +518,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
         moderatorPaymentsEnabled: false,
@@ -423,7 +529,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -435,6 +541,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         moderators: [{ address: 'other@example.com', amountUsd: 3 }],
       }),
@@ -444,7 +551,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'not_listed',
       ),
     ).toBe(true);
@@ -461,9 +568,10 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
-        recipients: [{ address: 'Ada@WalletOfSatoshi.com', amountUsd: 2 }],
+        recipients: [{ address: 'Ada@Example.com', amountUsd: 2 }],
       }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(seenInit?.body).toBe(
@@ -475,7 +583,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -491,6 +601,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         moderators: [{ address: ADDRESS, amountUsd: 3 }],
@@ -506,7 +617,9 @@ describe('HttpSpendPing', () => {
       }),
     );
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -516,6 +629,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID);
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -523,7 +637,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -542,6 +656,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -555,7 +670,9 @@ describe('HttpSpendPing', () => {
     );
     expect(String(seenInit?.body)).not.toContain('"kind"');
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -572,6 +689,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks' }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'trial');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -592,6 +710,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({ comment: 'thanks' }),
       }).ping(ADDRESS, MESSAGE_ID, 'daily', grantStatus);
       expect(fetchImpl).not.toHaveBeenCalled();
@@ -599,7 +718,7 @@ describe('HttpSpendPing', () => {
         parsedEvents(warn).some(
           (e) =>
             e['event'] === 'spend.ping.skipped' &&
-            e['address'] === ADDRESS &&
+            e['addressRef'] === ADDRESS_REF &&
             e['reason'] === 'not_listed',
         ),
       ).toBe(true);
@@ -620,6 +739,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -643,6 +763,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ comment: 'thanks', paymentsEnabled: false }),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).not.toHaveBeenCalled();
@@ -650,7 +771,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -669,6 +790,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -681,7 +803,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
@@ -707,6 +829,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -738,6 +861,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -748,7 +872,7 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -771,6 +895,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore(),
       gifts,
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
@@ -809,6 +934,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -830,7 +956,9 @@ describe('HttpSpendPing', () => {
     expect(getSpy).not.toHaveBeenCalled();
     expect(importSpy).not.toHaveBeenCalled();
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
   });
@@ -856,6 +984,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -865,7 +994,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'undecided',
       ),
     ).toBe(true);
@@ -890,6 +1019,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore,
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(2);
@@ -912,13 +1042,14 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(String(fetchImpl.mock.calls[0]?.[0])).toMatch(/\/daily-roster$/u);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -929,12 +1060,13 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -947,12 +1079,13 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -965,6 +1098,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: new InMemoryDailyRosterStore(),
     }).ping(ADDRESS, MESSAGE_ID, 'welcome');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -973,7 +1107,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'payments_disabled',
       ),
     ).toBe(true);
@@ -985,6 +1119,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
     }).ping(ADDRESS, MESSAGE_ID, 'moderator');
     expect(fetchImpl).toHaveBeenCalledTimes(1);
@@ -1008,6 +1143,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1028,9 +1164,40 @@ describe('HttpSpendPing', () => {
     );
     expect(String(seenInit?.body)).not.toContain('2026-09-20');
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
     expect(JSON.stringify(parsedEvents(warn))).not.toContain(TOKEN);
+  });
+
+  it('pingOnDay books a moderator stipend on the argument day without the welcome check', async () => {
+    let seenInit: RequestInit | undefined;
+    const fetchImpl = vi.fn<FetchFn>(async (_input, init) => {
+      seenInit = init;
+      return new Response(null, { status: 202 });
+    });
+    const listOutbound = vi.fn(async () => []);
+    const outcome = await new HttpSpendPing({
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      ...LOOKUP,
+      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 5 }] }),
+      gifts: { listOutbound },
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19', undefined, 'moderator');
+    expect(outcome).toEqual({ status: 'accepted' });
+    expect(listOutbound).not.toHaveBeenCalled();
+    expect(seenInit?.body).toBe(
+      JSON.stringify({
+        address: ADDRESS,
+        kind: 'moderator',
+        groupMessageId: MESSAGE_ID,
+        amountUsd: 5,
+        comment: '21gifts moderator',
+        day: '2026-09-19',
+      }),
+    );
   });
 
   it('pingOnDay skips when the welcome gift was paid on the argument day', async () => {
@@ -1045,6 +1212,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1057,7 +1225,7 @@ describe('HttpSpendPing', () => {
       parsedEvents(warn).some(
         (e) =>
           e['event'] === 'spend.ping.skipped' &&
-          e['address'] === ADDRESS &&
+          e['addressRef'] === ADDRESS_REF &&
           e['reason'] === 'welcome_paid',
       ),
     ).toBe(true);
@@ -1072,6 +1240,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1081,7 +1250,9 @@ describe('HttpSpendPing', () => {
     expect(
       parsedEvents(warn).some(
         (e) =>
-          e['event'] === 'spend.ping.skipped' && e['address'] === ADDRESS && e['reason'] === 'paid',
+          e['event'] === 'spend.ping.skipped' &&
+          e['addressRef'] === ADDRESS_REF &&
+          e['reason'] === 'paid',
       ),
     ).toBe(true);
   });
@@ -1092,6 +1263,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1099,7 +1271,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1111,6 +1285,7 @@ describe('HttpSpendPing', () => {
       spendUrl: SPEND_URL,
       token: TOKEN,
       fetchImpl,
+      ...LOOKUP,
       rosterStore: writtenStore({
         comment: 'thanks',
         recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1118,7 +1293,9 @@ describe('HttpSpendPing', () => {
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19');
     expect(outcome).toEqual({ status: 'accepted' });
     expect(
-      parsedEvents(warn).some((e) => e['event'] === 'spend.ping.ok' && e['address'] === ADDRESS),
+      parsedEvents(warn).some(
+        (e) => e['event'] === 'spend.ping.ok' && e['addressRef'] === ADDRESS_REF,
+      ),
     ).toBe(true);
   });
 
@@ -1129,6 +1306,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1137,7 +1315,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1149,6 +1327,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1157,7 +1336,7 @@ describe('HttpSpendPing', () => {
     ).resolves.toEqual({ status: 'failed' });
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1169,6 +1348,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1185,6 +1365,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1201,6 +1382,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1219,6 +1401,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1237,6 +1420,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1255,6 +1439,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1271,6 +1456,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1289,6 +1475,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1303,16 +1490,18 @@ describe('HttpSpendPing', () => {
     const rosterStore = new InMemoryDailyRosterStore();
     vi.spyOn(rosterStore, 'hasBeenWritten').mockRejectedValue(new Error('store down'));
     await expect(
-      new HttpSpendPing({ spendUrl: SPEND_URL, token: TOKEN, fetchImpl, rosterStore }).pingOnDay(
-        ADDRESS,
-        MESSAGE_ID,
-        '2026-09-19',
-      ),
+      new HttpSpendPing({
+        spendUrl: SPEND_URL,
+        token: TOKEN,
+        fetchImpl,
+        ...LOOKUP,
+        rosterStore,
+      }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-09-19'),
     ).resolves.toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1329,6 +1518,7 @@ describe('HttpSpendPing', () => {
         spendUrl: SPEND_URL,
         token: TOKEN,
         fetchImpl,
+        ...LOOKUP,
         rosterStore: writtenStore({
           comment: 'thanks',
           recipients: [{ address: ADDRESS, amountUsd: 2 }],
@@ -1339,8 +1529,57 @@ describe('HttpSpendPing', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'spend.ping.failed' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'spend.ping.failed' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
+  });
+});
+
+describe('HttpSpendPing stored rows by account', () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it('matches no stored row without an account lookup and pays the default', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    let seenInit: RequestInit | undefined;
+    const ping = resolveSpendPing(
+      { SPEND_URL, SPEND_API_TOKEN: TOKEN },
+      pingFetch({ onCall: (_url, init) => (seenInit = init) }),
+      { rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }) },
+    );
+    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(JSON.parse(String(seenInit?.body))).toMatchObject({ amountUsd: 1 });
+  });
+
+  it('matches no stored row for an address on another host', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    await new HttpSpendPing({
+      ...LOOKUP,
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore({ moderators: [{ address: ADDRESS, amountUsd: 3 }] }),
+    }).ping('ada@elsewhere.example', MESSAGE_ID, 'moderator');
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((e) => e['reason'] === 'not_listed')).toBe(true);
+  });
+
+  it('logs spend.ping.failed and does not POST when the account lookup throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const fetchImpl = vi.fn<FetchFn>(pingFetch());
+    const ping = new HttpSpendPing({
+      accounts: { getAccountByUsername: () => Promise.reject(new Error('db down')) },
+      lnurlServer: LNURL,
+      spendUrl: SPEND_URL,
+      token: TOKEN,
+      fetchImpl,
+      rosterStore: writtenStore(),
+    });
+    await ping.ping(ADDRESS, MESSAGE_ID);
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-10-01')).toEqual({ status: 'failed' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).filter((e) => e['event'] === 'spend.ping.failed')).toHaveLength(2);
   });
 });

@@ -11,7 +11,7 @@ async function memberSession(request: APIRequestContext): Promise<{ authorizatio
       accounts: [
         {
           name,
-          lightningAddress: `e2e-trust-${stamp}@walletofsatoshi.com`,
+          username: `e2e-trust-${stamp}`.slice(0, 32),
         },
       ],
     },
@@ -120,6 +120,26 @@ test('GET /view/:viewKey/activity is 404 on default boot', async ({ request }) =
   expect(res.status()).toBe(404);
 });
 
+test('GET /view/:viewKey/posts is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/posts');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/shops is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/shops');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/credits is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/credits');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /view/:viewKey/replies is 404 on default boot', async ({ request }) => {
+  const res = await request.get('/view/:viewKey/replies');
+  expect(res.status()).toBe(404);
+});
+
 test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/setup/skip', { data: { step: 'name' } });
   expect(res.status()).toBe(401);
@@ -128,6 +148,112 @@ test('POST /me/setup/skip without bearer is 401', async ({ request }) => {
 test('POST /me/wallet-backup-seen without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/wallet-backup-seen');
   expect(res.status()).toBe(401);
+});
+
+test('PUT /me/wallet is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.put('/me/wallet');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('PUT /me/recovery-share is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.put('/me/recovery-share');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /me/previous-wallets is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/me/previous-wallets');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('DELETE /me/previous-wallets/:sparkPubkey is 404 when LNURL server is off', async ({
+  request,
+}) => {
+  const res = await request.delete('/me/previous-wallets/:sparkPubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /me/wallet/report without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/report');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet/hearts without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/hearts');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet/hearts with a session and an unknown hash returns no hearts', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/hearts', {
+    headers: auth,
+    data: { hashes: ['ab'.repeat(32)] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ hearts: [] });
+});
+
+test('POST /me/wallet/report with a session acknowledges p1', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/wallet/report', {
+    headers: auth,
+    data: {
+      balanceSats: 1000,
+      syncedAt: new Date().toISOString(),
+      payments: [
+        {
+          id: 'p1',
+          direction: 'out',
+          status: 'completed',
+          amountSats: 21,
+          feeSats: 0,
+          timestamp: Math.floor(Date.now() / 1000),
+          method: 'lightning',
+        },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ acknowledgedIds: ['p1'] });
+});
+
+test('POST /me/events without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/events');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/events with a session accepts login and logout and drops unknown names', async ({
+  request,
+}) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: {
+      events: [
+        { name: 'login', at: new Date().toISOString() },
+        { name: 'logout', at: new Date().toISOString() },
+        { name: 'wallet_unlocked', at: new Date().toISOString() },
+        { name: 'not_a_real_event', at: new Date().toISOString() },
+      ],
+    },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 2, dropped: 2 });
+});
+
+test('POST /me/events with a session accepts recovery_done', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/events', {
+    headers: auth,
+    data: { events: [{ name: 'recovery_done', at: new Date().toISOString() }] },
+  });
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ accepted: 1, dropped: 0 });
 });
 
 test('Function: capPasskeyRenewText — POST /me/passkey-renew/report without bearer is 401', async ({
@@ -165,6 +291,16 @@ test('GET /members/:accountId without bearer is 401', async ({ request }) => {
 
 test('GET /members/:accountId/posts without bearer is 401', async ({ request }) => {
   const res = await request.get('/members/:accountId/posts');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /members/:accountId/shops without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/shops');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /members/:accountId/credits without bearer is 401', async ({ request }) => {
+  const res = await request.get('/members/:accountId/credits');
   expect(res.status()).toBe(401);
 });
 
@@ -267,6 +403,13 @@ test('POST /messages without bearer is 401', async ({ request }) => {
 
 test('POST /messages/:id/invoice without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages/:id/invoice', { data: { sats: 21 } });
+  expect(res.status()).toBe(401);
+});
+
+// A heart (Spark-only, own budget) needs a payable wallet author, which needs the LNURL
+// server; the default boot asserts the session gate in front of it.
+test('POST /messages/:id/invoice heart without bearer is 401', async ({ request }) => {
+  const res = await request.post('/messages/:id/invoice', { data: { sats: 1, heart: true } });
   expect(res.status()).toBe(401);
 });
 
@@ -412,6 +555,42 @@ test('GET /.well-known/lnurlp/:username is 404 when unknown', async ({ request }
   expect(res.status()).toBe(404);
 });
 
+test('POST /lnurlpay/:pubkey is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /lnurlpay/:pubkey/transfer is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey/transfer');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /lnurlpay/:pubkey/recover is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/lnurlpay/:pubkey/recover');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlpay/:pubkey/metadata is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlpay/:pubkey/metadata');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/:username/invoice is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/:username/invoice');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /verify/:paymentHash is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/verify/:paymentHash');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
 test('GET /pay/:username is 404 when unknown', async ({ request }) => {
   const res = await request.get('/pay/:username');
   expect(res.status()).toBe(404);
@@ -422,6 +601,40 @@ test('POST /pay/:username/invoice is 404 when unknown', async ({ request }) => {
     data: { amountSats: 1 },
   });
   expect(res.status()).toBe(404);
+});
+
+test('POST /lnurl/pay-request without bearer is 401', async ({ request }) => {
+  const res = await request.post('/lnurl/pay-request', { data: { target: 'bob@example.com' } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /lnurl/pay-request refuses a target on an address literal with 400', async ({
+  request,
+}) => {
+  const headers = await memberSession(request);
+  const res = await request.post('/lnurl/pay-request', {
+    headers,
+    data: { target: 'bob@127.0.0.1' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Not a payable address' });
+});
+
+test('POST /lnurl/invoice without bearer is 401', async ({ request }) => {
+  const res = await request.post('/lnurl/invoice', {
+    data: { target: 'bob@example.com', amountMsat: 1000 },
+  });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /lnurl/invoice refuses a non-numeric amount with 400', async ({ request }) => {
+  const headers = await memberSession(request);
+  const res = await request.post('/lnurl/invoice', {
+    headers,
+    data: { target: 'bob@example.com', amountMsat: '1000' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Amount out of range' });
 });
 
 test('POST /me/name without bearer is 401', async ({ request }) => {
@@ -450,8 +663,35 @@ test('POST /me/forum-laws-dismissed without bearer is 401', async ({ request }) 
   expect(res.status()).toBe(401);
 });
 
+test('POST /me/wallet-intro-seen without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet-intro-seen');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/wallet-intro-seen sets walletIntroSeen once for a member', async ({ request }) => {
+  const headers = await memberSession(request);
+  const before = await request.get('/me', { headers });
+  expect(before.status()).toBe(200);
+  const fresh = (await before.json()) as { walletIntroSeen: boolean; hadExternalWallet: boolean };
+  expect(fresh.walletIntroSeen).toBe(false);
+  expect(fresh.hadExternalWallet).toBe(false);
+  const first = await request.post('/me/wallet-intro-seen', { headers });
+  expect(first.status()).toBe(200);
+  expect(((await first.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  const second = await request.post('/me/wallet-intro-seen', { headers });
+  expect(second.status()).toBe(200);
+  expect(((await second.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+  const after = await request.get('/me', { headers });
+  expect(((await after.json()) as { walletIntroSeen: boolean }).walletIntroSeen).toBe(true);
+});
+
 test('POST /me/notification-level without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/notification-level');
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/heart-notifications without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/heart-notifications');
   expect(res.status()).toBe(401);
 });
 
@@ -475,30 +715,17 @@ test('POST /me/rules-agreement without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /me/lightning-address without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/lightning-address', {
-    data: { address: 'a@b.com' },
-  });
-  expect(res.status()).toBe(401);
-});
-
-test('DELETE /me/lightning-address without bearer is 401', async ({ request }) => {
-  const res = await request.delete('/me/lightning-address');
-  expect(res.status()).toBe(401);
-});
-
-test('POST /me/lightning-address/verification without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/lightning-address/verification');
-  expect(res.status()).toBe(401);
-});
-
-test('POST /me/lightning-address/verification/confirm without bearer is 401', async ({
-  request,
-}) => {
-  const res = await request.post('/me/lightning-address/verification/confirm', {
-    data: { nonce: '00' },
-  });
-  expect(res.status()).toBe(401);
+test('removed address-linking routes are 404', async ({ request }) => {
+  expect(
+    (await request.post('/me/lightning-address', { data: { address: 'a@b.com' } })).status(),
+  ).toBe(404);
+  expect((await request.delete('/me/lightning-address')).status()).toBe(404);
+  expect((await request.post('/me/lightning-address/verification')).status()).toBe(404);
+  expect(
+    (
+      await request.post('/me/lightning-address/verification/confirm', { data: { nonce: '00' } })
+    ).status(),
+  ).toBe(404);
 });
 
 test('GET /debug/accounts without bearer is 401', async ({ request }) => {
@@ -508,7 +735,7 @@ test('GET /debug/accounts without bearer is 401', async ({ request }) => {
 
 test('POST /debug/accounts without bearer is 401', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
-    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+    data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(401);
 });
@@ -516,15 +743,24 @@ test('POST /debug/accounts without bearer is 401', async ({ request }) => {
 test('POST /debug/accounts with the e2e token provisions a guest', async ({ request }) => {
   const res = await request.post('/debug/accounts', {
     headers: { authorization: 'Bearer e2e-debug-token' },
-    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@walletofsatoshi.com' }] },
+    data: { accounts: [{ name: 'Ada' }] },
   });
   expect(res.status()).toBe(200);
   const body = (await res.json()) as {
-    accounts: Array<{ name: string; lightningAddress: string; viewKey: string; created: boolean }>;
+    accounts: Array<{ name: string; username: string | null; viewKey: string; created: boolean }>;
   };
   expect(body.accounts).toHaveLength(1);
   expect(body.accounts[0]?.name).toBe('Ada');
+  expect(body.accounts[0]?.created).toBe(true);
   expect(body.accounts[0]?.viewKey).toMatch(/^[0-9a-f]{64}$/);
+});
+
+test('POST /debug/accounts refuses an external address field', async ({ request }) => {
+  const res = await request.post('/debug/accounts', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { accounts: [{ name: 'Ada', lightningAddress: 'guest@example.com' }] },
+  });
+  expect(res.status()).toBe(400);
 });
 
 test('GET /debug/accounts/:id without bearer is 401', async ({ request }) => {
@@ -646,6 +882,13 @@ test('GET /messages/stats returns a posts total', async ({ request }) => {
   expect(body.postsOverTime.reduce((sum, row) => sum + row.postCount, 0)).toBe(body.postCount);
 });
 
+test('GET /fx/spot is the empty result while the provider is unreachable', async ({ request }) => {
+  const res = await request.get('/fx/spot');
+  expect(res.status()).toBe(200);
+  expect(res.headers()['cache-control']).toBe('no-store');
+  expect(await res.json()).toEqual({ asOf: null, source: null, rates: {} });
+});
+
 test('GET /gifts/stats is empty without a database', async ({ request }) => {
   const res = await request.get('/gifts/stats');
   expect(res.status()).toBe(200);
@@ -748,6 +991,20 @@ test('POST /auth/passkey/authenticate/finish without body is 400', async ({ requ
   expect(res.status()).toBe(400);
 });
 
+test('POST /auth/passkey/recovery/begin is 503 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/auth/passkey/recovery/begin');
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Lightning address service is unavailable' });
+});
+
+test('POST /auth/passkey/recovery/finish without body is 400', async ({ request }) => {
+  const res = await request.post('/auth/passkey/recovery/finish');
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: 'Expected a JSON body with challengeId, credential, newSparkPubkey and signature',
+  });
+});
+
 test('POST /auth/passkey/replace/begin without bearer is 401', async ({ request }) => {
   const res = await request.post('/auth/passkey/replace/begin');
   expect(res.status()).toBe(401);
@@ -785,7 +1042,7 @@ test('GET /invoices/posted unconfigured is 503', async ({ request }) => {
 
 test('POST /invoices unconfigured is 503', async ({ request }) => {
   const res = await request.post('/invoices', {
-    data: { address: 'alice@walletofsatoshi.com', amountMsat: 1000 },
+    data: { address: 'alice@example.com', amountMsat: 1000 },
   });
   expect(res.status()).toBe(503);
 });
@@ -823,6 +1080,73 @@ test('POST /debug/push-ping with the e2e token and no VAPID is 503', async ({ re
     data: { accountId: '00000000-0000-0000-0000-000000000001' },
   });
   expect(res.status()).toBe(503);
+});
+
+test('POST /debug/push-broadcast without bearer is 401', async ({ request }) => {
+  const res = await request.post('/debug/push-broadcast');
+  expect(res.status()).toBe(401);
+});
+
+test('Function: debugPushBroadcastRoutes — dry run counts recipients, a bad link is 400', async ({
+  request,
+}) => {
+  const headers = { authorization: 'Bearer e2e-debug-token' };
+  const dry = await request.post('/debug/push-broadcast', {
+    headers,
+    data: { title: 'Update', body: 'Hello', link: '/welcome', dryRun: true },
+  });
+  expect(dry.status()).toBe(200);
+  expect(await dry.json()).toEqual({ dryRun: true, recipients: 0 });
+  const bad = await request.post('/debug/push-broadcast', {
+    headers,
+    data: { title: 'Update', body: 'Hello', link: 'https://example.com/' },
+  });
+  expect(bad.status()).toBe(400);
+});
+
+test('Function: listAccountIdsWithLiveSubscriptions — a dry run counts no live subscription on a fresh boot', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', usernames: ['nobody-here'], dryRun: true },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({
+    error: 'No account with that username',
+    usernames: ['nobody-here'],
+  });
+  const all = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello', dryRun: true },
+  });
+  expect(await all.json()).toEqual({ dryRun: true, recipients: 0 });
+});
+
+test('Function: enqueueBroadcastPush — a send without VAPID is 503 and queues nothing', async ({
+  request,
+}) => {
+  const res = await request.post('/debug/push-broadcast', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+    data: { title: 'Update', body: 'Hello' },
+  });
+  expect(res.status()).toBe(503);
+  expect(await res.json()).toEqual({ error: 'Push is not configured' });
+});
+
+test('POST /webhooks/lnurl is not mounted when LNURL_WEBHOOK_SECRET is blank', async ({
+  request,
+}) => {
+  const res = await request.post('/webhooks/lnurl', { data: {} });
+  expect(res.status()).toBe(404);
+});
+
+test('GET /debug/push-broadcast/:id for an unknown id is 404', async ({ request }) => {
+  const res = await request.get('/debug/push-broadcast/:id', {
+    headers: { authorization: 'Bearer e2e-debug-token' },
+  });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
 });
 
 test('POST /debug/passkey-renew/reopen without bearer is 401', async ({ request }) => {
@@ -944,6 +1268,11 @@ test('POST /funding/reject without bearer is 401', async ({ request }) => {
 
 test('GET /funding/daily-roster without bearer is 401', async ({ request }) => {
   const res = await request.get('/funding/daily-roster');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /funding/daily-roster/links without an operator token is 401', async ({ request }) => {
+  const res = await request.get('/funding/daily-roster/links');
   expect(res.status()).toBe(401);
 });
 
@@ -1106,9 +1435,68 @@ test('GET /messages/:id/external-posts without bearer is 404 on default boot', a
   expect(res.status()).toBe(404);
 });
 
+test('GET /messages/:id/external-shops without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-shops');
+  expect(res.status()).toBe(404);
+});
+
+test('GET /messages/:id/external-credits without bearer is 404 on default boot', async ({
+  request,
+}) => {
+  const res = await request.get('/messages/:id/external-credits');
+  expect(res.status()).toBe(404);
+});
+
 test('GET /messages/:id/external-replies without bearer is 404 on default boot', async ({
   request,
 }) => {
   const res = await request.get('/messages/:id/external-replies');
   expect(res.status()).toBe(404);
+});
+
+test('GET /messages with a country and no bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages?mode=active&country=PH');
+  expect(res.status()).toBe(401);
+});
+
+test('GET /messages/places without bearer is 401', async ({ request }) => {
+  const res = await request.get('/messages/places');
+  expect(res.status()).toBe(401);
+});
+
+// Shop payment in USDT and USDC (docs/shop-stablecoin-payment.md): the default boot leaves
+// LNURL_SERVER_URL and the four shop variables blank, so each new route answers its default.
+
+test('POST /pay/:username/payment is 404 for an unknown username on default boot', async ({
+  request,
+}) => {
+  const res = await request.post('/pay/:username/payment', { data: { amountSats: 1000 } });
+  expect(res.status()).toBe(404);
+  expect(await res.json()).toEqual({ error: 'Not found' });
+});
+
+test('GET /lnurlp/cb/:username is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/cb/:username');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/tx/:username is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/tx/:username');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('GET /lnurlp/wait/:payment is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.get('/lnurlp/wait/:payment');
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
+});
+
+test('POST /debug/shop-proofs/:id/retry is 404 when LNURL server is off', async ({ request }) => {
+  const res = await request.post('/debug/shop-proofs/:id/retry', { headers: DEBUG });
+  expect(res.status()).toBe(404);
+  expect(await res.text()).toBe('404 Not Found');
 });
