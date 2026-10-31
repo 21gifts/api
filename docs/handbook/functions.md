@@ -430,7 +430,7 @@
 
 ## Function: migratePushSchema
 
-- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS push_subscription` and its account index, `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text` (null on rows stored before it; those rows are never sent to and the sweep deletes them), `CREATE TABLE IF NOT EXISTS push_outbox` (with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`) and its pending index, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz` (null on rows finished before it; retention ages them from `created_at`), then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`).
+- **Purpose:** Applies `PUSH_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS push_subscription` and its account index, `ALTER TABLE push_subscription ADD COLUMN IF NOT EXISTS session_token text` (null on rows stored before it; those rows are never sent to and the sweep deletes them), `CREATE TABLE IF NOT EXISTS push_outbox` (with `delivered_endpoints`, `skip_endpoints text NOT NULL DEFAULT '[]'`, and `type` CHECK `('forum', 'zap', 'conversation', 'dismiss')`) and its pending index, `ALTER TABLE … ADD COLUMN IF NOT EXISTS delivered_endpoints`, `ALTER TABLE … ADD COLUMN IF NOT EXISTS skip_endpoints`, `ALTER TABLE push_outbox ADD COLUMN IF NOT EXISTS finished_at timestamptz` (null on rows finished before it; retention ages them from `created_at`), then an idempotent `DO` that drops/adds `push_outbox_type_check` so live CHECKs accept `'conversation'` and `'dismiss'`), and `CREATE TABLE IF NOT EXISTS push_payment_received` (`payment_hash text PRIMARY KEY`, `outbox_id uuid`, `created_at`; no account reference, kept after the outbox row is swept).
 - **Inputs:** `SqlClient` already opened by boot.
 - **Returns / side effects:** Void; idempotent DDL matching `docs/schema/push.sql`. Does not attach `db_change` triggers (that runs later via `migrateDbChangeSchema`).
 - **Used by:** `openBootStores` when SQL opens, after `migrateConversationSchema` and before `migrateDbChangeSchema`.
@@ -827,7 +827,7 @@
 ## Function: InMemoryPushStore
 
 - **Purpose:** Process-local `PushStore` for Web Push subscriptions and the outbox. Default empty so the process boots without a database.
-- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row; `countBroadcastOutbox` counts the rows of one broadcast (`messageId` and payload tag `broadcast:<id>`) as queued, pending, delivered (sent or failed with at least one delivered endpoint), dropped (sent with none), and failed (failed with none)). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
+- **Inputs:** Constructor none. Methods match `PushStore` (`upsertSubscription` keeps original `createdAt` on endpoint conflict and replaces account, keys, and `sessionToken`; `deleteStaleSubscription(sub)` removes the endpoint only while account and `sessionToken` still equal the listed row, so a rebind after the read survives; `claimPending` leases oldest pending; `markSent(id, nowMs)` stamps `finishedAt`; `markFailed(id, nowMs)` fails at 8 attempts and then stamps `finishedAt`; `deleteFinishedOutbox(beforeMs)` removes `sent`/`failed` rows whose `finishedAt`, else `createdAt`, is before the cutoff and never a pending row; `recordDelivered` unions unique endpoint URLs onto the outbox row; `countBroadcastOutbox` counts the rows of one broadcast (`messageId` and payload tag `broadcast:<id>`) as queued, pending, delivered (sent or failed with at least one delivered endpoint), dropped (sent with none), and failed (failed with none); `enqueuePaymentReceived(paymentHash, row)` appends the row and returns `true` only the first time a payment hash is given, otherwise `false` without a row). Operator dump: `listAllSubscriptions()` newest `createdAt` then `endpoint` DESC; `listAllOutbox(limit)` newest `createdAt` then `id` DESC.
 - **Returns / side effects:** Caller-owned copies including `deliveredEndpoints` slices; mutating results does not change the store. No I/O.
 - **Recovery commit:** `removeAccountSubscriptions(accountId)` deletes every subscription of one account synchronously and returns how many it removed; `InMemoryAuthStore.commitRecovery` calls it through `usePushStore`.
 - **Used by:** `createApp` default `pushStore`; memory `src/index.ts` when boot omits SQL push.
@@ -841,8 +841,8 @@
 
 ## Function: PostgresPushStore
 
-- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
-- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. `countBroadcastOutbox(broadcastId)` runs `SELECT status, count(*), count(*) FILTER (WHERE delivered_endpoints <> '[]') FROM push_outbox WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2 GROUP BY status` with `$2` = `broadcast:<broadcastId>`, then adds pending rows to `pending` and, per finished status, the rows with a delivered endpoint to `delivered` and the rest to `failed` or `dropped`. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
+- **Purpose:** Durable `PushStore` over Postgres (`push_subscription`, `push_outbox`, `push_payment_received`). Same port semantics as the in-memory adapter, including claim leases, attempt counting, and `recordDelivered` for successful endpoint URLs. `claimPending` returns the leased rows oldest `createdAt` then `id`, because `RETURNING` does not keep the subquery order.
+- **Inputs:** Constructor takes a shared boot `SqlClient` (already migrated via `migratePushSchema`). `upsertSubscription` sets `session_token = EXCLUDED.session_token` on endpoint conflict. `deleteStaleSubscription` deletes `WHERE account_id = $1 AND endpoint = $2 AND session_token IS NOT DISTINCT FROM $3`. `markSent` / terminal `markFailed` set `finished_at`. `deleteFinishedOutbox` runs `DELETE FROM push_outbox WHERE status IN ('sent', 'failed') AND COALESCE(finished_at, created_at) < $1 RETURNING id`. `countBroadcastOutbox(broadcastId)` runs `SELECT status, count(*), count(*) FILTER (WHERE delivered_endpoints <> '[]') FROM push_outbox WHERE message_id = $1 AND payload::jsonb ->> 'tag' = $2 GROUP BY status` with `$2` = `broadcast:<broadcastId>`, then adds pending rows to `pending` and, per finished status, the rows with a delivered endpoint to `delivered` and the rest to `failed` or `dropped`. `enqueuePaymentReceived(paymentHash, row)` runs one statement: a CTE inserts `push_payment_received` with `ON CONFLICT (payment_hash) DO NOTHING RETURNING outbox_id`, and `push_outbox` is inserted `SELECT … FROM` that CTE, so the claim and the row are written together or not at all; returns whether a row was inserted. Operator dump: `listAllSubscriptions` (`ORDER BY created_at DESC, endpoint DESC`); `listAllOutbox(limit)` newest `created_at` then `id`.
 - **Returns / side effects:** Parameter-bound SQL; maps snake_case rows to domain objects including `delivered_endpoints` JSON. Errors propagate to callers.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
 
@@ -916,6 +916,13 @@
 - **Returns / side effects:** `{ stop }` clears both intervals. A tick still running skips the next interval. A rejected tick logs `push.tick.failed` with `errorLogFields` only (a tick queries by session token, and an unhandled rejection would reach the process handler, which prints the raw error and exits); the next tick still runs. A rejected sweep logs `push.sweep.failed` with `errorLogFields` only (name and driver code, never the message, which can embed bound values such as a session token), and the next sweep runs on schedule.
 - **Used by:** `src/index.ts` on every boot. Without VAPID the ticks send nothing, but the sweep still runs.
 
+## Function: accountHasLiveSubscription
+
+- **Purpose:** Whether one account has a push subscription the push worker would send to: a subscription whose session token still authenticates that account (same rule as `runPushWorkerTick`, `sweepPushStore`, and `listAccountIdsWithLiveSubscriptions`).
+- **Inputs:** `PushStore`, `AuthStore`, `nowMs` (session expiry clock), `accountId`.
+- **Returns / side effects:** `true` at the first live subscription of the account, otherwise `false`. Read-only: stale subscriptions stay until the worker or `sweepPushStore` removes them.
+- **Used by:** `createApp` as the `hasLiveDevice` check of `webhookRoutes` / `notifyPaymentReceived`.
+
 ## Function: listAccountIdsWithLiveSubscriptions
 
 - **Purpose:** Account ids the push worker would send to: each account with at least one subscription whose session still authenticates it (same rule as `runPushWorkerTick` and `sweepPushStore`: a session token, not expired, account not refused, same account).
@@ -971,6 +978,49 @@
 - **Inputs:** `{ replyId, name, noteId }`. `replyId` is the receipt-derived UUID used in `tag`. `noteId` is the forum note to open.
 - **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify`.
 - **Used by:** `notifyHeart`.
+
+## Function: buildPaymentReceivedPushPayload
+
+- **Purpose:** English payload for the receiver of a lightning address payment (`type: 'zap'`, title the collapsed sender name or `21.gifts` when `name` is `null`, body `You received <amountSats> sats.`, url `/wallet`, tag `payment:<paymentHash>`).
+- **Inputs:** `{ paymentHash, amountSats, name }`; `name` is a member's display name or `null` when the sender is not known.
+- **Returns / side effects:** `PushPayload` object without `unreadCount`; callers `JSON.stringify` (notifyPaymentReceived adds `unreadCount`).
+- **Used by:** `notifyPaymentReceived`.
+
+## Function: resolvePaymentWebhookSecret
+
+- **Purpose:** Read the secret the LNURL server signs its webhooks with, which also switches `POST /webhooks/lnurl` on.
+- **Inputs:** Environment slice; reads `LNURL_WEBHOOK_SECRET`.
+- **Returns / side effects:** The trimmed secret, or `null` when unset or blank (the route is not mounted). Never logged.
+- **Used by:** `createApp`.
+
+## Function: breezSignatureValid
+
+- **Purpose:** Check the LNURL server's `X-Breez-Signature`: hex HMAC-SHA256 of the raw body with the shared secret, compared in constant time.
+- **Inputs:** Secret, raw body text, header value or `null`.
+- **Returns / side effects:** `true` only for 64 hex characters (either case) that match; a missing or malformed header is `false`. No side effects.
+- **Used by:** `webhookRoutes`.
+
+## Function: parsePaymentReceived
+
+- **Purpose:** Read a `spark_payment_received` webhook body (`{ template, data }`) into the fields the push uses.
+- **Inputs:** Raw JSON body.
+- **Returns / side effects:** `{ paymentHash, userPubkey, amountSats, zapRequest }` (payment hash lowercased; `zapRequest` is `data.nostr_zap_request` or `null`), or `null` for malformed JSON, another template, a payment hash that is not 32-byte hex, a blank `user_pubkey`, or an `amount_sat` that is not a positive safe integer. `sender_comment` and `lightning_address` are not read.
+- **Used by:** `webhookRoutes`.
+
+## Function: notifyPaymentReceived
+
+- **Purpose:** Enqueue one Web Push to the receiver of a payment, at most once per payment hash.
+- **Inputs:** `PaymentReceivedDeps` (`auth` with `getAccountByVerifiedSparkPubkey`, `getAccountByPubkey`, `getNostrPublicKey`; `pushStore` with `enqueuePaymentReceived`; `hasLiveDevice`; `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
+- **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and at least one `amount` tag, every one equal to the received amount in millisats (an unbound request could be replayed from a public receipt); otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`. A zap on a forum note is pushed too: `notifyZap` / `notifyHeart` send a separate notification about the note under their own rules (fan-out level, `notifyHearts`, platform payer), so this wallet push does not depend on them. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription whose session is still live (`hasLiveDevice`) returns `no_device`, and nothing is claimed.
+- **Returns / side effects:** `queued` after `PushStore.enqueuePaymentReceived` wrote the claim and the outbox row (`unreadCount` is in-app plus listed inbox unread), `duplicate` when the hash was already claimed, or the skip reason above. Throws when a store call rejects.
+- **Used by:** `webhookRoutes`.
+
+## Function: webhookRoutes
+
+- **Purpose:** Build the `/webhooks` group with `POST /webhooks/lnurl` (see the endpoint section). A body above 64 KiB answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end.
+- **Inputs:** `WebhookRouteDeps`: `secret` plus `PaymentReceivedDeps`.
+- **Returns / side effects:** A Hono app. Logs `payment_received` with the outcome, `payment_received.ignored`, or `payment_received.failed` with `errorLogFields`; never the body, hash, or pubkey.
+- **Used by:** `createApp` when `resolvePaymentWebhookSecret` returns a secret.
 
 ## Function: buildModeratorAppointedPushPayload
 
@@ -1410,7 +1460,7 @@
 - **Purpose:** Accept a 32-byte hex string (any case, trimmed).
 - **Inputs:** Raw hex string.
 - **Returns / side effects:** Lowercase 64-char hex or `null`.
-- **Used by:** `preimageMatchesHash`.
+- **Used by:** `preimageMatchesHash`; `parsePaymentReceived` (the webhook payment hash).
 
 ## Function: preimageMatchesHash
 
@@ -1455,6 +1505,7 @@
 - **Returns / side effects:** Hono app. Default `btcUsdRates` is an empty `InMemoryBtcUsdStore`. Default `fiatRates` is an empty `InMemoryFiatStore`. Default `fxSpotStore` is an empty `InMemoryFxSpotStore`, passed to `fxRoutes` at `/fx`. `createApp` passes the same `fiatRates` object into `/gifts`, `/gifts/stats`, `/me`, `/members`, and `/view`, and the same `now` into `/mentions` and `/accounts`. Used by Bun.serve in `index.ts` and by tests via `app.request()`. Before routes mount, equal trimmed tokens throw `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and neither value is printed; an empty or missing read token does not fail boot. Builds one `LoginGate` from `loginGateStore` (default `InMemoryLoginGateStore`) and `resolveLoginsOpenDefault(env)`, passes it with `resolveRequiredAppBuild(env)` to `authRoutes`, and mounts `debugLoginsRoutes` at `/debug`. An unknown `LOGINS_OPEN_DEFAULT` throws before routes mount.
 - **Social recovery:** When both the auth store and the push store are the in-memory adapters (the `createApp` defaults or injected `InMemoryAuthStore` and `InMemoryPushStore`), `createApp` links them with `store.usePushStore(pushStore)`, so a recovery commit also deletes the account's push subscriptions. Optional `recoveryShareKek` (`RECOVERY_SHARE_KEK`, from `openBootStores`) is the key of the recovery share; memory boots omit it. `meRoutes` receives it with `fetchImpl` (the anonymous explorer balance of previous wallets); without it `PUT /me/recovery-share` answers 503. `authRoutes` receives `fetchImpl` and, when it resolves, `lnurlServer`, for the recovery begin's lookup; `lnurlServerRoutes` carries the address transfer and the recover pass-through of a pending recovery's new key.
 - **Used by:** Boot path and every HTTP test.
+- **Payment webhook:** When `resolvePaymentWebhookSecret(env)` returns a secret (`LNURL_WEBHOOK_SECRET`), `webhookRoutes` is mounted at `/webhooks` with the auth, push, and notification stores, `hasLiveDevice` = `accountHasLiveSubscription(pushStore, store, now(), accountId)`, `inboxUnreadCountFor(conversationStore, store)`, and the same `now`; otherwise `POST /webhooks/lnurl` answers 404.
 - **Daily roster:** Optional `rosterStore` defaults to a fresh `InMemoryDailyRosterStore`. The same instance is passed to `fundingRoutes`, `spendInstructionRoutes`, and the default `resolveSpendPing` (with the auth store as `accounts` and the LNURL server config). `HttpDailyRoster` is not built. `SPEND_URL` is the ping POST base. Until the roster store has been written, it is also the base of `GET /daily-roster`.
 - **Shops:** Optional `shopIdentityStore` (default `InMemoryShopIdentityStore` over the same `messageStore` and `now`) is passed to `/messages`, `/me`, `/debug/messages`, `/debug/dump`, `/debug/shop-keys`, `/debug/shop-notes`, `/.well-known` (NIP-05 shop locals) and `shopRoutes` at `/shops`, mounted after `/shops/activity`. Optional `shopKek` (default `nostrKek`) is the KEK for new shop keys in `/messages`, `/me`, `/debug/messages` and `/debug/shop-notes`; `/debug/shop-keys` encrypts an existing secret with the same KEK and does not mint a key. A memory boot passes a random process-ephemeral key, so public shops get an npub without Postgres. The app does not send to OpenCryptoPay; `src/index.ts` starts the outbox senders.
 - **Welcome sweep:** Optional `welcomeSweep` (`WelcomeSweepSwitch`, `{ enabled }`) defaults to a fresh switch that is off. `createApp` passes it, with `giftStore`, to `debugPaymentsRoutes`, whose `GET /debug/welcome-sweep` reads it and whose `PUT /debug/welcome-sweep` sets it. Boot (`src/index.ts`) creates one switch, off, and passes the same object to `createApp` and to the 15-minute `syncWelcomePing` sweep, so the operator route sets the switch the sweep reads.
@@ -1515,7 +1566,7 @@
 - **Purpose:** Allowlisted scalar fields for a caught error so a log line never carries free text. Database messages embed offending values (`invalid input syntax for type uuid: "…"`) and fetch errors can embed a callback URL; a length cut is not redaction.
 - **Inputs:** Any caught value.
 - **Returns / side effects:** `LogFields` with optional `name` (an `Error` name of 1–40 ASCII letters), `code` and `errno` (strings of 1–40 ASCII alphanumerics or underscores, e.g. `ERR_POSTGRES_SERVER_ERROR` and `23505`). Primitives, `null`, and values outside the patterns yield `{}`. Never reads `message`, `detail`, or `cause`. Pure.
-- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`).
+- **Used by:** `indexOpenZapReceipts` (per-receipt catch, `nostr.zap.rejected`), `startNostrWorker` (`nostr.worker.tick.failed`, `nostr.worker.ingest.failed`), and the OpenCryptoPay outbox (`runOcpPlaceOutboxPass` per claim (in `sendPlace` and for a claim whose handling throws), `runOcpPhotoOutboxPass` per row, `startOcpOutboxWorker` per pass and per failed start-up attempt; `ocp.place.failed`, `ocp.photos.failed`), `mapPlacesCatchFields` in `src/lib/ocp-activity.ts` (the outer error and its `cause`), `startPushWorker` (a rejected tick or sweep, `push.tick.failed` / `push.sweep.failed`), and the closed-connection handler in `src/lib/postgres-connection-closed.ts` (`sql.connection.closed`); `webhookRoutes` (`payment_received.failed` when a store call fails).
 
 ## Function: meRoutes
 
@@ -2076,7 +2127,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Whether a recipient at `level` should receive this living-room event for in-app rows and Web Push. `none` is always false. `all` is always true. `active` is `isActive`. `mentions` is only `mentionedAccountId !== null && mentionedAccountId === recipientAccountId`. A staff or platform actor does not satisfy mentions.
 - **Inputs:** `{ level: NotificationLevel; isActive: boolean; mentionedAccountId: string | null; recipientAccountId: string }`.
 - **Returns / side effects:** boolean. No I/O.
-- **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set.
+- **Used by:** `fanoutToBellSubscribers` after skip when `auth` and `match` are set; `notifyPaymentReceived` (the receiver's own level; only `none` refuses).
 
 ## Function: notificationsMatchingLevel
 
@@ -2097,7 +2148,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account). GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
-- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`).
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`); `createApp` for `webhookRoutes` (badge count of the payment push).
 
 ## Function: notifyConversationMessage
 
@@ -4330,10 +4381,10 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: readCappedText
 
-- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), and `POST /me/events` (64 KiB).
+- **Purpose:** Read a request body as UTF-8 text without buffering more than a byte cap. A declared `Content-Length` above the cap is refused before anything is read; otherwise the stream is read chunk by chunk and cancelled as soon as the total passes the cap. Shared by the forwarded LNURL routes (`LNURL_BODY_LIMIT_BYTES`), `POST /me/wallet/report` (1 MiB), `POST /me/events` (64 KiB), `POST /me/wallet/hearts`, and `POST /webhooks/lnurl` (64 KiB).
 - **Inputs:** The incoming `Request` and the largest accepted body in bytes.
-- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (the caller answers 413 `{ error: 'Request body is too large' }`). Never logs the body.
-- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `memberEventRoutes`.
+- **Returns / side effects:** The decoded text, `''` when the request has no body, or `null` when the body is larger than the cap (`lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, and `memberEventRoutes` answer 413 `{ error: 'Request body is too large' }`; `webhookRoutes` answers 200 `ignored`, because the LNURL server retries every non-2xx answer without end). Never logs the body.
+- **Used by:** `lnurlServerRoutes`, `walletReportRoutes`, `walletHeartRoutes`, `memberEventRoutes`, `webhookRoutes`.
 
 ## Function: isSecretFieldName
 

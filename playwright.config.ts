@@ -12,6 +12,7 @@ import {
   REFUND_ADDRESS,
   RPC_PORTS,
   WEBAUTHN_ORIGIN,
+  WEBHOOK_SECRET,
 } from './e2e/shop-payment/stand-ins/ports';
 
 /**
@@ -75,6 +76,7 @@ const PINNED_OFF = {
   OCP_PLACE_INGEST_TOKEN: '',
   LOGINS_OPEN_DEFAULT: '',
   APP_BUILD_REQUIRED: '',
+  LNURL_WEBHOOK_SECRET: '',
   // Refused port: GET /fx/spot stays the empty result, independent of the network.
   BTC_FIAT_SPOT_URL: 'http://127.0.0.1:9/',
   DEBUG_READ_TOKEN: '',
@@ -132,6 +134,8 @@ const shopServers = [
         ),
       ),
       SHOP_REFUND_ADDRESS: REFUND_ADDRESS,
+      // The payment webhook of a verified wallet (e2e/shop-payment/payment-received.spec.ts).
+      LNURL_WEBHOOK_SECRET: WEBHOOK_SECRET,
       // The stand-ins' spot price (100 000 USD per BTC, the price of their
       // quotes): without a fresh spot the api offers no stablecoin.
       BTC_FIAT_SPOT_URL: `${CONTROL_URL}/__spot`,

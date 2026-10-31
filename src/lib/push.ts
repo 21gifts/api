@@ -303,6 +303,30 @@ export function buildHeartPushPayload(args: {
 }
 
 /**
+ * Payload for the receiver of a lightning address payment.
+ *
+ * Title is the collapsed sender name, or `21.gifts` when no sender is known.
+ * Body is `You received <amountSats> sats.` `url` is `/wallet`. Tag is
+ * `payment:<paymentHash>`.
+ *
+ * @param args - Payment hash, whole-sat amount, and sender name or `null`.
+ * @returns Payload object; callers `JSON.stringify`. Omits `unreadCount`.
+ */
+export function buildPaymentReceivedPushPayload(args: {
+  paymentHash: string;
+  amountSats: number;
+  name: string | null;
+}): PushPayload {
+  return {
+    type: 'zap',
+    title: args.name === null ? '21.gifts' : pushTitle(args.name),
+    body: `You received ${String(args.amountSats)} sats.`,
+    url: '/wallet',
+    tag: `payment:${args.paymentHash}`,
+  };
+}
+
+/**
  * Forum reply payload for every bell subscriber except the actor.
  *
  * Title matches a forum post. Body is the reply on one line (at most 180

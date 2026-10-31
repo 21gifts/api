@@ -4,8 +4,8 @@
 
 The pages are generated from the schema the server creates at boot. `ENUM` means a fixed set of values: a CHECK constraint that pins the column to a literal list, or a Postgres enum type; the stored type is shown under Database type. Regenerate with `DATABASE_URL=postgres://… bun run db:docs`. Tables created outside this service are built from their `docs/schema/*.sql` definition.
 
-- Tables: 59
-- Columns: 572
+- Tables: 60
+- Columns: 575
 - Foreign keys: 58
 
 | Table                                                                            | Source                                                                 | Columns | Foreign keys |
@@ -56,6 +56,7 @@ The pages are generated from the schema the server creates at boot. `ENUM` means
 | [`pos_charge_invoice`](tables/pos_charge_invoice.md)                             | [src/lib/pos-store.ts](../../src/lib/pos-store.ts)                     | 3       | 1            |
 | [`previous_wallet`](tables/previous_wallet.md)                                   | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`push_outbox`](tables/push_outbox.md)                                           | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 12      | 1            |
+| [`push_payment_received`](tables/push_payment_received.md)                       | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 3       | 0            |
 | [`push_subscription`](tables/push_subscription.md)                               | [src/lib/push-store.ts](../../src/lib/push-store.ts)                   | 6       | 1            |
 | [`recovery_share`](tables/recovery_share.md)                                     | [src/lib/auth/schema.ts](../../src/lib/auth/schema.ts)                 | 4       | 1            |
 | [`shop_identity`](tables/shop_identity.md)                                       | [src/lib/shop-identity.ts](../../src/lib/shop-identity.ts)             | 17      | 1            |

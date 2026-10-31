@@ -352,6 +352,14 @@
 - **Used by:** Operators verifying Web Push delivery.
 - **Auth:** `Authorization: Bearer` with `DEBUG_TOKEN`. Not an end-user session.
 
+## Endpoint: POST /webhooks/lnurl
+
+- **Purpose:** The self-hosted LNURL server calls it once per settled lightning address invoice (`spark_payment_received`). The receiver (the account whose verified wallet is `data.user_pubkey`) gets one Web Push `You received <amount_sat> sats.` that opens `/wallet`, titled with the sender's name when a signed zap request names the receiver and this amount and its signer is a 21.gifts account with a name, otherwise `21.gifts`. A zap on a forum note gets this push as well; the zap notification about the note is separate. Returns 200 `{ outcome }`: `queued`, `duplicate` (this payment hash was already pushed), `unknown` (no verified wallet), `self` (the receiver signed the zap request), `off` (notification level `none`), `no_device` (no push subscription whose login session is still live), or `ignored` (a body above 64 KiB, or a signed body that is not a usable `spark_payment_received`; nothing is written).
+- **Mounted:** Only when `LNURL_WEBHOOK_SECRET` is set; otherwise 404.
+- **Auth:** `X-Breez-Signature` must be the hex HMAC-SHA256 of the raw body with `LNURL_WEBHOOK_SECRET` (the `domain_webhooks.webhook_secret` of the LNURL server). No session.
+- **Errors:** 401 `Unauthorized`; 503 `Notifications are unavailable` when a store call fails, so the LNURL server retries. The claim of the payment hash and the outbox row are written together, so a retry never pushes twice.
+- **Used by:** The LNURL server's webhook delivery (retried with backoff on any non-2xx answer).
+
 ## Endpoint: POST /debug/push-broadcast
 
 - **Purpose:** Operator Web Push broadcast. Body `{ title, body, link?, usernames?, dryRun? }`. Without `usernames` it targets every account with a live push subscription (its session still authenticates the account, the rule the push worker sends by); with `usernames` (1-200) it targets those accounts. Accounts whose notification level is `none` are counted as `optedOut` and listed accounts without a live subscription as `noSubscription`; neither is queued. Each recipient gets one push outbox row, delivered by the push worker with the usual batch, lease, and retry rules. Returns 202 `{ id, targeted, queued, optedOut, noSubscription }`; `link` defaults to `/welcome`.

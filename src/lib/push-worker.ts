@@ -307,6 +307,31 @@ async function subscriptionSessionLive(
 }
 
 /**
+ * Whether one account has a subscription whose session still authenticates
+ * it: whether {@link runPushWorkerTick} would send that account anything.
+ *
+ * @param store - Push store.
+ * @param authStore - Auth store whose sessions the subscriptions are bound to.
+ * @param nowMs - Clock for session expiry.
+ * @param accountId - Account to check.
+ * @returns `true` when at least one of its subscriptions is live.
+ * @throws If a push store or auth store read rejects.
+ */
+export async function accountHasLiveSubscription(
+  store: PushStore,
+  authStore: AuthStore,
+  nowMs: number,
+  accountId: string,
+): Promise<boolean> {
+  for (const sub of await store.listByAccount(accountId)) {
+    if (await subscriptionSessionLive(authStore, nowMs, sub)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Account ids with at least one subscription whose session still
  * authenticates its account: the accounts {@link runPushWorkerTick} would
  * send to. Does not delete stale subscriptions; the worker and

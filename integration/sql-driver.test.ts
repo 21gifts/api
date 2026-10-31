@@ -2047,6 +2047,69 @@ describe('PostgresPushStore countBroadcastOutbox', () => {
   });
 });
 
+describe('PostgresPushStore enqueuePaymentReceived', () => {
+  test('parallel calls for one payment hash enqueue one row, and db_change logs the claim', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl, { max: 4 });
+    try {
+      await migrateAuthSchema(client);
+      await migratePushSchema(client);
+      await migrateDbChangeSchema(client);
+      const auth = new PostgresAuthStore(client);
+      const accountId = crypto.randomUUID();
+      await auth.createAccount({
+        id: accountId,
+        linkingKey: null,
+        role: 'basis',
+        name: null,
+        location: null,
+        forumLawsDismissed: false,
+        viewKey: `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`,
+        createdAt: Date.now(),
+        rulesAgreedAt: null,
+      });
+      const store = new PostgresPushStore(client);
+      const paymentHash = `${crypto.randomUUID().replaceAll('-', '')}${crypto.randomUUID().replaceAll('-', '')}`;
+      const createdAt = new Date('2026-10-30T12:00:00.000Z');
+      const row = (): PushOutboxRow => ({
+        id: crypto.randomUUID(),
+        accountId,
+        type: 'zap',
+        messageId: null,
+        payload: JSON.stringify({ tag: `payment:${paymentHash}` }),
+        status: 'pending',
+        attempts: 0,
+        claimedUntil: null,
+        createdAt,
+        finishedAt: null,
+        deliveredEndpoints: [],
+        skipEndpoints: [],
+      });
+      const rows = [row(), row(), row(), row()];
+      const results = await Promise.all(
+        rows.map((item) => store.enqueuePaymentReceived(paymentHash, item)),
+      );
+      expect(results.filter((queued) => queued)).toHaveLength(1);
+      const winner = rows[results.indexOf(true)];
+      if (winner === undefined) {
+        throw new Error('no enqueue won');
+      }
+      const stored = (await store.listAllOutbox(1000)).filter(
+        (item) => item.accountId === accountId,
+      );
+      expect(stored).toEqual([winner]);
+      expect(await store.enqueuePaymentReceived(paymentHash, row())).toBe(false);
+      const claims = await client.query<{ op: string; payment_hash: string; outbox_id: string }>(
+        `SELECT op, after->>'payment_hash' AS payment_hash, after->>'outbox_id' AS outbox_id
+         FROM db_change WHERE table_name = 'push_payment_received' AND after->>'payment_hash' = $1`,
+        [paymentHash],
+      );
+      expect(claims).toEqual([{ op: 'INSERT', payment_hash: paymentHash, outbox_id: winner.id }]);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
 describe('PostgresAuthStore wallet intro seen', () => {
   test('defaults false, a write raises it, a stale write keeps it, and db_change logs it', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);

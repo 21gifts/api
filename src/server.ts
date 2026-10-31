@@ -87,6 +87,8 @@ import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import { resolvePaymentWebhookSecret } from '@/lib/payment-received';
+import { accountHasLiveSubscription } from '@/lib/push-worker';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { aboutMeFromNote } from '@/lib/about-me';
@@ -125,6 +127,7 @@ import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
 import { lnurlServerRoutes } from '@/routes/lnurl-server';
+import { webhookRoutes } from '@/routes/webhooks';
 import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
 import { shopRoutes } from '@/routes/shops';
 
@@ -338,8 +341,9 @@ export interface AppDeps {
    * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`, Cloudflare)
    * and the self-hosted LNURL server. Those routes are mounted only when
    * `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
-   * {@link resolveLnurlServerConfig}; otherwise they are not mounted. Default
-   * `process.env`.
+   * {@link resolveLnurlServerConfig}; otherwise they are not mounted.
+   * `POST /webhooks/lnurl` is mounted only when `LNURL_WEBHOOK_SECRET` is set.
+   * Default `process.env`.
    */
   env?: Record<string, string | undefined>;
   /**
@@ -462,7 +466,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   and `/debug/messages`),
  *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when
  *   `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
- *   {@link resolveLnurlServerConfig}; otherwise they are not mounted),
+ *   {@link resolveLnurlServerConfig}; otherwise they are not mounted; `webhookRoutes`
+ *   is mounted at `/webhooks` only when `LNURL_WEBHOOK_SECRET` is set),
  *   sparkInvoiceStore (used only when free in-app payments are on; default
  *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
  *   spend token, spend ping, daily roster store (optional; default a fresh
@@ -698,6 +703,22 @@ export function createApp(deps: AppDeps = {}): Hono {
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
+  const webhookSecret = resolvePaymentWebhookSecret(env);
+  if (webhookSecret !== null) {
+    app.route(
+      '/webhooks',
+      webhookRoutes({
+        secret: webhookSecret,
+        auth: store,
+        pushStore,
+        hasLiveDevice: (accountId) =>
+          accountHasLiveSubscription(pushStore, store, now(), accountId),
+        notifications: notificationStore,
+        inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),
+        now,
+      }),
+    );
+  }
   app.route(
     '/',
     walletReportRoutes({

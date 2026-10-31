@@ -41,5 +41,7 @@ export const ORCHESTRA_API_KEY = 'fn_e2e_shop_payment_key';
 export const REFUND_ADDRESS = '0x2121212121212121212121212121212121212121';
 /** Debug bearer of the shop api (same value as the default project). */
 export const DEBUG_TOKEN = 'e2e-debug-token';
+/** `LNURL_WEBHOOK_SECRET` of the shop api (the default project leaves it blank). */
+export const WEBHOOK_SECRET = 'e2e-webhook-secret';
 /** Browser origin the passkey ceremony of the fixture uses. */
 export const WEBAUTHN_ORIGIN = `http://localhost:${API_PORT}`;

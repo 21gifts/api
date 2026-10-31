@@ -1134,6 +1134,13 @@ test('Function: enqueueBroadcastPush — a send without VAPID is 503 and queues 
   expect(await res.json()).toEqual({ error: 'Push is not configured' });
 });
 
+test('POST /webhooks/lnurl is not mounted when LNURL_WEBHOOK_SECRET is blank', async ({
+  request,
+}) => {
+  const res = await request.post('/webhooks/lnurl', { data: {} });
+  expect(res.status()).toBe(404);
+});
+
 test('GET /debug/push-broadcast/:id for an unknown id is 404', async ({ request }) => {
   const res = await request.get('/debug/push-broadcast/:id', {
     headers: { authorization: 'Bearer e2e-debug-token' },
