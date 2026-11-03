@@ -3,6 +3,7 @@ import { Hono } from 'hono';
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { InMemoryAuthStore } from '@/lib/auth/store';
+import { InMemoryDiagnosticStore } from '@/lib/diagnostic-log';
 import { InMemoryConversationStore, type ConversationStore } from '@/lib/conversation-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import { unsignedNostrDefaults, type ForumPhoto } from '@/lib/message';
@@ -14,12 +15,20 @@ import { createApp as createAppRaw } from '@/server';
 import { FUNDING_REQUIRED_FROM_UTC, type FundingGrant } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
-import type { GiftRecord } from '@/lib/gift-recorder';
 import { InMemoryGiftStore } from '@/lib/gift-store';
+import type { GiftRecord } from '@/lib/gift-recorder';
 import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import { decodeBolt11 } from '@/lib/bolt11';
+import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/lnurlp';
+import {
+  LNURL_SERVER,
+  WALLET_PUBKEY,
+  allInternal,
+  walletLnurlFetch,
+} from '@/__tests__/helpers/wallet-lnurl';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
@@ -47,15 +56,41 @@ function admittedStore(accountId = 'acc-alice'): InMemoryFundingStore {
 function createApp(deps: Parameters<typeof createAppRaw>[0] = {}): ReturnType<typeof createAppRaw> {
   return createAppRaw({
     fundingStore: admittedStore(),
+    env: { ...process.env, ...LNURL_ENV },
     ...deps,
   });
+}
+
+/** Env that resolves the LNURL server, so `alice@example.test` is a wallet address. */
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
+
+/**
+ * Claim and verify the wallet of `acc-alice` (username `alice`) and, unless
+ * `share` is false, store the 21.gifts recovery share that payouts need from
+ * the grant gate day on.
+ */
+async function verifyWallet(
+  authStore: InMemoryAuthStore,
+  id = 'acc-alice',
+  share = true,
+): Promise<void> {
+  const account = await authStore.getAccount(id);
+  await authStore.claimSparkPubkey(id, WALLET_PUBKEY);
+  await authStore.markSparkPubkeyVerified(id, WALLET_PUBKEY, account!.username!, 2);
+  if (share) {
+    await storeRecoveryShare(authStore, id, WALLET_PUBKEY);
+  }
 }
 
 const spendApp = createApp;
 const NOW_MS = Date.parse('2026-09-20T12:00:00.000Z');
 const GATE_MS = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
 const TOKEN = 'spend-secret-token';
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@example.test';
+const ADDRESS_REF = expectedAddressRef(ADDRESS, TOKEN);
 const PR = 'lnbc1issued';
 const HASH = 'aa'.repeat(32);
 const PREIMAGE = '11'.repeat(32);
@@ -84,7 +119,7 @@ function happyFetch(): FetchFn {
   return async (input) => {
     if (String(input).includes('/.well-known/lnurlp/')) {
       return jsonResponse({
-        callback: 'https://walletofsatoshi.com/lnurlp/callback',
+        callback: 'https://example.test/lnurlp/alice/invoice',
         minSendable: 1000,
         maxSendable: MAX_SENDABLE,
         commentAllowed: 255,
@@ -113,26 +148,28 @@ function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, u
 }
 
 /**
- * Seed an account for `address` with a passkey credential so POST /invoices
- * can reach LNURL / 200.
+ * Seed `acc-alice` (wallet `alice@example.test`) with a passkey credential so
+ * POST /invoices can reach LNURL / 200. `share: false` leaves out the 21.gifts
+ * recovery share.
  */
 async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
-  address: string = ADDRESS,
+  { share = true }: { share?: boolean } = {},
 ): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
+    username: 'alice',
+    walletRequired: true,
     linkingKey: null,
     role: 'verified',
     name: 'Ada',
-    lightningAddress: address,
-    lightningAddressVerified: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
   });
+  await verifyWallet(authStore, 'acc-alice', share);
   await authStore.createPasskeyCredential({
     credentialId: 'cred-alice',
     publicKey: new Uint8Array([1]),
@@ -190,15 +227,16 @@ function liveReplyStore(accountId: string = 'acc-alice'): InMemoryMessageStore {
   ]);
 }
 
-async function seedPasskeyAndPlatform(authStore: InMemoryAuthStore): Promise<void> {
-  await seedPasskeyAccount(authStore);
+async function seedPasskeyAndPlatform(
+  authStore: InMemoryAuthStore,
+  options: { share?: boolean } = {},
+): Promise<void> {
+  await seedPasskeyAccount(authStore, options);
   await authStore.createAccount({
     id: 'plat',
     linkingKey: null,
     role: 'founder',
     name: '21.gifts',
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'b'.repeat(64),
@@ -371,17 +409,18 @@ describe('GET /invoices/passkey', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
       `/invoices/passkey?address=${encodeURIComponent(ADDRESS)}`,
       auth(),
@@ -458,17 +497,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({ spendApiToken: TOKEN, authStore }).request(
       `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
       auth(),
@@ -488,17 +528,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -519,17 +560,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const inner = livePostStore();
     const messageStore = new Proxy(inner, {
       get(target, prop, receiver) {
@@ -562,11 +604,11 @@ describe('GET /invoices/posted', () => {
     const profileId = 'prof-alice';
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -574,6 +616,7 @@ describe('GET /invoices/posted', () => {
       rulesAgreedAt: null,
       profileMessageId: profileId,
     });
+    await verifyWallet(authStore);
     const messageStore = new InMemoryMessageStore([
       {
         id: profileId,
@@ -604,17 +647,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -635,17 +679,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -666,17 +711,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const messageStore = new InMemoryMessageStore([
       {
         id: POST_ID,
@@ -717,17 +763,18 @@ describe('GET /invoices/posted', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -743,17 +790,112 @@ describe('GET /invoices/posted', () => {
       welcomeMessageId: 'post-alice',
     });
   });
+  it('reports no welcome media once the account received the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const messageStore = await liveMediaPostStore();
+    await messageStore.create({
+      id: 'welcome-reply',
+      accountId: 'plat',
+      name: '21.gifts',
+      text: 'Welcome',
+      createdAt: new Date('2026-08-02T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      parentId: 'post-alice',
+    });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: true,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
+    });
+  });
+  it('reports no welcome media when a welcome gift is recorded under the username', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    const messageStore = await liveMediaPostStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+    }).request(`/invoices/posted?address=${encodeURIComponent(ADDRESS)}`, auth());
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      hasPosted: true,
+      messageId: 'post-alice',
+      postedAt: '2026-08-01T00:00:00.000Z',
+      hasMedia: true,
+      welcomeHasMedia: false,
+      welcomeMessageId: null,
+    });
+  });
 
   it('reports welcome media on an About-me photo and ignores a note that is not that photo', async () => {
     const authStore = new InMemoryAuthStore();
     const profileId = 'prof-alice';
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -761,6 +903,7 @@ describe('GET /invoices/posted', () => {
       rulesAgreedAt: null,
       profileMessageId: profileId,
     });
+    await verifyWallet(authStore);
     const profile = {
       id: profileId,
       accountId: 'acc-alice',
@@ -893,6 +1036,7 @@ describe('POST /invoices', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -973,17 +1117,18 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createApp({
       spendApiToken: TOKEN,
       authStore,
@@ -1132,6 +1277,32 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.issued')).toBe(true);
   });
 
+  it('prints invoice.issued with addressRef and no address, and the sink keeps the address', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const diagnosticStore = new InMemoryDiagnosticStore();
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      diagnosticStore,
+      messageStore: livePostStore(),
+      fetchImpl: happyFetch(),
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(200);
+    const line = parsedEvents(warn).find((e) => e['event'] === 'invoice.issued');
+    expect(line?.['addressRef']).toBe(ADDRESS_REF);
+    expect(line?.['amountMsat']).toBe(1000);
+    expect('address' in (line ?? {})).toBe(false);
+    const stored = (await diagnosticStore.listLatest(50)).find(
+      (row) => row.event === 'invoice.issued',
+    );
+    expect(stored?.fields['address']).toBe(ADDRESS);
+    expect('addressRef' in (stored?.fields ?? {})).toBe(false);
+  });
+
   it('stores messageId and comment when issuing against a UUID post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAndPlatform(authStore);
@@ -1246,6 +1417,119 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(200);
   });
 
+  it('records a welcome gift sent without messageId as welcome and refuses a second one', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const deps = {
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      fetchImpl: happyFetch(),
+      now: () => NOW_MS,
+      giftRecorder: {
+        recordOutbound: async (row: GiftRecord): Promise<void> => {
+          recorded.push(row);
+        },
+      },
+    };
+    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
+    const issued = await createApp(deps).request(
+      '/invoices',
+      auth({ method: 'POST', body: welcome }),
+    );
+    expect(issued.status).toBe(200);
+    const body = (await issued.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.comment).toBe('Welcome');
+    expect(invoiceStore.get(body.id)?.messageId).toBeUndefined();
+    const proved = await createApp(deps).request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded).toHaveLength(1);
+    expect(recorded[0]).toMatchObject({
+      recipientWosUser: 'alice',
+      kind: 'welcome',
+      description: '21gifts welcome',
+    });
+    const again = await createApp({
+      ...deps,
+      giftStore: new InMemoryGiftStore(
+        recorded.map((row) => ({
+          paidAt: row.paidAt,
+          amountSats: row.amountSats,
+          recipientWosUser: row.recipientWosUser,
+          kind: row.kind,
+          description: row.description,
+        })),
+      ),
+    }).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: 'Welcome gift already paid' });
+  });
+
+  it('pays a moderator payout with comment Welcome after the welcome gift, but not an ignored group id', async () => {
+    mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore);
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const recorded: GiftRecord[] = [];
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      invoiceStore,
+      conversationStore,
+      fetchImpl: happyFetch(),
+      now: () => NOW_MS,
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      giftRecorder: {
+        recordOutbound: async (row) => {
+          recorded.push(row);
+        },
+      },
+    });
+    const issue = async (groupMessageId: string): Promise<Response> =>
+      app.request(
+        '/invoices',
+        auth({
+          method: 'POST',
+          body: JSON.stringify({
+            address: ADDRESS,
+            amountMsat: 1000,
+            comment: 'Welcome',
+            groupMessageId,
+          }),
+        }),
+      );
+    const moderator = await issue(GROUP_MSG_ID);
+    expect(moderator.status).toBe(200);
+    const body = (await moderator.json()) as { id: string };
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: body.id, preimage: PREIMAGE }) }),
+    );
+    expect(proved.status).toBe(200);
+    expect(recorded[0]).toMatchObject({ kind: 'moderator', description: '21gifts moderator' });
+    const ignored = await issue('99999999-9999-4999-8999-999999999999');
+    expect(ignored.status).toBe(409);
+    expect(await ignored.json()).toEqual({ error: 'Welcome gift already paid' });
+  });
+
   it('stores normalized amountUsd and freezes that USD on the proven gift', async () => {
     mockedDecode.mockReturnValue({ paymentHash: MATCHING_HASH, amountMsat: 1000 });
     const authStore = new InMemoryAuthStore();
@@ -1296,10 +1580,10 @@ describe('POST /invoices', () => {
     );
     expect(proved.status).toBe(200);
     expect(recorded[0]?.fiat?.usd).toBe('5.00');
-    expect(recorded[0]?.fiat?.chf).toBe('4.00');
+    expect(recorded[0]?.fiat?.chf).toBeNull();
     const attached = await conversationStore.getMessageById(spendGroupGiftId(body.id));
     expect(attached?.amountUsd).toBe('5.00');
-    expect(attached?.amountChf).toBe('4.00');
+    expect(attached?.amountChf).toBeNull();
   });
 
   it('returns 400 when amountUsd cannot be normalized', async () => {
@@ -1427,11 +1711,11 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1439,6 +1723,7 @@ describe('POST /invoices', () => {
       rulesAgreedAt: null,
       profileMessageId: PROFILE_NOTE_ID,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
@@ -1451,8 +1736,6 @@ describe('POST /invoices', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1506,11 +1789,11 @@ describe('POST /invoices', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1518,6 +1801,7 @@ describe('POST /invoices', () => {
       rulesAgreedAt: null,
       profileMessageId: PROFILE_NOTE_ID,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
@@ -1530,8 +1814,6 @@ describe('POST /invoices', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1571,6 +1853,163 @@ describe('POST /invoices', () => {
     expect(res.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalled();
   });
+  it('returns 409 for a welcome invoice when the account already received the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: PROFILE_NOTE_ID,
+    });
+    await verifyWallet(authStore);
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'welcome-reply',
+        accountId: 'plat',
+        name: '21.gifts',
+        text: 'Welcome',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: PROFILE_NOTE_ID,
+      },
+    ]);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          messageId: PROFILE_NOTE_ID,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it('returns 409 for a welcome invoice without messageId after a platform Welcome reply', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      profileMessageId: PROFILE_NOTE_ID,
+    });
+    await verifyWallet(authStore);
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    await authStore.createAccount({
+      id: 'plat',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'b'.repeat(64),
+      createdAt: 2,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: PROFILE_NOTE_ID,
+        accountId: 'acc-alice',
+        name: 'Ada',
+        text: 'about',
+        createdAt: new Date('2026-08-01T00:00:00.000Z'),
+        hasPhoto: true,
+        ...unsignedNostrDefaults(),
+      },
+      {
+        id: 'welcome-reply',
+        accountId: 'plat',
+        name: '21.gifts',
+        text: 'Welcome',
+        createdAt: new Date('2026-08-02T00:00:00.000Z'),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        parentId: PROFILE_NOTE_ID,
+      },
+    ]);
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore,
+      fetchImpl,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          comment: 'Welcome',
+        }),
+      }),
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
 
   it("returns 403 when messageId is another account's post", async () => {
     const authStore = new InMemoryAuthStore();
@@ -1580,8 +2019,6 @@ describe('POST /invoices', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Bob',
-      lightningAddress: 'bob@walletofsatoshi.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'c'.repeat(64),
@@ -1685,6 +2122,114 @@ describe('POST /invoices', () => {
     expect(putSpy).not.toHaveBeenCalled();
   });
 
+  it('returns 409 for a welcome invoice when a welcome gift is recorded under the username', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = (gifts: InMemoryGiftStore): ReturnType<typeof createAppRaw> =>
+      createApp({
+        spendApiToken: TOKEN,
+        authStore,
+        messageStore: livePostStore(),
+        giftStore: gifts,
+        fetchImpl,
+      });
+    const welcome = JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' });
+    const refused = await app(
+      new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'Alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+    ).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const first = await app(
+      new InMemoryGiftStore([
+        { paidAt: new Date(5), amountSats: 1, recipientWosUser: 'alice', kind: 'daily' },
+        {
+          paidAt: new Date(1),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+        // A legacy welcome to another member's external address with the same local part.
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts daily',
+        },
+      ]),
+    ).request('/invoices', auth({ method: 'POST', body: welcome }));
+    expect(first.status).toBe(200);
+  });
+
+  it('returns 409 for a welcome invoice when the legacy external address got the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([], ['acc-alice']),
+      fetchImpl,
+    });
+    const refused = await app.request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toEqual({ error: 'Welcome gift already paid' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    const posted = await app.request(
+      `/invoices/posted?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await posted.json()).toMatchObject({ welcomeHasMedia: false, welcomeMessageId: null });
+  });
+
+  it('checks the funding grant before the welcome gift', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      giftStore: new InMemoryGiftStore([
+        {
+          paidAt: new Date(5),
+          amountSats: 1,
+          recipientWosUser: 'alice',
+          kind: 'welcome',
+          description: '21gifts welcome',
+        },
+      ]),
+      fetchImpl: happyFetch(),
+      fundingStore: new InMemoryFundingStore(),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+  });
+
   it('returns 200 when messageId is omitted even without a platform account', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -1703,89 +2248,6 @@ describe('POST /invoices', () => {
     );
     expect(res.status).toBe(200);
     expect(fetchImpl).toHaveBeenCalled();
-  });
-
-  it('returns 403 when getAccount misses the post author', async () => {
-    const inner = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(inner);
-    const authStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'getAccount') {
-          return async (id: string) => {
-            if (id === 'acc-alice') {
-              return undefined;
-            }
-            return target.getAccount(id);
-          };
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
-    });
-    const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
-
-  it("returns 403 when the post author's Lightning Address is unset", async () => {
-    const inner = new InMemoryAuthStore();
-    await seedPasskeyAndPlatform(inner);
-    const authStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'getAccount') {
-          return async (id: string) => {
-            const account = await target.getAccount(id);
-            if (account === undefined || id !== 'acc-alice') {
-              return account;
-            }
-            return { ...account, lightningAddress: null };
-          };
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
-    });
-    const fetchImpl = vi.fn<FetchFn>(happyFetch());
-    const res = await createApp({
-      spendApiToken: TOKEN,
-      authStore,
-      messageStore: uuidPostStore(),
-      fetchImpl,
-    }).request(
-      '/invoices',
-      auth({
-        method: 'POST',
-        body: JSON.stringify({
-          address: ADDRESS,
-          amountMsat: 1000,
-          messageId: POST_ID,
-        }),
-      }),
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Forum post required' });
-    expect(fetchImpl).not.toHaveBeenCalled();
   });
 
   it('stores groupMessageId and comment when issuing against a group message', async () => {
@@ -1934,7 +2396,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -1983,7 +2445,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2018,7 +2480,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2037,6 +2499,7 @@ describe('POST /invoices', () => {
         fundingStore: admittedStore(),
         now: () => 1,
         fetchImpl: happyFetch(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(
@@ -2056,7 +2519,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2084,6 +2547,7 @@ describe('POST /invoices', () => {
         fundingStore: admittedStore(),
         now: () => 1,
         fetchImpl: happyFetch(),
+        lnurlServer: LNURL_SERVER,
       }),
     );
     const res = await app.request(
@@ -2103,7 +2567,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2138,7 +2602,7 @@ describe('POST /invoices', () => {
     expect(invoiceStore.get(body.id)?.groupMessageId).toBeUndefined();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.group_message_ignored' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.group_message_ignored' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2200,7 +2664,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.welcome_paid' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2389,7 +2853,7 @@ describe('POST /invoices', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(
       parsedEvents(warn).some(
-        (e) => e['event'] === 'invoice.welcome_paid' && e['address'] === ADDRESS,
+        (e) => e['event'] === 'invoice.welcome_paid' && e['addressRef'] === ADDRESS_REF,
       ),
     ).toBe(true);
   });
@@ -2472,6 +2936,7 @@ describe('POST /invoices/proof', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -2630,7 +3095,7 @@ describe('POST /invoices/proof', () => {
         feeSats: 0,
         recipientWosUser: 'alice',
         lightningInvoice: PR,
-        description: '21gifts daily',
+        description: '21gifts welcome',
         kind: 'welcome',
         sourceWallet: 'lightning.space',
         fiat: null,
@@ -2858,8 +3323,6 @@ describe('POST /invoices/proof', () => {
       linkingKey: null,
       role: 'founder',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -2891,8 +3354,6 @@ describe('POST /invoices/proof', () => {
       linkingKey: null,
       role: 'founder',
       name: '   ',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3298,17 +3759,18 @@ describe('POST /invoices/proof', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
@@ -3321,8 +3783,6 @@ describe('POST /invoices/proof', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3375,17 +3835,18 @@ describe('POST /invoices/proof', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: '  ',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),
@@ -3398,8 +3859,6 @@ describe('POST /invoices/proof', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -3706,17 +4165,18 @@ describe('GET /invoices/eligible', () => {
     const authStore = new InMemoryAuthStore();
     await authStore.createAccount({
       id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
       linkingKey: null,
       role: 'basis',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const fundingStore = admittedStore();
     const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
       `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
@@ -3762,6 +4222,7 @@ describe('POST /invoices/proof payment fiat', () => {
   });
 
   afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
     warn.mockRestore();
   });
 
@@ -3777,17 +4238,16 @@ describe('POST /invoices/proof payment fiat', () => {
       amountUsd: '5.00',
     };
     const recorded: GiftRecord[] = [];
+    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
+      throw new Error('frankfurter down');
+    });
     const invoiceStore = new InMemoryInvoiceStore();
     invoiceStore.put(invoice);
     const res = await createApp({
       spendApiToken: TOKEN,
       invoiceStore,
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: {
-        ensureDays: async () => {
-          throw new Error('frankfurter down');
-        },
-      },
+      fiatRates: { ensureDays },
       giftRecorder: {
         recordOutbound: async (row) => {
           recorded.push(row);
@@ -3798,9 +4258,11 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
-    expect(recorded[0]?.fiat?.usd).toBe('5.00');
-    expect(recorded[0]?.fiat?.chf).toBeNull();
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
+      false,
+    );
+    expect(ensureDays).not.toHaveBeenCalled();
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
   });
 
   it('uses an earlier stored rate when loading the payment day throws', async () => {
@@ -3841,11 +4303,11 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(true);
-    expect(calls[0]?.[0]).toBe('2026-06-01');
-    expect(calls[1]?.includes('2026-06-01')).toBe(false);
-    expect(calls[1]?.includes('2026-05-31')).toBe(true);
-    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: '4.00', eur: '4.50', php: '250.00' });
+    expect(parsedEvents(warn).some((event) => event['event'] === 'invoice.fiat_failed')).toBe(
+      false,
+    );
+    expect(calls).toEqual([]);
+    expect(recorded[0]?.fiat).toEqual({ usd: '5.00', chf: null, eur: null, php: null });
   });
 
   it('stores null fiat when amountUsd is not normalized', async () => {
@@ -3908,8 +4370,11 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(mockedSpot).not.toHaveBeenCalled();
   });
 
-  it('freezes spot crosses when the invoice has no amountUsd', async () => {
+  it('the omitted snapshot stays null when the invoice has no amountUsd', async () => {
     mockedSpot.mockResolvedValueOnce('100000');
+    const ensureDays = vi.fn(async (_days: readonly string[], _nowMs: number) => {
+      return new Map([['2026-06-01', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+    });
     const invoice: GiftInvoice = {
       id: 'd0'.repeat(16),
       address: ADDRESS,
@@ -3926,9 +4391,7 @@ describe('POST /invoices/proof payment fiat', () => {
       spendApiToken: TOKEN,
       invoiceStore,
       now: () => Date.parse('2026-06-01T12:00:00.000Z'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-06-01': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
+      fiatRates: { ensureDays },
       giftRecorder: {
         recordOutbound: async (row) => {
           recorded.push(row);
@@ -3939,8 +4402,9 @@ describe('POST /invoices/proof payment fiat', () => {
       auth({ method: 'POST', body: JSON.stringify({ id: invoice.id, preimage: PREIMAGE }) }),
     );
     expect(res.status).toBe(200);
-    expect(recorded[0]?.fiat?.usd).toBe('1.00');
-    expect(recorded[0]?.fiat?.chf).toBe('0.80');
+    expect(recorded[0]?.fiat).toBeNull();
+    expect(mockedSpot).not.toHaveBeenCalled();
+    expect(ensureDays).not.toHaveBeenCalled();
   });
 
   it('fills a quote the payment day has not published yet from the previous day', async () => {
@@ -3977,9 +4441,9 @@ describe('POST /invoices/proof payment fiat', () => {
     expect(res.status).toBe(200);
     expect(recorded[0]?.fiat).toEqual({
       usd: '5.00',
-      chf: '4.00',
-      eur: '4.50',
-      php: '250.00',
+      chf: null,
+      eur: null,
+      php: null,
     });
   });
 
@@ -4012,5 +4476,407 @@ describe('POST /invoices/proof payment fiat', () => {
     );
     expect(res.status).toBe(200);
     expect(recorded[0]?.fiat).toBeNull();
+  });
+});
+
+describe('spend lookups by wallet address', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    mockedDecode.mockReset();
+    mockedDecode.mockReturnValue({ paymentHash: HASH, amountMsat: 1000 });
+  });
+
+  afterEach(() => {
+    expect(warn.mock.calls.flat().join('\n')).not.toContain(ADDRESS);
+    warn.mockRestore();
+  });
+
+  const EMPTY_POSTED = {
+    hasPosted: false,
+    messageId: null,
+    postedAt: null,
+    hasMedia: false,
+    welcomeHasMedia: false,
+    welcomeMessageId: null,
+  };
+
+  /** `acc-alice` with a passkey, an admitted grant, and a live post, but no verified wallet. */
+  async function seedWithoutWallet(
+    authStore: InMemoryAuthStore,
+    withPasskey = true,
+  ): Promise<void> {
+    await authStore.createAccount({
+      id: 'acc-alice',
+      linkingKey: null,
+      role: 'verified',
+      name: 'Ada',
+      username: 'alice',
+      walletRequired: true,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    if (!withPasskey) {
+      return;
+    }
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+  }
+
+  async function lookups(
+    app: ReturnType<typeof createAppRaw>,
+    address: string,
+  ): Promise<{ passkey: unknown; eligible: unknown; posted: unknown; post: Response }> {
+    const query = encodeURIComponent(address);
+    const passkey = await (await app.request(`/invoices/passkey?address=${query}`, auth())).json();
+    const eligible = await (
+      await app.request(`/invoices/eligible?address=${query}`, auth())
+    ).json();
+    const posted = await (await app.request(`/invoices/posted?address=${query}`, auth())).json();
+    const post = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address, amountMsat: 1000 }) }),
+    );
+    return { passkey, eligible, posted, post };
+  }
+
+  it('resolves the wallet address case-insensitively and fetches the invoice internally', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const { fetchImpl, seen } = walletLnurlFetch('alice');
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      invoiceStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, ' ALICE@Example.Test ');
+    expect(result.passkey).toEqual({ hasPasskey: true });
+    expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
+    expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
+    expect(result.post.status).toBe(200);
+    const body = (await result.post.json()) as { id: string };
+    expect(invoiceStore.get(body.id)?.address).toBe('alice@example.test');
+    expect(allInternal(seen)).toBe(true);
+  });
+
+  it('accepts a wallet address whose public host carries a port or is an IP address', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    /** App whose `PUBLIC_BASE_URL` is `https://<host>`, with a fake internal LNURL server. */
+    function hostApp(host: string): {
+      app: ReturnType<typeof createAppRaw>;
+      invoiceStore: InMemoryInvoiceStore;
+      seen: string[];
+    } {
+      const invoiceStore = new InMemoryInvoiceStore();
+      const seen: string[] = [];
+      const fetchImpl: FetchFn = async (input) => {
+        const url = String(input);
+        seen.push(url);
+        if (url === 'http://lnurl.test/.well-known/lnurlp/alice') {
+          return Response.json({
+            tag: 'payRequest',
+            callback: `https://${host}/lnurlp/alice/invoice`,
+            metadata: '[["text/plain","x"]]',
+            minSendable: 1000,
+            maxSendable: 1_000_000_000,
+          });
+        }
+        if (url.startsWith('http://lnurl.test/lnurlp/alice/invoice?')) {
+          return Response.json({ pr: PR });
+        }
+        return new Response('unexpected', { status: 500 });
+      };
+      const app = createApp({
+        spendApiToken: TOKEN,
+        authStore,
+        invoiceStore,
+        messageStore: livePostStore(),
+        fetchImpl,
+        now: () => NOW_MS,
+        env: { ...process.env, ...LNURL_ENV, PUBLIC_BASE_URL: `https://${host}` },
+      });
+      return { app, invoiceStore, seen };
+    }
+    for (const host of ['example.test:8443', '127.0.0.1', '[::1]:3000']) {
+      const { app, invoiceStore, seen } = hostApp(host);
+      const result = await lookups(app, `Alice@${host.toUpperCase()}`);
+      expect(result.passkey).toEqual({ hasPasskey: true });
+      expect(result.eligible).toEqual({ eligible: true, status: 'admitted' });
+      expect(result.posted).toMatchObject({ hasPosted: true, messageId: 'post-alice' });
+      expect(result.post.status).toBe(200);
+      const body = (await result.post.json()) as { id: string };
+      expect(invoiceStore.get(body.id)?.address).toBe(`alice@${host}`);
+      expect(seen.length).toBeGreaterThan(0);
+      expect(seen.every((url) => url.startsWith('http://lnurl.test/'))).toBe(true);
+      const bare = await app.request(
+        `/invoices/passkey?address=${encodeURIComponent(host)}`,
+        auth(),
+      );
+      expect(bare.status).toBe(400);
+    }
+    const { app } = hostApp('example.test:8443');
+    for (const address of [
+      'alice@other.test:8443',
+      '@example.test:8443',
+      'alice@@example.test:8443',
+      'al ice@example.test:8443',
+      `${'a'.repeat(250)}@example.test:8443`,
+    ]) {
+      const refused = await app.request(
+        `/invoices/passkey?address=${encodeURIComponent(address)}`,
+        auth(),
+      );
+      expect(refused.status).toBe(400);
+    }
+    const off = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      env: { ...process.env, LNURL_SERVER_URL: '', PUBLIC_BASE_URL: '' },
+    }).request(
+      `/invoices/passkey?address=${encodeURIComponent('alice@example.test:8443')}`,
+      auth(),
+    );
+    expect(off.status).toBe(400);
+  });
+
+  it('does not find a foreign domain', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, 'alice@example.com');
+    expect(result.passkey).toEqual({ hasPasskey: false });
+    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
+    expect(result.posted).toEqual(EMPTY_POSTED);
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not find a member without a verified wallet', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedWithoutWallet(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, ADDRESS);
+    expect(result.passkey).toEqual({ hasPasskey: false });
+    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
+    expect(result.posted).toEqual(EMPTY_POSTED);
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Wallet required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.wallet_required')).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers Passkey required for a member with neither a passkey nor a wallet', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedWithoutWallet(authStore, false);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, ADDRESS);
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers Passkey required for a member without a wallet named on another host', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedWithoutWallet(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+    });
+    const result = await lookups(app, 'alice@other.test');
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not find anyone while the LNURL server is off', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore);
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const app = createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => NOW_MS,
+      env: {},
+    });
+    const result = await lookups(app, ADDRESS);
+    expect(result.passkey).toEqual({ hasPasskey: false });
+    expect(result.eligible).toEqual({ eligible: false, status: 'none' });
+    expect(result.posted).toEqual(EMPTY_POSTED);
+    expect(result.post.status).toBe(403);
+    expect(await result.post.json()).toEqual({ error: 'Passkey required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+});
+
+describe('payout gate: the 21.gifts recovery share', () => {
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  it('refuses an admitted member without a share like a missing grant', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(parsedEvents(warn)).toContainEqual(
+      expect.objectContaining({ event: 'invoice.funding_required', addressRef: ADDRESS_REF }),
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('answers eligible false with the admitted status without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => GATE_MS }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'admitted' });
+  });
+
+  it("answers eligible false with the trial status for today's trial without a share", async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fundingStore = new InMemoryFundingStore([
+      { ...expiredTrialGrant(), trialUtcDate: FUNDING_REQUIRED_FROM_UTC },
+    ]);
+    const app = createApp({ spendApiToken: TOKEN, authStore, fundingStore, now: () => GATE_MS });
+    const before = await app.request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await before.json()).toEqual({ eligible: false, status: 'trial' });
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+    const after = await app.request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await after.json()).toEqual({ eligible: true, status: 'trial' });
+  });
+
+  it('refuses the welcome gift without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({ address: ADDRESS, amountMsat: 1000, comment: 'Welcome' }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('refuses the moderator stipend without a share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAndPlatform(authStore, { share: false });
+    const conversationStore = new InMemoryConversationStore();
+    await seedGroupTrigger(conversationStore);
+    const invoiceStore = new InMemoryInvoiceStore();
+    const fetchImpl = vi.fn<FetchFn>(happyFetch());
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: uuidPostStore(),
+      invoiceStore,
+      fetchImpl,
+      conversationStore,
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({
+        method: 'POST',
+        body: JSON.stringify({
+          address: ADDRESS,
+          amountMsat: 1000,
+          groupMessageId: GROUP_MSG_ID,
+          comment: '21gifts moderator',
+        }),
+      }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('does not read the share before the gate day', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const shareRead = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+    const res = await createApp({ spendApiToken: TOKEN, authStore, now: () => NOW_MS }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(await res.json()).toEqual({ eligible: true, status: 'admitted' });
+    expect(shareRead).not.toHaveBeenCalled();
   });
 });

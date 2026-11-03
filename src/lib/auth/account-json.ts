@@ -1,4 +1,5 @@
 import { aboutMeFromNote } from '@/lib/about-me';
+import type { HeartedPublicMessage } from '@/lib/member-public-feed';
 import {
   accountMissing,
   accountSetup,
@@ -14,7 +15,6 @@ import {
   type Account,
   type AccountFiat,
   type AccountLocale,
-  type AddressVerification,
   type AmountUnit,
   type AuthStore,
   type NostrKeyListRow,
@@ -23,10 +23,12 @@ import {
   type PasskeyCredential,
   type Session,
 } from '@/lib/auth/store';
+import type { LnurlServerConfig } from '@/lib/config';
 import { serializeOwnerFunding, type OwnerFundingJson } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { MessageStore } from '@/lib/message-store';
 import { parseNotificationLevel } from '@/lib/notification';
+import { receivingAddress } from '@/lib/receiving-address';
 
 /**
  * Public JSON shape of an account (eleven fields always present). Never
@@ -47,9 +49,12 @@ export interface AccountResponse {
   username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
-  /** Linked Lightning Address, or `null`. */
+  /**
+   * Receiving address: the verified in-app wallet (`username` at the host of
+   * `PUBLIC_BASE_URL`), or `null` without one. Name kept for app compatibility.
+   */
   lightningAddress: string | null;
-  /** Whether control of the linked address has been proven. */
+  /** True when {@link AccountResponse.lightningAddress} is set (verified wallet). */
   lightningAddressVerified: boolean;
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
@@ -68,10 +73,11 @@ export interface AccountResponse {
  * Owner-facing account JSON: the eleven public fields plus the durable
  * view-key capability secret, the next `setup` step, factual `missing`,
  * `hasPosted`, `aboutMe`, `aboutMeHasPhoto`, `notificationLevel`,
- * `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
- * `walletBackupSeenAt`, `passkeyCredentialId`, `passkeyRenewFailed`,
- * `passkeyRenewClosed`, and `passkeyRenewPrfUnsupported` (true only when
- * the newest unacknowledged failed renew is `prfUnsupported`).
+ * `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`, `walletRequired`,
+ * `walletBackupSeenAt`, `walletIntroSeen`, `hadExternalWallet`, `sparkPubkey`,
+ * `sparkWalletVerified`, `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
+ * `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
+ * failed renew is `prfUnsupported`), and `socialRecoverySetUp`.
  */
 export interface OwnerAccountResponse extends AccountResponse {
   /** 64 lowercase hex; capability URL secret for `GET /view/:viewKey`. */
@@ -114,10 +120,15 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   aboutMessageId: string | null;
   /**
-   * Owner fan-out filter (`all` \| `active` \| `mentions`). Default `all`.
+   * Owner fan-out filter (`all` \| `active` \| `mentions` \| `none`). Default `all`.
    * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
    */
   notificationLevel: NotificationLevel;
+  /**
+   * Owner preference for heart-tip notifications. Default `true`.
+   * Owner-only; omitted from public `GET /view/:viewKey` and member cards.
+   */
+  notifyHearts: boolean;
   /**
    * Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. Owner-only;
    * omitted from public member cards and view profiles.
@@ -151,6 +162,23 @@ export interface OwnerAccountResponse extends AccountResponse {
    */
   walletBackupSeenAt: number | null;
   /**
+   * True after `POST /me/wallet-intro-seen`; false until then. Owner-only;
+   * omitted from public member cards and view profiles.
+   */
+  walletIntroSeen: boolean;
+  /**
+   * True when the account has a stored legacy external payout address.
+   * Read-only. Owner-only; omitted from public member cards and view profiles.
+   */
+  hadExternalWallet: boolean;
+  /** Identity public key of the member's wallet (66 lower-case hex), or `null`. */
+  sparkPubkey: string | null;
+  /**
+   * True when the LNURL server has accepted a registration signed by
+   * {@link OwnerAccountResponse.sparkPubkey}.
+   */
+  sparkWalletVerified: boolean;
+  /**
    * Newest passkey credential id (base64url) when `walletRequired` is true,
    * or `null` when `walletRequired` is not true even if a login passkey
    * exists. Owner-only; used to bind PRF reveal to this account's seed
@@ -174,22 +202,62 @@ export interface OwnerAccountResponse extends AccountResponse {
    * Owner-only. False for every other failure.
    */
   passkeyRenewPrfUnsupported: boolean;
+  /**
+   * True when the api holds a 21.gifts recovery share for the account's
+   * current verified wallet (`sparkPubkey` with `sparkWalletVerified`). No
+   * grant or date check. Owner only.
+   */
+  socialRecoverySetUp: boolean;
 }
 
 /**
- * Public profile card for anyone with the view-key URL. Omits identity
- * ids, role, and the view key itself.
+ * Counts and funding marks the member card already shows.
+ * The share link returns the same marks.
+ */
+export interface ViewProfileFacts {
+  /** Uncapped live top-level posts. */
+  postCount: number;
+  /** Uncapped live replies. */
+  replyCount: number;
+  /** Uncapped live shop notes. */
+  shopCount: number;
+  /** Uncapped live credit notes. */
+  creditCount: number;
+  /** Admission time (epoch ms) when admitted, otherwise `null`. */
+  fundingReviewedAt: number | null;
+  /** Display name of the staff member who admitted them, or `null`. */
+  fundingReviewedByName: string | null;
+}
+
+/** Empty counts and no funding mark. */
+const EMPTY_VIEW_FACTS: ViewProfileFacts = {
+  postCount: 0,
+  replyCount: 0,
+  shopCount: 0,
+  creditCount: 0,
+  fundingReviewedAt: null,
+  fundingReviewedByName: null,
+};
+
+/**
+ * Public profile card for anyone with the view-key URL.
+ * Same visible identity as the member card. Omits `linkingKey`, `viewKey`,
+ * and owner-only settings.
  */
 export interface ViewProfileResponse {
+  /** Account id. Same id as `GET /members/:id`. */
+  id: string;
   /** Display name, or `null` until set. */
   name: string | null;
   /** Unique LUD-16 / NIP-05 local-part, or `null` until set. */
   username: string | null;
   /** Free-text location set by the owner, or `null` when unset. */
   location: string | null;
-  /** Linked Lightning Address, or `null`. */
+  /** Live role. Same value as the member card. */
+  role: Account['role'];
+  /** Receiving address (verified in-app wallet), or `null`. Name kept for app compatibility. */
   lightningAddress: string | null;
-  /** Whether control of the linked address has been proven. */
+  /** True when {@link ViewProfileResponse.lightningAddress} is set. */
   lightningAddressVerified: boolean;
   /** Creation time (epoch ms). */
   createdAt: number;
@@ -211,6 +279,25 @@ export interface ViewProfileResponse {
    * Name-copy, missing, and soft-hidden notes stay `null`. Always present.
    */
   aboutMessageId: string | null;
+  /** Uncapped live top-level posts. */
+  postCount: number;
+  /** Uncapped live replies. */
+  replyCount: number;
+  /** Uncapped live shop notes. */
+  shopCount: number;
+  /** Uncapped live credit notes. */
+  creditCount: number;
+  /** Admission time (epoch ms) when admitted, otherwise `null`. */
+  fundingReviewedAt: number | null;
+  /** Display name of the staff member who admitted them, or `null`. */
+  fundingReviewedByName: string | null;
+  /**
+   * Live profile note, or `null` when none. Same object as
+   * `GET /members/:accountId`. `hearted` is false on this URL.
+   */
+  profileMessage: HeartedPublicMessage | null;
+  /** Present only when the account's staff label is `software_developer`. */
+  staffTag?: 'software_developer';
 }
 
 /**
@@ -222,10 +309,18 @@ export interface ViewProfileResponse {
  * `viewKey`, Nostr columns, or `isPlatform`. The eleven public fields stay
  * always present; `staffTag` is added only when set to `software_developer`.
  *
+ * `lightningAddress` is the account's receiving address (verified in-app
+ * wallet) from {@link receivingAddress}, never the stored external address.
+ *
  * @param account - Stored account.
+ * @param lnurlServer - LNURL server config, or `undefined` when off (no receiving address).
  * @returns The eleven public fields, plus `staffTag` only when set.
  */
-export function serializeAccount(account: Account): AccountResponse {
+export function serializeAccount(
+  account: Account,
+  lnurlServer?: LnurlServerConfig,
+): AccountResponse {
+  const receiving = receivingAddress(account, lnurlServer);
   const body: AccountResponse = {
     id: account.id,
     linkingKey: account.linkingKey,
@@ -233,8 +328,8 @@ export function serializeAccount(account: Account): AccountResponse {
     name: account.name,
     username: account.username ?? null,
     location: account.location,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
+    lightningAddress: receiving?.address ?? null,
+    lightningAddressVerified: receiving !== null,
     forumLawsDismissed: account.forumLawsDismissed,
     createdAt: account.createdAt,
     rulesAgreedAt: account.rulesAgreedAt,
@@ -269,7 +364,11 @@ export const EMPTY_DEBUG_NOSTR: DebugNostrFields = {
   nostrKeyCreatedAt: null,
 };
 
-/** Operator JSON shape: every `account` column plus Nostr debug fields. */
+/**
+ * Operator JSON shape: the `account` columns except the legacy
+ * `lightning_address` and `lightning_address_verified` and the derived
+ * `spark_address` (it follows from `sparkPubkey`), plus Nostr debug fields.
+ */
 export interface DebugAccountResponse extends AccountResponse {
   /** True when this is the official platform account. */
   isPlatform: boolean;
@@ -279,12 +378,14 @@ export interface DebugAccountResponse extends AccountResponse {
   viewKey: string;
   /** Epoch ms when the owner skipped the name wizard step, or `null`. */
   nameSkippedAt: number | null;
-  /** Epoch ms when the owner skipped the Lightning Address wizard step, or `null`. */
+  /** Epoch ms when the owner skipped the receiving-wallet wizard step, or `null`. */
   lightningAddressSkippedAt: number | null;
   /** Id of the single top-level profile forum message, or `null`. */
   profileMessageId: string | null;
-  /** Owner fan-out filter (`all` \| `active` \| `mentions`). */
+  /** Owner fan-out filter (`all` \| `active` \| `mentions` \| `none`). */
   notificationLevel: NotificationLevel;
+  /** Owner preference for heart-tip notifications. Default `true`. */
+  notifyHearts: boolean;
   /** Owner amount-entry unit (`btc` \| `fiat`). Default `btc`. */
   amountUnit: AmountUnit;
   /**
@@ -305,6 +406,12 @@ export interface DebugAccountResponse extends AccountResponse {
    * that has not been recorded.
    */
   walletBackupSeenAt: number | null;
+  /** True after the owner saw the in-app wallet intro. Default `false`. */
+  walletIntroSeen: boolean;
+  /** Identity public key of the member's wallet (66 lower-case hex), or `null`. */
+  sparkPubkey: string | null;
+  /** Epoch ms when the LNURL server accepted a registration for that key, or `null`. */
+  sparkPubkeyVerifiedAt: number | null;
   /** Custodial pubkey hex, or `null`. */
   nostrPubkey: string | null;
   /** Lowercase hex of the stored nsec envelope, or `null`. Never plaintext. */
@@ -341,18 +448,6 @@ export interface SessionDebug {
   createdAt: number;
 }
 
-/** Operator address-verification JSON. */
-export interface AddressVerificationDebug {
-  /** Owning account id. */
-  accountId: string;
-  /** Lightning Address under proof. */
-  address: string;
-  /** One-time nonce. */
-  nonce: string;
-  /** Issue time (epoch ms). */
-  createdAt: number;
-}
-
 /** Operator passkey-challenge JSON. */
 export interface PasskeyChallengeDebug {
   /** Opaque challenge id. */
@@ -377,8 +472,6 @@ export interface DebugAccountDetailResponse extends DebugAccountResponse {
   passkeys: PasskeyDebug[];
   /** Sessions for this account (plaintext tokens). */
   sessions: SessionDebug[];
-  /** Pending address verification, or `null`. */
-  addressVerification: AddressVerificationDebug | null;
   /** Passkey challenges whose `accountId` matches. */
   passkeyChallenges: PasskeyChallengeDebug[];
 }
@@ -441,23 +534,6 @@ export function serializeDebugSession(session: Session): SessionDebug {
 }
 
 /**
- * Project a pending address verification for operator debug JSON.
- *
- * @param verification - Stored verification.
- * @returns Debug fields.
- */
-export function serializeDebugAddressVerification(
-  verification: AddressVerification,
-): AddressVerificationDebug {
-  return {
-    accountId: verification.accountId,
-    address: verification.address,
-    nonce: verification.nonce,
-    createdAt: verification.createdAt,
-  };
-}
-
-/**
  * Project a passkey challenge for operator debug JSON.
  *
  * @param challenge - Stored challenge.
@@ -496,20 +572,24 @@ function aboutMessageIdFor(account: Account, aboutMe: string | null): string | n
 /**
  * Project an account for `GET /debug/accounts` and `PATCH /debug/accounts/:id`.
  *
- * Includes every `account` column plus Nostr debug fields. Never used by
- * member `GET /me`. Does not decrypt nsec.
+ * Includes the `account` columns except the legacy `lightning_address` and
+ * `lightning_address_verified` and the derived `spark_address` (it follows from
+ * `sparkPubkey`), plus Nostr debug fields. Never used by member
+ * `GET /me`. Does not decrypt nsec.
  *
  * @param account - Stored account.
  * @param nostr - Optional Nostr columns (defaults to JSON `null`s).
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Debug fields including `viewKey`, `sessionRefused`, `locale`,
- * `fiat`, and Nostr columns.
+ * `fiat`, `walletIntroSeen`, `sparkPubkey`, `sparkPubkeyVerifiedAt`, and Nostr columns.
  */
 export function serializeDebugAccount(
   account: Account,
   nostr: DebugNostrFields = EMPTY_DEBUG_NOSTR,
+  lnurlServer?: LnurlServerConfig,
 ): DebugAccountResponse {
   return {
-    ...serializeAccount(account),
+    ...serializeAccount(account, lnurlServer),
     isPlatform: account.isPlatform === true,
     sessionRefused: account.sessionRefused === true,
     viewKey: account.viewKey,
@@ -517,11 +597,16 @@ export function serializeDebugAccount(
     lightningAddressSkippedAt: account.lightningAddressSkippedAt ?? null,
     profileMessageId: account.profileMessageId ?? null,
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    notifyHearts: account.notifyHearts !== false,
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    walletIntroSeen: account.walletIntroSeen === true,
+    sparkPubkey: account.sparkPubkey ?? null,
+    sparkPubkeyVerifiedAt:
+      typeof account.sparkPubkeyVerifiedAt === 'number' ? account.sparkPubkeyVerifiedAt : null,
     nostrPubkey: nostr.nostrPubkey,
     nostrNsecCiphertext: nostr.nostrNsecCiphertext,
     nostrKekId: nostr.nostrKekId,
@@ -535,7 +620,8 @@ export function serializeDebugAccount(
  *
  * @param account - Stored account.
  * @param nostr - Nostr debug fields.
- * @param nested - Passkeys, sessions, verification, and matching challenges.
+ * @param nested - Passkeys, sessions, and matching challenges.
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Detail JSON.
  */
 export function serializeDebugAccountDetail(
@@ -544,18 +630,14 @@ export function serializeDebugAccountDetail(
   nested: {
     passkeys: readonly PasskeyCredential[];
     sessions: readonly Session[];
-    addressVerification: AddressVerification | undefined;
     passkeyChallenges: readonly PasskeyChallenge[];
   },
+  lnurlServer?: LnurlServerConfig,
 ): DebugAccountDetailResponse {
   return {
-    ...serializeDebugAccount(account, nostr),
+    ...serializeDebugAccount(account, nostr, lnurlServer),
     passkeys: nested.passkeys.map(serializeDebugPasskey),
     sessions: nested.sessions.map(serializeDebugSession),
-    addressVerification:
-      nested.addressVerification === undefined
-        ? null
-        : serializeDebugAddressVerification(nested.addressVerification),
     passkeyChallenges: nested.passkeyChallenges.map(serializeDebugPasskeyChallenge),
   };
 }
@@ -570,7 +652,8 @@ export function serializeDebugAccountDetail(
  * `passkeyCredentialId` (base64url or `null`, default `null`); the seventh is
  * `passkeyRenewFailed` (default `false`); the eighth is `passkeyRenewClosed`
  * (default `false`); the ninth is `passkeyRenewPrfUnsupported`
- * (default `false`).
+ * (default `false`); the tenth is the LNURL server config; the eleventh is
+ * `socialRecoverySetUp` (default `false`).
  * This function performs no I/O. Never used by the operator debug listing.
  * Does not expose `profileMessageId`.
  *
@@ -590,12 +673,17 @@ export function serializeDebugAccountDetail(
  *   and an acknowledged failed renew exists. Defaults to `false`.
  * @param passkeyRenewPrfUnsupported - True when the newest unacknowledged
  *   failed renew is `prfUnsupported`. Defaults to `false`.
+ * @param lnurlServer - LNURL server config for the receiving address
+ *   (`lightningAddress`), or `undefined` when off.
+ * @param socialRecoverySetUp - True when a 21.gifts recovery share is stored
+ *   for the current verified wallet. Defaults to `false`.
  * @returns Owner fields including `viewKey`, `setup`, `missing`,
  * `hasPosted`, `location`, `aboutMe`, `aboutMeHasPhoto`,
- * `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- * `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
- * `passkeyRenewFailed`, `passkeyRenewClosed`, and
- * `passkeyRenewPrfUnsupported`.
+ * `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
+ * `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
+ * `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
+ * `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
+ * `passkeyRenewPrfUnsupported`, and `socialRecoverySetUp`.
  */
 export function serializeOwnerAccount(
   account: Account,
@@ -607,9 +695,11 @@ export function serializeOwnerAccount(
   passkeyRenewFailed = false,
   passkeyRenewClosed = false,
   passkeyRenewPrfUnsupported = false,
+  lnurlServer?: LnurlServerConfig,
+  socialRecoverySetUp = false,
 ): OwnerAccountResponse {
   return {
-    ...serializeAccount(account),
+    ...serializeAccount(account, lnurlServer),
     viewKey: account.viewKey,
     setup: accountSetup(account),
     missing: accountMissing(account),
@@ -618,16 +708,22 @@ export function serializeOwnerAccount(
     aboutMeHasPhoto,
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
     notificationLevel: parseNotificationLevel(account.notificationLevel),
+    notifyHearts: account.notifyHearts !== false,
     amountUnit: parseAmountUnit(account.amountUnit),
     locale: parseStoredLocale(account.locale),
     fiat: parseStoredFiat(account.fiat),
     funding,
     walletRequired: account.walletRequired === true,
     walletBackupSeenAt: account.walletBackupSeenAt ?? null,
+    walletIntroSeen: account.walletIntroSeen === true,
+    hadExternalWallet: account.hadExternalWallet === true,
+    sparkPubkey: account.sparkPubkey ?? null,
+    sparkWalletVerified: typeof account.sparkPubkeyVerifiedAt === 'number',
     passkeyCredentialId,
     passkeyRenewFailed,
     passkeyRenewClosed,
     passkeyRenewPrfUnsupported,
+    socialRecoverySetUp,
   };
 }
 
@@ -637,7 +733,10 @@ export interface OwnerFundingLookup {
   store: FundingStore;
   /** Epoch milliseconds for lazy trial expiry. */
   nowMs: number;
-  /** Account lookup for admitted `reviewedByName` and owner `passkeyCredentialId`. */
+  /**
+   * Account lookup for admitted `reviewedByName`, owner `passkeyCredentialId`,
+   * the renew flags, and `socialRecoverySetUp`.
+   */
   authStore: Pick<
     AuthStore,
     | 'getAccount'
@@ -645,6 +744,7 @@ export interface OwnerFundingLookup {
     | 'hasUnacknowledgedPasskeyRenewFailure'
     | 'hasAcknowledgedPasskeyRenewFailure'
     | 'latestUnacknowledgedPasskeyRenewErrorName'
+    | 'hasRecoveryShareForVerifiedWallet'
   >;
 }
 
@@ -678,14 +778,19 @@ export interface OwnerFundingLookup {
  *   if `walletRequired` is false, and sets `passkeyRenewClosed` only when
  *   `walletRequired` is not true and `hasAcknowledgedPasskeyRenewFailure`
  *   is true. `walletRequired` is read after that predicate, so a seed that
- *   already acknowledged the failure is not closed.
+ *   already acknowledged the failure is not closed. When `funding` is
+ *   passed, `socialRecoverySetUp` is
+ *   `authStore.hasRecoveryShareForVerifiedWallet` of the re-read account;
+ *   when it is omitted, the field is false and that method is not called.
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
  * @returns Owner JSON including `hasPosted`, `aboutMe`, `aboutMeHasPhoto`,
- *   `notificationLevel`, `amountUnit`, `locale`, `fiat`, `funding`,
- *   `walletRequired`, `walletBackupSeenAt`, `passkeyCredentialId`,
- *   `passkeyRenewFailed`, `passkeyRenewClosed`, and
- *   `passkeyRenewPrfUnsupported` (true only when the newest unacknowledged
- *   failed renew is `prfUnsupported`, via
- *   {@link serializeOwnerAccount}).
+ *   `notificationLevel`, `notifyHearts`, `amountUnit`, `locale`, `fiat`, `funding`,
+ *   `walletRequired`, `walletBackupSeenAt`, `walletIntroSeen`,
+ *   `hadExternalWallet`, `sparkPubkey`, `sparkWalletVerified`,
+ *   `passkeyCredentialId`, `passkeyRenewFailed`, `passkeyRenewClosed`,
+ *   `passkeyRenewPrfUnsupported` (true only when
+ *   the newest unacknowledged failed renew is `prfUnsupported`), and
+ *   `socialRecoverySetUp` (via {@link serializeOwnerAccount}).
  *   `aboutMe` is `null` when the profile note is missing or `deletedAt` is
  *   set, else `aboutMeFromNote(account.name, row.text, row.name)`.
  *   `aboutMeHasPhoto` is true iff the live row has `hasPhoto === true`.
@@ -694,6 +799,7 @@ export async function serializeOwnerAccountWithPosts(
   account: Account,
   messages: Pick<MessageStore, 'accountHasLivePost' | 'getById'>,
   funding?: OwnerFundingLookup,
+  lnurlServer?: LnurlServerConfig,
 ): Promise<OwnerAccountResponse> {
   const livePost = await messages.accountHasLivePost(account.id, account.profileMessageId ?? null);
   const profileId = account.profileMessageId;
@@ -712,6 +818,7 @@ export async function serializeOwnerAccountWithPosts(
   let passkeyRenewFailed = false;
   let passkeyRenewClosed = false;
   let passkeyRenewPrfUnsupported = false;
+  let socialRecoverySetUp = false;
   let serializedAccount = account;
   if (funding === undefined) {
     fundingJson = serializeOwnerFunding(account.role, undefined, 0, null, '');
@@ -744,6 +851,9 @@ export async function serializeOwnerAccountWithPosts(
       passkeyCredentialId = passkey?.credentialId ?? null;
     }
     passkeyRenewClosed = serializedAccount.walletRequired !== true && acknowledgedRenew;
+    socialRecoverySetUp = await funding.authStore.hasRecoveryShareForVerifiedWallet(
+      serializedAccount.id,
+    );
   }
   return serializeOwnerAccount(
     serializedAccount,
@@ -755,37 +865,58 @@ export async function serializeOwnerAccountWithPosts(
     passkeyRenewFailed,
     passkeyRenewClosed,
     passkeyRenewPrfUnsupported,
+    lnurlServer,
+    socialRecoverySetUp,
   );
 }
 
 /**
  * Project an account to the public read-only profile card.
  *
- * Omits `id`, `linkingKey`, `role`, and `viewKey`.
+ * Same visible identity as the member card: id, role, counts, and the
+ * funding mark. Omits `linkingKey`, `viewKey`, and owner-only settings.
+ * `staffTag` is present only for `software_developer`.
  *
  * @param account - Stored account.
  * @param hasPasskey - Whether the account already has a passkey credential.
  * @param aboutMe - Profile bio, or `null` when unfilled.
  * @param aboutMeHasPhoto - True when the live profile note has a photo.
- * @returns Ten public profile fields (including username, location, aboutMe,
- *   aboutMeHasPhoto, and aboutMessageId).
+ * @param lnurlServer - LNURL server config for the receiving address, or `undefined`.
+ * @param facts - Post counts and funding mark. Omitted facts are zeros and nulls.
+ * @param profileMessage - Live profile note, or `null`. Omitted means `null`.
+ * @returns The public profile card.
  */
 export function serializeViewProfile(
   account: Account,
   hasPasskey: boolean,
   aboutMe: string | null,
   aboutMeHasPhoto: boolean,
+  lnurlServer?: LnurlServerConfig,
+  facts: ViewProfileFacts = EMPTY_VIEW_FACTS,
+  profileMessage: HeartedPublicMessage | null = null,
 ): ViewProfileResponse {
+  const receiving = receivingAddress(account, lnurlServer);
+  const staffTag = staffTagOf(account.staffTag);
   return {
+    id: account.id,
     name: account.name,
     username: account.username ?? null,
     location: account.location,
-    lightningAddress: account.lightningAddress,
-    lightningAddressVerified: account.lightningAddressVerified,
+    role: account.role,
+    lightningAddress: receiving?.address ?? null,
+    lightningAddressVerified: receiving !== null,
     createdAt: account.createdAt,
     hasPasskey,
     aboutMe,
     aboutMeHasPhoto,
     aboutMessageId: aboutMessageIdFor(account, aboutMe),
+    postCount: facts.postCount,
+    replyCount: facts.replyCount,
+    shopCount: facts.shopCount,
+    creditCount: facts.creditCount,
+    fundingReviewedAt: facts.fundingReviewedAt,
+    fundingReviewedByName: facts.fundingReviewedByName,
+    profileMessage,
+    ...(staffTag === null ? {} : { staffTag }),
   };
 }

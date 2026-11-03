@@ -1,0 +1,1899 @@
+/**
+ * Proof of a shop stablecoin payment (`docs/shop-stablecoin-payment.md`,
+ * Proof): `GET /lnurlp/tx/:username`, the verification of `tx` and `hex`,
+ * the one "Storing and submitting" step shared by the route and the
+ * watcher, the Orchestra submit with its key rule, and the operator retry
+ * of a `stuck` proof.
+ *
+ * Every transaction that changes a proof's result or merges two proof rows
+ * first locks the payment's `shop_payment` row, then every proof row of the
+ * payment ordered by id (`lockPaymentForProofs`); a submit answer whose order
+ * a row of another payment holds locks both payment rows in the order of
+ * their ids, then their proof rows ordered by id (`lockPaymentsForProofs`).
+ * No account row is locked. No transaction is held across an RPC or
+ * Orchestra call.
+ */
+
+import type { Account } from '@/lib/auth/store';
+import {
+  evmGasPrice,
+  evmGetTransactionByHash,
+  evmGetTransactionReceipt,
+  evmGetUserOperationReceipt,
+  evmSendRawTransaction,
+  type EvmLog,
+} from '@/lib/evm-rpc';
+import {
+  decodeSignedEvmTransaction,
+  decodeTransferLog,
+  erc20TransferData,
+  hexFeeReaches,
+  recommendedMinFee,
+  type DecodedEvmTransaction,
+  type Erc20TransferLog,
+} from '@/lib/evm-transfer';
+import { IpRateLimiter } from '@/lib/ip-rate-limit';
+import type { FetchFn } from '@/lib/lnurlp';
+import { logEvent, type LogFields } from '@/lib/log';
+import {
+  ORCHESTRA_FINAL_STATUSES,
+  type OrchestraSubmitCaller,
+  type OrchestraSubmitResult,
+} from '@/lib/orchestra';
+import { normalizeHex32 } from '@/lib/proof';
+import {
+  SHOP_FIRST_STATUS_MS,
+  SHOP_UNRESOLVED_LIMIT_MS,
+  evaluateProof,
+  lockPaymentForProofs,
+  lockPaymentsForProofs,
+  recordProofOrder,
+  refuseProof,
+  shopError,
+  shopMethodByName,
+  shopResponse,
+  type ShopMethod,
+  type ShopPayments,
+} from '@/lib/shop-payment';
+import type {
+  ShopOffer,
+  ShopPayment,
+  ShopProof,
+  ShopProofPatch,
+  ShopProofSource,
+  ShopQuote,
+  ShopTx,
+} from '@/lib/shop-payment-store';
+import { normalizeUuid } from '@/lib/uuid';
+
+/** Whole budget of one proof request (below Tether's 20 s). */
+export const SHOP_PROOF_BUDGET_MS = 18_000;
+/** Timeout of each RPC call of a proof request. */
+export const SHOP_RPC_TIMEOUT_MS = 3_000;
+/** Longest Orchestra call of a proof request. */
+export const SHOP_PROOF_ORCHESTRA_MS = 10_000;
+/** Two submits of one proof are at least this far apart (the slot claim). */
+export const SHOP_SUBMIT_SLOT_MS = 2_000;
+/** Resubmits of one proof that repeats may trigger per minute. */
+export const SHOP_REPEAT_SUBMITS_PER_MINUTE = 5;
+/** Lookup rows per quote, done ones included (Verification of `tx`, step 2). */
+export const SHOP_MAX_LOOKUPS_PER_QUOTE = 4;
+/** First lookup of a stored lookup row. */
+export const SHOP_FIRST_LOOKUP_MS = 10_000;
+/** First watcher submit of a stored proof, or of one after its log index is filled. */
+export const SHOP_FIRST_SUBMIT_MS = 10_000;
+/** First watcher receipt read or resend of a proof without a log index. */
+export const SHOP_FIRST_RECEIPT_MS = 30_000;
+/** Fewest hexadecimal characters of a `hex` proof (after an optional `0x`). */
+export const SHOP_HEX_MIN_CHARS = 100;
+/** Most hexadecimal characters of a `hex` proof (after an optional `0x`). */
+export const SHOP_HEX_MAX_CHARS = 4096;
+
+/** Text of the generic proof refusal. */
+const NOT_ACCEPTED = 'Payment was not accepted';
+/** Text of a deposit that another quote or offer already holds. */
+const TX_USED = 'Transaction already used';
+/** Text of an unresolved, held, or stuck proof. */
+const BEING_CONFIRMED = 'Payment is being confirmed';
+/** Text of an unknown or foreign quote. */
+const QUOTE_EXPIRED = 'Quote expired';
+/** Text of a request the rate limiter refused. */
+const TOO_MANY = 'Too many requests';
+/** Substrings of a send error that still count as sent once the node knows the hash. */
+const SENT_ANYWAY = ['already known', 'nonce too low'];
+/** Substrings of a send error that refuse the proof. */
+const SEND_REJECTED = ['insufficient funds', 'invalid', 'intrinsic gas'];
+
+/** Query of `GET /lnurlp/tx/:username` as the route read it. */
+export interface ShopProofQuery {
+  /** `quote`, or `null`. */
+  quote: string | null;
+  /** `method`, or `null`. */
+  method: string | null;
+  /** `asset`, or `null`. */
+  asset: string | null;
+  /** `tx`, or `null`. */
+  tx: string | null;
+  /** `hex`, or `null`. */
+  hex: string | null;
+  /** `true` when `quote`, `method`, `asset`, `tx`, or `hex` appears more than once. */
+  repeated: boolean;
+}
+
+/** A quote with its payment and offers. */
+export interface ShopProofContext {
+  /** The quote. */
+  quote: ShopQuote;
+  /** Its payment. */
+  payment: ShopPayment;
+  /** Every offer of the quote. */
+  offers: ShopOffer[];
+}
+
+/** One deposit to store through {@link storeProof}. */
+export interface ShopProofCandidate {
+  /** The offer whose deposit address received the transfer. */
+  offer: ShopOffer;
+  /** The offer's payment. */
+  paymentId: string;
+  /** `tx`, `hex`, or `detected`. */
+  source: ShopProofSource;
+  /** Transaction hash, lowercase `0x` + 64 hex. */
+  txHash: string;
+  /** Transfer log index, or `null` (a `hex` or `detected` proof). */
+  logIndex: number | null;
+  /** User-operation hash the wallet sent, or `null`. */
+  userOpHash: string | null;
+  /** Signed transaction without `0x` (only `hex`). */
+  rawHex: string | null;
+  /** Transferred value in base units, or `null` while unknown. */
+  transferAmount: string | null;
+  /** The Orchestra order the orders duty found, or `null`. */
+  order: { orderId: string; status: string } | null;
+}
+
+/** Result of {@link storeProof}. */
+export interface StoredShopProof {
+  /** The stored row (a new row, a repeat, or the row it was merged into). */
+  proof: ShopProof;
+  /** `true` when this call inserted the row. */
+  created: boolean;
+}
+
+/** Result of {@link verifyTxProof}. */
+export type ShopTxVerification =
+  | { kind: 'not_found' }
+  | { kind: 'failed' }
+  | { kind: 'no_log' }
+  | { kind: 'used' }
+  | {
+      kind: 'found';
+      offer: ShopOffer;
+      txHash: string;
+      logIndex: number;
+      transferAmount: string;
+      userOpHash: string | null;
+    };
+
+/** Result of {@link verifyHexProof}. */
+export type ShopHexVerification =
+  { kind: 'invalid' } | { kind: 'unavailable' } | { kind: 'valid'; offer: ShopOffer };
+
+/** Outcome of {@link sendHexProof}. */
+export type ShopHexSendOutcome = 'sent' | 'rejected' | 'retry';
+
+/** Outcome of {@link readProofReceipt}. */
+export type ShopReceiptOutcome = 'filled' | 'pending' | 'failed' | 'mismatch' | 'held' | 'error';
+
+/** Result of {@link submitProofAttempt}. */
+export interface ShopSubmitAttempt {
+  /** The proof after the attempt, or `null` when it does not exist. */
+  proof: ShopProof | null;
+  /** `true` when an Orchestra submit was sent. */
+  sent: boolean;
+}
+
+/** Repeat-submit limiter per service, keyed by proof id. */
+const repeatSubmits = new WeakMap<ShopPayments, IpRateLimiter>();
+
+/**
+ * Log one proof event with its ids (never a key, URL, raw hex, or BOLT11):
+ * the payment, the proof, its offer, and its order (`orderId`) when it holds
+ * one; callers add the offer's `quoteId` and `providerRef`.
+ *
+ * @param event - Event name.
+ * @param proof - The proof.
+ * @param extra - Further fields.
+ */
+function proofLog(event: string, proof: ShopProof, extra: LogFields = {}): void {
+  logEvent(event, {
+    paymentId: proof.paymentId,
+    proofId: proof.id,
+    offerId: proof.offerId,
+    ...(proof.providerOrder === null ? {} : { orderId: proof.providerOrder }),
+    ...extra,
+  });
+}
+
+/**
+ * Time left for one call: the call limit, cut to what remains of the deadline.
+ *
+ * @param shop - Service (clock).
+ * @param deadlineMs - Absolute deadline.
+ * @param limitMs - Longest call.
+ * @returns Milliseconds, at least 1.
+ */
+function callTimeout(shop: ShopPayments, deadlineMs: number, limitMs: number): number {
+  return Math.max(1, Math.min(limitMs, deadlineMs - shop.deps.now()));
+}
+
+/**
+ * Whether a proof is unresolved and may be submitted (Storing and
+ * submitting, step 2): no result, no order, no stop after
+ * `409 quote_expired`, and a log index. A `hex` proof gets its log index only
+ * once its receipt with status `0x1` is found, so it is submitted only after
+ * Orchestra can see the deposit.
+ *
+ * @param proof - Stored proof.
+ * @returns `true` when a submit may run.
+ */
+function submittable(proof: ShopProof): boolean {
+  return (
+    proof.result === null &&
+    proof.providerOrder === null &&
+    !proof.submitStopped &&
+    proof.logIndex !== null
+  );
+}
+
+/**
+ * The quote and Orchestra quote of a proof's offer, for its log lines.
+ *
+ * @param offer - The proof's offer.
+ * @returns `quoteId` and `providerRef`.
+ */
+function offerLogFields(offer: ShopOffer): LogFields {
+  return { quoteId: offer.quoteId, providerRef: offer.providerRef };
+}
+
+/**
+ * The response for a stored proof (Storing and submitting, the response table).
+ *
+ * @param proof - Stored proof.
+ * @returns 200 `{ txId }` when `accepted`; 400 with the result's text for
+ *   `superseded`, `late`, `refunded`, `failed`, and `refused`; otherwise 503
+ *   `Payment is being confirmed`.
+ */
+export function proofResponse(proof: ShopProof): Response {
+  switch (proof.result) {
+    case 'accepted':
+      return shopResponse({ txId: proof.txHash }, 200);
+    case 'superseded':
+      return shopError(400, 'Another transfer is paying this payment');
+    case 'late':
+      return shopError(400, 'Invoice expired');
+    case 'refunded':
+      return shopError(400, 'The transfer was refunded');
+    case 'failed':
+      return shopError(400, 'The transfer was not completed');
+    case 'refused':
+      return shopError(400, proof.refusal === 'tx_used' ? TX_USED : NOT_ACCEPTED);
+    default:
+      return shopError(503, BEING_CONFIRMED);
+  }
+}
+
+/**
+ * Read a quote with its payment and offers.
+ *
+ * @param shop - Service.
+ * @param quoteId - Lowercase quote id.
+ * @returns The context, or `null` when the quote does not exist.
+ */
+export function shopProofContext(
+  shop: ShopPayments,
+  quoteId: string,
+): Promise<ShopProofContext | null> {
+  return shop.store.transaction(async (tx) => {
+    const quote = await tx.getQuote(quoteId);
+    if (quote === null) {
+      return null;
+    }
+    const payment = await tx.getPayment(quote.paymentId);
+    /* v8 ignore next 3 -- a quote's payment is a foreign key */
+    if (payment === null) {
+      return null;
+    }
+    return { quote, payment, offers: await tx.offersOf(quote.id) };
+  });
+}
+
+/**
+ * Offers of a method, and of an asset when one is given (matched without case).
+ *
+ * @param offers - Offers of a quote.
+ * @param method - Table row of the method.
+ * @param asset - Requested asset, or `null`.
+ * @returns The matching offers.
+ */
+function offersFor(
+  offers: readonly ShopOffer[],
+  method: ShopMethod,
+  asset: string | null,
+): ShopOffer[] {
+  return offers.filter(
+    (offer) =>
+      offer.method === method.method &&
+      (asset === null || offer.asset.toLowerCase() === asset.toLowerCase()),
+  );
+}
+
+/**
+ * The transfer log of an offer in a receipt. Logs whose index another row of
+ * the same offer and transaction already holds are skipped, so a second
+ * order paid by the same transaction keeps its own row; among the free logs
+ * the first whose value equals `amountIn` wins, else the first one. Only
+ * when no free log remains is a held log returned (same preference), and
+ * filling it in merges the two rows of one deposit. A log in `blocked` (held
+ * by a row with another order) is never returned, because two rows with
+ * different orders never merge.
+ *
+ * @param logs - Receipt logs.
+ * @param offer - The offer.
+ * @param held - Log indexes other rows of this offer and transaction hold.
+ * @param blocked - Log indexes held by such a row with an order other than
+ *   the reading row's.
+ * @returns The decoded transfer, or `undefined`.
+ */
+function offerTransfer(
+  logs: readonly EvmLog[],
+  offer: ShopOffer,
+  held: ReadonlySet<number>,
+  blocked: ReadonlySet<number>,
+): Erc20TransferLog | undefined {
+  const transfers = logs
+    .map(decodeTransferLog)
+    .filter(
+      (transfer): transfer is Erc20TransferLog =>
+        transfer !== null &&
+        transfer.token === offer.tokenAddress &&
+        transfer.to === offer.depositAddress &&
+        !blocked.has(transfer.logIndex),
+    );
+  const amount = BigInt(offer.amountIn);
+  const free = transfers.filter((transfer) => !held.has(transfer.logIndex));
+  const pool = free.length > 0 ? free : transfers;
+  return pool.find((transfer) => transfer.value === amount) ?? pool[0];
+}
+
+/**
+ * Verification of `tx` (contract steps 1, 3, 4, and 5): the transaction
+ * receipt, else the ERC-4337 user-operation receipt; a failed transfer; the
+ * `Transfer` log to an offer's deposit address that no proof of another
+ * quote holds, preferring the log whose value is the offer's `amountIn`,
+ * else the first such log in receipt (log-index) order. A failed RPC call
+ * counts as not found.
+ *
+ * @param shop - Service (fetch, clock).
+ * @param input - Quote offers, method, asset, endpoint, hash, deadline, call
+ *   limit, and an optional `fetchImpl` for the RPC calls (default the
+ *   service's; the watcher passes one that counts its calls).
+ * @returns `found` with the candidate log, or why the hash proves nothing yet.
+ */
+export async function verifyTxProof(
+  shop: ShopPayments,
+  input: {
+    quoteOffers: readonly ShopOffer[];
+    method: ShopMethod;
+    asset: string | null;
+    url: string;
+    hash: string;
+    deadlineMs: number;
+    callLimitMs: number;
+    fetchImpl?: FetchFn;
+  },
+): Promise<ShopTxVerification> {
+  const fetchImpl = input.fetchImpl ?? shop.deps.fetchImpl;
+  const receipt = await evmGetTransactionReceipt(
+    input.url,
+    fetchImpl,
+    input.hash,
+    callTimeout(shop, input.deadlineMs, input.callLimitMs),
+  );
+  if (!receipt.ok) {
+    return { kind: 'not_found' };
+  }
+  let txHash: string;
+  let success: boolean;
+  let logs: EvmLog[];
+  let userOpHash: string | null = null;
+  if (receipt.value !== null) {
+    txHash = receipt.value.transactionHash;
+    success = receipt.value.status === '0x1';
+    logs = receipt.value.logs;
+  } else {
+    if (input.deadlineMs - shop.deps.now() <= 0) {
+      return { kind: 'not_found' };
+    }
+    const operation = await evmGetUserOperationReceipt(
+      input.url,
+      fetchImpl,
+      input.hash,
+      callTimeout(shop, input.deadlineMs, input.callLimitMs),
+    );
+    if (!operation.ok || operation.value === null) {
+      return { kind: 'not_found' };
+    }
+    txHash = operation.value.transactionHash;
+    success = operation.value.success === true;
+    logs = operation.value.logs;
+    userOpHash = input.hash;
+  }
+  if (!success) {
+    return { kind: 'failed' };
+  }
+  const matches: { offer: ShopOffer; transfer: Erc20TransferLog }[] = [];
+  for (const offer of offersFor(input.quoteOffers, input.method, input.asset)) {
+    for (const log of logs) {
+      const transfer = decodeTransferLog(log);
+      if (
+        transfer !== null &&
+        transfer.token === offer.tokenAddress &&
+        transfer.to === offer.depositAddress
+      ) {
+        matches.push({ offer, transfer });
+      }
+    }
+  }
+  if (matches.length === 0) {
+    return { kind: 'no_log' };
+  }
+  const quoteOfferIds = new Set(input.quoteOffers.map((offer) => offer.id));
+  const stored = await shop.store.transaction((tx) =>
+    tx.findProofs({ chainId: input.method.chainId, txHash }),
+  );
+  const free = matches
+    .filter(
+      (match) =>
+        !stored.some(
+          (proof) =>
+            proof.logIndex === match.transfer.logIndex && !quoteOfferIds.has(proof.offerId),
+        ),
+    )
+    .sort((a, b) => a.transfer.logIndex - b.transfer.logIndex);
+  const pick =
+    free.find((match) => match.transfer.value === BigInt(match.offer.amountIn)) ?? free[0];
+  if (pick === undefined) {
+    return { kind: 'used' };
+  }
+  return {
+    kind: 'found',
+    offer: pick.offer,
+    txHash,
+    logIndex: pick.transfer.logIndex,
+    transferAmount: pick.transfer.value.toString(),
+    userOpHash,
+  };
+}
+
+/**
+ * Verification of `hex` (contract step 2): the method's chain id, an offer
+ * contract of this quote and method as `to`, zero value, the offer's
+ * transfer data byte for byte, the requested asset, and the fee against the
+ * offer's `minFee` (EIP-1559 reads the current `eth_gasPrice`).
+ *
+ * @param shop - Service (fetch, clock).
+ * @param input - Method offers, method, asset, endpoint, decoded transaction, deadline.
+ * @returns `valid` with the offer, `invalid`, or `unavailable` when the gas
+ *   price could not be read.
+ */
+export async function verifyHexProof(
+  shop: ShopPayments,
+  input: {
+    quoteOffers: readonly ShopOffer[];
+    method: ShopMethod;
+    asset: string | null;
+    url: string;
+    decoded: DecodedEvmTransaction;
+    deadlineMs: number;
+  },
+): Promise<ShopHexVerification> {
+  const { decoded } = input;
+  const offer = offersFor(input.quoteOffers, input.method, null).find(
+    (row) => row.tokenAddress === decoded.to,
+  );
+  if (
+    decoded.chainId !== input.method.chainId ||
+    offer === undefined ||
+    (input.asset !== null && input.asset.toLowerCase() !== offer.asset.toLowerCase()) ||
+    decoded.value !== 0n ||
+    decoded.data !== erc20TransferData(offer.depositAddress, BigInt(offer.amountIn))
+  ) {
+    return { kind: 'invalid' };
+  }
+  let current = 0n;
+  if (decoded.type === 'eip1559') {
+    const gas = await evmGasPrice(
+      input.url,
+      shop.deps.fetchImpl,
+      callTimeout(shop, input.deadlineMs, SHOP_RPC_TIMEOUT_MS),
+    );
+    if (!gas.ok) {
+      return { kind: 'unavailable' };
+    }
+    current = recommendedMinFee(gas.value, input.method.chainId);
+  }
+  return hexFeeReaches(decoded, BigInt(offer.minFee), current)
+    ? { kind: 'valid', offer }
+    : { kind: 'invalid' };
+}
+
+/**
+ * Pick which of two rows of one deposit survives a merge: the `accepted`
+ * row, else the row with an order, else the older row.
+ *
+ * @param a - One row (with its intended values).
+ * @param b - The other row.
+ * @returns `[keep, other]`.
+ */
+function keepOf(a: ShopProof, b: ShopProof): [ShopProof, ShopProof] {
+  const rank = (row: ShopProof): number =>
+    (row.result === 'accepted' ? 2 : 0) + (row.providerOrder === null ? 0 : 1);
+  if (rank(a) !== rank(b)) {
+    return rank(a) > rank(b) ? [a, b] : [b, a];
+  }
+  return a.createdAt.getTime() <= b.createdAt.getTime() ? [a, b] : [b, a];
+}
+
+/**
+ * Whether two rows hold different orders (both non-null); such rows are two
+ * proofs, never one deposit, and never merge.
+ *
+ * @param a - One row.
+ * @param b - The other row.
+ * @returns `true` when both hold an order and the orders differ.
+ */
+function ordersDiffer(a: ShopProof, b: ShopProof): boolean {
+  return (
+    a.providerOrder !== null && b.providerOrder !== null && a.providerOrder !== b.providerOrder
+  );
+}
+
+/**
+ * The newer of two rows: the later `created_at`, then the greater id.
+ *
+ * @param a - One row.
+ * @param b - The other row.
+ * @returns The newer row.
+ */
+function newerOf(a: ShopProof, b: ShopProof): ShopProof {
+  const diff = a.createdAt.getTime() - b.createdAt.getTime();
+  if (diff !== 0) {
+    return diff > 0 ? a : b;
+  }
+  return a.id > b.id ? a : b;
+}
+
+/**
+ * Which row step 3 or 4 refuses as `tx_used` when the colliding row belongs
+ * to another offer: `filling` (step 4, a 23505 while a row is filled in)
+ * refuses the row being filled in; `newer` (step 3, a submit or status read
+ * returned an order another row holds) refuses the newer of the two rows.
+ */
+export type ShopOrderCollision = 'filling' | 'newer';
+
+/**
+ * Step 3 and 4 of Storing and submitting: a row being filled in collides
+ * with `holder`, which already holds the log index or the order. Another
+ * offer's row: the filled row is `refused` with `tx_used` through
+ * `refuseProof` (from any result the States table allows, an `accepted` one
+ * included, which ends its payment with `proof_refused` unless another proof
+ * takes its place); it is no longer submitted or read, its order status
+ * included, and nothing is deleted (step 3's newer holder is handled by
+ * {@link mergeOrderHolder} before this). Two rows of the same offer that hold
+ * different orders are two proofs and are left as they are. The same offer:
+ * the kept row takes every value of the other row it lacks, and a final
+ * order status of either row for the kept order (a final status is terminal,
+ * so it is the newer one); the other row is deleted, then the values are
+ * written (the indexes are not deferrable).
+ *
+ * @param tx - Transaction (payment row and proof rows locked).
+ * @param filling - The row being filled in, as stored.
+ * @param patch - What was being written onto it.
+ * @param holder - The row that holds the value.
+ * @param nowMs - Clock.
+ * @returns The surviving row after evaluation.
+ */
+async function mergeDeposit(
+  tx: ShopTx,
+  filling: ShopProof,
+  patch: ShopProofPatch,
+  holder: ShopProof,
+  nowMs: number,
+): Promise<ShopProof> {
+  if (holder.offerId !== filling.offerId) {
+    /* v8 ignore next -- the row being filled in was read in this transaction */
+    return (await refuseProof(tx, filling.id, 'tx_used', nowMs)) ?? filling;
+  }
+  /* v8 ignore next 3 -- a fill never takes a log another order holds, and an order only goes to a row without one */
+  if (ordersDiffer({ ...filling, ...patch }, holder)) {
+    return filling;
+  }
+  const intended: ShopProof = { ...filling, ...patch };
+  const [keep, other] = keepOf(intended, holder);
+  const order = keep.providerOrder ?? other.providerOrder;
+  // Both rows can hold the same order with statuses read at different times.
+  // A final status is terminal, so it is never older than the other one.
+  const finalStatus = [keep, other]
+    .filter((row) => row.providerOrder === order)
+    .map((row) => row.orderStatus)
+    .find((status) => status !== null && ORCHESTRA_FINAL_STATUSES.has(status));
+  const merged: ShopProofPatch = {
+    logIndex: keep.logIndex ?? other.logIndex,
+    transferAmount: keep.transferAmount ?? other.transferAmount,
+    userOpHash: keep.userOpHash ?? other.userOpHash,
+    providerOrder: order,
+    orderStatus:
+      finalStatus ?? (keep.providerOrder === null ? other.orderStatus : keep.orderStatus),
+    orderFoundAt: keep.orderFoundAt ?? other.orderFoundAt,
+    nextStatusAt: finalStatus === undefined ? (keep.nextStatusAt ?? other.nextStatusAt) : null,
+  };
+  if (merged.logIndex !== null) {
+    merged.nextReceiptAt = null;
+  }
+  if (merged.providerOrder !== null) {
+    merged.nextSubmitAt = null;
+  }
+  await tx.deleteProof(other.id);
+  const written = await tx.updateProof(keep.id, {}, merged);
+  /* v8 ignore next 3 -- the only other holder of these values was just deleted */
+  if (written === null || written === 'conflict') {
+    return keep;
+  }
+  /* v8 ignore next -- evaluateProof returns null only for a missing row */
+  return (await evaluateProof(tx, written.id, nowMs)) ?? written;
+}
+
+/**
+ * Fill values into a stored row and re-evaluate it; a unique conflict on the
+ * log index merges the two rows of one deposit. A row that the fill makes
+ * submittable (a `hex` proof whose receipt was found) and that has no submit
+ * scheduled gets `next_submit_at` 10 s after the fill, as a proof stored with
+ * its log index does after its storing, so the watcher submits it 10 s,
+ * 30 s, and 60 s after the fill, then every 5 min.
+ *
+ * @param tx - Transaction (payment row and proof rows locked).
+ * @param proof - Stored row.
+ * @param patch - Values to fill in (`logIndex` and `transferAmount`, `userOpHash`).
+ * @param nowMs - Clock.
+ * @returns The row after the fill or merge.
+ */
+async function fillProof(
+  tx: ShopTx,
+  proof: ShopProof,
+  patch: ShopProofPatch,
+  nowMs: number,
+): Promise<ShopProof> {
+  const filled: ShopProofPatch =
+    proof.nextSubmitAt === null && submittable({ ...proof, ...patch })
+      ? { ...patch, nextSubmitAt: new Date(nowMs + SHOP_FIRST_SUBMIT_MS) }
+      : patch;
+  const updated = await tx.updateProof(proof.id, {}, filled);
+  if (updated === 'conflict') {
+    const holder = (await tx.findProofs({ chainId: proof.chainId, txHash: proof.txHash })).find(
+      (row) => row.id !== proof.id && row.logIndex === patch.logIndex,
+    );
+    /* v8 ignore next 3 -- a fill sets only the log index, so the log index clashed */
+    if (holder === undefined) {
+      return proof;
+    }
+    return mergeDeposit(tx, proof, patch, holder, nowMs);
+  }
+  /* v8 ignore next 3 -- the row was read in this transaction */
+  if (updated === null) {
+    return proof;
+  }
+  /* v8 ignore next -- evaluateProof returns null only for a missing row */
+  return (await evaluateProof(tx, updated.id, nowMs)) ?? updated;
+}
+
+/**
+ * Record an Orchestra order on a proof (`recordProofOrder`); when another
+ * row already holds the order id, the rows are one deposit: a row of the
+ * same offer merges, and of a row of another offer one is refused with
+ * `tx_used` (steps 3 and 4).
+ *
+ * @param tx - Transaction (payment row and proof rows locked).
+ * @param proof - Stored proof.
+ * @param order - Order id and status.
+ * @param nowMs - Clock.
+ * @param collision - Which row another offer's collision refuses: `filling`
+ *   (step 4, the storing step) refuses this proof; `newer` (step 3, a
+ *   submit or status answer) refuses the newer of the two rows, and when
+ *   that is the holder, this proof takes its order in the same transaction.
+ * @param lockedPayments - The payments whose rows the caller locked
+ *   (default: the proof's payment). A newer holder of another payment is
+ *   refused only when its payment is among them; otherwise nothing changes.
+ * @returns The proof (or the row it merged into) after evaluation.
+ */
+export async function applyProofOrder(
+  tx: ShopTx,
+  proof: ShopProof,
+  order: { orderId: string; status: string },
+  nowMs: number,
+  collision: ShopOrderCollision,
+  lockedPayments: readonly string[] = [proof.paymentId],
+): Promise<ShopProof> {
+  const recorded = await recordProofOrder(tx, proof.id, order, nowMs);
+  if (recorded !== 'conflict') {
+    /* v8 ignore next -- the row was read in this transaction */
+    return recorded ?? proof;
+  }
+  return mergeOrderHolder(tx, proof, order.orderId, order.status, nowMs, collision, lockedPayments);
+}
+
+/**
+ * Merge a proof with the row that already holds an order id. With
+ * `collision` `newer`, another offer's holder that is the newer row (later
+ * `created_at`, then greater id), of the same payment or of another one, is
+ * refused `tx_used` and gives the order to `proof`, which records it
+ * ({@link refuseProof} with an heir) with the holder's final status if it
+ * stored one and the holder's order found time. A holder whose order already
+ * ended it (`refunded`, `failed`, `refused` with `expired_order`, or a stored
+ * final status) keeps the order, and `proof` is refused `tx_used`; a holder
+ * `refused` for another reason keeps its result and hands the order over.
+ * The holder's payment must be among `lockedPayments`; a newer holder of a
+ * payment the caller did not lock is left as it is and `proof` stays without
+ * the order (the caller locks that payment and applies the answer again).
+ * Every other case goes through {@link mergeDeposit}.
+ *
+ * @param tx - Transaction (payment rows and their proof rows locked).
+ * @param proof - The proof that was to take the order.
+ * @param orderId - Order id.
+ * @param status - The order status to write.
+ * @param nowMs - Clock.
+ * @param collision - Which row another offer's collision refuses.
+ * @param lockedPayments - The payments whose rows the caller locked.
+ * @returns The surviving row.
+ */
+async function mergeOrderHolder(
+  tx: ShopTx,
+  proof: ShopProof,
+  orderId: string,
+  status: string,
+  nowMs: number,
+  collision: ShopOrderCollision,
+  lockedPayments: readonly string[],
+): Promise<ShopProof> {
+  const holder = (await tx.findProofs({ providerOrder: orderId })).find(
+    (row) => row.id !== proof.id,
+  );
+  /* v8 ignore next 3 -- the conflict was on the order index */
+  if (holder === undefined) {
+    return proof;
+  }
+  if (
+    collision === 'newer' &&
+    holder.offerId !== proof.offerId &&
+    newerOf(proof, holder) === holder
+  ) {
+    if (!lockedPayments.includes(holder.paymentId)) {
+      // The holder's payment row is not locked: nothing of it may change.
+      return proof;
+    }
+    // Step 3: the holder is the newer row and is refused `tx_used`, also
+    // when it belongs to another payment (both payment rows are locked). The
+    // older row survives and takes the order Orchestra answered for it, in
+    // this transaction: its submits stop, the order-status duty follows it,
+    // and it takes an `accepted` holder's place only when it belongs to the
+    // same payment and its evaluation accepts it (refuseProof's heir); the
+    // holder's payment otherwise loses its accepted proof. A final status
+    // the holder stored is never older
+    // than the answer's (as in mergeDeposit), and the order keeps the time
+    // it was found, so the fast reads and the order_stuck limit do not
+    // restart. A holder the order already ended stays, and the survivor is
+    // refused `tx_used` instead; a holder refused for another reason hands
+    // the order over and keeps its result.
+    const stored = holder.orderStatus;
+    await refuseProof(tx, holder.id, 'tx_used', nowMs, {
+      proofId: proof.id,
+      order: {
+        orderId,
+        status: stored !== null && ORCHESTRA_FINAL_STATUSES.has(stored) ? stored : status,
+      },
+      foundAt: holder.orderFoundAt,
+    });
+    /* v8 ignore next -- the surviving row was read in this transaction */
+    return (await tx.getProof(proof.id)) ?? proof;
+  }
+  return mergeDeposit(
+    tx,
+    proof,
+    {
+      providerOrder: orderId,
+      orderStatus: status,
+      orderFoundAt: proof.orderFoundAt ?? new Date(nowMs),
+      nextStatusAt: new Date(nowMs + SHOP_FIRST_STATUS_MS),
+    },
+    holder,
+    nowMs,
+  );
+}
+
+/**
+ * The one "Storing and submitting" step 1 (and 3/4 on a conflict), shared by
+ * the route, the lookup duty, and the orders duty: a stored row of the same
+ * offer and transaction is reused (filling in a missing log index, value,
+ * user-operation hash, and order); otherwise a row is inserted with
+ * `give_up_at` 24 h ahead. An order is given only to a row without one: a
+ * second order of the same transaction and offer gets its own unlogged row,
+ * and while another unlogged row of that offer and transaction exists (the
+ * unlogged index admits one) the order is not stored yet, so the orders duty
+ * stores it on a later read, once the receipts duty filled that row's log
+ * index. A lost insert answers from the winning row. A row with a log index
+ * and no order gets its first watcher submit after 10 s; a row without a log
+ * index (`hex`, `detected`) gets its first receipt read after 30 s and no
+ * submit. Runs under the payment row and its proof rows
+ * (`lockPaymentForProofs`). The submit (step 2) is the caller's.
+ *
+ * @param shop - Service (store, ids, clock).
+ * @param candidate - The verified deposit.
+ * @returns The stored row and whether this call inserted it.
+ */
+export function storeProof(
+  shop: ShopPayments,
+  candidate: ShopProofCandidate,
+): Promise<StoredShopProof> {
+  return shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, candidate.paymentId);
+    const nowMs = shop.deps.now();
+    const { offer } = candidate;
+    if (candidate.order !== null) {
+      const [holder] = await tx.findProofs({ providerOrder: candidate.order.orderId });
+      if (holder !== undefined) {
+        return { proof: holder, created: false };
+      }
+    }
+    const sameTx = await tx.findProofs({ chainId: offer.chainId, txHash: candidate.txHash });
+    const sameOffer = sameTx.filter((row) => row.offerId === offer.id);
+    const unlogged = sameOffer.find((row) => row.logIndex === null);
+    const takesOrder = (row: ShopProof): boolean =>
+      candidate.order === null || row.providerOrder === null;
+    const existing =
+      candidate.logIndex === null
+        ? unlogged !== undefined && takesOrder(unlogged)
+          ? unlogged
+          : sameOffer.find(takesOrder)
+        : (sameOffer.find((row) => row.logIndex === candidate.logIndex) ?? unlogged);
+    if (existing === undefined && unlogged !== undefined) {
+      return { proof: unlogged, created: false };
+    }
+    if (existing !== undefined) {
+      const patch: ShopProofPatch = {};
+      if (existing.logIndex === null && candidate.logIndex !== null) {
+        patch.logIndex = candidate.logIndex;
+        patch.transferAmount = candidate.transferAmount;
+        patch.nextReceiptAt = null;
+      }
+      if (existing.userOpHash === null && candidate.userOpHash !== null) {
+        patch.userOpHash = candidate.userOpHash;
+      }
+      let proof =
+        Object.keys(patch).length === 0 ? existing : await fillProof(tx, existing, patch, nowMs);
+      if (candidate.order !== null && proof.providerOrder === null) {
+        proof = await applyProofOrder(tx, proof, candidate.order, nowMs, 'filling');
+      }
+      return { proof, created: false };
+    }
+    const row: ShopProof = {
+      id: shop.newId(),
+      offerId: offer.id,
+      paymentId: candidate.paymentId,
+      source: candidate.source,
+      chainId: offer.chainId,
+      txHash: candidate.txHash,
+      logIndex: candidate.logIndex,
+      userOpHash: candidate.userOpHash,
+      rawHex: candidate.rawHex,
+      transferAmount: candidate.transferAmount,
+      idempotencyKey: shop.newId(),
+      result: null,
+      providerOrder: null,
+      supersededByOrder: null,
+      orderStatus: null,
+      orderFoundAt: null,
+      refusal: null,
+      submitStopped: false,
+      sentAt: null,
+      lastSubmitAt: null,
+      giveUpAt: new Date(nowMs + SHOP_UNRESOLVED_LIMIT_MS),
+      nextSubmitAt:
+        candidate.logIndex === null || candidate.order !== null
+          ? null
+          : new Date(nowMs + SHOP_FIRST_SUBMIT_MS),
+      nextReceiptAt: candidate.logIndex === null ? new Date(nowMs + SHOP_FIRST_RECEIPT_MS) : null,
+      nextStatusAt: null,
+      tries: 0,
+      resolvedAt: null,
+      createdAt: new Date(nowMs),
+    };
+    if (!(await tx.insertProof(row))) {
+      const winner = sameTx.find(
+        (other) => other.logIndex !== null && other.logIndex === candidate.logIndex,
+      );
+      /* v8 ignore next 3 -- an unlogged row of the same offer was reused above, so only a log index clashes */
+      if (winner === undefined) {
+        throw new Error('shop proof insert lost without a winning row');
+      }
+      return { proof: winner, created: false };
+    }
+    proofLog(candidate.source === 'detected' ? 'shop.proof.detected' : 'shop.proof.stored', row, {
+      ...offerLogFields(offer),
+      ...(candidate.order === null ? {} : { orderId: candidate.order.orderId }),
+      source: candidate.source,
+    });
+    const proof =
+      candidate.order === null
+        ? row
+        : await applyProofOrder(tx, row, candidate.order, nowMs, 'filling');
+    return { proof, created: true };
+  });
+}
+
+/**
+ * Give a proof a new idempotency key (the key rule: after a definitive,
+ * non-retryable answer a new attempt uses a new key).
+ *
+ * @param tx - Transaction.
+ * @param shop - Service (ids).
+ * @param proof - The proof as read in this transaction.
+ * @returns The proof with its new key.
+ */
+async function rotateKey(tx: ShopTx, shop: ShopPayments, proof: ShopProof): Promise<ShopProof> {
+  const rotated = await tx.updateProof(proof.id, {}, { idempotencyKey: shop.newId() });
+  /* v8 ignore next -- the row was read in this transaction; a key change clashes with no index */
+  return rotated === null || rotated === 'conflict' ? proof : rotated;
+}
+
+/**
+ * One Orchestra submit of a proof, with the slot claim and the answer mapping
+ * (Calls › Submit): claims the 2 s slot with a conditional update of
+ * `last_submit_at`; an order is recorded (`recordProofOrder`, merge on an
+ * order conflict); when another step recorded an order meanwhile, only a
+ * final status of that same order is applied; `xchain_deposit_mismatch` refuses; `409 quote_expired`
+ * makes the proof `late` and stops submitting; a definitive unresolved
+ * answer rotates the idempotency key. The answer is applied under the
+ * proof's payment row and its proof rows (`lockPaymentForProofs`); when a
+ * row of another payment holds the answered order (a read without a lock,
+ * as the first statement), under both payment rows in the order of their
+ * ids and their proof rows (`lockPaymentsForProofs`), so that step 3 can
+ * refuse that newer row. A holder that moved to a third payment before the
+ * locks applies the answer once more under new locks; on that second run it
+ * is left as it is, and the proof keeps no order until a later submit.
+ *
+ * @param shop - Service.
+ * @param proofId - Proof id.
+ * @param caller - Budget share of the call.
+ * @param deadlineMs - No submit starts at or after this instant (checked when
+ *   the slot is claimed and again right before the call); the call's timeout
+ *   is the time left, at most {@link SHOP_PROOF_ORCHESTRA_MS}.
+ * @returns The proof afterwards and whether a submit was sent.
+ */
+export async function submitProofAttempt(
+  shop: ShopPayments,
+  proofId: string,
+  caller: OrchestraSubmitCaller,
+  deadlineMs: number,
+): Promise<ShopSubmitAttempt> {
+  const { orchestra } = shop.deps;
+  const claim = await shop.store.transaction(async (tx) => {
+    const claimMs = shop.deps.now();
+    const proof = await tx.getProof(proofId);
+    if (proof === null) {
+      return null;
+    }
+    if (orchestra === null || deadlineMs - claimMs <= 0 || !submittable(proof)) {
+      return { proof, offer: null };
+    }
+    const claimed = await tx.updateProof(
+      proof.id,
+      { results: [null], lastSubmitAtOrBefore: new Date(claimMs - SHOP_SUBMIT_SLOT_MS) },
+      { lastSubmitAt: new Date(claimMs) },
+    );
+    if (claimed === null || claimed === 'conflict') {
+      return { proof, offer: null };
+    }
+    return { proof: claimed, offer: await tx.getOffer(claimed.offerId) };
+  });
+  if (claim === null) {
+    return { proof: null, sent: false };
+  }
+  const { offer } = claim;
+  if (orchestra === null || offer === null || deadlineMs - shop.deps.now() <= 0) {
+    return { proof: claim.proof, sent: false };
+  }
+  const ids: LogFields = {
+    paymentId: claim.proof.paymentId,
+    proofId: claim.proof.id,
+    offerId: offer.id,
+    ...offerLogFields(offer),
+  };
+  const answer = await orchestra.submit(
+    offer.providerRef,
+    claim.proof.txHash,
+    claim.proof.idempotencyKey,
+    caller,
+    callTimeout(shop, deadlineMs, SHOP_PROOF_ORCHESTRA_MS),
+    ids,
+  );
+  if (answer.kind === 'budget') {
+    return { proof: claim.proof, sent: false };
+  }
+  logEvent('shop.proof.submitted', {
+    ...ids,
+    ...(answer.kind === 'order' ? { orderId: answer.orderId } : {}),
+    answer: answer.kind,
+  });
+  const paymentId = claim.proof.paymentId;
+  // An order answer may be held by a row of another payment, which step 3
+  // then refuses: that payment's row is locked too. Its id comes from a read
+  // without a lock before the first lock, so that every transaction takes
+  // the payment rows in the order of their ids; a holder that moved to
+  // another payment before the locks applies the answer once more.
+  const orderId = answer.kind === 'order' ? answer.orderId : null;
+  const answerOnce = (recheck: boolean): Promise<ShopProof | null | 'relock'> =>
+    shop.store.transaction(async (tx) => {
+      const holderPayment =
+        orderId === null ? null : await orderHolderPayment(tx, orderId, proofId);
+      let locked: readonly string[] = [paymentId];
+      if (holderPayment === null || holderPayment === paymentId) {
+        await lockPaymentForProofs(tx, paymentId);
+      } else {
+        const both = await lockPaymentsForProofs(tx, [paymentId, holderPayment]);
+        locked = both.payments.map((payment) => payment.id);
+      }
+      // Re-read under the locks: a holder that moved to a payment not locked
+      // here applies the answer once more; on that second run such a holder
+      // is left as it is and the proof keeps no order (mergeOrderHolder).
+      if (recheck && orderId !== null) {
+        const moved = await orderHolderPayment(tx, orderId, proofId);
+        if (!locked.includes(moved ?? paymentId)) {
+          return 'relock';
+        }
+      }
+      return applySubmitAnswer(tx, shop, proofId, answer, ids, locked);
+    });
+  const first = await answerOnce(true);
+  // The second run never answers 'relock' (recheck is off).
+  const proof = (first === 'relock' ? await answerOnce(false) : first) as ShopProof | null;
+  return { proof, sent: true };
+}
+
+/**
+ * The row other than `proofId` that holds an order, read without a lock:
+ * its payment id, or `null` when no other row holds the order.
+ *
+ * @param tx - Transaction.
+ * @param orderId - Order id.
+ * @param proofId - The submitted proof.
+ * @returns The holder's payment id, or `null`.
+ */
+async function orderHolderPayment(
+  tx: ShopTx,
+  orderId: string,
+  proofId: string,
+): Promise<string | null> {
+  const holder = (await tx.findProofs({ providerOrder: orderId })).find(
+    (row) => row.id !== proofId,
+  );
+  return holder?.paymentId ?? null;
+}
+
+/**
+ * Apply one Orchestra submit answer to a proof (Calls › Submit), under the
+ * locks {@link submitProofAttempt} took: an order is recorded (step 3 on a
+ * collision, across the locked payments); when another step recorded an
+ * order meanwhile, only a final status of that same order is applied;
+ * `xchain_deposit_mismatch` refuses; `409 quote_expired` makes the proof
+ * `late`; a definitive unresolved answer rotates the key.
+ *
+ * @param tx - Transaction (payment rows and their proof rows locked).
+ * @param shop - Service (ids, clock).
+ * @param proofId - Proof id.
+ * @param answer - The submit answer.
+ * @param ids - Log fields of the call.
+ * @param locked - The payments whose rows are locked.
+ * @returns The proof afterwards, or `null` when it does not exist.
+ */
+async function applySubmitAnswer(
+  tx: ShopTx,
+  shop: ShopPayments,
+  proofId: string,
+  answer: Exclude<OrchestraSubmitResult, { kind: 'budget' }>,
+  ids: LogFields,
+  locked: readonly string[],
+): Promise<ShopProof | null> {
+  const nowMs = shop.deps.now();
+  const current = await tx.getProof(proofId);
+  if (current === null) {
+    return null;
+  }
+  if (answer.kind === 'order') {
+    // Another step recorded an order meanwhile. Only a final status of
+    // that same order is applied; a status in flight may be older than
+    // the one that step stored.
+    if (current.providerOrder !== null) {
+      return current.providerOrder === answer.orderId && ORCHESTRA_FINAL_STATUSES.has(answer.status)
+        ? applyProofOrder(
+            tx,
+            current,
+            { orderId: answer.orderId, status: answer.status },
+            nowMs,
+            'newer',
+          )
+        : current;
+    }
+    return applyProofOrder(
+      tx,
+      current,
+      { orderId: answer.orderId, status: answer.status },
+      nowMs,
+      'newer',
+      locked,
+    );
+  }
+  if (current.result !== null || current.providerOrder !== null) {
+    return current;
+  }
+  if (answer.kind === 'mismatch') {
+    await refuseProof(tx, proofId, 'mismatch', nowMs);
+    return rotateKey(tx, shop, current);
+  }
+  if (answer.kind === 'quote_expired') {
+    const late = await tx.updateProof(
+      proofId,
+      { results: [null] },
+      {
+        result: 'late',
+        submitStopped: true,
+        resolvedAt: new Date(nowMs),
+        nextSubmitAt: null,
+        idempotencyKey: shop.newId(),
+      },
+    );
+    /* v8 ignore next 3 -- checked unresolved above in this transaction */
+    if (late === null || late === 'conflict') {
+      return current;
+    }
+    logEvent('shop.proof.late', ids);
+    logEvent('shop.alert.late_deposit', ids);
+    return late;
+  }
+  logEvent('shop.proof.unresolved', ids);
+  return answer.retryable ? current : rotateKey(tx, shop, current);
+}
+
+/**
+ * Submit a proof to Orchestra once ({@link submitProofAttempt}).
+ *
+ * @param shop - Service.
+ * @param proofId - Proof id.
+ * @param caller - `proof-first`, `proof-repeat`, or `watcher`.
+ * @param deadlineMs - No submit starts at or after this instant.
+ * @returns The proof afterwards, or `null` when it does not exist.
+ */
+export async function submitProof(
+  shop: ShopPayments,
+  proofId: string,
+  caller: OrchestraSubmitCaller,
+  deadlineMs: number,
+): Promise<ShopProof | null> {
+  return (await submitProofAttempt(shop, proofId, caller, deadlineMs)).proof;
+}
+
+/**
+ * Record a rejected or reverted `hex` transaction through `refuseProof`, under
+ * the payment row and its proof rows (`lockPaymentForProofs`): the proof
+ * becomes `refused` with `hex_rejected` from any result the States table
+ * allows (an `accepted` proof included, which ends its payment with
+ * `proof_refused` unless a `superseded` proof takes its place) and is no
+ * longer read or submitted.
+ *
+ * @param shop - Service.
+ * @param proofId - Proof id.
+ * @returns The proof afterwards, or `null` when it does not exist.
+ */
+export function refuseHexProof(shop: ShopPayments, proofId: string): Promise<ShopProof | null> {
+  return shop.store.transaction(async (tx) => {
+    const proof = await tx.getProof(proofId);
+    if (proof === null) {
+      return null;
+    }
+    await lockPaymentForProofs(tx, proof.paymentId);
+    return refuseProof(tx, proofId, 'hex_rejected', shop.deps.now());
+  });
+}
+
+/**
+ * Broadcast a stored `hex` proof (`eth_sendRawTransaction`). An error that
+ * contains `already known` or `nonce too low` counts as sent once
+ * `eth_getTransactionByHash` finds the hash; `insufficient funds`, `invalid`,
+ * or `intrinsic gas` refuse the proof; anything else is retried later. A
+ * first send sets `sent_at` and schedules the first receipt read after 30 s;
+ * it schedules no submit, because a `hex` proof is submitted only once its
+ * receipt filled its log index.
+ *
+ * @param shop - Service.
+ * @param proof - Stored `hex` proof.
+ * @param url - RPC endpoint of its chain.
+ * @param timeoutMs - Timeout of each call.
+ * @param fetchImpl - Fetch of the RPC calls (default the service's; the
+ *   watcher passes one that counts its calls).
+ * @returns `sent`, `rejected`, or `retry`.
+ */
+export async function sendHexProof(
+  shop: ShopPayments,
+  proof: ShopProof,
+  url: string,
+  timeoutMs: number,
+  fetchImpl: FetchFn = shop.deps.fetchImpl,
+): Promise<ShopHexSendOutcome> {
+  /* v8 ignore next 3 -- every hex row stores its raw transaction */
+  if (proof.rawHex === null) {
+    return 'retry';
+  }
+  const sent = await evmSendRawTransaction(url, fetchImpl, proof.rawHex, timeoutMs);
+  let outcome: ShopHexSendOutcome = 'retry';
+  if (sent.ok) {
+    outcome = 'sent';
+  } else if (sent.kind === 'rpc') {
+    const message = sent.message.toLowerCase();
+    if (SENT_ANYWAY.some((text) => message.includes(text))) {
+      const known = await evmGetTransactionByHash(url, fetchImpl, proof.txHash, timeoutMs);
+      outcome = known.ok && known.value ? 'sent' : 'retry';
+    } else if (SEND_REJECTED.some((text) => message.includes(text))) {
+      outcome = 'rejected';
+    }
+  }
+  if (outcome === 'rejected') {
+    await refuseHexProof(shop, proof.id);
+    return outcome;
+  }
+  if (outcome === 'sent') {
+    await shop.store.transaction(async (tx) => {
+      const nowMs = shop.deps.now();
+      const current = await tx.getProof(proof.id);
+      if (current === null || current.sentAt !== null) {
+        return;
+      }
+      await tx.updateProof(
+        proof.id,
+        {},
+        { sentAt: new Date(nowMs), nextReceiptAt: new Date(nowMs + SHOP_FIRST_RECEIPT_MS) },
+      );
+    });
+  }
+  return outcome;
+}
+
+/**
+ * Read the receipt of a proof without a log index and fill in its log index
+ * and value, taking a transfer log no other row of the same offer and
+ * transaction holds while one remains (else the rows merge). A filled `hex`
+ * proof that may be submitted gets `next_submit_at` 10 s after the fill. A
+ * failed `hex` transaction is refused; a `detected` (or `hex`) proof whose successful receipt has no transfer log to its offer, or whose
+ * transaction failed, stays held, stops being read, and logs
+ * `shop.alert.detected_mismatch`.
+ *
+ * @param shop - Service.
+ * @param proof - Stored proof without a log index.
+ * @param url - RPC endpoint of its chain.
+ * @param timeoutMs - Timeout of the call.
+ * @param fetchImpl - Fetch of the RPC call (default the service's; the
+ *   watcher passes one that counts its calls).
+ * @returns `filled`, `pending` (no receipt yet), `failed`, `mismatch`, or
+ *   `error` (the call failed).
+ */
+export async function readProofReceipt(
+  shop: ShopPayments,
+  proof: ShopProof,
+  url: string,
+  timeoutMs: number,
+  fetchImpl: FetchFn = shop.deps.fetchImpl,
+): Promise<ShopReceiptOutcome> {
+  const receipt = await evmGetTransactionReceipt(url, fetchImpl, proof.txHash, timeoutMs);
+  if (!receipt.ok) {
+    return 'error';
+  }
+  if (receipt.value === null) {
+    return 'pending';
+  }
+  if (receipt.value.status !== '0x1' && proof.source === 'hex') {
+    await refuseHexProof(shop, proof.id);
+    return 'failed';
+  }
+  const logs = receipt.value.status === '0x1' ? receipt.value.logs : [];
+  return shop.store.transaction(async (tx) => {
+    await lockPaymentForProofs(tx, proof.paymentId);
+    const nowMs = shop.deps.now();
+    const current = await tx.getProof(proof.id);
+    // A same-offer merge can delete the row while the receipt is read.
+    if (current === null) {
+      return 'error';
+    }
+    const offer = await tx.getOffer(current.offerId);
+    /* v8 ignore next 3 -- a proof's offer is a foreign key */
+    if (offer === null) {
+      return 'error';
+    }
+    if (current.logIndex !== null) {
+      return 'filled';
+    }
+    const held = new Set<number>();
+    const blocked = new Set<number>();
+    for (const row of await tx.findProofs({ chainId: current.chainId, txHash: current.txHash })) {
+      if (row.id !== current.id && row.offerId === current.offerId && row.logIndex !== null) {
+        held.add(row.logIndex);
+        if (ordersDiffer(row, current)) {
+          blocked.add(row.logIndex);
+        }
+      }
+    }
+    const transfer = offerTransfer(logs, offer, held, blocked);
+    if (transfer === undefined && offerTransfer(logs, offer, held, new Set()) !== undefined) {
+      // The only matching logs are held by rows with another order (a
+      // successor or recovered order of the same transaction): this row is
+      // its own proof, stays unlogged, and is no longer read.
+      await tx.updateProof(current.id, {}, { nextReceiptAt: null });
+      return 'held';
+    }
+    if (transfer === undefined) {
+      await tx.updateProof(current.id, {}, { nextReceiptAt: null });
+      proofLog('shop.alert.detected_mismatch', current, {
+        ...offerLogFields(offer),
+        ...(current.providerOrder === null ? {} : { orderId: current.providerOrder }),
+        source: current.source,
+      });
+      return 'mismatch';
+    }
+    await fillProof(
+      tx,
+      current,
+      {
+        logIndex: transfer.logIndex,
+        transferAmount: transfer.value.toString(),
+        nextReceiptAt: null,
+      },
+      nowMs,
+    );
+    return 'filled';
+  });
+}
+
+/**
+ * Store a lookup row for a hash whose receipt was not found: at most
+ * {@link SHOP_MAX_LOOKUPS_PER_QUOTE} rows per quote, done ones included,
+ * counted and inserted under the quote's row lock. An existing row for the
+ * hash is kept.
+ *
+ * @param shop - Service.
+ * @param quote - The quote.
+ * @param method - Table row of the method.
+ * @param asset - Requested asset, or `null`.
+ * @param hash - Normalised hash.
+ */
+async function recordLookup(
+  shop: ShopPayments,
+  quote: ShopQuote,
+  method: ShopMethod,
+  asset: string | null,
+  hash: string,
+): Promise<void> {
+  await shop.store.transaction(async (tx) => {
+    const nowMs = shop.deps.now();
+    await tx.lockQuote(quote.id);
+    if ((await tx.findLookup(method.chainId, hash, quote.id)) !== null) {
+      return;
+    }
+    if ((await tx.countLookups(quote.id)) >= SHOP_MAX_LOOKUPS_PER_QUOTE) {
+      return;
+    }
+    await tx.insertLookup({
+      id: shop.newId(),
+      quoteId: quote.id,
+      method: method.method,
+      asset,
+      chainId: method.chainId,
+      hash,
+      nextTryAt: new Date(nowMs + SHOP_FIRST_LOOKUP_MS),
+      tries: 0,
+      doneAt: null,
+      createdAt: new Date(nowMs),
+    });
+  });
+}
+
+/**
+ * Close the open lookup row of a hash once its proof is stored.
+ *
+ * @param shop - Service.
+ * @param chainId - Chain id.
+ * @param hash - Normalised hash.
+ * @param quoteId - Quote id.
+ */
+async function closeLookup(
+  shop: ShopPayments,
+  chainId: number,
+  hash: string,
+  quoteId: string,
+): Promise<void> {
+  await shop.store.transaction(async (tx) => {
+    const lookup = await tx.findLookup(chainId, hash, quoteId);
+    if (lookup !== null && lookup.doneAt === null) {
+      await tx.updateLookup(lookup.id, { doneAt: new Date(shop.deps.now()) });
+    }
+  });
+}
+
+/** A parsed proof form. */
+type ProofForm =
+  | { kind: 'tx'; hash: string }
+  | { kind: 'hex'; hash: string; rawHex: string; decoded: DecodedEvmTransaction };
+
+/**
+ * Parse `tx` or `hex` (Accepted forms). Exactly one must be present.
+ *
+ * @param query - Proof query.
+ * @returns The form, or `null` when neither or both are present or the value is malformed.
+ */
+function parseProofForm(query: ShopProofQuery): ProofForm | null {
+  if (query.tx !== null) {
+    if (query.hex !== null) {
+      return null;
+    }
+    const bare = /^0x/i.test(query.tx) ? query.tx.slice(2) : query.tx;
+    const hash = normalizeHex32(bare);
+    return hash === null ? null : { kind: 'tx', hash: `0x${hash}` };
+  }
+  const hex = query.hex;
+  if (hex === null) {
+    return null;
+  }
+  const raw = (/^0x/i.test(hex) ? hex.slice(2) : hex).toLowerCase();
+  if (
+    raw.length < SHOP_HEX_MIN_CHARS ||
+    raw.length > SHOP_HEX_MAX_CHARS ||
+    !/^([0-9a-f]{2})+$/.test(raw)
+  ) {
+    return null;
+  }
+  const decoded = decodeSignedEvmTransaction(raw);
+  return decoded === null ? null : { kind: 'hex', hash: decoded.hash, rawHex: raw, decoded };
+}
+
+/**
+ * The stored proof a request repeats: a proof of this quote's offers whose
+ * `tx_hash` (or, for `tx`, `user_op_hash`) equals the hash. Several rows:
+ * the `accepted` one, else the one whose offer's asset equals `asset`, else
+ * the oldest.
+ *
+ * @param shop - Service.
+ * @param context - Quote, payment, offers.
+ * @param chainId - Method chain id.
+ * @param form - Parsed proof form.
+ * @param asset - Requested asset, or `null`.
+ * @returns The row, or `null` when the request is no repeat.
+ */
+async function findRepeat(
+  shop: ShopPayments,
+  context: ShopProofContext,
+  chainId: number,
+  form: ProofForm,
+  asset: string | null,
+): Promise<ShopProof | null> {
+  const offerIds = new Map(context.offers.map((offer) => [offer.id, offer]));
+  const rows = await shop.store.transaction(async (tx) => {
+    const byTx = await tx.findProofs({ chainId, txHash: form.hash });
+    const byOp = form.kind === 'tx' ? await tx.findProofs({ chainId, userOpHash: form.hash }) : [];
+    return [...byTx, ...byOp.filter((row) => !byTx.some((other) => other.id === row.id))];
+  });
+  const mine = rows
+    .filter((row) => offerIds.has(row.offerId))
+    .sort((a, b) => a.createdAt.getTime() - b.createdAt.getTime());
+  return (
+    mine.find((row) => row.result === 'accepted') ??
+    (asset === null
+      ? undefined
+      : mine.find(
+          (row) => offerIds.get(row.offerId)?.asset.toLowerCase() === asset.toLowerCase(),
+        )) ??
+    mine[0] ??
+    null
+  );
+}
+
+/**
+ * Whether a repeat may resubmit a proof now: at most
+ * {@link SHOP_REPEAT_SUBMITS_PER_MINUTE} per minute per proof. Records the
+ * submit when allowed.
+ *
+ * @param shop - Service.
+ * @param proofId - Proof id.
+ * @returns `true` when allowed.
+ */
+function allowRepeatSubmit(shop: ShopPayments, proofId: string): boolean {
+  let limiter = repeatSubmits.get(shop);
+  if (limiter === undefined) {
+    limiter = new IpRateLimiter(SHOP_REPEAT_SUBMITS_PER_MINUTE);
+    repeatSubmits.set(shop, limiter);
+  }
+  return limiter.allow(proofId, shop.deps.now());
+}
+
+/**
+ * Submit for a request: a new proof with `proof-first`; a repeat with
+ * `proof-repeat` only when its slot is free (2 s) and the per-proof repeat
+ * limit allows it.
+ *
+ * @param shop - Service.
+ * @param proof - Stored proof.
+ * @param created - Whether this request stored it.
+ * @param deadlineMs - Request deadline.
+ * @returns The proof afterwards.
+ */
+async function submitForRequest(
+  shop: ShopPayments,
+  proof: ShopProof,
+  created: boolean,
+  deadlineMs: number,
+): Promise<ShopProof> {
+  if (!submittable(proof)) {
+    return proof;
+  }
+  if (!created) {
+    const nowMs = shop.deps.now();
+    if (
+      (proof.lastSubmitAt !== null && nowMs - proof.lastSubmitAt.getTime() < SHOP_SUBMIT_SLOT_MS) ||
+      !allowRepeatSubmit(shop, proof.id)
+    ) {
+      return proof;
+    }
+  }
+  const after = await submitProof(
+    shop,
+    proof.id,
+    created ? 'proof-first' : 'proof-repeat',
+    deadlineMs,
+  );
+  return after ?? reread(shop, proof);
+}
+
+/**
+ * Re-read one proof. When a same-offer merge deleted it, the request answers
+ * from the kept row (Storing and submitting, step 4): the row of the same
+ * offer and transaction, the `accepted` one first, else the oldest, as the
+ * repeat rule picks.
+ *
+ * @param shop - Service.
+ * @param proof - The proof as last seen.
+ * @returns The stored row, the row it was merged into, or the given one when
+ *   no row of its offer and transaction is left.
+ */
+function reread(shop: ShopPayments, proof: ShopProof): Promise<ShopProof> {
+  return shop.store.transaction(async (tx) => {
+    const current = await tx.getProof(proof.id);
+    if (current !== null) {
+      return current;
+    }
+    const kept = (await tx.findProofs({ chainId: proof.chainId, txHash: proof.txHash })).filter(
+      (row) => row.offerId === proof.offerId,
+    );
+    return kept.find((row) => row.result === 'accepted') ?? kept[0] ?? proof;
+  });
+}
+
+/**
+ * Bring a repeated row forward within the request's budget: read its receipt
+ * once when it has no log index, send a `hex` transaction that was never
+ * sent, and resubmit it when it is unresolved.
+ *
+ * @param shop - Service.
+ * @param row - Stored row.
+ * @param url - RPC endpoint.
+ * @param deadlineMs - Request deadline.
+ * @returns The row afterwards.
+ */
+async function bringForward(
+  shop: ShopPayments,
+  row: ShopProof,
+  url: string,
+  deadlineMs: number,
+): Promise<ShopProof> {
+  let proof = row;
+  const left = (): number => deadlineMs - shop.deps.now();
+  if (proof.logIndex === null && left() > 0) {
+    await readProofReceipt(shop, proof, url, callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS));
+    proof = await reread(shop, proof);
+  }
+  if (
+    proof.source === 'hex' &&
+    proof.sentAt === null &&
+    proof.result === null &&
+    proof.providerOrder === null &&
+    left() > 0
+  ) {
+    await sendHexProof(shop, proof, url, callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS));
+    proof = await reread(shop, proof);
+  }
+  return submitForRequest(shop, proof, false, deadlineMs);
+}
+
+/**
+ * Read the quote of a proof request: it must be a quote of a shop payment of
+ * this account, current or earlier, in any status.
+ *
+ * @param shop - Service.
+ * @param account - The username's account.
+ * @param raw - `quote` query value.
+ * @returns The context, or `null` (answered **404** `Quote expired`).
+ */
+async function requestContext(
+  shop: ShopPayments,
+  account: Account,
+  raw: string | null,
+): Promise<ShopProofContext | null> {
+  const quoteId = raw === null ? null : normalizeUuid(raw);
+  if (quoteId === null) {
+    return null;
+  }
+  const context = await shopProofContext(shop, quoteId);
+  return context === null || context.payment.accountId !== account.id ? null : context;
+}
+
+/**
+ * `GET /lnurlp/tx/:username` after the username and account checks and the
+ * rate-limit count (Proof). A repeated key is **400**; a quote that is not a
+ * quote of this account is **404** `Quote expired`; a missing or unknown
+ * method or a malformed `tx` / `hex` is **400**. A stored proof of this
+ * quote's offers with the same hash is a repeat: it is brought forward and
+ * answered from its row. Otherwise `tx` and `hex` are verified, stored,
+ * sent (`hex`), and submitted within {@link SHOP_PROOF_BUDGET_MS}.
+ *
+ * Over the rate limit only a stored row answers; anything else is **503**
+ * `Too many requests`. Without shop configuration, or without an RPC
+ * endpoint for the method's chain, a stored row is answered as it stands
+ * and a new proof is **503** `Payment is being confirmed` with nothing
+ * stored: the quote is this account's, only its verification cannot run
+ * now, and the wallet retries.
+ *
+ * @param shop - Service.
+ * @param account - The username's account.
+ * @param _username - The username (the route already resolved it).
+ * @param query - Proof query.
+ * @param overLimit - `true` when the 120/min limiter refused the request.
+ * @returns The response.
+ */
+export async function handleShopProof(
+  shop: ShopPayments,
+  account: Account,
+  _username: string,
+  query: ShopProofQuery,
+  overLimit: boolean,
+): Promise<Response> {
+  const deadlineMs = shop.deps.now() + SHOP_PROOF_BUDGET_MS;
+  const refuse = (status: number, text: string): Response =>
+    overLimit ? shopError(503, TOO_MANY) : shopError(status, text);
+  if (query.repeated) {
+    return refuse(400, NOT_ACCEPTED);
+  }
+  const context = await requestContext(shop, account, query.quote);
+  if (context === null) {
+    return refuse(404, QUOTE_EXPIRED);
+  }
+  const method = query.method === null ? undefined : shopMethodByName(query.method);
+  const form = parseProofForm(query);
+  if (method === undefined || form === null) {
+    return refuse(400, NOT_ACCEPTED);
+  }
+  const stored = await findRepeat(shop, context, method.chainId, form, query.asset);
+  if (overLimit) {
+    return stored === null ? shopError(503, TOO_MANY) : proofResponse(stored);
+  }
+  const url = shop.deps.config?.evmRpc.get(method.chainId);
+  if (stored !== null) {
+    return proofResponse(
+      url === undefined ? stored : await bringForward(shop, stored, url, deadlineMs),
+    );
+  }
+  if (url === undefined) {
+    return shopError(503, BEING_CONFIRMED);
+  }
+  return form.kind === 'tx'
+    ? newTxProof(shop, context, method, query.asset, form.hash, url, deadlineMs)
+    : newHexProof(shop, context, method, query.asset, form, url, deadlineMs);
+}
+
+/**
+ * A `tx` proof that is not a repeat: verify, store, close the hash's lookup
+ * row (only once the proof is stored, so a failure in between leaves the
+ * lookup open for the watcher), submit.
+ *
+ * @param shop - Service.
+ * @param context - Quote context.
+ * @param method - Table row of the method.
+ * @param asset - Requested asset, or `null`.
+ * @param hash - Normalised hash.
+ * @param url - RPC endpoint.
+ * @param deadlineMs - Request deadline.
+ * @returns The response.
+ */
+async function newTxProof(
+  shop: ShopPayments,
+  context: ShopProofContext,
+  method: ShopMethod,
+  asset: string | null,
+  hash: string,
+  url: string,
+  deadlineMs: number,
+): Promise<Response> {
+  const verified = await verifyTxProof(shop, {
+    quoteOffers: context.offers,
+    method,
+    asset,
+    url,
+    hash,
+    deadlineMs,
+    callLimitMs: SHOP_RPC_TIMEOUT_MS,
+  });
+  switch (verified.kind) {
+    case 'not_found':
+      await recordLookup(shop, context.quote, method, asset, hash);
+      return shopError(503, 'Transfer not found yet');
+    case 'failed':
+    case 'no_log':
+      return shopError(400, NOT_ACCEPTED);
+    case 'used':
+      return shopError(400, TX_USED);
+  }
+  const { proof, created } = await storeProof(shop, {
+    offer: verified.offer,
+    paymentId: context.payment.id,
+    source: 'tx',
+    txHash: verified.txHash,
+    logIndex: verified.logIndex,
+    userOpHash: verified.userOpHash,
+    rawHex: null,
+    transferAmount: verified.transferAmount,
+    order: null,
+  });
+  await closeLookup(shop, method.chainId, hash, context.quote.id);
+  return proofResponse(await submitForRequest(shop, proof, created, deadlineMs));
+}
+
+/**
+ * A `hex` proof that is not a repeat: verify, store with `raw_hex`, send,
+ * then read its receipt once within the budget and submit it only when the
+ * receipt filled its log index (Verification of `hex`, step 5). Without a
+ * receipt yet it answers **503** `Payment is being confirmed`, and the
+ * receipts duty reads and sends it until the receipt is found, after which
+ * the submits duty submits it.
+ *
+ * @param shop - Service.
+ * @param context - Quote context.
+ * @param method - Table row of the method.
+ * @param asset - Requested asset, or `null`.
+ * @param form - Parsed `hex` form.
+ * @param url - RPC endpoint.
+ * @param deadlineMs - Request deadline.
+ * @returns The response.
+ */
+async function newHexProof(
+  shop: ShopPayments,
+  context: ShopProofContext,
+  method: ShopMethod,
+  asset: string | null,
+  form: Extract<ProofForm, { kind: 'hex' }>,
+  url: string,
+  deadlineMs: number,
+): Promise<Response> {
+  const verified = await verifyHexProof(shop, {
+    quoteOffers: context.offers,
+    method,
+    asset,
+    url,
+    decoded: form.decoded,
+    deadlineMs,
+  });
+  if (verified.kind === 'invalid') {
+    return shopError(400, NOT_ACCEPTED);
+  }
+  if (verified.kind === 'unavailable') {
+    return shopError(503, BEING_CONFIRMED);
+  }
+  const { proof, created } = await storeProof(shop, {
+    offer: verified.offer,
+    paymentId: context.payment.id,
+    source: 'hex',
+    txHash: form.hash,
+    logIndex: null,
+    userOpHash: null,
+    rawHex: form.rawHex,
+    transferAmount: verified.offer.amountIn,
+    order: null,
+  });
+  /* v8 ignore next 3 -- findRepeat already answered every row of this quote with this hash */
+  if (!created) {
+    return proofResponse(await bringForward(shop, proof, url, deadlineMs));
+  }
+  const outcome = await sendHexProof(
+    shop,
+    proof,
+    url,
+    callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS),
+  );
+  const sent = await reread(shop, proof);
+  if (outcome !== 'sent') {
+    return proofResponse(sent);
+  }
+  if (deadlineMs - shop.deps.now() > 0) {
+    await readProofReceipt(shop, sent, url, callTimeout(shop, deadlineMs, SHOP_RPC_TIMEOUT_MS));
+  }
+  const current = await reread(shop, sent);
+  return proofResponse(await submitForRequest(shop, current, true, deadlineMs));
+}
+
+/**
+ * Operator retry (`POST /debug/shop-proofs/:id/retry`), under the payment row
+ * and its proof rows (`lockPaymentForProofs`): a `stuck` proof becomes
+ * unresolved again, `give_up_at` moves 24 h ahead, and `shop.proof.retried`
+ * is logged. A `hex` proof without a log index gets `next_receipt_at` now,
+ * so the receipts duty reads and sends its transaction again (and the
+ * submits duty submits it once the receipt filled the log index); any other
+ * proof gets `next_submit_at` now.
+ *
+ * @param shop - Service.
+ * @param proofId - Proof id (any case).
+ * @returns `retried`, `not_stuck` when the proof is not `stuck`, or
+ *   `not_found`.
+ */
+export function retryStuckProof(
+  shop: ShopPayments,
+  proofId: string,
+): Promise<'retried' | 'not_stuck' | 'not_found'> {
+  const id = normalizeUuid(proofId);
+  if (id === null) {
+    return Promise.resolve('not_found');
+  }
+  return shop.store.transaction(async (tx) => {
+    const peek = await tx.getProof(id);
+    if (peek === null) {
+      return 'not_found';
+    }
+    await lockPaymentForProofs(tx, peek.paymentId);
+    const nowMs = shop.deps.now();
+    const proof = await tx.getProof(id);
+    /* v8 ignore next 3 -- only a same-offer merge deletes a proof, and it runs under the same locks */
+    if (proof === null) {
+      return 'not_found';
+    }
+    const retried = await tx.updateProof(
+      id,
+      { results: ['stuck'] },
+      {
+        result: null,
+        giveUpAt: new Date(nowMs + SHOP_UNRESOLVED_LIMIT_MS),
+        tries: 0,
+        ...(proof.source === 'hex' && proof.logIndex === null
+          ? { nextSubmitAt: null, nextReceiptAt: new Date(nowMs) }
+          : { nextSubmitAt: new Date(nowMs) }),
+      },
+    );
+    if (retried === null || retried === 'conflict') {
+      return 'not_stuck';
+    }
+    const offer = await tx.getOffer(retried.offerId);
+    /* v8 ignore next -- a proof's offer is a foreign key */
+    proofLog('shop.proof.retried', retried, offer === null ? {} : offerLogFields(offer));
+    return 'retried';
+  });
+}

@@ -16,14 +16,21 @@ import {
   type GoalFiatCode,
   type GoalRateDay,
 } from '@/lib/goal-rate';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { isOperatorBearer } from '@/lib/debug-token';
+import type { GiftStore } from '@/lib/gift-store';
+import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
 import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
 import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
+import type { LnurlServerConfig } from '@/lib/config';
+import { CANNOT_RECEIVE, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { issueSparkInvoice } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import {
   MESSAGE_LIST_LIMIT,
   MESSAGE_MAX_LENGTH,
@@ -34,10 +41,14 @@ import {
   forumContentFingerprint,
   forumPhotoResponse,
   normalizeForumText,
+  messagePay,
   normalizePhotoTakenAt,
+  NOT_PAYABLE,
   serializeHiddenMessage,
   serializeMessage,
   unsignedNostrDefaults,
+  WAIT_SATS_POLL_MS,
+  WAIT_SATS_TIMEOUT_MS,
   type ForumFeedMode,
   type ForumPhoto,
   type MessageRow,
@@ -59,18 +70,20 @@ import {
 } from '@/lib/translate-note';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import {
+  publicExternalAuthorCredits,
   publicExternalAuthorPosts,
   publicExternalAuthorProfile,
   publicExternalAuthorReplies,
+  publicExternalAuthorShops,
 } from '@/lib/nostr/external-profile';
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
-import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { HeartRateLimiter, InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
 import { signEventForAccount } from '@/lib/nostr/sign';
-import { buildZapRequest } from '@/lib/nostr/zap-request';
+import { buildZapRequest, serializeZapRequest } from '@/lib/nostr/zap-request';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { mentionUsernames } from '@/lib/mention';
@@ -80,10 +93,16 @@ import type { NotificationStore } from '@/lib/notification-store';
 import type { PushStore } from '@/lib/push-store';
 import type { SpendPing } from '@/lib/spend-ping';
 import { syncWelcomePing } from '@/lib/welcome-media';
-import { normalizePlace, parseMultipartCoord, placesMatch, type ForumPlace } from '@/lib/place';
+import {
+  normalizePlace,
+  parseMultipartCoord,
+  placeCountryCode,
+  placesMatch,
+  type ForumPlace,
+} from '@/lib/place';
 import { SHOP_NAME_REQUIRED, shopPlaceProblem, shopTextProblem } from '@/lib/shop-place';
 import { shopNpub, type ShopIdentityStore } from '@/lib/shop-identity';
-import { repaymentInvoice, repaymentStatus } from '@/routes/repayment';
+import { repaymentDueBills, repaymentInvoice, repaymentStatus } from '@/routes/repayment';
 import { bearerToken } from '@/routes/me';
 import {
   MESSAGE_VIDEO_MAX_BYTES,
@@ -150,23 +169,8 @@ const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
 /** 400 body when the author's LNURL cannot mint a forum-creditable zap (`noZap` / `not_zap`). */
 const AUTHOR_WALLET_CANNOT_RECEIVE = "The author's wallet cannot receive this Bitcoin payment";
 
-/**
- * Whether a forum row can mint a zap: non-empty signed `eventId` plus a
- * non-blank author Lightning Address. Null or empty `eventId` and
- * whitespace-only addresses are not payable.
- *
- * @param row - Forum row (`eventId` is the mint gate).
- * @param author - Author account when known.
- * @returns True when list/get should mark the note payable.
- */
-function payableOf(
-  row: { eventId: string | null },
-  author: { lightningAddress: string | null } | undefined,
-): boolean {
-  const address = author?.lightningAddress;
-  const eventId = row.eventId;
-  return eventId !== null && eventId !== '' && typeof address === 'string' && address.trim() !== '';
-}
+/** 503 code when a heart cannot get its fee-free Spark invoice; a heart never falls back to Lightning. */
+const HEART_UNAVAILABLE = 'HEART_UNAVAILABLE';
 
 /**
  * Persist an invoice attempt without failing the HTTP payment response.
@@ -206,6 +210,7 @@ function invoiceAttemptBase(args: {
   isNip57Invoice: boolean;
   lnurlResponse?: Record<string, unknown> | null;
   shown?: { pinned: false } | { pinned: true; fiat: FiatAmounts };
+  heart?: boolean;
 }): MessageInvoiceAttempt {
   const shown = args.shown?.pinned === true ? args.shown : undefined;
   return {
@@ -232,6 +237,7 @@ function invoiceAttemptBase(args: {
     amountChf: shown?.fiat.chf ?? null,
     amountEur: shown?.fiat.eur ?? null,
     amountPhp: shown?.fiat.php ?? null,
+    heart: args.heart === true,
   };
 }
 
@@ -254,10 +260,21 @@ export interface MessagesRouteDeps {
   nostrKek?: Uint8Array;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
+  /** LNURL server; omitted when off. Members with a verified wallet receive on it. */
+  lnurlServer?: LnurlServerConfig;
+  /** Issued Spark invoices; omitted when free in-app payments are off. */
+  sparkInvoices?: SparkInvoiceStore;
   /** Post limiter (tests inject). */
   postLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
+  /**
+   * Repayment invoice limiter (test-only override; omitted → the module
+   * limiter).
+   */
+  repaymentLimiter?: InvoiceRateLimiter;
+  /** Heart limiter, separate from the invoice limiter (tests inject). */
+  heartLimiter?: HeartRateLimiter;
   /** Optional push outbox; also the bell-subscriber list. */
   pushStore?: PushStore;
   /**
@@ -285,6 +302,12 @@ export interface MessagesRouteDeps {
    */
   fundingStore?: FundingStore;
   /**
+   * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the author's
+   * username at or after the wallet verification stops a second welcome ping.
+   * Omitted → only the platform `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound'>;
+  /**
    * Optional in-app notification store. When present, living-room events
    * fan out via {@link notifyForumPost} / {@link notifyForumReply} to every
    * account except the actor and except mention account ids on the created
@@ -310,7 +333,7 @@ export interface MessagesRouteDeps {
    */
   nostrQuerier?: NostrQuerier;
   /**
-   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * Relay URLs for that lookup. Omitted → `resolveZapRelays(env)`.
    * An empty list skips the lookup.
    */
   nostrRelayUrls?: readonly string[];
@@ -344,6 +367,7 @@ export interface MessagesRouteDeps {
 
 const defaultPostLimiter = new PostRateLimiter();
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
+const defaultHeartLimiter = new HeartRateLimiter();
 
 /**
  * After a committed write that can make a note a public shop: create its key
@@ -483,12 +507,6 @@ function publicEditField(field: MessageEditRow['field']): 'text' | 'place' | 'sh
 
 /** Hex UUID as stored on `message.id` (rejects values Postgres would error on). */
 export const MESSAGE_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
-/** Max wait for `GET /messages/:id?sinceSats=` before returning the current body. */
-export const WAIT_SATS_TIMEOUT_MS = 25_000;
-
-/** Poll interval while waiting for `sats` to exceed `sinceSats`. */
-export const WAIT_SATS_POLL_MS = 250;
 
 /**
  * Default sleep between `sinceSats` polls when no test inject is provided.
@@ -1036,8 +1054,11 @@ function multipartPlaceAddress(form: FormData): unknown {
  * @param shopAccount - Optional shop assignment for a new top-level shop
  *   note. Default `null`. Stored on the same insert as the note. Not applied
  *   on a media replay, and not written as edit history.
- * @returns 200 / 403 (unpaid text-only below verified) / 409 (same live
- *   media, different pin) / 429 / 503.
+ * @param ownParent - True when `account` wrote the parent note. A text-only
+ *   reply below verified is then unpaid: a wallet cannot pay itself. Default
+ *   `false`.
+ * @returns 200 / 403 (unpaid text-only below verified, except a reply on the
+ *   own note) / 409 (same live media, different pin) / 429 / 503.
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
@@ -1053,6 +1074,7 @@ async function persistForumPost(
   goal: FrozenAsk = NO_ASK,
   place: ForumPlace | null = null,
   shopAccount: { id: string; username: string; name: string } | null = null,
+  ownParent = false,
 ): Promise<Response> {
   const extras = video !== undefined ? [] : [...(extraPhotos ?? [])];
   if (photo !== undefined || video !== undefined) {
@@ -1072,32 +1094,51 @@ async function persistForumPost(
         if (!placesMatch(existing.place ?? null, place)) {
           return c.json({ error: 'A live note with this media already exists' }, 409);
         }
-        return c.json(
-          serializeMessage(
-            existing,
-            payableOf(existing, account),
-            account.role,
-            undefined,
-            true,
-            undefined,
-            staffTagOf(account.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              existing,
+              messagePay(existing, account, deps.lnurlServer),
+              account.role,
+              undefined,
+              true,
+              undefined,
+              staffTagOf(account.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       }
     } catch {
       logEvent('messages.create.failed');
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  if (!roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined) {
-    return c.json(
-      {
-        error:
-          parentId === null ? 'A post needs a Bitcoin payment' : 'A reply needs a Bitcoin payment',
-      },
-      403,
-    );
+  // Below verified, a text-only note is unpaid. Only a first top-level post is free,
+  // and a reply on the member's own note: a wallet cannot pay itself.
+  const unpaidBelowVerified =
+    !roleAtLeast(account.role, 'verified') && photo === undefined && video === undefined;
+  if (unpaidBelowVerified && parentId !== null && !ownParent) {
+    return c.json({ error: 'A reply needs a Bitcoin payment' }, 403);
+  }
+  const firstPost = unpaidBelowVerified && parentId === null;
+  const profileNoteId = account.profileMessageId ?? null;
+  if (firstPost) {
+    try {
+      if (await deps.store.accountHasTopLevelPost(account.id, profileNoteId)) {
+        return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
+      }
+    } catch {
+      logEvent('messages.create.failed');
+      return c.json({ error: 'Messages are unavailable' }, 503);
+    }
   }
   if (!postLimiter.allow(account.id, deps.now())) {
     logEvent('messages.rate_limited', { accountId: account.id });
@@ -1137,12 +1178,17 @@ async function persistForumPost(
     ...(parentId === null && shopAccount !== null ? { shopAccount } : {}),
   };
   try {
-    const created =
-      extras.length > 0
+    const created = firstPost
+      ? await deps.store.createFirstPost(row, profileNoteId)
+      : extras.length > 0
         ? await deps.store.create(row, photo, video, extras)
         : photo === undefined && video === undefined
           ? await deps.store.create(row)
           : await deps.store.create(row, photo, video);
+    if (created === undefined) {
+      // Another top-level note landed between the check and the insert.
+      return c.json({ error: 'A post needs a Bitcoin payment' }, 403);
+    }
     const isReplay = created.id !== id;
     const excludeAccountIds = [
       ...new Set(
@@ -1173,22 +1219,35 @@ async function persistForumPost(
         logEvent('push.enqueue.failed');
       }
     }
+    const lnurlServer = deps.lnurlServer;
+    const spendAddress =
+      lnurlServer === undefined
+        ? null
+        : /* v8 ignore next -- forum.post already required a verified wallet and a username */
+          (receivingAddress(account, lnurlServer)?.address ?? null);
     if (
       !isReplay &&
       parentId === null &&
-      account.lightningAddress !== null &&
+      lnurlServer !== undefined &&
+      spendAddress !== null &&
       deps.spendPing !== undefined
     ) {
       await syncWelcomePing({
         spendPing: deps.spendPing,
         messages: deps.store,
+        auth: deps.authStore,
+        gifts: deps.giftStore,
         account,
+        lnurlServer,
       });
       try {
-        const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
-          account.id,
+        const { grant, eligible } = await loadPayoutEligibility(
+          deps.fundingStore ?? new InMemoryFundingStore(),
+          deps.authStore,
+          account,
+          deps.now(),
         );
-        if (!eligibleToday(account.role, grant, deps.now())) {
+        if (!eligible) {
           logEvent('spend.ping.skipped', { reason: 'not_eligible' });
         } else if (
           created.hasPhoto === true ||
@@ -1196,7 +1255,7 @@ async function persistForumPost(
           Number(created.photoCount) > 0
         ) {
           await deps.spendPing.ping(
-            account.lightningAddress,
+            spendAddress,
             created.id,
             'daily',
             effectiveStatus(grant, deps.now()),
@@ -1266,18 +1325,27 @@ async function persistForumPost(
       const npub = await ensureShopIdentity(deps, published.id);
       if (npub !== undefined) published.shopNpub = npub;
     }
-    return c.json(
-      serializeMessage(
-        published,
-        payableOf(published, account),
-        account.role,
-        undefined,
-        true,
-        undefined,
-        staffTagOf(account.staffTag),
-      ),
-      200,
+    const attached = await attachHeartStats(
+      (ids, viewer) => deps.store.heartStats(ids, viewer),
+      account.id,
+      [
+        serializeMessage(
+          published,
+          messagePay(published, account, deps.lnurlServer),
+          account.role,
+          undefined,
+          true,
+          undefined,
+          staffTagOf(account.staffTag),
+        ),
+      ],
     );
+    const body = attached[0];
+    /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+    if (body === undefined) {
+      throw new Error('attachHeartStats returned no message');
+    }
+    return c.json(body, 200);
   } catch (err) {
     if (err instanceof Error && err.message === 'place conflicts with live media') {
       return c.json({ error: 'A live note with this media already exists' }, 409);
@@ -1492,6 +1560,7 @@ const invoiceBody = z.object({
   amountChf: z.string().nullable().optional(),
   amountEur: z.string().nullable().optional(),
   amountPhp: z.string().nullable().optional(),
+  heart: z.boolean().optional(),
 });
 
 const translateBody = z.object({
@@ -1505,8 +1574,11 @@ const translateBody = z.object({
  * `POST /messages` (JSON photo or multipart `video` + optional `poster`,
  * optional `goalSats` whole-sat ask on a top-level note; optional
  * `goalRepayable` and `goalTermDays` on that ask; replies 400),
- * `GET /messages/places` (live top-level map pins),
- * `GET /messages/compose-target` (platform profile note for a 1-sat write),
+ * `GET /messages/places` (live top-level map pins, each with the `countryCode` of
+ * its coordinates), optional `?country=` on signed-in `GET /messages` (notes
+ * pinned in that ISO 3166-1 alpha-2 country),
+ * `GET /messages/compose-target` (platform profile note for a 1-sat write, plus
+ * `firstPostFree` while the caller has no top-level note besides its profile note),
  * `GET /messages/:id/photo` (and `.jpg` / `.jpeg` / `.png` / `.webp`),
  * `GET /messages/:id/video.mp4|.webm|.mov`, public `GET /messages/:id/replies`
  * (`accountId` when the stored author id is non-null), staff `DELETE /messages/:id` (soft-hide)
@@ -1521,7 +1593,7 @@ const translateBody = z.object({
  * value 400), `POST /messages/:id/invoice`, and
  * `POST /:id/translate` / `POST /messages/:id/translate`.
  * Photo, video, replies, DELETE, `GET /stats`, `GET /hidden`, `GET /places`,
- * `GET /:id/external-posts`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
+ * `GET /:id/external-posts`, `GET /:id/external-shops`, `GET /:id/external-credits`, and `GET /:id/external-replies` register before the public single-note `GET /:id`. Soft-hidden rows (`deletedAt`) are omitted from
  * lists and 404 on unsigned/non-staff reads; a founder/moderator session may
  * GET the hidden permalink, its replies (including hidden children), and
  * photo/video bytes. `getById` still returns hidden rows for workers. Public
@@ -1545,7 +1617,7 @@ const translateBody = z.object({
  * optional `translationStore` (default `InMemoryTranslationStore`), and
  * test injects `waitSatsSleep` / `waitSatsTimeoutMs` / `waitSatsPollMs`
  * (defaults `defaultWaitSatsSleep` / `WAIT_SATS_TIMEOUT_MS` /
- * `WAIT_SATS_POLL_MS`).
+ * `WAIT_SATS_POLL_MS`), and the optional `lnurlServer` and `sparkInvoices`.
  * @returns A Hono app with `GET /`, `POST /`, `GET /compose-target`,
  * `GET /places`, `GET /:id/photo` plus `.jpg` / `.jpeg` / `.png` / `.webp`,
  * `GET /:id/video.mp4|.webm|.mov`, public `GET /:id/replies` (`accountId` when
@@ -1562,7 +1634,7 @@ const translateBody = z.object({
  * A cursor that points at the 200th row is 401. A cursor whose id is gone
  * continues at the first row strictly older than its timestamp, or is 401
  * when nothing in the window is older. Anything other than `mode=active`
- * without a hashtag is 401.
+ * without a hashtag or a country is 401.
  * Malformed limit or cursor stays 400.
  *
  * @param deps - Route collaborators.
@@ -1570,7 +1642,11 @@ const translateBody = z.object({
  * @returns The public page, 400, or 401.
  */
 async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promise<Response> {
-  if (c.req.query('mode') !== 'active' || c.req.query('hashtag') !== undefined) {
+  if (
+    c.req.query('mode') !== 'active' ||
+    c.req.query('hashtag') !== undefined ||
+    c.req.query('country') !== undefined
+  ) {
     return c.json({ error: 'Unauthorized' }, 401);
   }
   const limitQuery = c.req.query('limit');
@@ -1638,20 +1714,24 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
           : deps.authStore.getAccount(row.accountId),
       ),
     );
-    const messages = kept.map((row, i) => {
-      const author = authors[i];
-      const payable = payableOf(row, author);
-      const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-      return serializeMessage(
-        row,
-        payable,
-        role,
-        row.replyCount,
-        true,
-        undefined,
-        staffTagOf(author?.staffTag),
-      );
-    });
+    const messages = await attachHeartStats(
+      (ids, viewer) => deps.store.heartStats(ids, viewer),
+      null,
+      kept.map((row, i) => {
+        const author = authors[i];
+        const pay = messagePay(row, author, deps.lnurlServer);
+        const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+        return serializeMessage(
+          row,
+          pay,
+          role,
+          row.replyCount,
+          true,
+          undefined,
+          staffTagOf(author?.staffTag),
+        );
+      }),
+    );
     const last = page[page.length - 1];
     const anchor = kept.length > 0 ? kept[kept.length - 1] : last;
     let nextCursor: string | undefined;
@@ -1683,13 +1763,15 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
  * header must be a live session, or the response is 401. A session still
  * needs `forum.read`.
  *
- * @param deps - Stores, clock, and optional push, notification, and inbox
- * dependencies.
+ * @param deps - Stores, clock, optional push, notification, and inbox
+ * dependencies, and the optional `lnurlServer` and `sparkInvoices` for
+ * wallet-backed recipients.
  * @returns Hono app mounted at `/messages`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
   const postLimiter = deps.postLimiter ?? defaultPostLimiter;
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
+  const heartLimiter = deps.heartLimiter ?? defaultHeartLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
 
@@ -1761,6 +1843,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       if (hashtagQuery !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_]{0,63}$/.test(hashtagQuery)) {
         return c.json({ error: 'Invalid hashtag' }, 400);
       }
+      const countryQuery = c.req.query('country');
+      if (countryQuery !== undefined && !/^[A-Z]{2}$/.test(countryQuery)) {
+        return c.json({ error: 'Invalid country' }, 400);
+      }
       try {
         const staffAccountIds =
           mode === 'active'
@@ -1772,6 +1858,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           cursor,
           staffAccountIds,
           ...(hashtagQuery === undefined ? {} : { hashtag: hashtagQuery }),
+          ...(countryQuery === undefined ? {} : { country: countryQuery }),
         });
         const maybeKept = await Promise.all(
           rows.map(async (row) => {
@@ -1787,20 +1874,24 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               : deps.authStore.getAccount(row.accountId),
           ),
         );
-        const messages = kept.map((row, i) => {
-          const author = authors[i];
-          const payable = payableOf(row, author);
-          const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          return serializeMessage(
-            row,
-            payable,
-            role,
-            row.replyCount,
-            true,
-            undefined,
-            staffTagOf(author?.staffTag),
-          );
-        });
+        const messages = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          kept.map((row, i) => {
+            const author = authors[i];
+            const pay = messagePay(row, author, deps.lnurlServer);
+            const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
+            return serializeMessage(
+              row,
+              pay,
+              role,
+              row.replyCount,
+              true,
+              undefined,
+              staffTagOf(author?.staffTag),
+            );
+          }),
+        );
         let nextCursor: string | undefined;
         if (rows.length === limit) {
           const last = rows[rows.length - 1];
@@ -1916,6 +2007,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'A reply cannot ask for a goal' }, 400);
       }
       let parentId: string | null = null;
+      let ownParent = false;
       if (parsed.data.inReplyTo !== undefined) {
         if (!MESSAGE_ID_RE.test(parsed.data.inReplyTo)) {
           return c.json({ error: 'Not found' }, 404);
@@ -1926,6 +2018,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           return c.json({ error: 'Not found' }, 404);
         }
         parentId = parent.id;
+        ownParent = parent.accountId === account.id;
       }
       const shaped = readGoalPair(
         parsed.data.goalSats ?? null,
@@ -1979,6 +2072,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         termed.goal,
         place,
         shopParsed.snapshot,
+        ownParent,
       );
     })
     .get('/compose-target', async (c) => {
@@ -2014,10 +2108,17 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (row.deletedAt !== null) {
           return c.json({ error: 'Messages are unavailable' }, 503);
         }
-        if (!payableOf(row, live) || row.eventId === null || row.eventId === '') {
+        if (receivingAddress(live, deps.lnurlServer) === null) {
+          return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
+        }
+        if (!messagePay(row, live, deps.lnurlServer).payable) {
           return c.json({ error: 'This message cannot be paid yet' }, 400);
         }
-        return c.json({ messageId: row.id, sats: row.sats }, 200);
+        const firstPostFree = !(await deps.store.accountHasTopLevelPost(
+          account.id,
+          account.profileMessageId ?? null,
+        ));
+        return c.json({ messageId: row.id, sats: row.sats, firstPostFree }, 200);
       } catch {
         logEvent('messages.compose_target.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2065,7 +2166,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               messages.push(
                 serializeMessage(
                   row,
-                  false,
+                  NOT_PAYABLE,
                   role,
                   undefined,
                   true,
@@ -2090,11 +2191,12 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             const author =
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-            const payable = row.accountId === null ? false : payableOf(kept, author);
+            const pay =
+              row.accountId === null ? NOT_PAYABLE : messagePay(kept, author, deps.lnurlServer);
             messages.push(
               serializeMessage(
                 kept,
-                payable,
+                pay,
                 role,
                 undefined,
                 true,
@@ -2107,7 +2209,16 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewer) => deps.store.heartStats(ids, viewer),
+              account === null ? null : account.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2132,6 +2243,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2139,14 +2251,97 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, row.replyCount, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
           } catch {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_posts.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/external-shops', async (c) => {
+      const result = await publicExternalAuthorShops(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('messages.external_shops.failed');
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+    })
+    .get('/:id/external-credits', async (c) => {
+      const result = await publicExternalAuthorCredits(deps, c.req.param('id'));
+      if (result.status === 404) {
+        return c.json({ error: 'Not found' }, 404);
+      }
+      if (result.status === 503) {
+        return c.json({ error: 'Messages are unavailable' }, 503);
+      }
+      try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
+        const messages = [];
+        for (const row of result.messages) {
+          const kept = await dropMissingVideoRow(deps.store, row);
+          if (kept === null) {
+            continue;
+          }
+          try {
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, row.replyCount, true));
+          } catch {
+            continue;
+          }
+        }
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
+      } catch {
+        logEvent('messages.external_credits.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
     })
@@ -2159,6 +2354,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
       try {
+        const viewer = await authedAccount(deps, c.req.header('authorization'));
         const messages = [];
         for (const row of result.messages) {
           const kept = await dropMissingVideoRow(deps.store, row);
@@ -2166,12 +2362,21 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             continue;
           }
           try {
-            messages.push(serializeMessage(kept, false, undefined, undefined, true));
+            messages.push(serializeMessage(kept, NOT_PAYABLE, undefined, undefined, true));
           } catch {
             continue;
           }
         }
-        return c.json({ messages }, 200);
+        return c.json(
+          {
+            messages: await attachHeartStats(
+              (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+              viewer === null ? null : viewer.id,
+              messages,
+            ),
+          },
+          200,
+        );
       } catch {
         logEvent('messages.external_replies.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2331,7 +2536,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.place.updated', {
           messageId: id,
@@ -2340,18 +2546,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         });
         const npub = await ensureShopIdentity(deps, updated.id);
         if (npub !== undefined) updated.shopNpub = npub;
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              pay,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.place.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2441,7 +2656,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.shop_account.updated', {
           messageId: id,
@@ -2450,18 +2666,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         });
         const npub = await ensureShopIdentity(deps, updated.id);
         if (npub !== undefined) updated.shopNpub = npub;
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              pay,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.shop_account.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2524,20 +2749,30 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         if (ensured === row.text) {
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author);
+          const pay =
+            row.accountId === null ? NOT_PAYABLE : messagePay(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
-          return c.json(
-            serializeMessage(
-              row,
-              payable,
-              role,
-              await deps.store.countAttributedReplies(row.id),
-              undefined,
-              undefined,
-              staffTagOf(author?.staffTag),
-            ),
-            200,
+          const attached = await attachHeartStats(
+            (ids, viewer) => deps.store.heartStats(ids, viewer),
+            account.id,
+            [
+              serializeMessage(
+                row,
+                pay,
+                role,
+                await deps.store.countAttributedReplies(row.id),
+                undefined,
+                undefined,
+                staffTagOf(author?.staffTag),
+              ),
+            ],
           );
+          const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+          if (body === undefined) {
+            throw new Error('attachHeartStats returned no message');
+          }
+          return c.json(body, 200);
         }
         const written = await deps.store.updateText(id, ensured, {
           id: crypto.randomUUID(),
@@ -2562,7 +2797,8 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           updated.accountId === null
             ? undefined
             : await deps.authStore.getAccount(updated.accountId);
-        const payable = updated.accountId === null ? false : payableOf(updated, author);
+        const pay =
+          updated.accountId === null ? NOT_PAYABLE : messagePay(updated, author, deps.lnurlServer);
         const role = updated.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.text.updated', {
           messageId: id,
@@ -2571,18 +2807,27 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         });
         const npub = await ensureShopIdentity(deps, updated.id);
         if (npub !== undefined) updated.shopNpub = npub;
-        return c.json(
-          serializeMessage(
-            updated,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(updated.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              updated,
+              pay,
+              role,
+              await deps.store.countAttributedReplies(updated.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.text.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2652,25 +2897,35 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           written.accountId === null
             ? undefined
             : await deps.authStore.getAccount(written.accountId);
-        const payable = written.accountId === null ? false : payableOf(written, author);
+        const pay =
+          written.accountId === null ? NOT_PAYABLE : messagePay(written, author, deps.lnurlServer);
         const role = written.accountId === null ? undefined : (author?.role ?? 'basis');
         logEvent('messages.photos.updated', {
           messageId: id,
           accountId: account.id,
           role: account.role,
         });
-        return c.json(
-          serializeMessage(
-            written,
-            payable,
-            role,
-            await deps.store.countAttributedReplies(written.id),
-            undefined,
-            undefined,
-            staffTagOf(author?.staffTag),
-          ),
-          200,
+        const attached = await attachHeartStats(
+          (ids, viewer) => deps.store.heartStats(ids, viewer),
+          account.id,
+          [
+            serializeMessage(
+              written,
+              pay,
+              role,
+              await deps.store.countAttributedReplies(written.id),
+              undefined,
+              undefined,
+              staffTagOf(author?.staffTag),
+            ),
+          ],
         );
+        const body = attached[0];
+        /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+        if (body === undefined) {
+          throw new Error('attachHeartStats returned no message');
+        }
+        return c.json(body, 200);
       } catch {
         logEvent('messages.photos.failed');
         return c.json({ error: 'Messages are unavailable' }, 503);
@@ -2791,6 +3046,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               label: row.label,
               address: row.address,
               shop: row.shop,
+              countryCode: placeCountryCode(row),
               shopNpub: row.shopNpub,
               ...(row.accountId === null ? {} : { accountId: row.accountId }),
             })),
@@ -2894,21 +3150,32 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
               row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
             const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
             const deletedBy = await resolveDeletedBy(deps.authStore, row);
-            return c.json(
-              serializeMessage(
-                row,
-                false,
-                role,
-                row.parentId === null ? await deps.store.countAttributedReplies(row.id) : undefined,
-                true,
-                {
-                  deletedAt: row.deletedAt,
-                  deletedBy,
-                },
-                staffTagOf(author?.staffTag),
-              ),
-              200,
+            const attached = await attachHeartStats(
+              (ids, viewer) => deps.store.heartStats(ids, viewer),
+              account.id,
+              [
+                serializeMessage(
+                  row,
+                  NOT_PAYABLE,
+                  role,
+                  row.parentId === null
+                    ? await deps.store.countAttributedReplies(row.id)
+                    : undefined,
+                  true,
+                  {
+                    deletedAt: row.deletedAt,
+                    deletedBy,
+                  },
+                  staffTagOf(author?.staffTag),
+                ),
+              ],
             );
+            const body = attached[0];
+            /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+            if (body === undefined) {
+              throw new Error('attachHeartStats returned no message');
+            }
+            return c.json(body, 200);
           }
           if (await withheldFromPublic(deps, row)) {
             return c.json({ error: 'Not found' }, 404);
@@ -2925,24 +3192,37 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }
           const author =
             row.accountId === null ? undefined : await deps.authStore.getAccount(row.accountId);
-          const payable = row.accountId === null ? false : payableOf(row, author);
+          const pay =
+            row.accountId === null ? NOT_PAYABLE : messagePay(row, author, deps.lnurlServer);
           const role = row.accountId === null ? undefined : (author?.role ?? 'basis');
           const kept = await dropMissingVideoRow(deps.store, row);
           if (kept === null) {
             return c.json({ error: 'Not found' }, 404);
           }
-          return c.json(
-            serializeMessage(
-              kept,
-              payable,
-              role,
-              kept.parentId === null ? await deps.store.countAttributedReplies(kept.id) : undefined,
-              true,
-              undefined,
-              staffTagOf(author?.staffTag),
-            ),
-            200,
+          const viewer = await authedAccount(deps, c.req.header('authorization'));
+          const attached = await attachHeartStats(
+            (ids, viewerId) => deps.store.heartStats(ids, viewerId),
+            viewer === null ? null : viewer.id,
+            [
+              serializeMessage(
+                kept,
+                pay,
+                role,
+                kept.parentId === null
+                  ? await deps.store.countAttributedReplies(kept.id)
+                  : undefined,
+                true,
+                undefined,
+                staffTagOf(author?.staffTag),
+              ),
+            ],
           );
+          const body = attached[0];
+          /* v8 ignore next 3 -- attachHeartStats returns one object per input */
+          if (body === undefined) {
+            throw new Error('attachHeartStats returned no message');
+          }
+          return c.json(body, 200);
         }
       } catch {
         logEvent('messages.get.failed');
@@ -2951,6 +3231,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
     })
     .get('/:id/repayment', (c) => repaymentStatus(deps, c))
     .post('/:id/repayment', (c) => repaymentInvoice(deps, c))
+    .post('/:id/repayment/due', (c) => repaymentDueBills(deps, c))
     .post('/:id/invoice', async (c) => {
       const account = await authedAccount(deps, c.req.header('authorization'));
       if (account === null) {
@@ -2966,12 +3247,14 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       const parsed = invoiceBody.safeParse(await c.req.json().catch(() => null));
       const shown = parsed.success ? shownFiatFromBody(parsed.data) : { pinned: false as const };
+      const heart = parsed.success && parsed.data.heart === true;
       if (!parsed.success || shown === null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: 0,
             lightningAddress: null,
@@ -2987,6 +3270,28 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Expected a JSON body with a positive "sats" integer' }, 400);
       }
+      if (heart && parsed.data.sats !== 1) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: messageIdParam,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: UNKNOWN_ACCOUNT_ID,
+            amountSats: 0,
+            lightningAddress: null,
+            zapRequest: null,
+            result: 'bad_body',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: 'A heart sends 1 sat' }, 400);
+      }
       const amountMsat = parsed.data.sats * 1000;
       const invoiceText = normalizeForumText(parsed.data.text ?? '');
       if (invoiceText === null) {
@@ -2995,6 +3300,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
             shown,
@@ -3017,6 +3323,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: 0,
             lightningAddress: null,
@@ -3039,6 +3346,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: messageIdParam,
             payerAccountId: account.id,
+            heart,
             authorAccountId: UNKNOWN_ACCOUNT_ID,
             amountSats: parsed.data.sats,
             shown,
@@ -3061,6 +3369,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: account.id,
             amountSats: parsed.data.sats,
             shown,
@@ -3075,7 +3384,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
       }
       if (row.eventId === null || row.eventId === '') {
         await persistInvoiceAttempt(
@@ -3083,6 +3392,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
@@ -3100,20 +3410,18 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         return c.json({ error: 'This message cannot be paid yet' }, 400);
       }
       const author = await deps.authStore.getAccount(row.accountId);
-      if (
-        author === undefined ||
-        author.lightningAddress === null ||
-        author.lightningAddress.trim() === ''
-      ) {
+      const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
+      if (author === undefined || receiving === null) {
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: row.accountId,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author?.lightningAddress ?? null,
+            lightningAddress: null,
             zapRequest: null,
             result: 'no_author',
             httpStatus: 400,
@@ -3124,7 +3432,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             isNip57Invoice: false,
           }),
         );
-        return c.json({ error: 'This message cannot be paid yet' }, 400);
+        return c.json({ error: 'This message cannot be paid yet', code: CANNOT_RECEIVE }, 400);
       }
       const recipientPubkey = await deps.authStore.getNostrPublicKey(author.id);
       /* v8 ignore start -- payable notes have keys after the worker */
@@ -3134,10 +3442,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'no_key',
             httpStatus: 400,
@@ -3158,10 +3467,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'no_key',
             httpStatus: 503,
@@ -3174,17 +3484,77 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      if (!invoiceLimiter.allow(account.id, deps.now())) {
+      // A wallet cannot pay its own invoice: no heart and no paid reply on the own note.
+      // A reply there is posted unpaid with POST /messages.
+      if (row.accountId === account.id && (heart || invoiceText !== '')) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest: null,
+            result: heart ? 'self_heart' : 'self_reply',
+            httpStatus: 400,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json(
+          {
+            error: heart
+              ? 'You cannot send a heart to yourself'
+              : 'A reply on your own note is free; post it without a payment',
+          },
+          400,
+        );
+      }
+      // A heart is paid only fee-free in the app: without Spark invoices it is refused.
+      if (heart && deps.sparkInvoices === undefined) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest: null,
+            result: 'heart_unavailable',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+          }),
+        );
+        return c.json({ error: HEART_UNAVAILABLE }, 503);
+      }
+      const allowed = heart
+        ? heartLimiter.allow(account.id, row.id, deps.now())
+        : invoiceLimiter.allow(account.id, deps.now());
+      if (!allowed) {
         c.header('Retry-After', '10');
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'rate_limited',
             httpStatus: 429,
@@ -3217,10 +3587,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest: null,
             result: 'sign_failed',
             httpStatus: 503,
@@ -3233,16 +3604,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: 'Messages are unavailable' }, 503);
       }
-      const zapRequestJson = JSON.stringify(signed);
-      const zapRequest =
-        signed !== null && typeof signed === 'object'
-          ? (signed as unknown as Record<string, unknown>)
-          : null;
+      const zapRequestJson = serializeZapRequest(signed);
+      const zapRequest = signed as unknown as Record<string, unknown>;
       const zap = await requestZapInvoice({
-        address: author.lightningAddress,
+        address: receiving.address,
         amountMsat,
         zapRequestJson,
-        fetchImpl,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, fetchImpl, deps.authStore),
       });
       if (!zap.ok) {
         await persistInvoiceAttempt(
@@ -3250,10 +3618,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest,
             result: zap.reason,
             httpStatus: 400,
@@ -3266,7 +3635,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           }),
         );
         if (zap.reason === 'noZap') {
-          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+          return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
         }
         return c.json({ error: 'Could not start the Bitcoin payment' }, 400);
       }
@@ -3280,10 +3649,11 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           invoiceAttemptBase({
             messageId: row.id,
             payerAccountId: account.id,
+            heart,
             authorAccountId: author.id,
             amountSats: parsed.data.sats,
             shown,
-            lightningAddress: author.lightningAddress,
+            lightningAddress: receiving.address,
             zapRequest,
             result: 'not_zap',
             httpStatus: 400,
@@ -3295,17 +3665,50 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
             lnurlResponse: zap.lnurlResponse,
           }),
         );
-        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE }, 400);
+        return c.json({ error: AUTHOR_WALLET_CANNOT_RECEIVE, code: CANNOT_RECEIVE }, 400);
+      }
+      const sparkInvoice = await issueSparkInvoice(deps, receiving, {
+        pr: zap.pr,
+        paymentHash: inspected?.paymentHash ?? null,
+        prAmountMsat: inspected?.amountMsat ?? null,
+        amountSats: zap.amountSats,
+        zapRequestJson,
+      });
+      // No Spark invoice for a heart: refuse, and never hand out or record `pr` as ok.
+      if (heart && sparkInvoice === null) {
+        await persistInvoiceAttempt(
+          deps.store,
+          invoiceAttemptBase({
+            messageId: row.id,
+            payerAccountId: account.id,
+            heart,
+            authorAccountId: author.id,
+            amountSats: parsed.data.sats,
+            shown,
+            lightningAddress: receiving.address,
+            zapRequest,
+            result: 'heart_unavailable',
+            httpStatus: 503,
+            pr: null,
+            paymentHash: null,
+            description: null,
+            descriptionHash: null,
+            isNip57Invoice: false,
+            lnurlResponse: zap.lnurlResponse,
+          }),
+        );
+        return c.json({ error: HEART_UNAVAILABLE }, 503);
       }
       await persistInvoiceAttempt(
         deps.store,
         invoiceAttemptBase({
           messageId: row.id,
           payerAccountId: account.id,
+          heart,
           authorAccountId: author.id,
           amountSats: parsed.data.sats,
           shown,
-          lightningAddress: author.lightningAddress,
+          lightningAddress: receiving.address,
           zapRequest,
           result: 'ok',
           httpStatus: 200,
@@ -3317,6 +3720,6 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
           lnurlResponse: zap.lnurlResponse,
         }),
       );
-      return c.json({ pr: zap.pr, amountSats: zap.amountSats }, 200);
+      return c.json({ pr: zap.pr, amountSats: zap.amountSats, sparkInvoice }, 200);
     });
 }

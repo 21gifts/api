@@ -15,9 +15,15 @@ import { InMemoryMessageStore } from '@/lib/message-store';
 import { setDiagnosticSink } from '@/lib/log';
 import { spendInstructionRoutes } from '@/routes/spend-instruction-route';
 import { createApp } from '@/server';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const TOKEN = 'spend-secret-token';
-const ADDRESS = 'alice@walletofsatoshi.com';
+const ADDRESS = 'alice@example.test';
+const LNURL_ENV = {
+  LNURL_SERVER_URL: LNURL_SERVER.baseUrl,
+  PUBLIC_BASE_URL: LNURL_SERVER.publicBaseUrl,
+};
 const NOW_MS = Date.parse('2026-10-08T12:00:00.000Z');
 const POST_ID = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const NEWER_POST_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
@@ -33,7 +39,7 @@ const PAYING_ROSTER: DailyRosterDocument = {
   paymentsEnabled: true,
   moderatorPaymentsEnabled: true,
   defaultAmountUsd: 1,
-  recipients: [{ address: ADDRESS, amountUsd: 2 }],
+  recipients: [{ accountId: 'acc-alice', amountUsd: 2 }],
   moderators: [],
 };
 
@@ -67,12 +73,13 @@ function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
     setComment: (comment) => fallback.setComment(comment),
     setPaymentsEnabled: (enabled) => fallback.setPaymentsEnabled(enabled),
     setModeratorPaymentsEnabled: (enabled) => fallback.setModeratorPaymentsEnabled(enabled),
-    addRecipient: (address, amountUsd) => fallback.addRecipient(address, amountUsd),
-    updateRecipient: (address, amountUsd) => fallback.updateRecipient(address, amountUsd),
-    deleteRecipient: (address) => fallback.deleteRecipient(address),
-    addModerator: (address, amountUsd) => fallback.addModerator(address, amountUsd),
-    updateModerator: (address, amountUsd) => fallback.updateModerator(address, amountUsd),
-    deleteModerator: (address) => fallback.deleteModerator(address),
+    addRecipient: (accountId, amountUsd) => fallback.addRecipient(accountId, amountUsd),
+    updateRecipient: (accountId, amountUsd) => fallback.updateRecipient(accountId, amountUsd),
+    deleteRecipient: (accountId) => fallback.deleteRecipient(accountId),
+    addModerator: (accountId, amountUsd) => fallback.addModerator(accountId, amountUsd),
+    updateModerator: (accountId, amountUsd) => fallback.updateModerator(accountId, amountUsd),
+    deleteModerator: (accountId) => fallback.deleteModerator(accountId),
+    linkReport: () => fallback.linkReport(),
     importDocument: (body) => fallback.importDocument(body),
   };
 }
@@ -83,6 +90,7 @@ function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<
     rosterStore: fakeStore(),
     fundingStore: admittedStore(),
     now: () => NOW_MS,
+    env: { ...process.env, ...LNURL_ENV },
     ...deps,
   });
 }
@@ -98,23 +106,37 @@ function auth(init?: RequestInit): RequestInit {
   };
 }
 
+/**
+ * Verify the wallet of `acc-alice` and, unless `share` is false, store the
+ * 21.gifts recovery share a payout needs from the grant gate day on.
+ */
+async function verifyWallet(authStore: InMemoryAuthStore, share = true): Promise<void> {
+  await authStore.claimSparkPubkey('acc-alice', WALLET_PUBKEY);
+  await authStore.markSparkPubkeyVerified('acc-alice', WALLET_PUBKEY, 'alice', 2);
+  if (share) {
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+  }
+}
+
 async function seedPasskeyAccount(
   authStore: InMemoryAuthStore,
   role: 'verified' | 'basis' = 'verified',
+  share = true,
 ): Promise<void> {
   await authStore.createAccount({
     id: 'acc-alice',
     linkingKey: null,
     role,
     name: 'Ada',
-    lightningAddress: ADDRESS,
-    lightningAddressVerified: true,
+    username: 'alice',
+    walletRequired: true,
     forumLawsDismissed: false,
     location: null,
     viewKey: 'a'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
   });
+  await verifyWallet(authStore, share);
   await authStore.createPasskeyCredential({
     credentialId: 'cred-alice',
     publicKey: new Uint8Array([1]),
@@ -164,6 +186,7 @@ function mount(overrides: Partial<Parameters<typeof spendInstructionRoutes>[0]> 
       messageStore: new InMemoryMessageStore(),
       fundingStore: new InMemoryFundingStore(),
       now: () => NOW_MS,
+      lnurlServer: LNURL_SERVER,
       ...overrides,
     }),
   );
@@ -262,14 +285,15 @@ describe('POST /spend/daily-instruction', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
+      username: 'alice',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
       createdAt: 1,
       rulesAgreedAt: null,
     });
+    await verifyWallet(authStore);
     const res = await createSpendApp({ authStore }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -339,6 +363,34 @@ describe('POST /spend/daily-instruction', () => {
     );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+  });
+
+  it('returns not_eligible for an admitted member without a recovery share', async () => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, 'verified', false);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
+    await storeRecoveryShare(authStore, 'acc-alice', WALLET_PUBKEY);
+    const paid = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(await paid.json()).toEqual({
+      action: 'pay',
+      amountUsd: 2,
+      comment: 'thanks',
+      messageId: POST_ID,
+    });
   });
 
   it('returns payments_disabled when the roster switch is off', async () => {
@@ -458,8 +510,8 @@ describe('POST /spend/daily-instruction', () => {
       linkingKey: null,
       role: 'verified',
       name: 'Ada',
-      lightningAddress: ADDRESS,
-      lightningAddressVerified: true,
+      username: 'alice',
+      walletRequired: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -467,6 +519,7 @@ describe('POST /spend/daily-instruction', () => {
       rulesAgreedAt: null,
       profileMessageId: PROFILE_NOTE_ID,
     });
+    await verifyWallet(authStore);
     await authStore.createPasskeyCredential({
       credentialId: 'cred-alice',
       publicKey: new Uint8Array([1]),

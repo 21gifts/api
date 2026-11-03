@@ -18,6 +18,10 @@ Not using that existing element is a defect unless the pull request names the el
 
 A hard requirement in `CONTRIBUTING.md` or in this file cannot be waived by a sentence in the pull request. That includes a line that says to reject the change, and a line marked as a hard requirement.
 
+## Fiat amounts
+
+Reject the change when a committed amount gains, loses, or replaces a fiat figure from sats, from a later spot, or from a daily close. A typed amount stays that exact decimal string. A missing string stays null. A till charge that does not return the operator's typed decimal string to both the shop and the payer is rejected. A typed 12.00 returned as 12.01 or 11.99 is rejected. `docs/fiat-amounts.md` is binding.
+
 A contradiction of `CONTRIBUTING.md`, or of a document that `CONTRIBUTING.md` names as binding, is a defect on the same terms.
 
 What done means is stated in the pull request. The review judges the diff against that pull request. A missing linked issue is not a defect.

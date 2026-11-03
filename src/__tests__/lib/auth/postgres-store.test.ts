@@ -1,8 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
+import type { MergeDb } from '@/lib/account-merge';
 import { AUTH_SCHEMA_SQL } from '@/lib/auth/schema';
-import { migrateAuthSchema, PostgresAuthStore } from '@/lib/auth/postgres-store';
+import {
+  backfillSparkAddresses,
+  migrateAuthSchema,
+  PostgresAuthStore,
+} from '@/lib/auth/postgres-store';
 import type { SqlClient } from '@/lib/auth/sql';
+import type { PendingRecovery } from '@/lib/auth/store';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 class MockSql implements SqlClient {
   executes: { text: string; params: readonly unknown[] }[] = [];
@@ -97,6 +104,18 @@ describe('PostgresAuthStore nostr keys', () => {
     expect(ids).toEqual(['f1', 'm1']);
   });
 
+  it('listLegacyPayoutHandles maps account ids to the legacy address local part', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { id: 'a1', handle: 'adawos' },
+      { id: 'a2', handle: '' },
+    ];
+    const handles = await new PostgresAuthStore(sql).listLegacyPayoutHandles();
+    expect(sql.queries[0]?.text).toContain("split_part(btrim(lightning_address), '@', 1)");
+    expect(sql.queries[0]?.text).toContain("btrim(lightning_address) <> ''");
+    expect(handles).toEqual(new Map([['a1', 'adawos']]));
+  });
+
   it('listIdsByPrefix selects matching account ids', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ id: 'D70C4763-3033-43da-817a-2c7de9938f27' }];
@@ -123,6 +142,47 @@ describe('migrateAuthSchema', () => {
   });
 });
 
+describe('backfillSparkAddresses', () => {
+  const KEY_A = `02${'a'.repeat(64)}`;
+  const KEY_B = `03${'b'.repeat(64)}`;
+  const KEY_C = `02${'c'.repeat(64)}`;
+  const UPDATE =
+    'UPDATE account SET spark_address = $3 WHERE id = $1 AND spark_pubkey = $2 RETURNING id';
+
+  it('writes a missing or stale address, skips a current one, and logs the rows written', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const sql = new MockSql();
+    sql.nextQueryRows = [
+      [
+        { id: 'a', spark_pubkey: KEY_A, spark_address: null },
+        { id: 'b', spark_pubkey: KEY_B, spark_address: encodeSparkAddress(KEY_B) },
+        { id: 'c', spark_pubkey: KEY_C, spark_address: encodeSparkAddress(KEY_A) },
+      ],
+      [{ id: 'a' }],
+      [],
+    ];
+    try {
+      expect(await backfillSparkAddresses(sql)).toBe(1);
+      expect(sql.queries.map((q) => q.text)).toEqual([
+        'SELECT id, spark_pubkey, spark_address FROM account WHERE spark_pubkey IS NOT NULL',
+        UPDATE,
+        UPDATE,
+      ]);
+      expect(sql.queries[1]?.params).toEqual(['a', KEY_A, encodeSparkAddress(KEY_A)]);
+      expect(sql.queries[2]?.params).toEqual(['c', KEY_C, encodeSparkAddress(KEY_C)]);
+      const events = warn.mock.calls
+        .map((call) => call[0])
+        .filter((arg): arg is string => typeof arg === 'string' && arg.startsWith('{'))
+        .map((arg) => JSON.parse(arg) as Record<string, unknown>);
+      expect(
+        events.some((e) => e['event'] === 'account.spark_address.backfill' && e['count'] === 1),
+      ).toBe(true);
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});
+
 describe('PostgresAuthStore', () => {
   it('maps account rows and lists them', async () => {
     const sql = new MockSql();
@@ -138,10 +198,13 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.profileMessageId).toBeNull();
     expect(mapped?.location).toBeNull();
     expect(mapped?.notificationLevel).toBe('all');
+    expect(mapped?.notifyHearts).toBe(true);
     expect(mapped?.amountUnit).toBe('btc');
     expect(mapped?.username).toBeNull();
     expect(mapped?.walletRequired).toBe(false);
     expect(mapped?.walletBackupSeenAt).toBeNull();
+    expect(mapped?.walletIntroSeen).toBe(false);
+    expect(mapped?.hadExternalWallet).toBe(false);
     const account = await store.getAccount('acc');
     expect(account?.linkingKey).toBe(ACCOUNT_ROW.linking_key);
     expect(account?.viewKey).toBe(VIEW_KEY);
@@ -155,10 +218,27 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/username/);
     expect(sql.queries[0]?.text).toMatch(/wallet_required/);
     expect(sql.queries[0]?.text).toMatch(/wallet_backup_seen_at/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_intro_seen/);
+    expect(sql.queries[0]?.text).toMatch(
+      /\(lightning_address IS NOT NULL AND btrim\(lightning_address\) <> ''\) AS had_external_wallet/,
+    );
     const listed = await store.listAccounts();
     expect(listed).toHaveLength(1);
     expect(sql.queries[2]?.text).toMatch(/ORDER BY created_at ASC, id ASC/);
     expect(sql.queries[2]?.text).toMatch(/rules_agreed_at/);
+  });
+
+  it('getAccounts reads the distinct ids in one uuid[] query and skips rows without a view key', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccounts([])).toEqual([]);
+    expect(sql.queries).toHaveLength(0);
+    sql.nextRows = [ACCOUNT_ROW, { ...ACCOUNT_ROW, id: 'acc-no-key', view_key: null }];
+    const found = await store.getAccounts(['acc', 'acc-no-key', 'acc']);
+    expect(found.map((row) => row.id)).toEqual(['acc']);
+    expect(sql.queries).toHaveLength(1);
+    expect(sql.queries[0]?.text).toMatch(/WHERE id = ANY\(\$1::uuid\[\]\)/);
+    expect(sql.queries[0]?.params).toEqual(['{"acc","acc-no-key"}']);
   });
 
   it('maps omitted skip timestamps to null', async () => {
@@ -213,6 +293,14 @@ describe('PostgresAuthStore', () => {
     expect(mapped?.walletBackupSeenAt).toBe(4_000);
   });
 
+  it('maps wallet_intro_seen and had_external_wallet', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, wallet_intro_seen: true, had_external_wallet: true }];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.walletIntroSeen).toBe(true);
+    expect(mapped?.hadExternalWallet).toBe(true);
+  });
+
   it('maps a non-null rules_agreed_at timestamp', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, rules_agreed_at: new Date(5_000) }];
@@ -223,7 +311,7 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(new MockSql()).getAccount('x')).toBeUndefined();
   });
 
-  it('inserts and updates accounts', async () => {
+  it('inserts and updates accounts without the stored external address', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -231,8 +319,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'moderator' as const,
       name: 'Ada',
-      lightningAddress: 'a@b.com',
-      lightningAddressVerified: true,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -245,63 +331,93 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
       createdAt: 1,
       rulesAgreedAt: 9_000,
     });
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
-    expect(sql.executes[0]?.text).toMatch(/forum_laws_dismissed/);
-    expect(sql.executes[0]?.text).toMatch(/view_key/);
-    expect(sql.executes[0]?.text).toMatch(/rules_agreed_at/);
-    expect(sql.executes[0]?.text).toMatch(/is_platform/);
-    expect(sql.executes[0]?.params[8]).toBe(account.viewKey);
-    expect(sql.executes[0]?.params[9]).toBeNull();
-    expect(sql.executes[0]?.params[10]).toBe(false);
-    expect(sql.executes[0]?.params[11]).toBeNull();
-    expect(sql.executes[0]?.params[12]).toBeNull();
-    expect(sql.executes[0]?.params[13]).toBeNull();
-    expect(sql.executes[0]?.params[14]).toBeNull();
-    expect(sql.executes[0]?.text).toMatch(/name_skipped_at/);
-    expect(sql.executes[0]?.text).toMatch(/profile_message_id/);
-    expect(sql.executes[0]?.text).toMatch(/location/);
-    expect(sql.executes[0]?.text).toMatch(/notification_level/);
-    expect(sql.executes[0]?.params[15]).toBe('all');
-    expect(sql.executes[0]?.params[16]).toBeNull();
-    expect(sql.executes[0]?.params[17]).toBe(false);
-    expect(sql.executes[0]?.params[18]).toBe(false);
-    expect(sql.executes[0]?.params[19]).toBeNull();
-    expect(sql.executes[0]?.params[20]).toBe('btc');
-    expect(sql.executes[0]?.text).toMatch(/username/);
-    expect(sql.executes[0]?.text).toMatch(/amount_unit/);
-    expect(sql.executes[0]?.text).toMatch(/session_refused/);
-    expect(sql.executes[0]?.text).toMatch(/wallet_required/);
-    expect(sql.executes[0]?.text).toMatch(/wallet_backup_seen_at/);
-    expect(sql.executes[1]?.text).toMatch(/UPDATE account/);
-    expect(sql.executes[1]?.text).not.toMatch(/wallet_required/);
-    expect(sql.executes[1]?.text).not.toMatch(/wallet_backup_seen_at/);
-    expect(sql.executes[1]?.text).toMatch(/forum_laws_dismissed/);
-    expect(sql.executes[1]?.text).toMatch(/view_key = \$9/);
-    expect(sql.executes[1]?.text).toMatch(/rules_agreed_at/);
-    expect(sql.executes[1]?.text).toMatch(/is_platform = \$11/);
-    expect(sql.executes[1]?.text).toMatch(/name_skipped_at/);
-    expect(sql.executes[1]?.text).toMatch(/profile_message_id = \$14/);
-    expect(sql.executes[1]?.text).toMatch(/location = \$15/);
-    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
-    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
-    expect(sql.executes[1]?.text).not.toMatch(/session_refused = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/NOT EXISTS/);
-    expect(sql.executes[1]?.params).toEqual([
+    const insert = sql.executes[0]!;
+    expect(insert.text).toMatch(/ON CONFLICT \(linking_key\) DO NOTHING/);
+    expect(insert.text).not.toMatch(/lightning_address,|lightning_address_verified/);
+    expect(insert.text).toMatch(/lightning_address_skipped_at/);
+    for (const column of [
+      'forum_laws_dismissed',
+      'view_key',
+      'rules_agreed_at',
+      'is_platform',
+      'name_skipped_at',
+      'profile_message_id',
+      'location',
+      'notification_level',
+      'username',
+      'amount_unit',
+      'session_refused',
+      'wallet_required',
+      'wallet_backup_seen_at',
+      'notify_hearts',
+      'wallet_intro_seen',
+    ]) {
+      expect(insert.text).toMatch(new RegExp(column));
+    }
+    expect(insert.params).toEqual([
+      'acc',
+      ACCOUNT_ROW.linking_key,
+      'moderator',
+      'Ada',
+      false,
+      1,
+      VIEW_KEY,
+      null,
+      false,
+      null,
+      null,
+      null,
+      null,
+      'all',
+      null,
+      false,
+      false,
+      null,
+      'btc',
+      true,
+      false,
+    ]);
+    const update = sql.executes[1]!;
+    expect(update.text).toMatch(/UPDATE account/);
+    expect(update.text).not.toMatch(/lightning_address =|lightning_address_verified/);
+    expect(update.text).not.toMatch(/wallet_required/);
+    expect(update.text).not.toMatch(/wallet_backup_seen_at/);
+    expect(update.text).not.toMatch(/spark_pubkey =/);
+    expect(update.text).not.toMatch(/spark_pubkey_verified_at =/);
+    expect(update.text).toMatch(/forum_laws_dismissed = \$5/);
+    expect(update.text).toMatch(/view_key = \$7/);
+    expect(update.text).toMatch(/is_platform = \$9/);
+    expect(update.text).toMatch(/lightning_address_skipped_at = to_timestamp\(\$11/);
+    expect(update.text).toMatch(/profile_message_id = \$12/);
+    expect(update.text).toMatch(/location = \$13/);
+    expect(update.text).toMatch(/notification_level = \$14/);
+    expect(update.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
+    );
+    expect(update.text).toMatch(/amount_unit = \$16/);
+    expect(update.text).toMatch(/notify_hearts = \$17/);
+    expect(update.text).toMatch(/wallet_intro_seen = wallet_intro_seen OR \$18/);
+    expect(update.text).not.toMatch(/had_external_wallet/);
+    expect(update.text).toMatch(/NOT EXISTS/);
+    expect(update.text).not.toMatch(/IS NOT DISTINCT FROM/);
+    const setClause = update.text.split(/\bWHERE\b/)[0]!;
+    expect(
+      setClause.replace(
+        /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
+        '',
+      ),
+    ).not.toMatch(/spark_pubkey/);
+    expect(update.params).toEqual([
       'acc',
       ACCOUNT_ROW.linking_key,
       'basis',
       null,
-      null,
-      false,
       false,
       1,
       VIEW_KEY,
@@ -314,10 +430,22 @@ describe('PostgresAuthStore', () => {
       'all',
       null,
       'btc',
+      true,
+      false,
     ]);
+    expect(insert.text).not.toMatch(/spark_pubkey/);
   });
 
-  it('writes a stored notificationLevel as $16', async () => {
+  it('selects account rows without the stored external address', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'old@example.com' }];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(sql.queries[0]?.text).not.toMatch(/lightning_address,|lightning_address_verified/);
+    expect(mapped).not.toHaveProperty('lightningAddress');
+    expect(mapped).not.toHaveProperty('lightningAddressVerified');
+  });
+
+  it('writes a stored notificationLevel as $14', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -325,8 +453,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -336,12 +462,14 @@ describe('PostgresAuthStore', () => {
     };
     await store.createAccount(account);
     expect(sql.executes[0]?.text).toMatch(/notification_level/);
-    expect(sql.executes[0]?.params[15]).toBe('mentions');
+    expect(sql.executes[0]?.params[13]).toBe('mentions');
     await store.updateAccount({ ...account, notificationLevel: 'active' });
-    expect(sql.executes[1]?.text).toMatch(/notification_level = \$16/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
-    expect(sql.executes[1]?.params[15]).toBe('active');
-    expect(sql.executes[1]?.params[16]).toBeNull();
+    expect(sql.executes[1]?.text).toMatch(/notification_level = \$14/);
+    expect(sql.executes[1]?.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
+    );
+    expect(sql.executes[1]?.params[13]).toBe('active');
+    expect(sql.executes[1]?.params[14]).toBeNull();
   });
 
   it('maps amount_unit stored texts via parseAmountUnit', async () => {
@@ -358,7 +486,7 @@ describe('PostgresAuthStore', () => {
     expect(sql.queries[0]?.text).toMatch(/amount_unit/);
   });
 
-  it('writes a stored amountUnit as $21 on insert and $18 on update', async () => {
+  it('writes notifyHearts as $20 on insert and $17 on update', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     const account = {
@@ -366,8 +494,29 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis' as const,
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: VIEW_KEY,
+      createdAt: 1,
+      rulesAgreedAt: null,
+      notifyHearts: false,
+    };
+    await store.createAccount(account);
+    expect(sql.executes[0]?.text).toMatch(/notify_hearts/);
+    expect(sql.executes[0]?.params[19]).toBe(false);
+    await store.updateAccount({ ...account, notifyHearts: true });
+    expect(sql.executes[1]?.text).toMatch(/notify_hearts = \$17/);
+    expect(sql.executes[1]?.params[16]).toBe(true);
+  });
+
+  it('writes a stored amountUnit as $19 on insert and $16 on update', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const account = {
+      id: 'acc',
+      linkingKey: ACCOUNT_ROW.linking_key,
+      role: 'basis' as const,
+      name: null,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -377,11 +526,13 @@ describe('PostgresAuthStore', () => {
     };
     await store.createAccount(account);
     expect(sql.executes[0]?.text).toMatch(/amount_unit/);
-    expect(sql.executes[0]?.params[20]).toBe('fiat');
+    expect(sql.executes[0]?.params[18]).toBe('fiat');
     await store.updateAccount({ ...account, amountUnit: 'btc' });
-    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$18/);
-    expect(sql.executes[1]?.text).toMatch(/username = \$17/);
-    expect(sql.executes[1]?.params[17]).toBe('btc');
+    expect(sql.executes[1]?.text).toMatch(/amount_unit = \$16/);
+    expect(sql.executes[1]?.text).toMatch(
+      /username = CASE WHEN spark_pubkey_verified_at IS NULL AND trim\(coalesce\(username, ''\)\) = '' THEN \$15 ELSE username END/,
+    );
+    expect(sql.executes[1]?.params[15]).toBe('btc');
   });
 
   it('clears other platform flags before inserting or updating is_platform true', async () => {
@@ -392,8 +543,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -402,15 +551,13 @@ describe('PostgresAuthStore', () => {
       isPlatform: true,
     });
     expect(sql.executes[0]?.text).toMatch(/is_platform = false WHERE is_platform/);
-    expect(sql.executes[1]?.params[10]).toBe(true);
-    expect(sql.executes[1]?.params[13]).toBeNull();
+    expect(sql.executes[1]?.params[8]).toBe(true);
+    expect(sql.executes[1]?.params[11]).toBeNull();
     await store.updateAccount({
       id: 'plat',
       linkingKey: null,
       role: 'founder',
       name: '21.gifts',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -419,7 +566,7 @@ describe('PostgresAuthStore', () => {
       isPlatform: true,
     });
     expect(sql.executes[2]?.text).toMatch(/is_platform = false WHERE is_platform/);
-    expect(sql.executes[3]?.params[10]).toBe(true);
+    expect(sql.executes[3]?.params[8]).toBe(true);
   });
 
   it('looks up an account by view_key', async () => {
@@ -439,21 +586,6 @@ describe('PostgresAuthStore', () => {
     ).toBeUndefined();
   });
 
-  it('looks up an account by lightning_address with lower(trim) SQL', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      { ...ACCOUNT_ROW, lightning_address: 'guest@walletofsatoshi.com', name: 'Ada' },
-    ];
-    const store = new PostgresAuthStore(sql);
-    const found = await store.getAccountByLightningAddress('  Guest@WalletOfSatoshi.com  ');
-    expect(sql.queries[0]?.text).toMatch(
-      /WHERE lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
-    );
-    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ']);
-    expect(found?.id).toBe('acc');
-    expect(found?.lightningAddress).toBe('guest@walletofsatoshi.com');
-  });
-
   it('looks up an account by nostr_pubkey with lower(trim) SQL', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, name: 'Ada' }];
@@ -466,14 +598,6 @@ describe('PostgresAuthStore', () => {
   it('returns undefined when nostr_pubkey lookup has no rows', async () => {
     expect(
       await new PostgresAuthStore(new MockSql()).getAccountByPubkey('aa'.repeat(32)),
-    ).toBeUndefined();
-  });
-
-  it('returns undefined when lightning_address lookup has no rows', async () => {
-    expect(
-      await new PostgresAuthStore(new MockSql()).getAccountByLightningAddress(
-        'missing@example.com',
-      ),
     ).toBeUndefined();
   });
 
@@ -561,47 +685,6 @@ describe('PostgresAuthStore', () => {
     ]);
   });
 
-  it('updateAccountNameByLightningAddress sets only name by lower(trim) address', async () => {
-    const sql = new MockSql();
-    sql.nextRows = [
-      {
-        ...ACCOUNT_ROW,
-        role: 'moderator',
-        name: 'Ada Lovelace',
-        lightning_address: 'guest@walletofsatoshi.com',
-        rules_agreed_at: new Date(9_000),
-      },
-    ];
-    const store = new PostgresAuthStore(sql);
-    const named = await store.updateAccountNameByLightningAddress(
-      '  Guest@WalletOfSatoshi.com  ',
-      'Ada Lovelace',
-    );
-    expect(sql.queries[0]?.text).toMatch(/SET name = \$2\s+WHERE/);
-    expect(sql.queries[0]?.text).toMatch(
-      /lower\(trim\(lightning_address\)\) = lower\(trim\(\$1\)\)/,
-    );
-    expect(sql.queries[0]?.text).toMatch(/RETURNING id, linking_key, role, name/);
-    expect(sql.queries[0]?.params).toEqual(['  Guest@WalletOfSatoshi.com  ', 'Ada Lovelace']);
-    expect(named).toMatchObject({
-      id: 'acc',
-      name: 'Ada Lovelace',
-      role: 'moderator',
-      lightningAddress: 'guest@walletofsatoshi.com',
-      rulesAgreedAt: 9_000,
-      viewKey: VIEW_KEY,
-    });
-  });
-
-  it('updateAccountNameByLightningAddress returns undefined when no row matches', async () => {
-    expect(
-      await new PostgresAuthStore(new MockSql()).updateAccountNameByLightningAddress(
-        'missing@example.com',
-        'Ada',
-      ),
-    ).toBeUndefined();
-  });
-
   it('claimProfileMessageId uses query with IS NOT DISTINCT FROM', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
@@ -635,8 +718,6 @@ describe('PostgresAuthStore', () => {
     expect(await store.getAccount('acc')).toBeUndefined();
     expect(await store.getAccountByViewKey(VIEW_KEY)).toBeUndefined();
     expect(await store.listAccounts()).toEqual([]);
-    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, lightning_address: 'a@b.com' }];
-    expect(await store.updateAccountNameByLightningAddress('a@b.com', 'Ada')).toBeUndefined();
   });
 
   it('createAccount treats a unique_violation as a no-op', async () => {
@@ -648,8 +729,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -668,8 +747,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -688,8 +765,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -706,8 +781,6 @@ describe('PostgresAuthStore', () => {
       linkingKey: ACCOUNT_ROW.linking_key,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: VIEW_KEY,
@@ -726,8 +799,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -746,8 +817,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -766,8 +835,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -786,8 +853,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -806,8 +871,6 @@ describe('PostgresAuthStore', () => {
         linkingKey: ACCOUNT_ROW.linking_key,
         role: 'basis',
         name: null,
-        lightningAddress: null,
-        lightningAddressVerified: false,
         forumLawsDismissed: false,
         location: null,
         viewKey: VIEW_KEY,
@@ -892,31 +955,16 @@ describe('PostgresAuthStore', () => {
     expect(await new PostgresAuthStore(new MockSql()).getSession('x')).toBeUndefined();
   });
 
-  it('upserts, reads, and deletes verifications', async () => {
+  it('deleteAllSessions deletes every auth_session row and returns the count', async () => {
     const sql = new MockSql();
-    const store = new PostgresAuthStore(sql);
-    await store.putVerification({
-      accountId: 'acc',
-      address: 'a@b.com',
-      nonce: 'n'.repeat(32),
-      createdAt: 1,
-    });
-    expect(sql.executes[0]?.text).toMatch(/ON CONFLICT/);
-    sql.nextRows = [
-      {
-        account_id: 'acc',
-        address: 'a@b.com',
-        nonce: 'n'.repeat(32),
-        created_at: new Date(1),
-      },
-    ];
-    expect((await store.getVerification('acc'))?.address).toBe('a@b.com');
-    await store.deleteVerification('acc');
-    expect(sql.executes[1]?.text).toMatch(/DELETE FROM address_verification/);
-  });
-
-  it('returns undefined for a missing verification', async () => {
-    expect(await new PostgresAuthStore(new MockSql()).getVerification('x')).toBeUndefined();
+    sql.nextRows = [{ deleted: 3 }];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(3);
+    expect(sql.queries[0]?.text).toContain('DELETE FROM auth_session RETURNING 1');
+    expect(sql.queries[0]?.params).toEqual([]);
+    sql.nextRows = [{ deleted: '4' }];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(4);
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).deleteAllSessions()).toBe(0);
   });
 
   it('maps verified and founder account roles', async () => {
@@ -1539,7 +1587,7 @@ describe('PostgresAuthStore', () => {
     expect(row?.createdAt).toBe(1_000);
   });
 
-  it('lists passkeys, sessions, challenges, verifications, and nostr keys', async () => {
+  it('lists passkeys, sessions, challenges, and nostr keys', async () => {
     const sql = new MockSql();
     const store = new PostgresAuthStore(sql);
     sql.nextRows = [
@@ -1569,15 +1617,6 @@ describe('PostgresAuthStore', () => {
       },
     ];
     expect((await store.listPasskeyChallenges())[0]?.id).toBe('ch');
-    sql.nextRows = [
-      {
-        account_id: 'acc',
-        address: 'a@b.com',
-        nonce: 'n',
-        created_at: new Date(4_000),
-      },
-    ];
-    expect((await store.listAddressVerifications())[0]?.nonce).toBe('n');
     sql.nextRows = [
       {
         id: 'acc',
@@ -2094,5 +2133,850 @@ describe('PostgresAuthStore', () => {
     const sql = new MockSql();
     sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null, fiat: 'CHF' }]];
     expect(await new PostgresAuthStore(sql).setAccountFiat('acc', 'EUR', true)).toBeUndefined();
+  });
+});
+
+describe('PostgresAuthStore spark pubkey', () => {
+  const PUBKEY = `02${'a'.repeat(64)}`;
+
+  it('claimSparkPubkey updates with the conditional SQL and returns wrote true', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      { ...ACCOUNT_ROW, spark_pubkey: PUBKEY, wallet_required: true, username: 'ada' },
+    ];
+    const stored = await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY);
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE account SET spark_pubkey = \$2, spark_address = \$3/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/wallet_required IS TRUE/);
+    expect(sql.queries[0]?.text).toMatch(/username IS NOT NULL AND trim\(username\) <> ''/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING/);
+    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY, encodeSparkAddress(PUBKEY)]);
+    expect(stored?.wrote).toBe(true);
+    expect(stored?.account.sparkPubkey).toBe(PUBKEY);
+  });
+
+  it('claimSparkPubkey re-selects and returns wrote false when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, wallet_required: false }]];
+    const stored = await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY);
+    expect(sql.queries).toHaveLength(2);
+    expect(sql.queries[1]?.text).toMatch(/SELECT/);
+    expect(sql.queries[1]?.params).toEqual(['acc']);
+    expect(stored?.wrote).toBe(false);
+  });
+
+  it('claimSparkPubkey returns undefined for an unknown id', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], []];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('missing', PUBKEY)).toBeUndefined();
+  });
+
+  it('claimSparkPubkey returns undefined when the written row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ ...ACCOUNT_ROW, view_key: null, spark_pubkey: PUBKEY }];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY)).toBeUndefined();
+  });
+
+  it('claimSparkPubkey returns undefined when the existing row has no view key', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ ...ACCOUNT_ROW, view_key: null }]];
+    expect(await new PostgresAuthStore(sql).claimSparkPubkey('acc', PUBKEY)).toBeUndefined();
+  });
+
+  it('markSparkPubkeyVerified uses the conditional SQL and returns true when a row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ id: 'acc' }];
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      true,
+    );
+    expect(sql.queries[0]?.text).toMatch(
+      /UPDATE account SET spark_pubkey_verified_at = to_timestamp\(\$4::double precision \/ 1000\.0\)/,
+    );
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/lower\(trim\(username\)\) = \$3/);
+    expect(sql.queries[0]?.params).toEqual(['acc', PUBKEY, 'ada', 10]);
+  });
+
+  it('markSparkPubkeyVerified returns false when no row is updated', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      false,
+    );
+  });
+
+  it('markSparkPubkeyVerified returns false on unique violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(await new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10)).toBe(
+      false,
+    );
+  });
+
+  it('markSparkPubkeyVerified rethrows other errors', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(
+      new PostgresAuthStore(sql).markSparkPubkeyVerified('acc', PUBKEY, 'ada', 10),
+    ).rejects.toThrow('boom');
+  });
+
+  it('getAccountByVerifiedSparkPubkey selects a verified row', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        spark_pubkey: PUBKEY,
+        spark_pubkey_verified_at: new Date(10),
+      },
+    ];
+    const account = await new PostgresAuthStore(sql).getAccountByVerifiedSparkPubkey(PUBKEY);
+    expect(sql.queries[0]?.text).toMatch(
+      /WHERE spark_pubkey = \$1 AND spark_pubkey_verified_at IS NOT NULL/,
+    );
+    expect(sql.queries[0]?.params).toEqual([PUBKEY]);
+    expect(account?.sparkPubkey).toBe(PUBKEY);
+    expect(account?.sparkPubkeyVerifiedAt).toBe(10);
+  });
+
+  it('getAccountByVerifiedSparkPubkey returns undefined when no row matches', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(
+      await new PostgresAuthStore(sql).getAccountByVerifiedSparkPubkey(PUBKEY),
+    ).toBeUndefined();
+  });
+
+  it('isSparkPubkeyClaimed returns true when a row holds the key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ one: 1 }];
+    expect(await new PostgresAuthStore(sql).isSparkPubkeyClaimed(PUBKEY)).toBe(true);
+    expect(sql.queries[0]?.text).toBe(
+      'SELECT 1 AS one FROM account WHERE spark_pubkey = $1 LIMIT 1',
+    );
+    expect(sql.queries[0]?.params).toEqual([PUBKEY]);
+  });
+
+  it('isSparkPubkeyClaimed returns false when no row holds the key', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [];
+    expect(await new PostgresAuthStore(sql).isSparkPubkeyClaimed(PUBKEY)).toBe(false);
+  });
+
+  it('maps spark_pubkey and spark_pubkey_verified_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        ...ACCOUNT_ROW,
+        spark_pubkey: PUBKEY,
+        spark_pubkey_verified_at: new Date(4_000),
+      },
+    ];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.sparkPubkey).toBe(PUBKEY);
+    expect(mapped?.sparkPubkeyVerifiedAt).toBe(4_000);
+  });
+
+  it('maps omitted spark columns to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    const mapped = await new PostgresAuthStore(sql).getAccount('acc');
+    expect(mapped?.sparkPubkey).toBeNull();
+    expect(mapped?.sparkPubkeyVerifiedAt).toBeNull();
+  });
+
+  it('SELECT columns include spark_pubkey and spark_pubkey_verified_at', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [ACCOUNT_ROW];
+    await new PostgresAuthStore(sql).getAccount('acc');
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at/);
+  });
+});
+
+describe('PostgresAuthStore setUsername', () => {
+  it('updates with FOR UPDATE and returns the previous username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: 'ada' }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: true,
+      previous: 'ada',
+    });
+    expect(sql.queries[0]?.text).toMatch(/UPDATE account AS a SET username = \$2/);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE/);
+    expect(sql.queries[0]?.text).toMatch(/spark_pubkey_verified_at IS NULL/);
+    expect(sql.queries[0]?.text).toMatch(/RETURNING before\.previous/);
+    expect(sql.queries[0]?.params).toEqual(['acc', 'grace']);
+  });
+
+  it('returns previous null when the row had no username', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ previous: null }];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('coalesces a missing previous column to null', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{}];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: true,
+      previous: null,
+    });
+  });
+
+  it('returns frozen when the update matches no row and the account exists', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], [{ spark_pubkey_verified_at: new Date(10) }]];
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'grace')).toEqual({
+      ok: false,
+      reason: 'frozen',
+    });
+    expect(sql.queries[1]?.text).toMatch(
+      /SELECT spark_pubkey_verified_at FROM account WHERE id = \$1/,
+    );
+    expect(sql.queries[1]?.params).toEqual(['acc']);
+  });
+
+  it('returns missing when the update matches no row and the account is gone', async () => {
+    const sql = new MockSql();
+    sql.nextQueryRows = [[], []];
+    expect(await new PostgresAuthStore(sql).setUsername('missing', 'ada')).toEqual({
+      ok: false,
+      reason: 'missing',
+    });
+  });
+
+  it('returns taken on unique violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = Object.assign(new Error('duplicate key'), { code: '23505' });
+    expect(await new PostgresAuthStore(sql).setUsername('acc', 'ada')).toEqual({
+      ok: false,
+      reason: 'taken',
+    });
+  });
+
+  it('rethrows errors that are not unique_violation', async () => {
+    const sql = new MockSql();
+    sql.queryError = new Error('boom');
+    await expect(new PostgresAuthStore(sql).setUsername('acc', 'ada')).rejects.toThrow('boom');
+  });
+});
+
+describe('PostgresAuthStore social recovery', () => {
+  const OLD = `02${'1'.repeat(64)}`;
+  const NEW = `03${'2'.repeat(64)}`;
+  const NOW = 50_000_000;
+  const CUTOFF = NOW - CHALLENGE_TTL_MS;
+
+  interface Recorded {
+    text: string;
+    params: readonly unknown[];
+  }
+
+  /** Transaction port that records each statement and answers the scripted rows in order. */
+  function transactions(script: unknown[][] = []): {
+    db: MergeDb;
+    queries: Recorded[];
+    begins: { n: number };
+  } {
+    const queries: Recorded[] = [];
+    const begins = { n: 0 };
+    const db: MergeDb = {
+      async begin(run) {
+        begins.n += 1;
+        return run({
+          async query<T>(text: string, params: readonly unknown[] = []): Promise<T[]> {
+            queries.push({ text, params });
+            const next = script.shift();
+            if (next instanceof Error) {
+              throw next;
+            }
+            return (next ?? []) as T[];
+          },
+        });
+      },
+    };
+    return { db, queries, begins };
+  }
+
+  const holder = (overrides: Record<string, unknown> = {}) => ({
+    id: 'acc',
+    username: 'Ada',
+    spark_pubkey: OLD,
+    spark_address: encodeSparkAddress(OLD),
+    spark_pubkey_verified_at: new Date(10),
+    session_refused: false,
+    ...overrides,
+  });
+
+  const pendingRow = (overrides: Record<string, unknown> = {}) => ({
+    account_id: 'acc',
+    old_spark_pubkey: OLD,
+    new_spark_pubkey: NEW,
+    credential_id: 'new-credential',
+    public_key: Uint8Array.of(4, 5, 6),
+    sign_count: 0,
+    created_at: new Date(NOW),
+    forwarded_at: null as Date | string | null,
+    ...overrides,
+  });
+
+  const pending: PendingRecovery = {
+    accountId: 'acc',
+    oldSparkPubkey: OLD,
+    newSparkPubkey: NEW,
+    credentialId: 'new-credential',
+    publicKey: Uint8Array.of(4, 5, 6),
+    signCount: 0,
+    createdAt: NOW,
+    forwardedAt: null,
+  };
+
+  const challenge = {
+    id: 'c1',
+    type: 'recovery' as const,
+    challenge: 'chal',
+    accountId: 'acc',
+    consumed: false,
+    createdAt: NOW,
+  };
+
+  it('throws on every locked step without a transaction port', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const message = 'auth transactions are not configured';
+    await expect(
+      store.startRecoveryChallenge({ accountId: 'acc', oldSparkPubkey: OLD, challenge, now: NOW }),
+    ).rejects.toThrow(message);
+    await expect(
+      store.storePendingRecovery({ challengeId: 'c1', pending, now: NOW }),
+    ).rejects.toThrow(message);
+    await expect(
+      store.markRecoveryForwarded({
+        newSparkPubkey: NEW,
+        oldSparkPubkey: OLD,
+        username: 'ada',
+        now: NOW,
+      }),
+    ).rejects.toThrow(message);
+    await expect(
+      store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW }),
+    ).rejects.toThrow(message);
+    await expect(
+      store.putRecoveryShare({
+        accountId: 'acc',
+        sparkPubkey: OLD,
+        ciphertext: new Uint8Array(40),
+        now: NOW,
+      }),
+    ).rejects.toThrow(message);
+    expect(sql.queries).toEqual([]);
+  });
+
+  it('reads a live pending recovery by account, new key, or credential id', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextQueryRows = [
+      [pendingRow()],
+      [pendingRow({ forwarded_at: new Date(NOW + 1) })],
+      [pendingRow({ forwarded_at: new Date(NOW + 2).toISOString() })],
+      [],
+    ];
+    expect(await store.getPendingRecovery('acc', NOW)).toEqual(pending);
+    expect(await store.getPendingRecoveryByNewSparkPubkey(NEW, NOW)).toEqual({
+      ...pending,
+      forwardedAt: NOW + 1,
+    });
+    expect(await store.getPendingRecoveryByCredentialId('new-credential', NOW)).toEqual({
+      ...pending,
+      forwardedAt: NOW + 2,
+    });
+    expect(await store.getPendingRecovery('acc', NOW)).toBeUndefined();
+    const columns = ['account_id', 'new_spark_pubkey', 'credential_id', 'account_id'];
+    sql.queries.forEach((query, index) => {
+      expect(query.text).toMatch(/FROM pending_recovery/);
+      expect(query.text).toContain(
+        `WHERE ${columns[index]} = $1 AND (forwarded_at IS NOT NULL OR created_at >= to_timestamp($2::double precision / 1000.0))`,
+      );
+      expect(query.params[1]).toBe(CUTOFF);
+    });
+    expect(sql.queries.map((query) => query.params[0])).toEqual([
+      'acc',
+      NEW,
+      'new-credential',
+      'acc',
+    ]);
+  });
+
+  it('reads a stored recovery challenge', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [
+      {
+        id: 'c1',
+        type: 'recovery',
+        challenge: 'chal',
+        account_id: 'acc',
+        consumed: false,
+        created_at: new Date(NOW),
+        requested_name: null,
+      },
+    ];
+    expect((await new PostgresAuthStore(sql).getPasskeyChallenge('c1'))?.type).toBe('recovery');
+  });
+
+  describe('startRecoveryChallenge', () => {
+    const start = (script: unknown[][]) => {
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(new MockSql(), tx.db);
+      return {
+        tx,
+        result: store.startRecoveryChallenge({
+          accountId: 'acc',
+          oldSparkPubkey: OLD,
+          challenge,
+          now: NOW,
+        }),
+      };
+    };
+
+    it('locks the account first and answers changed for a missing, moved, unverified, or refused account', async () => {
+      for (const lock of [
+        [],
+        [holder({ spark_pubkey: NEW })],
+        [holder({ spark_pubkey_verified_at: null })],
+        [holder({ session_refused: true })],
+      ]) {
+        const { tx, result } = start([lock]);
+        expect(await result).toBe('changed');
+        expect(tx.queries).toHaveLength(1);
+        expect(tx.queries[0]?.text).toMatch(
+          /SELECT id, username, spark_pubkey, spark_address, spark_pubkey_verified_at, session_refused\s+FROM account WHERE id = \$1 FOR UPDATE/,
+        );
+        expect(tx.queries[0]?.params).toEqual(['acc']);
+      }
+    });
+
+    it('answers forwarded while a forwarded pending recovery remains', async () => {
+      const { tx, result } = start([[holder()], [{ forwarded_at: new Date(NOW) }]]);
+      expect(await result).toBe('forwarded');
+      expect(tx.queries[1]?.text).toBe(
+        'SELECT forwarded_at FROM pending_recovery WHERE account_id = $1 FOR UPDATE',
+      );
+      expect(tx.queries).toHaveLength(2);
+    });
+
+    it('drops an unforwarded pending recovery, consumes open recovery challenges, evicts expired ones, and inserts', async () => {
+      const { tx, result } = start([[holder()], [{ forwarded_at: null }]]);
+      expect(await result).toBe('started');
+      expect(tx.queries.map((query) => query.text.replace(/\s+/g, ' ').trim())).toEqual([
+        expect.stringContaining('FOR UPDATE'),
+        'SELECT forwarded_at FROM pending_recovery WHERE account_id = $1 FOR UPDATE',
+        'DELETE FROM pending_recovery WHERE account_id = $1',
+        "UPDATE passkey_challenge SET consumed = true WHERE account_id = $1 AND type = 'recovery' AND consumed = false",
+        'DELETE FROM passkey_challenge WHERE created_at < to_timestamp($1::double precision / 1000.0)',
+        expect.stringMatching(
+          /^INSERT INTO passkey_challenge \(id, type, challenge, account_id, consumed, created_at, requested_name\)/,
+        ),
+      ]);
+      expect(tx.queries[4]?.params).toEqual([CUTOFF]);
+      expect(tx.queries[5]?.params).toEqual(['c1', 'recovery', 'chal', 'acc', false, NOW, null]);
+    });
+
+    it('passes a requested name through', async () => {
+      const tx = transactions([[holder()], []]);
+      await new PostgresAuthStore(new MockSql(), tx.db).startRecoveryChallenge({
+        accountId: 'acc',
+        oldSparkPubkey: OLD,
+        challenge: { ...challenge, requestedName: 'ada' },
+        now: NOW,
+      });
+      expect(tx.queries[5]?.params[6]).toBe('ada');
+    });
+  });
+
+  describe('storePendingRecovery', () => {
+    const storeWith = (script: unknown[][], value: PendingRecovery = pending) => {
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(new MockSql(), tx.db);
+      return {
+        tx,
+        result: store.storePendingRecovery({ challengeId: 'c1', pending: value, now: NOW }),
+      };
+    };
+    const open = { consumed: false, created_at: new Date(NOW) };
+
+    it('answers changed for an account that left the old key', async () => {
+      const { tx, result } = storeWith([[holder({ spark_pubkey: NEW })]]);
+      expect(await result).toBe('changed');
+      expect(tx.queries).toHaveLength(1);
+    });
+
+    it('answers challenge for a missing or expired challenge', async () => {
+      const missing = storeWith([[holder()], []]);
+      expect(await missing.result).toBe('challenge');
+      expect(missing.tx.queries[1]?.text.replace(/\s+/g, ' ')).toBe(
+        "SELECT consumed, created_at FROM passkey_challenge WHERE id = $1 AND type = 'recovery' AND account_id = $2 FOR UPDATE",
+      );
+      expect(missing.tx.queries[1]?.params).toEqual(['c1', 'acc']);
+      const expired = storeWith([
+        [holder()],
+        [{ consumed: false, created_at: new Date(CUTOFF - 1) }],
+      ]);
+      expect(await expired.result).toBe('challenge');
+      expect(expired.tx.queries).toHaveLength(2);
+      const edge = storeWith([
+        [holder()],
+        [{ consumed: false, created_at: new Date(CUTOFF).toISOString() }],
+        [],
+        [],
+        [],
+        [],
+      ]);
+      expect(await edge.result).toBe('stored');
+    });
+
+    it('evicts expired pending recoveries, then answers same, challenge, or pending', async () => {
+      const used = { consumed: true, created_at: new Date(NOW) };
+      const same = storeWith([
+        [holder()],
+        [used],
+        [],
+        [{ credential_id: 'new-credential', new_spark_pubkey: NEW }],
+      ]);
+      expect(await same.result).toBe('same');
+      expect(same.tx.queries[2]?.text.replace(/\s+/g, ' ')).toBe(
+        'DELETE FROM pending_recovery WHERE forwarded_at IS NULL AND created_at < to_timestamp($1::double precision / 1000.0)',
+      );
+      expect(same.tx.queries[2]?.params).toEqual([CUTOFF]);
+      expect(same.tx.queries[3]?.text).toBe(
+        'SELECT credential_id, new_spark_pubkey FROM pending_recovery WHERE account_id = $1',
+      );
+      expect(same.tx.queries).toHaveLength(4);
+      for (const stored of [
+        [],
+        [{ credential_id: 'other', new_spark_pubkey: NEW }],
+        [{ credential_id: 'new-credential', new_spark_pubkey: OLD }],
+      ]) {
+        expect(await storeWith([[holder()], [used], [], stored]).result).toBe('challenge');
+      }
+      expect(
+        await storeWith([[holder()], [open], [], [{ credential_id: 'x', new_spark_pubkey: OLD }]])
+          .result,
+      ).toBe('pending');
+    });
+
+    it('answers key or credential when they are in use', async () => {
+      const key = storeWith([[holder()], [open], [], [], [{ one: 1 }]]);
+      expect(await key.result).toBe('key');
+      expect(key.tx.queries[4]?.text.replace(/\s+/g, ' ')).toBe(
+        'SELECT 1 AS one FROM account WHERE spark_pubkey = $1 UNION ALL SELECT 1 AS one FROM previous_wallet WHERE spark_pubkey = $1 UNION ALL SELECT 1 AS one FROM pending_recovery WHERE new_spark_pubkey = $1 LIMIT 1',
+      );
+      expect(key.tx.queries[4]?.params).toEqual([NEW]);
+      const credential = storeWith([[holder()], [open], [], [], [], [{ one: 1 }]]);
+      expect(await credential.result).toBe('credential');
+      expect(credential.tx.queries[5]?.text.replace(/\s+/g, ' ')).toBe(
+        'SELECT 1 AS one FROM passkey_credential WHERE credential_id = $1 UNION ALL SELECT 1 AS one FROM pending_recovery WHERE credential_id = $1 LIMIT 1',
+      );
+      expect(credential.tx.queries[5]?.params).toEqual(['new-credential']);
+      expect(credential.tx.queries).toHaveLength(6);
+    });
+
+    it('consumes the challenge and inserts the row', async () => {
+      const { tx, result } = storeWith([[holder()], [open], [], [], [], [], [], []], {
+        ...pending,
+        forwardedAt: 5,
+      });
+      expect(await result).toBe('stored');
+      expect(tx.queries[6]?.text).toBe(
+        'UPDATE passkey_challenge SET consumed = true WHERE id = $1 AND consumed = false',
+      );
+      expect(tx.queries[6]?.params).toEqual(['c1']);
+      expect(tx.queries[7]?.text).toMatch(
+        /^INSERT INTO pending_recovery \(account_id, old_spark_pubkey, new_spark_pubkey, credential_id, public_key, sign_count, created_at\)/,
+      );
+      expect(tx.queries[7]?.text).not.toContain('forwarded_at');
+      expect(tx.queries[7]?.params).toEqual([
+        'acc',
+        OLD,
+        NEW,
+        'new-credential',
+        pending.publicKey,
+        0,
+        NOW,
+      ]);
+    });
+
+    it('lets a unique violation of the insert propagate unmapped', async () => {
+      const violation = Object.assign(new Error('duplicate key'), { code: '23505' });
+      const { result } = storeWith([
+        [holder()],
+        [open],
+        [],
+        [],
+        [],
+        [],
+        [],
+        violation as unknown as unknown[],
+      ]);
+      await expect(result).rejects.toBe(violation);
+    });
+  });
+
+  describe('markRecoveryForwarded', () => {
+    const admit = (rows: unknown[][], script: unknown[][], username = 'ada') => {
+      const sql = new MockSql();
+      sql.nextQueryRows = rows;
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(sql, tx.db);
+      return {
+        sql,
+        tx,
+        result: store.markRecoveryForwarded({
+          newSparkPubkey: NEW,
+          oldSparkPubkey: OLD,
+          username,
+          now: NOW + 1,
+        }),
+      };
+    };
+
+    it('answers undefined without a pending recovery for that new key, before any lock', async () => {
+      const { sql, tx, result } = admit([[]], []);
+      expect(await result).toBeUndefined();
+      expect(sql.queries[0]?.text).toBe(
+        'SELECT account_id FROM pending_recovery WHERE new_spark_pubkey = $1',
+      );
+      expect(sql.queries[0]?.params).toEqual([NEW]);
+      expect(tx.begins.n).toBe(0);
+    });
+
+    it('answers undefined when the account left the key or the username differs', async () => {
+      for (const lock of [
+        [],
+        [holder({ spark_pubkey: NEW })],
+        [holder({ username: null })],
+        [holder({ username: 'Bob' })],
+      ]) {
+        const { tx, result } = admit([[{ account_id: 'acc' }]], [lock]);
+        expect(await result).toBeUndefined();
+        expect(tx.queries).toHaveLength(1);
+        expect(tx.queries[0]?.text).toMatch(/FOR UPDATE/);
+      }
+    });
+
+    it('marks the pending recovery forwarded in the same step and maps the row', async () => {
+      const none = admit([[{ account_id: 'acc' }]], [[holder({ username: ' Ada ' })], []]);
+      expect(await none.result).toBeUndefined();
+      const update = none.tx.queries[1];
+      expect(update?.text.replace(/\s+/g, ' ')).toContain(
+        'UPDATE pending_recovery SET forwarded_at = to_timestamp($5::double precision / 1000.0) WHERE account_id = $1 AND new_spark_pubkey = $2 AND old_spark_pubkey = $3 AND forwarded_at IS NULL AND created_at >= to_timestamp($4::double precision / 1000.0) RETURNING',
+      );
+      expect(update?.params).toEqual(['acc', NEW, OLD, NOW + 1 - CHALLENGE_TTL_MS, NOW + 1]);
+      const done = admit(
+        [[{ account_id: 'acc' }]],
+        [[holder()], [pendingRow({ forwarded_at: new Date(NOW + 1) })]],
+      );
+      expect(await done.result).toEqual({ ...pending, forwardedAt: NOW + 1 });
+    });
+  });
+
+  describe('commitRecovery', () => {
+    const commit = (script: unknown[][]) => {
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(new MockSql(), tx.db);
+      return {
+        tx,
+        result: store.commitRecovery({ accountId: 'acc', newSparkPubkey: NEW, now: NOW + 9 }),
+      };
+    };
+    const forwardedRow = pendingRow({ forwarded_at: new Date(NOW + 1) });
+
+    it('answers gone without the account or a forwarded pending recovery with that key', async () => {
+      const missing = commit([[]]);
+      expect(await missing.result).toBe('gone');
+      expect(missing.tx.queries).toHaveLength(1);
+      const none = commit([[holder()], []]);
+      expect(await none.result).toBe('gone');
+      expect(none.tx.queries[1]?.text.replace(/\s+/g, ' ')).toContain(
+        'FROM pending_recovery WHERE account_id = $1 AND new_spark_pubkey = $2 AND forwarded_at IS NOT NULL FOR UPDATE',
+      );
+      expect(none.tx.queries[1]?.params).toEqual(['acc', NEW]);
+      expect(none.tx.queries).toHaveLength(2);
+    });
+
+    it('deletes the pending row and answers changed when the account left the old verified key', async () => {
+      for (const lock of [
+        holder({ spark_pubkey: `02${'9'.repeat(64)}` }),
+        holder({ spark_pubkey_verified_at: null }),
+      ]) {
+        const { tx, result } = commit([[lock], [forwardedRow]]);
+        expect(await result).toBe('changed');
+        expect(tx.queries.slice(2)).toEqual([
+          { text: 'DELETE FROM pending_recovery WHERE account_id = $1', params: ['acc'] },
+        ]);
+      }
+    });
+
+    it('commits every write of the recovery in order', async () => {
+      const { tx, result } = commit([[holder()], [forwardedRow]]);
+      expect(await result).toBe('committed');
+      expect(
+        tx.queries.slice(2).map((query) => [query.text.replace(/\s+/g, ' ').trim(), query.params]),
+      ).toEqual([
+        [
+          'INSERT INTO previous_wallet (account_id, spark_pubkey, spark_address, replaced_at) VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0))',
+          ['acc', OLD, encodeSparkAddress(OLD), NOW + 9],
+        ],
+        ['DELETE FROM passkey_credential WHERE account_id = $1', ['acc']],
+        [
+          'INSERT INTO passkey_credential (credential_id, public_key, sign_count, account_id, created_at) VALUES ($1, $2, $3, $4, to_timestamp($5::double precision / 1000.0))',
+          ['new-credential', Uint8Array.of(4, 5, 6), 0, 'acc', NOW + 9],
+        ],
+        ['DELETE FROM auth_session WHERE account_id = $1', ['acc']],
+        ['DELETE FROM push_subscription WHERE account_id = $1', ['acc']],
+        [
+          'UPDATE account SET spark_pubkey = $2, spark_address = $3, wallet_required = TRUE WHERE id = $1',
+          ['acc', NEW, encodeSparkAddress(NEW)],
+        ],
+        [
+          "UPDATE passkey_challenge SET consumed = true WHERE account_id = $1 AND type = 'recovery' AND consumed = false",
+          ['acc'],
+        ],
+        ['DELETE FROM pending_recovery WHERE account_id = $1', ['acc']],
+      ]);
+    });
+
+    it('derives the previous address when the account row has none', async () => {
+      const { tx, result } = commit([[holder({ spark_address: null })], [forwardedRow]]);
+      expect(await result).toBe('committed');
+      expect(tx.queries[2]?.params[2]).toBe(encodeSparkAddress(OLD));
+    });
+
+    it('lets a failed write propagate', async () => {
+      const violation = Object.assign(new Error('duplicate key'), { code: '23505' });
+      const { result } = commit([[holder()], [forwardedRow], violation as unknown as unknown[]]);
+      await expect(result).rejects.toBe(violation);
+    });
+  });
+
+  it('drops a pending recovery only by account and new key', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextQueryRows = [[{ account_id: 'acc' }], []];
+    expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(true);
+    expect(await store.dropPendingRecovery({ accountId: 'acc', newSparkPubkey: NEW })).toBe(false);
+    expect(sql.queries[0]?.text.replace(/\s+/g, ' ')).toBe(
+      'DELETE FROM pending_recovery WHERE account_id = $1 AND new_spark_pubkey = $2 RETURNING account_id',
+    );
+    expect(sql.queries[0]?.params).toEqual(['acc', NEW]);
+  });
+
+  it('reads previous wallets newest first and drops one with its share', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    const row = {
+      account_id: 'acc',
+      spark_pubkey: OLD,
+      spark_address: encodeSparkAddress(OLD),
+      replaced_at: new Date(NOW),
+    };
+    const wallet = {
+      accountId: 'acc',
+      sparkPubkey: OLD,
+      sparkAddress: encodeSparkAddress(OLD),
+      replacedAt: NOW,
+    };
+    sql.nextQueryRows = [
+      [row],
+      [],
+      [row, { ...row, spark_pubkey: NEW, replaced_at: '1970-01-01T00:00:01.000Z' }],
+      [{ dropped: 1 }],
+      [{ dropped: '0' }],
+      [],
+    ];
+    expect(await store.getPreviousWalletBySparkPubkey(OLD)).toEqual(wallet);
+    expect(await store.getPreviousWalletBySparkPubkey(NEW)).toBeUndefined();
+    expect(await store.listPreviousWallets('acc')).toEqual([
+      wallet,
+      { ...wallet, sparkPubkey: NEW, replacedAt: 1000 },
+    ]);
+    expect(await store.dropPreviousWallet('acc', OLD)).toBe(true);
+    expect(await store.dropPreviousWallet('acc', OLD)).toBe(false);
+    expect(await store.dropPreviousWallet('acc', OLD)).toBe(false);
+    expect(sql.queries[0]?.text.replace(/\s+/g, ' ')).toBe(
+      'SELECT account_id, spark_pubkey, spark_address, replaced_at FROM previous_wallet WHERE spark_pubkey = $1 ORDER BY replaced_at DESC, account_id DESC LIMIT 1',
+    );
+    expect(sql.queries[2]?.text.replace(/\s+/g, ' ')).toBe(
+      'SELECT account_id, spark_pubkey, spark_address, replaced_at FROM previous_wallet WHERE account_id = $1 ORDER BY replaced_at DESC, spark_pubkey COLLATE "C" ASC',
+    );
+    expect(sql.queries[3]?.text.replace(/\s+/g, ' ')).toBe(
+      'WITH gone AS (DELETE FROM previous_wallet WHERE account_id = $1 AND spark_pubkey = $2 RETURNING spark_pubkey), share AS (DELETE FROM recovery_share WHERE account_id = $1 AND spark_pubkey IN (SELECT spark_pubkey FROM gone)) SELECT count(*)::int AS dropped FROM gone',
+    );
+    expect(sql.queries[3]?.params).toEqual(['acc', OLD]);
+  });
+
+  describe('putRecoveryShare', () => {
+    const put = (script: unknown[][]) => {
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(new MockSql(), tx.db);
+      const ciphertext = new Uint8Array(40).fill(9);
+      return {
+        tx,
+        ciphertext,
+        result: store.putRecoveryShare({
+          accountId: 'acc',
+          sparkPubkey: OLD,
+          ciphertext,
+          now: NOW,
+        }),
+      };
+    };
+
+    it('answers changed unless the key is the account verified wallet key', async () => {
+      for (const lock of [
+        [],
+        [holder({ spark_pubkey: NEW })],
+        [holder({ spark_pubkey_verified_at: null })],
+      ]) {
+        const { tx, result } = put([lock]);
+        expect(await result).toBe('changed');
+        expect(tx.queries).toHaveLength(1);
+      }
+      const refused = put([[holder({ session_refused: true })], []]);
+      expect(await refused.result).toBe('stored');
+    });
+
+    it('upserts the envelope and reports stored or replaced', async () => {
+      const first = put([[holder()], []]);
+      expect(await first.result).toBe('stored');
+      expect(first.tx.queries[1]).toEqual({
+        text: 'SELECT 1 AS one FROM recovery_share WHERE account_id = $1 AND spark_pubkey = $2',
+        params: ['acc', OLD],
+      });
+      expect(first.tx.queries[2]?.text.replace(/\s+/g, ' ')).toBe(
+        'INSERT INTO recovery_share (account_id, spark_pubkey, recovery_share_ciphertext, stored_at) VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0)) ON CONFLICT (account_id, spark_pubkey) DO UPDATE SET recovery_share_ciphertext = EXCLUDED.recovery_share_ciphertext, stored_at = EXCLUDED.stored_at',
+      );
+      expect(first.tx.queries[2]?.params).toEqual(['acc', OLD, first.ciphertext, NOW]);
+      expect(await put([[holder()], [{ one: 1 }]]).result).toBe('replaced');
+    });
+  });
+
+  it('checks for a share of the current verified wallet without reading the ciphertext', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextQueryRows = [[{ stored: true }], [{ stored: false }], []];
+    expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(true);
+    expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+    expect(await store.hasRecoveryShareForVerifiedWallet('acc')).toBe(false);
+    expect(sql.queries[0]?.text.replace(/\s+/g, ' ')).toBe(
+      'SELECT EXISTS (SELECT 1 FROM account a JOIN recovery_share s ON s.account_id = a.id AND s.spark_pubkey = a.spark_pubkey WHERE a.id = $1 AND a.spark_pubkey_verified_at IS NOT NULL) AS stored',
+    );
+    expect(sql.queries[0]?.text).not.toContain('recovery_share_ciphertext');
   });
 });

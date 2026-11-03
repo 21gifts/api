@@ -139,6 +139,7 @@ describe('serializeConversation', () => {
       amountPhp: null,
       unread: false,
       unreadMessageCount: 0,
+      canReceive: false,
     });
     expect(json).not.toHaveProperty('accountA');
     expect(json).not.toHaveProperty('accountId');
@@ -204,7 +205,13 @@ describe('serializeConversation', () => {
       amountPhp: null,
       unread: false,
       unreadMessageCount: 0,
+      canReceive: false,
     });
+  });
+
+  it('emits canReceive when the counterpart can receive', () => {
+    expect(serializeConversation(THREAD, false, false, 0, 'acc-b', true).canReceive).toBe(true);
+    expect(serializeConversation(THREAD, false, false, 0, 'acc-b', false).canReceive).toBe(false);
   });
 });
 

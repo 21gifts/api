@@ -1,0 +1,2 @@
+breez_sdk_spark==0.26.1
+mnemonic==0.21

@@ -3,6 +3,8 @@ import { InMemoryMemberHabitStore, type MemberHabit } from '@/lib/member-habit-s
 import { memberHabitRoutes } from '@/routes/member-habits';
 import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryAuthStore, type AccountRole } from '@/lib/auth/store';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
+import type { LnurlServerConfig } from '@/lib/config';
 
 const NOW_OPEN = Date.parse('2026-10-05T08:00:00.000Z');
 const SUNDAY_ZURICH = Date.parse('2026-09-27T12:00:00.000Z');
@@ -12,28 +14,38 @@ type AccountView = {
   id: string;
   role: AccountRole;
   name: string | null;
-  lightningAddress: string | null;
+  username: string | null;
+  sparkPubkey: string | null;
+  sparkPubkeyVerifiedAt: number | null;
 };
+
+const WALLET_KEY = `02${'a'.repeat(64)}`;
 
 const BASIS: AccountView = {
   id: 'acc-basis',
   role: 'basis',
   name: 'Basis',
-  lightningAddress: 'basis@wallet.example',
+  username: 'basis',
+  sparkPubkey: WALLET_KEY,
+  sparkPubkeyVerifiedAt: 1,
 };
 
 const INITIATOR: AccountView = {
   id: 'acc-init',
   role: 'initiator',
   name: 'Initiator',
-  lightningAddress: null,
+  username: 'initiator',
+  sparkPubkey: null,
+  sparkPubkeyVerifiedAt: null,
 };
 
 const ALICE: AccountView = {
   id: 'acc-alice',
   role: 'basis',
   name: 'Alice',
-  lightningAddress: 'alice@wallet.example',
+  username: 'alice',
+  sparkPubkey: WALLET_KEY,
+  sparkPubkeyVerifiedAt: 1,
 };
 
 const unusedFetch: FetchFn = async () => new Response(null, { status: 500 });
@@ -86,6 +98,7 @@ function mount(opts: {
   accounts?: Record<string, AccountView>;
   now?: () => number;
   fetchImpl?: FetchFn;
+  lnurlServer?: LnurlServerConfig | null;
 }) {
   const account = opts.account === undefined ? null : opts.account;
   const accounts = opts.accounts ?? {};
@@ -94,9 +107,16 @@ function mount(opts: {
     now: opts.now ?? (() => NOW_OPEN),
     fetchImpl: opts.fetchImpl ?? unusedFetch,
     resolve: async () => account,
+    ...(opts.lnurlServer === null ? {} : { lnurlServer: opts.lnurlServer ?? LNURL_SERVER }),
     authStore: {
       async getAccount(id: string) {
         return accounts[id];
+      },
+      async getAccounts(ids: readonly string[]) {
+        return ids.flatMap((id) => (accounts[id] === undefined ? [] : [accounts[id]]));
+      },
+      async getAccountByUsername() {
+        return undefined;
       },
     },
   });
@@ -423,7 +443,7 @@ describe('memberHabitRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Cannot donate to yourself' });
   });
 
-  it('invoice when getAccount returns lightningAddress null is 409', async () => {
+  it('invoice when the author has no verified wallet is 409', async () => {
     const store = new InMemoryMemberHabitStore();
     await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
     await store.comment({
@@ -440,7 +460,7 @@ describe('memberHabitRoutes', () => {
       mount({
         store,
         account: BASIS,
-        accounts: { [ALICE.id]: { ...ALICE, lightningAddress: null } },
+        accounts: { [ALICE.id]: { ...ALICE, sparkPubkeyVerifiedAt: null } },
       }),
       { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
       AUTH,
@@ -448,6 +468,66 @@ describe('memberHabitRoutes', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
+    });
+  });
+
+  it('invoice when the author account is gone is 409', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: '33333333-3333-4333-8333-333333333333',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: {},
+      }),
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      AUTH,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
+    });
+  });
+
+  it('invoice when the LNURL server is off is 409', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-comment', accountId: ALICE.id, role: 'basis' }));
+    await store.comment({
+      id: '33333333-3333-4333-8333-333333333333',
+      habitId: 'h-comment',
+      accountId: ALICE.id,
+      name: 'Alice',
+      text: 'nice',
+      week: '2026-09-28',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    const res = await post(
+      mount({
+        store,
+        account: BASIS,
+        accounts: { [ALICE.id]: ALICE },
+        lnurlServer: null,
+      }),
+      { action: 'invoice', commentId: '33333333-3333-4333-8333-333333333333', amountSats: 1 },
+      AUTH,
+    );
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
   });
 
@@ -682,6 +762,65 @@ describe('memberHabitRoutes', () => {
     };
     expect(body.habits[0]?.comments[0]?.text).toBe('nice');
     expect(body.habits[0]?.comments[0]?.deletedAt).toBeUndefined();
+  });
+
+  it('GET marks each comment author canReceive from one bulk account lookup', async () => {
+    const store = new InMemoryMemberHabitStore();
+    await store.add(sampleHabit({ id: 'h-recv', accountId: BASIS.id, role: 'basis' }));
+    const comment = (id: string, accountId: string) => ({
+      id,
+      habitId: 'h-recv',
+      accountId,
+      name: 'Name',
+      text: 'nice',
+      week: '2026-10-05',
+      createdAt: NOW_OPEN,
+      deletedAt: null,
+    });
+    await store.comment(comment('c-alice-1', ALICE.id));
+    await store.comment(comment('c-alice-2', ALICE.id));
+    await store.comment(comment('c-init', INITIATOR.id));
+    await store.comment(comment('c-gone', 'acc-gone'));
+    const lookups: string[] = [];
+    const bulk: string[][] = [];
+    const known: Record<string, AccountView> = { [ALICE.id]: ALICE, [INITIATOR.id]: INITIATOR };
+    const app = memberHabitRoutes({
+      store,
+      now: () => NOW_OPEN,
+      fetchImpl: unusedFetch,
+      resolve: async () => null,
+      lnurlServer: LNURL_SERVER,
+      authStore: {
+        async getAccount(id: string) {
+          lookups.push(id);
+          return known[id];
+        },
+        async getAccounts(ids: readonly string[]) {
+          bulk.push([...ids]);
+          return ids.flatMap((id) => (known[id] === undefined ? [] : [known[id]]));
+        },
+        async getAccountByUsername() {
+          return undefined;
+        },
+      },
+    });
+    const listed = await app.request('/');
+    expect(listed.status).toBe(200);
+    const body = (await listed.json()) as {
+      habits: Array<{ comments: Array<{ id: string; canReceive: boolean }> }>;
+    };
+    const byId = Object.fromEntries(
+      (body.habits[0]?.comments ?? []).map((row) => [row.id, row.canReceive]),
+    );
+    expect(byId).toEqual({
+      'c-alice-1': true,
+      'c-alice-2': true,
+      'c-init': false,
+      'c-gone': false,
+    });
+    expect(lookups).toEqual([]);
+    expect(bulk).toHaveLength(1);
+    expect([...(bulk[0] ?? [])].sort()).toEqual([ALICE.id, INITIATOR.id, 'acc-gone'].sort());
   });
 
   it('sorts the same role by owner name and habit name, and keeps a moderator with everyone else', async () => {
@@ -1179,7 +1318,7 @@ describe('memberHabitRoutes', () => {
     const app = mount({
       store,
       account: BASIS,
-      accounts: { [ALICE.id]: { ...ALICE, lightningAddress: '' } },
+      accounts: { [ALICE.id]: { ...ALICE, sparkPubkey: null } },
       fetchImpl: successFetch,
     });
     const zero = await post(
@@ -1238,6 +1377,7 @@ describe('memberHabitRoutes', () => {
     expect(emptyWallet.status).toBe(409);
     expect(await emptyWallet.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const stillNoWallet = await post(
       app,
@@ -1247,12 +1387,13 @@ describe('memberHabitRoutes', () => {
     expect(stillNoWallet.status).toBe(409);
     expect(await stillNoWallet.json()).toEqual({
       error: "The author's wallet cannot receive this Bitcoin payment",
+      code: 'cannot_receive',
     });
     const atCeiling = await post(
       mount({
         store,
         account: BASIS,
-        accounts: { [ALICE.id]: { ...ALICE, lightningAddress: '' } },
+        accounts: { [ALICE.id]: { ...ALICE, sparkPubkey: null } },
         fetchImpl: successFetch,
       }),
       {
@@ -1352,8 +1493,6 @@ describe('memberHabitRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Sam',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'a'.repeat(64),
@@ -1385,8 +1524,6 @@ describe('memberHabitRoutes', () => {
       linkingKey: null,
       role: 'basis',
       name: 'Old',
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: 'b'.repeat(64),
@@ -1415,6 +1552,12 @@ describe('memberHabitRoutes', () => {
       store: new InMemoryMemberHabitStore(),
       authStore: {
         async getAccount() {
+          return undefined;
+        },
+        async getAccounts() {
+          return [];
+        },
+        async getAccountByUsername() {
           return undefined;
         },
       },

@@ -167,6 +167,26 @@ export function inspectBolt11(
 }
 
 /**
+ * Every plaintext description tag of any decodable BOLT11, zero-amount invoices included.
+ *
+ * @param pr - BOLT11 string.
+ * @param decodeImpl - Optional decoder (tests inject a fake).
+ * @returns All string `description` values in tag order; empty when the invoice does not decode or has none (for example only a description hash).
+ */
+export function bolt11Descriptions(
+  pr: string,
+  decodeImpl?: (invoice: string) => { sections?: Bolt11Section[] },
+): string[] {
+  const descriptions: string[] = [];
+  for (const section of decodeSections(pr, decodeImpl) ?? []) {
+    if (section.name === 'description' && typeof section.value === 'string') {
+      descriptions.push(section.value);
+    }
+  }
+  return descriptions;
+}
+
+/**
  * NIP-57 invoice: description_hash equals sha256(utf8(zap request JSON)).
  *
  * @param descriptionHash - Lowercase hex hash from the invoice, or null.
@@ -182,4 +202,35 @@ export function isNip57Invoice(
   }
   const digest = createHash('sha256').update(zapRequestJson, 'utf8').digest('hex');
   return digest === descriptionHash;
+}
+
+/** Expiry of a BOLT11 that carries no `expiry` tag (BOLT11 default: one hour). */
+export const DEFAULT_INVOICE_EXPIRY_MS = 3_600_000;
+
+/**
+ * When a BOLT11 stops being payable: `issuedAtMs` plus its `expiry` tag, or
+ * plus {@link DEFAULT_INVOICE_EXPIRY_MS} when the tag is absent or the
+ * invoice does not decode. Callers pass the time they requested the invoice,
+ * so the result is at or before the invoice's real expiry.
+ *
+ * @param pr - BOLT11 string.
+ * @param issuedAtMs - When the invoice was requested or recorded (epoch ms).
+ * @returns Expiry instant (epoch ms).
+ */
+export function bolt11ExpiresAtMs(pr: string, issuedAtMs: number): number {
+  const seconds = inspectBolt11(pr)?.expirySeconds;
+  return issuedAtMs + (typeof seconds === 'number' ? seconds * 1000 : DEFAULT_INVOICE_EXPIRY_MS);
+}
+
+/**
+ * Whether a stored BOLT11 can still be paid. An invoice that does not decode
+ * uses the one-hour default.
+ *
+ * @param pr - Stored invoice.
+ * @param createdAtMs - When the attempt was recorded.
+ * @param nowMs - Clock.
+ * @returns False once the invoice has expired.
+ */
+export function invoiceStillOpen(pr: string, createdAtMs: number, nowMs: number): boolean {
+  return nowMs < bolt11ExpiresAtMs(pr, createdAtMs);
 }

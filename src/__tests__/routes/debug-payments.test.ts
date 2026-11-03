@@ -11,7 +11,13 @@ import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
+import { InMemoryGiftStore } from '@/lib/gift-store';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
+import { InMemoryTrustStore } from '@/lib/trust-store';
+import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER } from '@/__tests__/helpers/wallet-lnurl';
 
 function parsedEvents(warn: ReturnType<typeof vi.spyOn>): Array<Record<string, unknown>> {
   return warn.mock.calls
@@ -36,6 +42,7 @@ function mount(
         messageId: string,
         day: string,
         grantStatus?: 'none' | 'pending' | 'trial' | 'admitted' | 'rejected',
+        kind?: 'daily' | 'moderator',
       ) => Promise<
         { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' }
       >;
@@ -43,6 +50,8 @@ function mount(
     fundingStore?: InMemoryFundingStore;
     auth?: InMemoryAuthStore;
     now?: () => number;
+    giftStore?: InMemoryGiftStore;
+    welcomeSweep?: WelcomeSweepSwitch;
   } = {},
 ): Hono {
   return new Hono().route(
@@ -54,16 +63,33 @@ function mount(
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      conversationStore: new InMemoryConversationStore(),
+      trustStore: new InMemoryTrustStore(),
+      giftStore: extra.giftStore ?? new InMemoryGiftStore(),
+      lnurlServer: LNURL_SERVER,
+      welcomeSweep: extra.welcomeSweep ?? { enabled: false },
     }),
   );
+}
+
+/**
+ * Create a verified account with the username `ada` and a verified wallet, so
+ * it receives on `ada@example.test`.
+ */
+async function createReceiver(
+  auth: InMemoryAuthStore,
+  partial: Pick<Account, 'id' | 'role'> & Partial<Account>,
+): Promise<void> {
+  await auth.createAccount(account({ username: 'ada', walletRequired: true, ...partial }));
+  const pubkey = `02${partial.id.replace(/-/g, '').padEnd(64, '0').slice(0, 64)}`;
+  await auth.claimSparkPubkey(partial.id, pubkey);
+  await auth.markSparkPubkeyVerified(partial.id, pubkey, 'ada', 1);
 }
 
 function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Account {
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -454,6 +480,10 @@ describe('debugPaymentsRoutes', () => {
         debugToken: 'secret',
         pushStore: new InMemoryPushStore(),
         notificationStore: new InMemoryNotificationStore(),
+        conversationStore: new InMemoryConversationStore(),
+        trustStore: new InMemoryTrustStore(),
+        giftStore: new InMemoryGiftStore(),
+        welcomeSweep: { enabled: false },
       }),
     );
     const settled = await app.request('/debug/invoices/settle', {
@@ -516,14 +546,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'a1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -546,11 +573,11 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(202);
     const json: unknown = await res.json();
     expect(json).toEqual({ messageId, status: 'accepted' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -558,7 +585,7 @@ describe('debugPaymentsRoutes', () => {
     const sent = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.sent');
     expect(sent?.['messageId']).toBe(messageId);
     expect(sent).not.toHaveProperty('address');
-    expect(JSON.stringify(sent)).not.toContain('ada@example.com');
+    expect(JSON.stringify(sent)).not.toContain('ada@example.test');
   });
 
   it('returns 503 for spend-ping when debug is not configured', async () => {
@@ -830,15 +857,12 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'd1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-        profileMessageId: messageId,
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+      profileMessageId: messageId,
+    });
     await store.create(
       {
         id: messageId,
@@ -869,14 +893,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'e1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -901,14 +922,14 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-29',
       'none',
     ]);
   });
 
-  it('returns 409 when the spend-ping account has no Lightning address', async () => {
+  it('returns 409 when the spend-ping account has no verified wallet', async () => {
     const messageId = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
     const accountId = 'f1111111-1111-4111-8111-111111111111';
     const store = new InMemoryMessageStore();
@@ -939,57 +960,16 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
   });
 
-  it('returns 409 when the spend-ping Lightning address is blank', async () => {
-    const messageId = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-    const accountId = 'a2222222-2222-4222-8222-222222222222';
-    const store = new InMemoryMessageStore();
-    const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: '   ',
-      }),
-    );
-    await store.create(
-      {
-        id: messageId,
-        accountId,
-        name: 'Ada',
-        text: 'photo',
-        createdAt: SPEND_CREATED_AT,
-        hasPhoto: false,
-        ...unsignedNostrDefaults(),
-      },
-      SPEND_PHOTO,
-    );
-    const spendPing = spendPingMock();
-    const app = mount(store, 'secret', { spendPing, auth, now: SPEND_NOW });
-    const res = await app.request('/debug/spend-ping', {
-      method: 'POST',
-      headers: SPEND_HEADERS,
-      body: JSON.stringify({ messageId }),
-    });
-    expect(res.status).toBe(409);
-    expect(await res.json()).toEqual({ error: 'No Lightning address' });
-    expect(spendPing.ping).not.toHaveBeenCalled();
-    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
-  });
-
   it('returns 403 when the spend-ping account is not eligible', async () => {
     const messageId = 'ffffffff-ffff-4fff-8fff-ffffffffffff';
     const accountId = 'b2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'basis',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'basis',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1012,7 +992,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(403);
     const json: unknown = await res.json();
     expect(json).toEqual({ error: 'Not eligible' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     const skipped = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.skipped');
     expect(skipped?.['reason']).toBe('not_eligible');
     expect(skipped?.['messageId']).toBe(messageId);
@@ -1026,14 +1006,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'c2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1072,14 +1049,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new VideoRowStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1101,7 +1075,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1121,14 +1095,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new PhotoCountStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create({
       id: messageId,
       accountId,
@@ -1150,7 +1121,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1162,14 +1133,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'f2222222-2222-4222-8222-222222222222';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1199,7 +1167,7 @@ describe('debugPaymentsRoutes', () => {
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
     expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
-      'ada@example.com',
+      'ada@example.test',
       messageId,
       '2026-09-30',
       'none',
@@ -1216,14 +1184,11 @@ describe('debugPaymentsRoutes', () => {
     }
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1260,14 +1225,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'b3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1303,14 +1265,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'c3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1336,7 +1295,7 @@ describe('debugPaymentsRoutes', () => {
     expect(res.status).toBe(200);
     const json: unknown = await res.json();
     expect(json).toEqual({ messageId, status: 'skipped', reason: 'paid' });
-    expect(JSON.stringify(json)).not.toContain('ada@example.com');
+    expect(JSON.stringify(json)).not.toContain('ada@example.test');
     expect(spendPing.ping).not.toHaveBeenCalled();
   });
 
@@ -1345,14 +1304,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'd3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1387,14 +1343,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'e3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1424,14 +1377,11 @@ describe('debugPaymentsRoutes', () => {
     const accountId = 'f3333333-3333-4333-8333-333333333333';
     const store = new InMemoryMessageStore();
     const auth = new InMemoryAuthStore();
-    await auth.createAccount(
-      account({
-        id: accountId,
-        role: 'verified',
-        name: 'Ada',
-        lightningAddress: 'ada@example.com',
-      }),
-    );
+    await createReceiver(auth, {
+      id: accountId,
+      role: 'verified',
+      name: 'Ada',
+    });
     await store.create(
       {
         id: messageId,
@@ -1455,5 +1405,390 @@ describe('debugPaymentsRoutes', () => {
     expect(await res.json()).toEqual({ error: 'Message is not from today' });
     expect(spendPing.ping).not.toHaveBeenCalled();
     expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+  });
+
+  describe('spend-ping replay from the grant gate day', () => {
+    const GATE_NOW = (): number => Date.parse('2026-10-29T12:00:00.000Z');
+    const messageId = '18181818-1818-4181-8181-181818181818';
+    const accountId = 'c4444444-4444-4444-8444-444444444444';
+
+    /** An admitted receiver with today's photo post, and optionally the recovery share. */
+    async function gated(share: boolean): Promise<{
+      store: InMemoryMessageStore;
+      auth: InMemoryAuthStore;
+      fundingStore: InMemoryFundingStore;
+    }> {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await createReceiver(auth, { id: accountId, role: 'verified', name: 'Ada' });
+      if (share) {
+        const receiver = await auth.getAccount(accountId);
+        await storeRecoveryShare(auth, accountId, receiver!.sparkPubkey!);
+      }
+      await store.create(
+        {
+          id: messageId,
+          accountId,
+          name: 'Ada',
+          text: 'photo',
+          createdAt: new Date('2026-10-29T08:00:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+        },
+        SPEND_PHOTO,
+      );
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: 'staff',
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      return { store, auth, fundingStore };
+    }
+
+    async function replay(
+      deps: Awaited<ReturnType<typeof gated>>,
+      spendPing: ReturnType<typeof spendPingMock>,
+    ): Promise<Response> {
+      const app = mount(deps.store, 'secret', {
+        spendPing,
+        auth: deps.auth,
+        fundingStore: deps.fundingStore,
+        now: GATE_NOW,
+      });
+      return app.request('/debug/spend-ping', {
+        method: 'POST',
+        headers: SPEND_HEADERS,
+        body: JSON.stringify({ messageId }),
+      });
+    }
+
+    it('answers 403 Not eligible for an admitted member without a recovery share', async () => {
+      const spendPing = spendPingMock();
+      const res = await replay(await gated(false), spendPing);
+      expect(res.status).toBe(403);
+      expect(await res.json()).toEqual({ error: 'Not eligible' });
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({
+          event: 'debug.spend_ping.skipped',
+          messageId,
+          reason: 'not_eligible',
+        }),
+      );
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('replays for an admitted member with a recovery share', async () => {
+      const spendPing = spendPingMock();
+      const res = await replay(await gated(true), spendPing);
+      expect(res.status).toBe(202);
+      expect(await res.json()).toEqual({ messageId, status: 'accepted' });
+      expect(spendPing.pingOnDay.mock.calls[0]).toEqual([
+        'ada@example.test',
+        messageId,
+        '2026-10-29',
+        'admitted',
+      ]);
+    });
+
+    it('answers 503 when the share read throws', async () => {
+      const deps = await gated(true);
+      vi.spyOn(deps.auth, 'hasRecoveryShareForVerifiedWallet').mockRejectedValue(
+        new Error('share down'),
+      );
+      const spendPing = spendPingMock();
+      const res = await replay(deps, spendPing);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'debug.spend_ping.failed', messageId }),
+      );
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('window replay', () => {
+    const WINDOW = { from: '2026-09-29T23:00:00.000Z', to: '2026-09-30T01:00:00.000Z' };
+    const WINDOW_NOW = (): number => Date.parse('2026-09-30T01:30:00.000Z');
+    const ACCOUNT_ID = 'a7777777-7777-4777-8777-777777777777';
+    const MESSAGE_ID = '17171717-1717-4171-8171-171717171717';
+
+    async function seeded(): Promise<{
+      store: InMemoryMessageStore;
+      auth: InMemoryAuthStore;
+      fundingStore: InMemoryFundingStore;
+    }> {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await createReceiver(auth, { id: ACCOUNT_ID, role: 'verified', name: 'Ada' });
+      await store.create(
+        {
+          id: MESSAGE_ID,
+          accountId: ACCOUNT_ID,
+          name: 'Ada',
+          text: 'photo',
+          createdAt: new Date('2026-09-29T23:30:00.000Z'),
+          hasPhoto: false,
+          ...unsignedNostrDefaults(),
+        },
+        SPEND_PHOTO,
+      );
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId: ACCOUNT_ID,
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: null,
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      return { store, auth, fundingStore };
+    }
+
+    async function post(app: Hono, body: unknown): Promise<Response> {
+      return app.request('/debug/spend-ping', {
+        method: 'POST',
+        headers: SPEND_HEADERS,
+        body: JSON.stringify(body),
+      });
+    }
+
+    it('replays every event of the window onto its own day', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(200);
+      const json = (await res.json()) as Record<string, unknown>;
+      expect(json).toMatchObject({
+        ...WINDOW,
+        dryRun: false,
+        totals: { events: 2, paid: 1, sent: 1 },
+      });
+      expect(json['events']).toEqual([
+        expect.objectContaining({ trigger: 'post', day: '2026-09-29', status: 'paid' }),
+        expect.objectContaining({ trigger: 'welcome', status: 'sent' }),
+      ]);
+      expect(JSON.stringify(json)).not.toContain('ada@example.test');
+      expect(spendPing.pingOnDay.mock.calls).toEqual([
+        ['ada@example.test', MESSAGE_ID, '2026-09-29', 'admitted', 'daily'],
+      ]);
+      const replayed = parsedEvents(warn).find((e) => e['event'] === 'debug.spend_ping.replayed');
+      expect(replayed).toMatchObject({ dryRun: false, events: 2, paid: 1 });
+    });
+
+    it('replays without a funding store or LNURL server', async () => {
+      const app = new Hono().route(
+        '/debug',
+        debugPaymentsRoutes({
+          store: new InMemoryMessageStore(),
+          auth: new InMemoryAuthStore(),
+          now: WINDOW_NOW,
+          debugToken: 'secret',
+          spendPing: spendPingMock(),
+          conversationStore: new InMemoryConversationStore(),
+          trustStore: new InMemoryTrustStore(),
+          giftStore: new InMemoryGiftStore(),
+          welcomeSweep: { enabled: false },
+        }),
+      );
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({ events: [], totals: { events: 0 } });
+    });
+
+    it('dry-run pings nothing', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const app = mount(store, 'secret', { spendPing, auth, fundingStore, now: WINDOW_NOW });
+      const res = await post(app, { ...WINDOW, dryRun: true });
+      expect(res.status).toBe(200);
+      expect(await res.json()).toMatchObject({
+        dryRun: true,
+        totals: { events: 2, wouldPay: 1, wouldSend: 1, paid: 0, sent: 0 },
+      });
+      expect(spendPing.ping).not.toHaveBeenCalled();
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('counts a payout in the gift ledger on that day as already paid', async () => {
+      const { store, auth, fundingStore } = await seeded();
+      const spendPing = spendPingMock();
+      const giftStore = new InMemoryGiftStore([
+        {
+          paidAt: new Date('2026-09-29T10:00:00.000Z'),
+          amountSats: 1000,
+          recipientWosUser: 'ada',
+          kind: 'daily',
+        },
+      ]);
+      const app = mount(store, 'secret', {
+        spendPing,
+        auth,
+        fundingStore,
+        giftStore,
+        now: WINDOW_NOW,
+      });
+      const json = (await (await post(app, WINDOW)).json()) as { events: unknown[] };
+      expect(json.events[0]).toMatchObject({ reason: 'already_paid', detail: 'ledger' });
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [{ from: WINDOW.from }],
+      [{ ...WINDOW, from: 1 }],
+      [{ ...WINDOW, dryRun: 'yes' }],
+      [{ ...WINDOW, from: 'yesterday' }],
+      [{ ...WINDOW, to: WINDOW.from }],
+      [{ from: '2026-09-27T00:00:00.000Z', to: '2026-09-29T00:00:01.000Z' }],
+      [{ from: '2026-09-30T02:00:00.000Z', to: '2026-09-30T03:00:00.000Z' }],
+      [{ ...WINDOW, messageId: MESSAGE_ID }],
+    ])('returns 400 for the window body %j', async (body) => {
+      const spendPing = spendPingMock();
+      const app = mount(new InMemoryMessageStore(), 'secret', { spendPing, now: WINDOW_NOW });
+      const res = await post(app, body);
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Invalid body' });
+      expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    });
+
+    it('returns 503 when pingOnDay is missing', async () => {
+      const app = mount(new InMemoryMessageStore(), 'secret', {
+        spendPing: { ping: vi.fn(async () => undefined) },
+        now: WINDOW_NOW,
+      });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Spend ping is not configured' });
+    });
+
+    it('returns 503 when a store read throws', async () => {
+      const { store, auth } = await seeded();
+      const fundingStore = new InMemoryFundingStore();
+      vi.spyOn(fundingStore, 'listGrants').mockRejectedValue(new Error('down'));
+      const app = mount(store, 'secret', {
+        spendPing: spendPingMock(),
+        auth,
+        fundingStore,
+        now: WINDOW_NOW,
+      });
+      const res = await post(app, WINDOW);
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+      expect(parsedEvents(warn).some((e) => e['event'] === 'debug.spend_ping.replay_failed')).toBe(
+        true,
+      );
+    });
+  });
+});
+
+describe('/debug/welcome-sweep', () => {
+  const accountId = 'a1111111-1111-4111-8111-111111111111';
+  const messageId = 'b1111111-1111-4111-8111-111111111111';
+
+  async function seedOwed(): Promise<{ store: InMemoryMessageStore; auth: InMemoryAuthStore }> {
+    const store = new InMemoryMessageStore();
+    const auth = new InMemoryAuthStore();
+    await createReceiver(auth, { id: accountId, role: 'verified', name: 'Ada' });
+    await store.create(
+      {
+        id: messageId,
+        accountId,
+        name: 'Ada',
+        text: 'photo',
+        createdAt: SPEND_CREATED_AT,
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+      },
+      SPEND_PHOTO,
+    );
+    return { store, auth };
+  }
+
+  it('answers 503 without a debug token and 401 without the bearer', async () => {
+    const store = new InMemoryMessageStore();
+    expect((await mount(store, undefined).request('/debug/welcome-sweep')).status).toBe(503);
+    const app = mount(store, 'secret');
+    expect((await app.request('/debug/welcome-sweep')).status).toBe(401);
+    expect((await app.request('/debug/welcome-sweep', { method: 'PUT' })).status).toBe(401);
+  });
+
+  it('lists the accounts the sweep would ping without pinging', async () => {
+    const { store, auth } = await seedOwed();
+    const spendPing = spendPingMock();
+    const app = mount(store, 'secret', { spendPing, auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      enabled: false,
+      spendPing: true,
+      wouldPing: [{ accountId, username: 'ada', messageId }],
+    });
+    expect(spendPing.ping).not.toHaveBeenCalled();
+    expect(spendPing.pingOnDay).not.toHaveBeenCalled();
+    expect(await store.listInvoiceAttempts(10)).toEqual([]);
+  });
+
+  it('leaves out an account welcomed at its legacy external address', async () => {
+    const { store, auth } = await seedOwed();
+    const gifts = new InMemoryGiftStore([], [accountId]);
+    const app = mount(store, 'secret', { auth, giftStore: gifts });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(await res.json()).toEqual({ enabled: false, spendPing: false, wouldPing: [] });
+  });
+
+  it('answers 503 when the accounts cannot be read', async () => {
+    const auth = new InMemoryAuthStore();
+    vi.spyOn(auth, 'listAccounts').mockRejectedValue(new Error('down'));
+    const app = mount(new InMemoryMessageStore(), 'secret', { auth });
+    const res = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+  });
+
+  it('turns the switch on and off', async () => {
+    const welcomeSweep = { enabled: false };
+    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    const on = await app.request('/debug/welcome-sweep', {
+      method: 'PUT',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ enabled: true }),
+    });
+    expect(on.status).toBe(200);
+    expect(await on.json()).toEqual({ enabled: true });
+    expect(welcomeSweep.enabled).toBe(true);
+    const listed = await app.request('/debug/welcome-sweep', { headers: SPEND_HEADERS });
+    expect(((await listed.json()) as { enabled: boolean }).enabled).toBe(true);
+    const off = await app.request('/debug/welcome-sweep', {
+      method: 'PUT',
+      headers: SPEND_HEADERS,
+      body: JSON.stringify({ enabled: false }),
+    });
+    expect(await off.json()).toEqual({ enabled: false });
+    expect(welcomeSweep.enabled).toBe(false);
+  });
+
+  it('rejects a body without an enabled boolean', async () => {
+    const welcomeSweep = { enabled: false };
+    const app = mount(new InMemoryMessageStore(), 'secret', { welcomeSweep });
+    for (const body of ['{"enabled":"yes"}', '{"enabled":true,"x":1}', 'nope']) {
+      const res = await app.request('/debug/welcome-sweep', {
+        method: 'PUT',
+        headers: SPEND_HEADERS,
+        body,
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error: 'Expected a JSON body with an "enabled" boolean' });
+    }
+    expect(welcomeSweep.enabled).toBe(false);
   });
 });

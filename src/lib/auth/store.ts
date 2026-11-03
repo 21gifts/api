@@ -5,9 +5,11 @@ import {
 import { roleAtLeast } from '@/lib/auth/roles';
 import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
 import { mentionAccountMatches } from '@/lib/mention-query';
+import type { InMemoryPushStore } from '@/lib/push-store';
+import { encodeSparkAddress } from '@/lib/spark-address';
 
 /**
- * Persistence for accounts, sessions, passkeys, and address verification.
+ * Persistence for accounts, sessions, and passkeys.
  *
  * {@link InMemoryAuthStore} is the default when `DATABASE_URL` is unset
  * (tests and local boots). {@link PostgresAuthStore} is the durable adapter
@@ -21,7 +23,7 @@ import { mentionAccountMatches } from '@/lib/mention-query';
  * the propose edge only. `PATCH /debug/accounts/:id` may still set `role`
  * and does not write edges. New passkey accounts stay `basis`.
  * `verified` is a moderator confirming this person in real
- * life (forum badge), not `lightningAddressVerified`.
+ * life (forum badge), not a verified wallet.
  */
 export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder';
 
@@ -32,8 +34,9 @@ export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'fo
  * - `active` — related top-level post has `sats > 0` (zaps also when `amountSats > 0`).
  * - `mentions` — a reply or a zap on the recipient's own note, or an `@username`
  *   mark for that recipient. A staff or platform actor is not enough.
+ * - `none` — none of that living-room stream, including the dedicated `@username` channel.
  */
-export type NotificationLevel = 'all' | 'active' | 'mentions';
+export type NotificationLevel = 'all' | 'active' | 'mentions' | 'none';
 
 /**
  * Owner amount-entry unit. Omitted / unknown → `btc`.
@@ -138,15 +141,19 @@ export interface Account {
    * Not unique. Not a setup step. Public on member and view cards.
    */
   location: string | null;
-  /** The receiver's linked Lightning Address (LUD-16), or `null` if none. */
-  lightningAddress: string | null;
-  /**
-   * Whether control of the linked address has been proven via micro-payment
-   * verification. Set only by successful confirm; linking/unlinking resets it.
-   */
-  lightningAddressVerified: boolean;
   /** True after the user dismissed the welcome-forum living-room laws hint. */
   forumLawsDismissed: boolean;
+  /**
+   * True after the owner saw the in-app wallet intro. Omitted → false.
+   * Once true it stays true: `updateAccount` never clears it.
+   */
+  walletIntroSeen?: boolean;
+  /**
+   * True when the account has a stored legacy external payout address
+   * (`account.lightning_address`). Read-only: `createAccount` and
+   * `updateAccount` never write it. Omitted → false.
+   */
+  hadExternalWallet?: boolean;
   /**
    * Durable capability secret for the public profile URL (`GET /view/:viewKey`).
    * 64 lowercase hex characters. Never a session; never accepted as Bearer.
@@ -169,7 +176,7 @@ export interface Account {
   sessionRefused?: boolean;
   /** Epoch ms when the owner skipped the name wizard step, or null/omitted. */
   nameSkippedAt?: number | null;
-  /** Epoch ms when the owner skipped the Lightning Address wizard step, or null/omitted. */
+  /** Epoch ms when the owner skipped the receiving-wallet wizard step, or null/omitted. */
   lightningAddressSkippedAt?: number | null;
   /** Id of the single top-level profile forum message, or null/omitted. */
   profileMessageId?: string | null;
@@ -178,6 +185,11 @@ export interface Account {
    * cards or view profiles. Operator debug JSON includes the stored value.
    */
   notificationLevel?: NotificationLevel;
+  /**
+   * Owner preference for heart-tip notifications. Omitted / unknown → true.
+   * Not public on member cards or view profiles.
+   */
+  notifyHearts?: boolean;
   /**
    * Owner amount-entry unit. Omitted / unknown → `btc`. Not public on member
    * cards or view profiles.
@@ -201,7 +213,8 @@ export interface Account {
   /**
    * True when a seed-bearing passkey exists. Does not set `setup` to
    * `wallet`. Omit / false = no seed yet. New passkey register and
-   * first-passkey claim set true; seed finish sets true; replace does not.
+   * first-passkey claim set true; seed finish sets true; a social recovery
+   * commit (`commitRecovery`) sets true; replace does not.
    */
   walletRequired?: boolean;
   /**
@@ -211,21 +224,15 @@ export interface Account {
    * that has not been recorded.
    */
   walletBackupSeenAt?: number | null;
-}
-
-/**
- * Pending receiver address verification (one-time nonce in an LNURL-pay comment).
- * At most one record per account; replaced on re-start, cleared on confirm/link/unlink.
- */
-export interface AddressVerification {
-  /** Account that started verification. */
-  accountId: string;
-  /** Lightning Address the payment was sent to (must still match on confirm). */
-  address: string;
-  /** One-time nonce (32 lowercase hex chars) placed in the LUD-12 comment. */
-  nonce: string;
-  /** Issue time (epoch ms). */
-  createdAt: number;
+  /** Identity public key of the member's wallet (66 lower-case hex), or null/omitted. */
+  sparkPubkey?: string | null;
+  /**
+   * Epoch ms of the account's first wallet verification (the LNURL server
+   * accepted a registration signed by its wallet key), or null/omitted. A
+   * social recovery commit (`commitRecovery`) keeps it when it replaces
+   * `sparkPubkey`.
+   */
+  sparkPubkeyVerifiedAt?: number | null;
 }
 
 /** A discoverable WebAuthn credential bound to an account. */
@@ -243,12 +250,14 @@ export interface PasskeyCredential {
 }
 
 /** Kind of outstanding WebAuthn ceremony. */
-export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace' | 'seed';
+export type PasskeyChallengeType = 'register' | 'authenticate' | 'replace' | 'seed' | 'recovery';
 
 /**
  * A one-time WebAuthn challenge. Registration stores the pending account id;
  * authentication looks the account up from the asserted credential; replace
- * and seed store the signed-in account id (never null).
+ * and seed store the signed-in account id (never null). `recovery`: a social
+ * recovery ceremony for the account with `accountId`. Consumed only when its
+ * pending recovery is stored.
  */
 export interface PasskeyChallenge {
   /** Opaque id returned to the client as `challengeId`. */
@@ -257,7 +266,10 @@ export interface PasskeyChallenge {
   type: PasskeyChallengeType;
   /** WebAuthn challenge (base64url) from the ceremony generator. */
   challenge: string;
-  /** Pending account id for register; signed-in id for replace/seed; `null` for authenticate. */
+  /**
+   * Pending account id for register; signed-in id for replace/seed; the
+   * recovered account's id for recovery; `null` for authenticate.
+   */
   accountId: string | null;
   /** Whether finish has already consumed this challenge. */
   consumed: boolean;
@@ -269,6 +281,73 @@ export interface PasskeyChallenge {
    */
   requestedName?: string | null;
 }
+
+/**
+ * Pending social recovery: stored by the finish, committed or dropped later.
+ * An unforwarded one counts as absent once `CHALLENGE_TTL_MS` has passed since
+ * `createdAt`; a forwarded one never expires.
+ */
+export interface PendingRecovery {
+  /** Account being recovered. */
+  accountId: string;
+  /** The account's verified `spark_pubkey` when the recovery was stored. */
+  oldSparkPubkey: string;
+  /** Identity key of the new wallet (66 lower-case hex). */
+  newSparkPubkey: string;
+  /** Credential id of the new passkey (base64url, from `verifyRegistration`). */
+  credentialId: string;
+  /** COSE public key of the new passkey. */
+  publicKey: Uint8Array;
+  /** Authenticator signature counter of the new passkey. */
+  signCount: number;
+  /** Time the finish stored it (epoch ms). */
+  createdAt: number;
+  /** Time the transfer route forwarded the address claim (epoch ms), or `null`. */
+  forwardedAt: number | null;
+}
+
+/** A wallet key an account had before a social recovery commit. */
+export interface PreviousWallet {
+  /** Account the wallet belonged to. */
+  accountId: string;
+  /** Identity key of that wallet (66 lower-case hex). */
+  sparkPubkey: string;
+  /** Spark address (`spark1…`) of that key. */
+  sparkAddress: string;
+  /** Time of the commit that replaced it (epoch ms). */
+  replacedAt: number;
+}
+
+/**
+ * Result of {@link AuthStore.startRecoveryChallenge}: `started` stored the
+ * challenge; `changed` means the account no longer holds that verified key (or
+ * is session-refused); `forwarded` means a forwarded pending recovery remains.
+ */
+export type RecoveryStartResult = 'started' | 'changed' | 'forwarded';
+
+/**
+ * Result of {@link AuthStore.storePendingRecovery}: `stored` wrote the row;
+ * `same` is the repeat of that finish (no write); `challenge` is a missing,
+ * expired, foreign, or used challenge; `changed` means the account no longer
+ * holds the old verified key; `pending` means the account already has one;
+ * `key` and `credential` mean the new wallet key or credential id is in use.
+ */
+export type RecoveryStoreResult =
+  'stored' | 'same' | 'challenge' | 'changed' | 'pending' | 'key' | 'credential';
+
+/**
+ * Result of {@link AuthStore.commitRecovery}: `committed` moved the account;
+ * `gone` means no forwarded pending recovery with that new key exists;
+ * `changed` means the account left the old key, so the pending row was dropped.
+ */
+export type RecoveryCommitResult = 'committed' | 'gone' | 'changed';
+
+/**
+ * Result of {@link AuthStore.putRecoveryShare}: `stored` is the first share of
+ * that wallet, `replaced` overwrote one, `changed` means the key is not the
+ * account's current verified key (no write).
+ */
+export type RecoveryShareResult = 'stored' | 'replaced' | 'changed';
 
 /** Stage of a passkey renew ceremony. */
 export type PasskeyRenewStage = 'begin' | 'ceremony' | 'finish';
@@ -335,6 +414,18 @@ export interface Session {
 }
 
 /**
+ * Result of {@link AuthStore.setUsername}: the username this write replaced,
+ * or why the write did not run.
+ *
+ * `{ ok: true, previous }` carries the replaced handle (`null` when none was
+ * set). `{ ok: false, reason }` is `'frozen'` when the wallet is verified,
+ * `'taken'` when another account owns the username, or `'missing'` when the
+ * account does not exist.
+ */
+export type SetUsernameResult =
+  { ok: true; previous: string | null } | { ok: false; reason: 'frozen' | 'taken' | 'missing' };
+
+/**
  * Persistence port for the auth subsystem. In-memory and Postgres adapters
  * implement the same async contract so domain logic does not branch on storage.
  */
@@ -343,11 +434,31 @@ export interface AuthStore {
   createAccount(account: Account): Promise<void>;
   /**
    * Overwrite a stored account. A `viewKey`, non-null `linkingKey`,
-   * `lightningAddress` (`lower(trim)`), or `username` (`lower(trim)`) owned
+   * or `username` (`lower(trim)`) owned
    * by another id is refused (in-memory no-op; Postgres via `UPDATE`
-   * matching no row or swallowed unique_violation).
+   * matching no row or swallowed unique_violation). A stored non-blank username
+   * is kept, and so is the username of an account with a verified wallet
+   * (`sparkPubkeyVerifiedAt` set); only a blank one is filled, so a write from
+   * an older snapshot cannot undo a rename. Renames go through
+   * {@link AuthStore.setUsername}. The other
+   * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
+   * are never written here. `walletIntroSeen` is only ever raised to true
+   * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
+   * never written.
    */
   updateAccount(account: Account): Promise<void>;
+  /**
+   * Set the username of an account whose wallet is not verified yet, as one
+   * atomic step, and report the username it replaced.
+   *
+   * @param accountId - Account id.
+   * @param username - Normalized username (see `normalizeUsername`).
+   * @returns `{ ok: true, previous }` with the replaced username (`null` when
+   *   none was set); `{ ok: false, reason }` with `'frozen'` when the wallet is
+   *   verified, `'taken'` when another account owns the username, `'missing'`
+   *   when the account does not exist.
+   */
+  setUsername(accountId: string, username: string): Promise<SetUsernameResult>;
   /**
    * Set `walletBackupSeenAt` to `now` when it is still null. Other columns
    * stay unchanged.
@@ -361,6 +472,34 @@ export interface AuthStore {
     accountId: string,
     now: number,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Store `sparkPubkey` as the account's wallet key while the account has no verified wallet.
+   * Writes only when the account has `walletRequired` true, a non-blank username, and
+   * `sparkPubkeyVerifiedAt` null. The Postgres adapter also stores `spark_address`
+   * (`encodeSparkAddress(sparkPubkey)`) in the same write. Other columns stay unchanged. An
+   * unverified value is not exclusive: two accounts may hold the same unverified key.
+   * @returns `{ account, wrote }`, or `undefined` when the id is unknown.
+   */
+  claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined>;
+  /**
+   * Mark the account's wallet key verified. One conditional write: only when the row has this id,
+   * this `sparkPubkey`, a null `sparkPubkeyVerifiedAt`, and `lower(trim(username)) = username`.
+   * A second account verified on the same key is refused (unique index / in-memory scan).
+   * @returns `true` only when this call stored the timestamp.
+   */
+  markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean>;
+  /** The account whose verified wallet key is `sparkPubkey`, or `undefined`. At most one row matches. */
+  getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined>;
+  /** Whether any account holds `sparkPubkey` as its claimed or verified wallet key. */
+  isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean>;
   /**
    * Persist one passkey renew attempt. Caps and redacts client fields.
    * Does not change the account row.
@@ -442,16 +581,6 @@ export interface AuthStore {
     onlyIfUnset: boolean,
   ): Promise<{ account: Account; wrote: boolean } | undefined>;
   /**
-   * Set only `name` on the account that owns this Lightning Address
-   * (`lower(trim)` match). Other columns stay unchanged.
-   *
-   * @returns The updated account, or `undefined` when no row matches.
-   */
-  updateAccountNameByLightningAddress(
-    lightningAddress: string,
-    name: string,
-  ): Promise<Account | undefined>;
-  /**
    * Set `profileMessageId` to `nextId` only when the stored pointer still
    * matches `expectedId`. Does not change other columns. Does not touch
    * viewKey or linkingKey indexes.
@@ -473,6 +602,13 @@ export interface AuthStore {
   /** Look up an account by id, or `undefined` if unknown. */
   getAccount(id: string): Promise<Account | undefined>;
   /**
+   * Look up several accounts by id in one call.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in no particular order.
+   */
+  getAccounts(ids: readonly string[]): Promise<Account[]>;
+  /**
    * Up to two stored account ids whose string form starts with `prefix`
    * (case-insensitive). Does not consult view keys, linking keys, or pubkeys.
    * Does not require a UUID.
@@ -486,12 +622,6 @@ export interface AuthStore {
    * Used by the public capability URL; never mints a session.
    */
   getAccountByViewKey(viewKey: string): Promise<Account | undefined>;
-  /**
-   * Look up an account by Lightning Address (`lower(trim)` match). Rows with a
-   * null `lightningAddress` are skipped. At most one row matches (unique index
-   * in Postgres; in-memory create/update refuse a taken address).
-   */
-  getAccountByLightningAddress(address: string): Promise<Account | undefined>;
   /**
    * Look up an account by username (`lower(trim)` match). Rows with a
    * null/undefined/blank `username` are skipped. At most one row matches
@@ -542,14 +672,18 @@ export interface AuthStore {
    * (GET `/debug/accounts/:id` and dump table `auth_session` do).
    */
   listAccounts(): Promise<Account[]>;
+  /**
+   * Lower-cased local part of each account's legacy external payout address
+   * (`account.lightning_address`), keyed by account id. Accounts without one
+   * are left out. Omitted on stores that never hold a legacy address.
+   */
+  listLegacyPayoutHandles?(): Promise<Map<string, string>>;
   /** Every stored passkey credential (operator dump / account detail). */
   listPasskeyCredentials(): Promise<PasskeyCredential[]>;
   /** Every stored session (operator dump / account detail). */
   listSessions(): Promise<Session[]>;
   /** Every stored passkey challenge (operator dump / account detail). */
   listPasskeyChallenges(): Promise<PasskeyChallenge[]>;
-  /** Every pending address verification (operator dump / account detail). */
-  listAddressVerifications(): Promise<AddressVerification[]>;
   /**
    * Every account row's Nostr columns (pubkey may be null; kek/custody are the stored defaults).
    * In-memory `createdAt` is `null` when the adapter does not store it.
@@ -573,12 +707,13 @@ export interface AuthStore {
   setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined>;
   /** Look up a session by token, or `undefined` if unknown. */
   getSession(token: string): Promise<Session | undefined>;
-  /** Upsert a pending address verification for the account. */
-  putVerification(verification: AddressVerification): Promise<void>;
-  /** Look up a pending verification by account id, or `undefined` if none. */
-  getVerification(accountId: string): Promise<AddressVerification | undefined>;
-  /** Drop any pending verification for the account. */
-  deleteVerification(accountId: string): Promise<void>;
+  /**
+   * Delete every session row (operator `DELETE /debug/sessions`). Bearers
+   * that held one answer 401 from then on.
+   *
+   * @returns How many rows were deleted.
+   */
+  deleteAllSessions(): Promise<number>;
   /** Persist a freshly issued passkey ceremony challenge. */
   createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void>;
   /** Look up a passkey challenge by id, or `undefined` if unknown. */
@@ -654,6 +789,176 @@ export interface AuthStore {
    * @returns Ids at the moderator rank or above (order unspecified).
    */
   listStaffAccountIds(): Promise<string[]>;
+  /**
+   * The account's pending social recovery, unless it expired (unforwarded and
+   * older than `CHALLENGE_TTL_MS`).
+   *
+   * @param accountId - Account id.
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecovery(accountId: string, now: number): Promise<PendingRecovery | undefined>;
+  /**
+   * The pending social recovery whose new wallet key is `sparkPubkey`, unless
+   * it expired.
+   *
+   * @param sparkPubkey - New wallet key (66 lower-case hex).
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecoveryByNewSparkPubkey(
+    sparkPubkey: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined>;
+  /**
+   * The pending social recovery of the new passkey `credentialId`, unless it
+   * expired.
+   *
+   * @param credentialId - Credential id of the new passkey (base64url).
+   * @param now - Epoch ms of the read.
+   * @returns The pending recovery, or `undefined`.
+   */
+  getPendingRecoveryByCredentialId(
+    credentialId: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined>;
+  /**
+   * Begin a social recovery ceremony as one locked step per account. Needs the
+   * account to hold `oldSparkPubkey` as its verified wallet key and not to be
+   * session-refused (else `changed`, no write). A forwarded pending recovery
+   * gives `forwarded` (no write). Otherwise it deletes an unforwarded pending
+   * recovery of any age, consumes every open `recovery` challenge of the
+   * account, evicts expired challenges, and stores `challenge`.
+   *
+   * @param input - Account, its verified old key, the new `recovery` challenge
+   *   (`consumed: false`), and the epoch ms of the step.
+   * @returns `started`, `changed`, or `forwarded`.
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  startRecoveryChallenge(input: {
+    accountId: string;
+    oldSparkPubkey: string;
+    challenge: PasskeyChallenge;
+    now: number;
+  }): Promise<RecoveryStartResult>;
+  /**
+   * Store the finish's pending recovery and consume its challenge as one
+   * locked step per account. Checks in order: the account still holds
+   * `pending.oldSparkPubkey` verified and is not session-refused (`changed`);
+   * the challenge exists with type `recovery`, this account, and is not
+   * expired (`challenge`); expired pending recoveries of every account are
+   * deleted; a consumed challenge answers `same` when the account's pending
+   * recovery has this credential id and new key, else `challenge`; any pending
+   * recovery of the account gives `pending`; the new key held by an account,
+   * a previous wallet, or another pending recovery gives `key`; the credential
+   * id stored or pending gives `credential`. Then it consumes the challenge and
+   * inserts `pending` with `forwardedAt` null.
+   *
+   * @param input - Challenge id, the pending recovery, and the epoch ms of the step.
+   * @returns One of {@link RecoveryStoreResult}.
+   * @throws When the Postgres adapter has no transaction port, or when the
+   *   insert hits a unique index (not mapped; the caller answers 503).
+   */
+  storePendingRecovery(input: {
+    challengeId: string;
+    pending: PendingRecovery;
+    now: number;
+  }): Promise<RecoveryStoreResult>;
+  /**
+   * Admit the transfer route's forward as one locked step per account: the
+   * pending recovery with this new key must be unforwarded, unexpired, and
+   * authorized by `oldSparkPubkey`; the account must still hold that key
+   * verified, not be session-refused, and have the username `username`
+   * (`lower(trim)` match). Sets `forwardedAt` to `now` in the same step.
+   *
+   * @param input - New key (path key), old key, normalized username, and epoch ms.
+   * @returns The forwarded pending recovery, or `undefined` with no write.
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  markRecoveryForwarded(input: {
+    newSparkPubkey: string;
+    oldSparkPubkey: string;
+    username: string;
+    now: number;
+  }): Promise<PendingRecovery | undefined>;
+  /**
+   * Commit a forwarded pending recovery in one step: add the old key and its
+   * Spark address to the previous wallets, replace every passkey credential of
+   * the account with the pending one, delete every session and push
+   * subscription of the account, store the new key (and its Spark address) as
+   * the wallet key with `walletRequired` true while keeping
+   * `sparkPubkeyVerifiedAt`, consume open `recovery` challenges, and delete the
+   * pending row. Username, `sessionRefused`, the Nostr key, and the stored
+   * recovery shares stay.
+   *
+   * @param input - Account, the pending recovery's new key, and epoch ms of the commit.
+   * @returns `committed`; `gone` without a forwarded pending recovery with that
+   *   new key; `changed` (pending row deleted) when the account left the old key.
+   * @throws When the Postgres adapter has no transaction port, or on a unique
+   *   violation (rolled back).
+   */
+  commitRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+    now: number;
+  }): Promise<RecoveryCommitResult>;
+  /**
+   * Delete the account's pending recovery only when its new key is
+   * `newSparkPubkey`. One conditional write.
+   *
+   * @param input - Account and new key.
+   * @returns Whether a row was deleted.
+   */
+  dropPendingRecovery(input: { accountId: string; newSparkPubkey: string }): Promise<boolean>;
+  /**
+   * The newest previous wallet with this key (`replacedAt` descending, then
+   * account id descending).
+   *
+   * @param sparkPubkey - Wallet key (66 lower-case hex).
+   * @returns The previous wallet, or `undefined`.
+   */
+  getPreviousWalletBySparkPubkey(sparkPubkey: string): Promise<PreviousWallet | undefined>;
+  /**
+   * The account's previous wallets, newest first (`replacedAt` descending,
+   * then `sparkPubkey` ascending).
+   *
+   * @param accountId - Account id.
+   * @returns The previous wallets (empty when none).
+   */
+  listPreviousWallets(accountId: string): Promise<PreviousWallet[]>;
+  /**
+   * Delete one previous wallet of the account together with the account's
+   * recovery share of that key, in one statement.
+   *
+   * @param accountId - Account id.
+   * @param sparkPubkey - Key of the previous wallet.
+   * @returns Whether a previous wallet was deleted (the share goes only then).
+   */
+  dropPreviousWallet(accountId: string, sparkPubkey: string): Promise<boolean>;
+  /**
+   * Store the encrypted 21.gifts recovery share of the account's current
+   * verified wallet as one locked step per account. Upserts by
+   * `(accountId, sparkPubkey)` and sets the stored time to `now`.
+   *
+   * @param input - Account, its wallet key, the share envelope, and epoch ms.
+   * @returns `stored`, `replaced`, or `changed` when `sparkPubkey` is not the
+   *   account's verified wallet key (no write).
+   * @throws When the Postgres adapter has no transaction port.
+   */
+  putRecoveryShare(input: {
+    accountId: string;
+    sparkPubkey: string;
+    ciphertext: Uint8Array;
+    now: number;
+  }): Promise<RecoveryShareResult>;
+  /**
+   * Whether a recovery share is stored for the account's current
+   * `sparkPubkey` while that key is verified. Never reads the ciphertext.
+   *
+   * @param accountId - Account id.
+   * @returns `true` only in that case.
+   */
+  hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean>;
 }
 
 /** Stored custodial (or later user-owned) Nostr key material. Not on {@link Account}. */
@@ -697,20 +1002,35 @@ export class InMemoryAuthStore implements AuthStore {
   readonly #accountsByLinkingKey = new Map<string, string>();
   readonly #accountsByViewKey = new Map<string, string>();
   readonly #sessions = new Map<string, Session>();
-  readonly #verifications = new Map<string, AddressVerification>();
   readonly #passkeyChallenges = new Map<string, PasskeyChallenge>();
   readonly #passkeyCredentials = new Map<string, PasskeyCredential>();
   readonly #nostrKeys = new Map<string, NostrKeyRecord>();
   readonly #passkeyRenewAttempts: StoredPasskeyRenewAttempt[] = [];
+  /** Pending social recoveries by account id. */
+  readonly #pendingRecoveries = new Map<string, PendingRecovery>();
+  /** Previous wallets by `${accountId}:${sparkPubkey}`. */
+  readonly #previousWallets = new Map<string, PreviousWallet>();
+  /** Recovery share envelopes by `${accountId}:${sparkPubkey}`. */
+  readonly #recoveryShares = new Map<string, { ciphertext: Uint8Array; storedAt: number }>();
+  /** Push subscriptions a recovery commit deletes; unset until {@link usePushStore}. */
+  #pushStore: InMemoryPushStore | undefined;
+
+  /**
+   * Link the in-memory push store whose subscriptions {@link commitRecovery}
+   * deletes for the recovered account. `createApp` calls it when both default
+   * stores are in memory.
+   *
+   * @param push - Push store of the same process.
+   */
+  usePushStore(push: InMemoryPushStore): void {
+    this.#pushStore = push;
+  }
 
   async createAccount(account: Account): Promise<void> {
     if (this.#accountsByViewKey.has(account.viewKey)) {
       return;
     }
     if (account.linkingKey !== null && this.#accountsByLinkingKey.has(account.linkingKey)) {
-      return;
-    }
-    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
       return;
     }
     if (this.#usernameTaken(account.username, account.id)) {
@@ -722,8 +1042,11 @@ export class InMemoryAuthStore implements AuthStore {
     this.#accounts.set(account.id, {
       ...account,
       sessionRefused: account.sessionRefused === true,
+      notifyHearts: account.notifyHearts !== false,
       locale: null,
       fiat: null,
+      sparkPubkey: null,
+      sparkPubkeyVerifiedAt: null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -745,6 +1068,86 @@ export class InMemoryAuthStore implements AuthStore {
     const updated: Account = { ...current, walletBackupSeenAt: now };
     this.#accounts.set(accountId, updated);
     return { account: updated, wrote: true };
+  }
+
+  async claimSparkPubkey(
+    accountId: string,
+    sparkPubkey: string,
+  ): Promise<{ account: Account; wrote: boolean } | undefined> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return undefined;
+    }
+    const username = current.username;
+    const blankUsername = username === null || username === undefined || username.trim() === '';
+    const verified =
+      current.sparkPubkeyVerifiedAt !== null && current.sparkPubkeyVerifiedAt !== undefined;
+    if (current.walletRequired !== true || blankUsername || verified) {
+      return { account: current, wrote: false };
+    }
+    const updated: Account = { ...current, sparkPubkey };
+    this.#accounts.set(accountId, updated);
+    return { account: updated, wrote: true };
+  }
+
+  async markSparkPubkeyVerified(
+    accountId: string,
+    sparkPubkey: string,
+    username: string,
+    now: number,
+  ): Promise<boolean> {
+    for (const other of this.#accounts.values()) {
+      if (
+        other.id !== accountId &&
+        other.sparkPubkey === sparkPubkey &&
+        other.sparkPubkeyVerifiedAt !== null &&
+        other.sparkPubkeyVerifiedAt !== undefined
+      ) {
+        return false;
+      }
+    }
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return false;
+    }
+    if (current.sparkPubkey !== sparkPubkey) {
+      return false;
+    }
+    if (current.sparkPubkeyVerifiedAt !== null && current.sparkPubkeyVerifiedAt !== undefined) {
+      return false;
+    }
+    const storedUsername = current.username;
+    if (
+      storedUsername === null ||
+      storedUsername === undefined ||
+      storedUsername.trim().toLowerCase() !== username
+    ) {
+      return false;
+    }
+    this.#accounts.set(accountId, { ...current, sparkPubkeyVerifiedAt: now });
+    return true;
+  }
+
+  async getAccountByVerifiedSparkPubkey(sparkPubkey: string): Promise<Account | undefined> {
+    for (const account of this.#accounts.values()) {
+      if (
+        account.sparkPubkey === sparkPubkey &&
+        account.sparkPubkeyVerifiedAt !== null &&
+        account.sparkPubkeyVerifiedAt !== undefined
+      ) {
+        return account;
+      }
+    }
+    return undefined;
+  }
+
+  async isSparkPubkeyClaimed(sparkPubkey: string): Promise<boolean> {
+    for (const account of this.#accounts.values()) {
+      if (account.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    return false;
   }
 
   async insertPasskeyRenewAttempt(input: PasskeyRenewAttemptInput): Promise<void> {
@@ -888,16 +1291,19 @@ export class InMemoryAuthStore implements AuthStore {
     if (viewKeyOwnerId !== undefined && viewKeyOwnerId !== account.id) {
       return;
     }
-    if (this.#lightningAddressTaken(account.lightningAddress, account.id)) {
-      return;
-    }
-    if (this.#usernameTaken(account.username, account.id)) {
+    const previous = this.#accounts.get(account.id);
+    const { username: passedUsername, ...rest } = account;
+    const keepStored =
+      previous !== undefined &&
+      ((previous.sparkPubkeyVerifiedAt !== null && previous.sparkPubkeyVerifiedAt !== undefined) ||
+        (previous.username ?? '').trim() !== '');
+    const username = keepStored ? previous.username : passedUsername;
+    if (this.#usernameTaken(username, account.id)) {
       return;
     }
     if (account.isPlatform === true) {
       this.#clearPlatformExcept(account.id);
     }
-    const previous = this.#accounts.get(account.id);
     if (
       previous !== undefined &&
       previous.linkingKey !== null &&
@@ -909,12 +1315,17 @@ export class InMemoryAuthStore implements AuthStore {
       this.#accountsByViewKey.delete(previous.viewKey);
     }
     this.#accounts.set(account.id, {
-      ...account,
+      ...rest,
+      ...(username === undefined ? {} : { username }),
       sessionRefused: previous?.sessionRefused === true,
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
+      walletIntroSeen: previous?.walletIntroSeen === true || account.walletIntroSeen === true,
+      hadExternalWallet: previous?.hadExternalWallet === true,
       locale: previous?.locale ?? null,
       fiat: previous?.fiat ?? null,
+      sparkPubkey: previous?.sparkPubkey ?? null,
+      sparkPubkeyVerifiedAt: previous?.sparkPubkeyVerifiedAt ?? null,
     });
     this.#accountsByViewKey.set(account.viewKey, account.id);
     if (account.linkingKey !== null) {
@@ -922,21 +1333,20 @@ export class InMemoryAuthStore implements AuthStore {
     }
   }
 
-  async updateAccountNameByLightningAddress(
-    lightningAddress: string,
-    name: string,
-  ): Promise<Account | undefined> {
-    const needle = lightningAddress.trim().toLowerCase();
-    for (const account of this.#accounts.values()) {
-      if (account.lightningAddress === null) {
-        continue;
-      }
-      if (account.lightningAddress.trim().toLowerCase() === needle) {
-        account.name = name;
-        return account;
-      }
+  async setUsername(accountId: string, username: string): Promise<SetUsernameResult> {
+    const current = this.#accounts.get(accountId);
+    if (current === undefined) {
+      return { ok: false, reason: 'missing' };
     }
-    return undefined;
+    if (typeof current.sparkPubkeyVerifiedAt === 'number') {
+      return { ok: false, reason: 'frozen' };
+    }
+    if (this.#usernameTaken(username, accountId)) {
+      return { ok: false, reason: 'taken' };
+    }
+    const previous = current.username ?? null;
+    this.#accounts.set(accountId, { ...current, username });
+    return { ok: true, previous };
   }
 
   async claimProfileMessageId(
@@ -973,6 +1383,23 @@ export class InMemoryAuthStore implements AuthStore {
   }
 
   /**
+   * Accounts for `ids` from the in-memory map.
+   *
+   * @param ids - Account ids; duplicates and unknown ids are allowed.
+   * @returns The known accounts, each once, in first-seen order.
+   */
+  async getAccounts(ids: readonly string[]): Promise<Account[]> {
+    const found: Account[] = [];
+    for (const id of new Set(ids)) {
+      const account = this.#accounts.get(id);
+      if (account !== undefined) {
+        found.push(account);
+      }
+    }
+    return found;
+  }
+
+  /**
    * Up to two stored account ids whose string form starts with `prefix`
    * (case-insensitive). Scans `#accounts` values only.
    *
@@ -998,22 +1425,6 @@ export class InMemoryAuthStore implements AuthStore {
     return id === undefined ? undefined : this.#accounts.get(id);
   }
 
-  #lightningAddressTaken(address: string | null, accountId: string): boolean {
-    if (address === null) {
-      return false;
-    }
-    const needle = address.trim().toLowerCase();
-    for (const other of this.#accounts.values()) {
-      if (other.id === accountId || other.lightningAddress === null) {
-        continue;
-      }
-      if (other.lightningAddress.trim().toLowerCase() === needle) {
-        return true;
-      }
-    }
-    return false;
-  }
-
   #usernameTaken(username: string | null | undefined, accountId: string): boolean {
     if (username === null || username === undefined) {
       return false;
@@ -1031,19 +1442,6 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
     return false;
-  }
-
-  async getAccountByLightningAddress(address: string): Promise<Account | undefined> {
-    const needle = address.trim().toLowerCase();
-    for (const account of this.#accounts.values()) {
-      if (account.lightningAddress === null) {
-        continue;
-      }
-      if (account.lightningAddress.trim().toLowerCase() === needle) {
-        return account;
-      }
-    }
-    return undefined;
   }
 
   async getAccountByUsername(username: string): Promise<Account | undefined> {
@@ -1136,10 +1534,6 @@ export class InMemoryAuthStore implements AuthStore {
     return [...this.#passkeyChallenges.values()].map((challenge) => ({ ...challenge }));
   }
 
-  async listAddressVerifications(): Promise<AddressVerification[]> {
-    return [...this.#verifications.values()].map((row) => ({ ...row }));
-  }
-
   async listNostrKeys(): Promise<NostrKeyListRow[]> {
     const rows: NostrKeyListRow[] = [];
     for (const account of this.#accounts.values()) {
@@ -1183,6 +1577,12 @@ export class InMemoryAuthStore implements AuthStore {
     return true;
   }
 
+  async deleteAllSessions(): Promise<number> {
+    const count = this.#sessions.size;
+    this.#sessions.clear();
+    return count;
+  }
+
   async setSessionRefused(accountId: string, refused: boolean): Promise<Account | undefined> {
     const existing = this.#accounts.get(accountId);
     if (existing === undefined) {
@@ -1195,18 +1595,6 @@ export class InMemoryAuthStore implements AuthStore {
 
   async getSession(token: string): Promise<Session | undefined> {
     return this.#sessions.get(token);
-  }
-
-  async putVerification(verification: AddressVerification): Promise<void> {
-    this.#verifications.set(verification.accountId, verification);
-  }
-
-  async getVerification(accountId: string): Promise<AddressVerification | undefined> {
-    return this.#verifications.get(accountId);
-  }
-
-  async deleteVerification(accountId: string): Promise<void> {
-    this.#verifications.delete(accountId);
   }
 
   async createPasskeyChallenge(challenge: PasskeyChallenge): Promise<void> {
@@ -1395,6 +1783,338 @@ export class InMemoryAuthStore implements AuthStore {
     return ids;
   }
 
+  // Every recovery method below reads and writes the maps in one synchronous
+  // run (no await inside), so each one is atomic within the process.
+
+  async getPendingRecovery(accountId: string, now: number): Promise<PendingRecovery | undefined> {
+    const pending = this.#pendingRecoveries.get(accountId);
+    return pending !== undefined && pendingRecoveryLive(pending, now) ? pending : undefined;
+  }
+
+  async getPendingRecoveryByNewSparkPubkey(
+    sparkPubkey: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.newSparkPubkey === sparkPubkey && pendingRecoveryLive(pending, now)) {
+        return pending;
+      }
+    }
+    return undefined;
+  }
+
+  async getPendingRecoveryByCredentialId(
+    credentialId: string,
+    now: number,
+  ): Promise<PendingRecovery | undefined> {
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.credentialId === credentialId && pendingRecoveryLive(pending, now)) {
+        return pending;
+      }
+    }
+    return undefined;
+  }
+
+  async startRecoveryChallenge(input: {
+    accountId: string;
+    oldSparkPubkey: string;
+    challenge: PasskeyChallenge;
+    now: number;
+  }): Promise<RecoveryStartResult> {
+    if (this.#verifiedHolder(input.accountId, input.oldSparkPubkey) === undefined) {
+      return 'changed';
+    }
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (pending !== undefined && pending.forwardedAt !== null) {
+      return 'forwarded';
+    }
+    this.#pendingRecoveries.delete(input.accountId);
+    this.#consumeRecoveryChallenges(input.accountId);
+    this.#evictExpiredPasskeyChallenges(input.now);
+    this.#passkeyChallenges.set(input.challenge.id, input.challenge);
+    return 'started';
+  }
+
+  async storePendingRecovery(input: {
+    challengeId: string;
+    pending: PendingRecovery;
+    now: number;
+  }): Promise<RecoveryStoreResult> {
+    const { pending, now } = input;
+    if (this.#verifiedHolder(pending.accountId, pending.oldSparkPubkey) === undefined) {
+      return 'changed';
+    }
+    const challenge = this.#passkeyChallenges.get(input.challengeId);
+    if (
+      challenge === undefined ||
+      challenge.type !== 'recovery' ||
+      challenge.accountId !== pending.accountId ||
+      now - challenge.createdAt > CHALLENGE_TTL_MS
+    ) {
+      return 'challenge';
+    }
+    for (const [accountId, stored] of this.#pendingRecoveries) {
+      if (!pendingRecoveryLive(stored, now)) {
+        this.#pendingRecoveries.delete(accountId);
+      }
+    }
+    const existing = this.#pendingRecoveries.get(pending.accountId);
+    if (challenge.consumed) {
+      return existing !== undefined &&
+        existing.credentialId === pending.credentialId &&
+        existing.newSparkPubkey === pending.newSparkPubkey
+        ? 'same'
+        : 'challenge';
+    }
+    if (existing !== undefined) {
+      return 'pending';
+    }
+    if (this.#recoveryKeyInUse(pending.newSparkPubkey)) {
+      return 'key';
+    }
+    if (this.#recoveryCredentialInUse(pending.credentialId)) {
+      return 'credential';
+    }
+    this.#passkeyChallenges.set(challenge.id, { ...challenge, consumed: true });
+    this.#pendingRecoveries.set(pending.accountId, { ...pending, forwardedAt: null });
+    return 'stored';
+  }
+
+  async markRecoveryForwarded(input: {
+    newSparkPubkey: string;
+    oldSparkPubkey: string;
+    username: string;
+    now: number;
+  }): Promise<PendingRecovery | undefined> {
+    const pending = [...this.#pendingRecoveries.values()].find(
+      (stored) => stored.newSparkPubkey === input.newSparkPubkey,
+    );
+    if (
+      pending === undefined ||
+      pending.forwardedAt !== null ||
+      !pendingRecoveryLive(pending, input.now) ||
+      pending.oldSparkPubkey !== input.oldSparkPubkey
+    ) {
+      return undefined;
+    }
+    const account = this.#verifiedHolder(pending.accountId, input.oldSparkPubkey);
+    if (account?.username?.trim().toLowerCase() !== input.username) {
+      return undefined;
+    }
+    const forwarded: PendingRecovery = { ...pending, forwardedAt: input.now };
+    this.#pendingRecoveries.set(pending.accountId, forwarded);
+    return forwarded;
+  }
+
+  async commitRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+    now: number;
+  }): Promise<RecoveryCommitResult> {
+    const account = this.#accounts.get(input.accountId);
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (
+      account === undefined ||
+      pending === undefined ||
+      pending.newSparkPubkey !== input.newSparkPubkey ||
+      pending.forwardedAt === null
+    ) {
+      return 'gone';
+    }
+    if (
+      account.sparkPubkey !== pending.oldSparkPubkey ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      this.#pendingRecoveries.delete(input.accountId);
+      return 'changed';
+    }
+    // Same refusals, before any write, as the Postgres unique index on verified
+    // wallet keys and the passkey_credential primary key.
+    for (const other of this.#accounts.values()) {
+      if (
+        other.id !== input.accountId &&
+        other.sparkPubkey === pending.newSparkPubkey &&
+        typeof other.sparkPubkeyVerifiedAt === 'number'
+      ) {
+        throw new Error('spark_pubkey is the verified wallet key of another account');
+      }
+    }
+    const taken = this.#passkeyCredentials.get(pending.credentialId);
+    if (taken !== undefined && taken.accountId !== input.accountId) {
+      throw new Error('credential_id is a passkey of another account');
+    }
+    this.#previousWallets.set(`${input.accountId}:${pending.oldSparkPubkey}`, {
+      accountId: input.accountId,
+      sparkPubkey: pending.oldSparkPubkey,
+      sparkAddress: encodeSparkAddress(pending.oldSparkPubkey),
+      replacedAt: input.now,
+    });
+    for (const [credentialId, credential] of this.#passkeyCredentials) {
+      if (credential.accountId === input.accountId) {
+        this.#passkeyCredentials.delete(credentialId);
+      }
+    }
+    this.#passkeyCredentials.set(pending.credentialId, {
+      credentialId: pending.credentialId,
+      publicKey: pending.publicKey,
+      signCount: pending.signCount,
+      accountId: input.accountId,
+      createdAt: input.now,
+    });
+    for (const [token, session] of this.#sessions) {
+      if (session.accountId === input.accountId) {
+        this.#sessions.delete(token);
+      }
+    }
+    this.#pushStore?.removeAccountSubscriptions(input.accountId);
+    this.#accounts.set(input.accountId, {
+      ...account,
+      sparkPubkey: pending.newSparkPubkey,
+      walletRequired: true,
+    });
+    this.#consumeRecoveryChallenges(input.accountId);
+    this.#pendingRecoveries.delete(input.accountId);
+    return 'committed';
+  }
+
+  async dropPendingRecovery(input: {
+    accountId: string;
+    newSparkPubkey: string;
+  }): Promise<boolean> {
+    const pending = this.#pendingRecoveries.get(input.accountId);
+    if (pending === undefined || pending.newSparkPubkey !== input.newSparkPubkey) {
+      return false;
+    }
+    this.#pendingRecoveries.delete(input.accountId);
+    return true;
+  }
+
+  async getPreviousWalletBySparkPubkey(sparkPubkey: string): Promise<PreviousWallet | undefined> {
+    let newest: PreviousWallet | undefined;
+    for (const wallet of this.#previousWallets.values()) {
+      if (wallet.sparkPubkey !== sparkPubkey) {
+        continue;
+      }
+      if (
+        newest === undefined ||
+        wallet.replacedAt > newest.replacedAt ||
+        (wallet.replacedAt === newest.replacedAt && wallet.accountId > newest.accountId)
+      ) {
+        newest = wallet;
+      }
+    }
+    return newest;
+  }
+
+  async listPreviousWallets(accountId: string): Promise<PreviousWallet[]> {
+    return [...this.#previousWallets.values()]
+      .filter((wallet) => wallet.accountId === accountId)
+      .sort((a, b) => {
+        if (a.replacedAt !== b.replacedAt) {
+          return b.replacedAt - a.replacedAt;
+        }
+        return a.sparkPubkey < b.sparkPubkey ? -1 : 1;
+      });
+  }
+
+  async dropPreviousWallet(accountId: string, sparkPubkey: string): Promise<boolean> {
+    const key = `${accountId}:${sparkPubkey}`;
+    if (!this.#previousWallets.delete(key)) {
+      return false;
+    }
+    this.#recoveryShares.delete(key);
+    return true;
+  }
+
+  async putRecoveryShare(input: {
+    accountId: string;
+    sparkPubkey: string;
+    ciphertext: Uint8Array;
+    now: number;
+  }): Promise<RecoveryShareResult> {
+    const account = this.#accounts.get(input.accountId);
+    if (
+      account === undefined ||
+      account.sparkPubkey !== input.sparkPubkey ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      return 'changed';
+    }
+    const key = `${input.accountId}:${input.sparkPubkey}`;
+    const existed = this.#recoveryShares.has(key);
+    this.#recoveryShares.set(key, { ciphertext: input.ciphertext, storedAt: input.now });
+    return existed ? 'replaced' : 'stored';
+  }
+
+  async hasRecoveryShareForVerifiedWallet(accountId: string): Promise<boolean> {
+    const account = this.#accounts.get(accountId);
+    if (
+      account === undefined ||
+      typeof account.sparkPubkey !== 'string' ||
+      typeof account.sparkPubkeyVerifiedAt !== 'number'
+    ) {
+      return false;
+    }
+    return this.#recoveryShares.has(`${accountId}:${account.sparkPubkey}`);
+  }
+
+  /** The account when it holds `sparkPubkey` as its verified wallet key and is not session-refused. */
+  #verifiedHolder(accountId: string, sparkPubkey: string): Account | undefined {
+    const account = this.#accounts.get(accountId);
+    return account !== undefined &&
+      account.sparkPubkey === sparkPubkey &&
+      typeof account.sparkPubkeyVerifiedAt === 'number' &&
+      account.sessionRefused !== true
+      ? account
+      : undefined;
+  }
+
+  /** Mark every open `recovery` challenge of the account consumed. */
+  #consumeRecoveryChallenges(accountId: string): void {
+    for (const [id, challenge] of this.#passkeyChallenges) {
+      if (
+        challenge.type === 'recovery' &&
+        challenge.accountId === accountId &&
+        !challenge.consumed
+      ) {
+        this.#passkeyChallenges.set(id, { ...challenge, consumed: true });
+      }
+    }
+  }
+
+  /** Whether an account, a previous wallet, or a pending recovery already holds this key. */
+  #recoveryKeyInUse(sparkPubkey: string): boolean {
+    for (const account of this.#accounts.values()) {
+      if (account.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    for (const wallet of this.#previousWallets.values()) {
+      if (wallet.sparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.newSparkPubkey === sparkPubkey) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** Whether a stored credential or a pending recovery already holds this credential id. */
+  #recoveryCredentialInUse(credentialId: string): boolean {
+    if (this.#passkeyCredentials.has(credentialId)) {
+      return true;
+    }
+    for (const pending of this.#pendingRecoveries.values()) {
+      if (pending.credentialId === credentialId) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Drop passkey challenges older than the TTL. */
   #evictExpiredPasskeyChallenges(now: number): void {
     for (const [id, challenge] of this.#passkeyChallenges) {
@@ -1421,6 +2141,14 @@ export class InMemoryAuthStore implements AuthStore {
       }
     }
   }
+}
+
+/**
+ * Whether a pending recovery still counts: forwarded, or stored no more than
+ * `CHALLENGE_TTL_MS` before `now`.
+ */
+function pendingRecoveryLive(pending: PendingRecovery, now: number): boolean {
+  return pending.forwardedAt !== null || now - pending.createdAt <= CHALLENGE_TTL_MS;
 }
 
 /** In-memory passkey renew row, including acknowledgement. */

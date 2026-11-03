@@ -1,6 +1,6 @@
 import { Hono } from 'hono';
 import { cors } from 'hono/cors';
-import { healthRoute } from '@/routes/health';
+import { healthRoute, walletFeatures } from '@/routes/health';
 import { infoRoute } from '@/routes/info';
 import { brandRoutes, readPublicBrandFile } from '@/routes/brand';
 import type { BrandReader } from '@/routes/brand';
@@ -27,10 +27,15 @@ import { resolveActivityPing } from '@/lib/ocp-activity';
 import { translateRoutes } from '@/routes/translate';
 import { InMemoryTranslationStore, type TranslationStore } from '@/lib/translation-store';
 import { wellKnownRoutes } from '@/routes/well-known';
+import { lnurlRoutes } from '@/routes/lnurl';
 import { payRoutes } from '@/routes/pay';
 import { contactRoutes } from '@/routes/contact';
 import { memberHabitRoutes } from '@/routes/member-habits';
 import { posRoutes } from '@/routes/pos';
+import { debugShopProofsRoutes } from '@/routes/debug-shop-proofs';
+import { OrchestraClient } from '@/lib/orchestra';
+import { ShopPayments } from '@/lib/shop-payment';
+import { InMemoryShopPaymentStore } from '@/lib/shop-payment-store';
 import { grantContinuationRoutes } from '@/routes/grant-continuation';
 import { shopActivityRoutes } from '@/routes/shop-activity';
 import { conversationRoutes } from '@/routes/conversations';
@@ -46,13 +51,22 @@ import { debugContactsRoutes } from '@/routes/debug-contacts';
 import { debugMessagesRoutes } from '@/routes/debug-messages';
 import { debugExternalRoutes } from '@/routes/debug-external';
 import { debugPaymentsRoutes } from '@/routes/debug-payments';
+import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { pushRoutes } from '@/routes/push';
+import { walletReportRoutes } from '@/routes/wallet-report';
+import { walletHeartRoutes } from '@/routes/wallet-hearts';
+import { memberEventRoutes } from '@/routes/member-events';
+import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
+import { debugPushBroadcastRoutes } from '@/routes/debug-push-broadcast';
 import { debugPasskeyRenewRoutes } from '@/routes/debug-passkey-renew';
 import { debugShopKeyRoutes } from '@/routes/debug-shop-keys';
 import { debugShopNoteRoutes } from '@/routes/debug-shop-notes';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
+import { debugLoginsRoutes } from '@/routes/debug-logins';
+import { LoginGate, resolveLoginsOpenDefault, resolveRequiredAppBuild } from '@/lib/login-gate';
+import { InMemoryLoginGateStore, type LoginGateStore } from '@/lib/login-gate-store';
 import { trustChainRoutes } from '@/routes/trust-chain';
 import { trustRoutes } from '@/routes/trust';
 import { fundingRoutes } from '@/routes/funding';
@@ -60,15 +74,21 @@ import { InMemoryAuthStore } from '@/lib/auth/store';
 import type { AuthStore } from '@/lib/auth/store';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
+import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
+import { fxRoutes } from '@/routes/fx';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { GiftStore } from '@/lib/gift-store';
 import { InMemoryApiLogStore, type ApiLogStore } from '@/lib/api-log';
 import { InMemoryDiagnosticStore, type DiagnosticStore } from '@/lib/diagnostic-log';
+import { InMemoryWalletStore, type WalletStore } from '@/lib/wallet-store';
+import { InMemoryMemberEventStore, type MemberEventStore } from '@/lib/member-event-store';
 import { InMemoryContactStore } from '@/lib/contact-store';
 import type { ContactStore } from '@/lib/contact-store';
 import { InMemoryMemberHabitStore, type MemberHabitStore } from '@/lib/member-habit-store';
 import { InMemoryPosStore, type PosStore } from '@/lib/pos-store';
 import { inboxUnreadCountFor } from '@/lib/conversation-push';
+import { resolvePaymentWebhookSecret } from '@/lib/payment-received';
+import { accountHasLiveSubscription } from '@/lib/push-worker';
 import { InMemoryConversationStore } from '@/lib/conversation-store';
 import type { ConversationStore } from '@/lib/conversation-store';
 import { aboutMeFromNote } from '@/lib/about-me';
@@ -81,22 +101,33 @@ import { resolveVapidConfig } from '@/lib/push-config';
 import { InMemoryPushStore, type PushStore } from '@/lib/push-store';
 import { InMemoryTrustStore, type TrustStore } from '@/lib/trust-store';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
-import { PostRateLimiter } from '@/lib/nostr/rate-limit';
-import { resolveAllowedOrigins } from '@/lib/config';
-import { UnconfiguredInvoicePayer } from '@/lib/invoice-payer';
-import type { InvoicePayer } from '@/lib/invoice-payer';
+import {
+  InvoiceRateLimiter,
+  PostRateLimiter,
+  resolveTestInvoiceRateCaps,
+  type InvoiceRateCaps,
+} from '@/lib/nostr/rate-limit';
+import {
+  resolveAllowedOrigins,
+  resolveFreePaymentsConfig,
+  resolveLnurlServerConfig,
+  resolveShopPaymentConfig,
+} from '@/lib/config';
+import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
 import { InMemoryInvoiceStore } from '@/lib/invoice-store';
 import type { InvoiceStore } from '@/lib/invoice-store';
 import type { GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryLnAddressCache } from '@/lib/ln-address-cache';
 import type { LnAddressCache } from '@/lib/ln-address-cache';
-import { requestLog, setDiagnosticSink } from '@/lib/log';
+import { requestLog, setAddressRefKey, setDiagnosticSink } from '@/lib/log';
 import { sundayRest } from '@/lib/sunday-rest';
 import type { FetchFn } from '@/lib/lnurlp';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
 import { InMemoryDailyRosterStore, type DailyRosterStore } from '@/lib/daily-roster-store';
 import { resolveSpendPing, type SpendPing } from '@/lib/spend-ping';
+import { lnurlServerRoutes } from '@/routes/lnurl-server';
+import { webhookRoutes } from '@/routes/webhooks';
 import { InMemoryShopIdentityStore, type ShopIdentityStore } from '@/lib/shop-identity';
 import { shopRoutes } from '@/routes/shops';
 
@@ -112,11 +143,6 @@ export interface AppDeps {
   now?: () => number;
   /** Browser origins allowed by CORS (default: from `CORS_ALLOWED_ORIGINS` / app surfaces). */
   allowedOrigins?: string[];
-  /**
-   * Pays verification micro-payment invoices (default:
-   * {@link UnconfiguredInvoicePayer} — process boots; start verification returns 503).
-   */
-  invoicePayer?: InvoicePayer;
   /** Injected `fetch` for LNURL-pay (default: `globalThis.fetch`). */
   fetchImpl?: FetchFn;
   /**
@@ -147,7 +173,8 @@ export interface AppDeps {
    */
   debugToken?: string;
   /**
-   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, and the operator staff GET reads
+   * Read-only bearer for `GET /debug/db`, `GET /funding/goal`, the operator staff GET reads,
+   * and `GET /funding/daily-roster/links`
    * (default: `process.env.DEBUG_READ_TOKEN`).
    * Trim. Empty → omitted. Non-empty and equal to `debugToken` after trim
    * throws `DEBUG_READ_TOKEN matches DEBUG_TOKEN` before routes mount, without
@@ -156,8 +183,8 @@ export interface AppDeps {
   debugReadToken?: string;
   /**
    * Reserved-connection transaction port for `POST /debug/accounts/merge`.
-   * Omitted on a memory boot. A valid body then returns 503. An invalid body
-   * is still 400.
+   * Omitted on a memory boot. A valid merge body
+   * then returns 503. An invalid body is still 400.
    */
   mergeDb?: MergeDb;
   /**
@@ -176,8 +203,21 @@ export interface AppDeps {
    */
   diagnosticStore?: DiagnosticStore;
   /**
-   * Outbound gifts for public statistics (default: empty
-   * {@link InMemoryGiftStore}).
+   * Wallet balance snapshots and reported payments (default: empty
+   * {@link InMemoryWalletStore}). Boot injects {@link PostgresWalletStore}
+   * when `DATABASE_URL` is set.
+   */
+  walletStore?: WalletStore;
+  /**
+   * Member interaction-log events (default: empty
+   * {@link InMemoryMemberEventStore}). Boot injects
+   * {@link PostgresMemberEventStore} when `DATABASE_URL` is set.
+   */
+  memberEventStore?: MemberEventStore;
+  /**
+   * Outbound gifts for public statistics; the same store tells the welcome
+   * check (invoices, trust, me, messages) that a welcome gift was already paid
+   * (default: empty {@link InMemoryGiftStore}).
    */
   giftStore?: GiftStore;
   /**
@@ -201,11 +241,17 @@ export interface AppDeps {
   spendApiToken?: string;
   /**
    * Spend-worker ping after a new top-level forum post or a `moderator_group`
-   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore })`). Unset
+   * persist (default: `resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore, accounts, lnurlServer })`). Unset
    * `SPEND_URL` or `SPEND_API_TOKEN` → omitted; `POST /messages` and
    * `POST /conversations/:id` still 200.
    */
   spendPing?: SpendPing;
+  /**
+   * Switch of the 15-minute welcome sweep, shared with the boot timer
+   * (default: a fresh switch, off). `GET` and `PUT /debug/welcome-sweep` read
+   * and set it.
+   */
+  welcomeSweep?: WelcomeSweepSwitch;
   /**
    * Daily payout roster (default: a fresh {@link InMemoryDailyRosterStore}).
    * Boot injects the same instance used by {@link resolveSpendPing}.
@@ -217,6 +263,13 @@ export interface AppDeps {
    * `messagesRoutes` and the Nostr worker.
    */
   postLimiter?: PostRateLimiter;
+  /**
+   * Test-only invoice caps for gift and repayment minting (default:
+   * {@link resolveTestInvoiceRateCaps} on the same `env` `createApp`
+   * already resolves). `null` or a resolver miss leaves the process-wide
+   * default limiters (1/10s, 20/h).
+   */
+  invoiceRateCaps?: InvoiceRateCaps | null;
   /** Gift invoices issued for the spend worker (default: in-memory). */
   invoiceStore?: InvoiceStore;
   /**
@@ -236,6 +289,19 @@ export interface AppDeps {
    */
   fiatRates?: FiatRateBook;
   /**
+   * Last good BTC spot quote for `GET /fx/spot` (default: empty
+   * {@link InMemoryFxSpotStore} — answers `rates: {}`). Boot keeps it fresh
+   * with the spot worker.
+   */
+  fxSpotStore?: FxSpotStore;
+  /**
+   * Operator login switch and allowlist (default: empty
+   * {@link InMemoryLoginGateStore}, so the switch starts at
+   * `LOGINS_OPEN_DEFAULT`). Boot injects `PostgresLoginGateStore` when
+   * `DATABASE_URL` is set.
+   */
+  loginGateStore?: LoginGateStore;
+  /**
    * Member forum messages (default: empty {@link InMemoryMessageStore}).
    * Boot injects {@link PostgresMessageStore} when `DATABASE_URL` is set.
    */
@@ -251,6 +317,12 @@ export interface AppDeps {
    */
   shopKek?: Uint8Array;
   /**
+   * Optional AES-256 KEK (`RECOVERY_SHARE_KEK`) that encrypts the 21.gifts
+   * recovery share. Memory boots omit it, and `PUT /me/recovery-share` then
+   * answers 503.
+   */
+  recoveryShareKek?: Uint8Array;
+  /**
    * Optional Nostr EVENT publisher. When set with `nostrKek`, staff hide
    * publishes NIP-09 kind:5. Memory/unit boots may omit.
    */
@@ -261,13 +333,17 @@ export interface AppDeps {
    */
   nostrQuerier?: NostrQuerier;
   /**
-   * Relay URLs for that lookup. Omitted → `resolveZapReadRelays(env)`.
+   * Relay URLs for that lookup. Omitted → `resolveZapRelays(env)`.
    * An empty list skips the lookup.
    */
   nostrRelayUrls?: readonly string[];
   /**
-   * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`,
-   * Cloudflare). Default `process.env`.
+   * Optional env slice for hide retract (relays, `PUBLIC_BASE_URL`, Cloudflare)
+   * and the self-hosted LNURL server. Those routes are mounted only when
+   * `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
+   * {@link resolveLnurlServerConfig}; otherwise they are not mounted.
+   * `POST /webhooks/lnurl` is mounted only when `LNURL_WEBHOOK_SECRET` is set.
+   * Default `process.env`.
    */
   env?: Record<string, string | undefined>;
   /**
@@ -297,6 +373,13 @@ export interface AppDeps {
    * Boot injects {@link PostgresPosStore} when `DATABASE_URL` is set.
    */
   posStore?: PosStore;
+  /**
+   * Shop payment service in USDT and USDC. Boot builds one per process and
+   * shares it with the paid watcher. Default when the LNURL server resolves:
+   * a service over an {@link InMemoryShopPaymentStore} on `posStore`, with
+   * Orchestra when {@link resolveShopPaymentConfig} resolves.
+   */
+  shopPayments?: ShopPayments;
   /**
    * Private messaging threads (default: empty
    * {@link InMemoryConversationStore}). Boot injects
@@ -338,6 +421,14 @@ export interface AppDeps {
    * is passed to the Nostr worker.
    */
   bannerStore?: BannerStore;
+  /**
+   * Issued Spark invoices (default: empty {@link InMemorySparkInvoiceStore}).
+   * Used only when free in-app payments are on: `LNURL_SERVER_URL` and
+   * `PUBLIC_BASE_URL` resolve through {@link resolveLnurlServerConfig} and
+   * `LNURL_ZAP_NSEC_HEX` through {@link resolveFreePaymentsConfig}. The
+   * same instance is passed to the Spark invoice worker.
+   */
+  sparkInvoiceStore?: SparkInvoiceStore;
 }
 
 /** Optional `listDebug` on a rate book, or `[]` when the adapter has none. */
@@ -353,10 +444,10 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  * via Hono's `app.request()` helper without binding to a TCP port. Every
  * wire-up change — middleware, routes, error handlers — flows through this
  * single factory so the test surface matches production exactly. Mounts
- * public `GET /view/:viewKey` alongside `/me`, `/pay`, Web Push subscription routes,
+ * public `GET /view/:viewKey` alongside `/me`, `/pay`, `/lnurl`, Web Push subscription routes,
  * `/notifications`, `/debug/dump`, and the rest of the surface.
  *
- * @param deps - Optional overrides for the auth store, clock, invoice payer,
+ * @param deps - Optional overrides for the auth store, clock,
  *   LNURL-pay fetch, LN-Address cache, brand reader, debugToken,
  *   debugReadToken (optional; default `process.env.DEBUG_READ_TOKEN`;
  *   equal to debugToken after trim throws before routes mount),
@@ -369,17 +460,35 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   conversation store, notification store, push store, trust store,
  *   debugDbStore (`GET /debug/db`; omitted on a memory boot),
  *   funding store (injected into `/funding`, `/me`, `/auth`, `/members`,
- *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`), vapidPublicKey, nostrKek,
+ *   `/messages`, `/conversations`, `/invoices`, and `debugPaymentsRoutes`; `debugPaymentsRoutes` also
+ *   receives the conversation, trust, and gift stores for the window replay), vapidPublicKey, nostrKek,
  *   shopKek (optional; default nostrKek; new shop keys in `/messages`, `/me`,
  *   and `/debug/messages`),
- *   nostrPublisher, env, WebAuthn RP, spend token, spend ping, daily roster
- *   store (optional; default a fresh {@link InMemoryDailyRosterStore}, shared
- *   by funding routes, `POST /spend/daily-instruction`, and the default
- *   spend ping), postLimiter
+ *   nostrPublisher, env (the self-hosted LNURL server routes are mounted only when
+ *   `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve through
+ *   {@link resolveLnurlServerConfig}; otherwise they are not mounted; `webhookRoutes`
+ *   is mounted at `/webhooks` only when `LNURL_WEBHOOK_SECRET` is set),
+ *   sparkInvoiceStore (used only when free in-app payments are on; default
+ *   {@link InMemorySparkInvoiceStore}), WebAuthn RP,
+ *   spend token, spend ping, daily roster store (optional; default a fresh
+ *   {@link InMemoryDailyRosterStore}, shared by funding routes,
+ *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
- *   and the Nostr worker), gift invoice store, listDbChange, and
+ *   and the Nostr worker), invoiceRateCaps (optional; default
+ *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
+ *   repayment invoice limiters), gift invoice store, listDbChange,
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
- *   mounts `POST /diagnostics` and `GET /debug/diagnostics`).
+ *   mounts `POST /diagnostics` and `GET /debug/diagnostics`),
+ *   walletStore (optional; default {@link InMemoryWalletStore}; mounts
+ *   `POST /me/wallet/report`; SQL boot injects {@link PostgresWalletStore}),
+ *   and memberEventStore (optional; default {@link InMemoryMemberEventStore};
+ *   mounts `POST /me/events`; SQL boot injects
+ *   {@link PostgresMemberEventStore}), and loginGateStore (optional; default
+ *   {@link InMemoryLoginGateStore}; with `LOGINS_OPEN_DEFAULT` and
+ *   `APP_BUILD_REQUIRED` from env it gates the session-creating `/auth`
+ *   routes and backs `/debug/logins` and `DELETE /debug/sessions`).
+ * @throws {@link Error}
+ * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`.
  * @throws {@link Error}
  * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
@@ -388,7 +497,6 @@ export function createApp(deps: AppDeps = {}): Hono {
   const store = deps.authStore ?? new InMemoryAuthStore();
   const now = deps.now ?? Date.now;
   const allowedOrigins = deps.allowedOrigins ?? resolveAllowedOrigins(process.env);
-  const invoicePayer = deps.invoicePayer ?? new UnconfiguredInvoicePayer();
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
   const lnAddressCache = deps.lnAddressCache ?? new InMemoryLnAddressCache();
   const readBrand = deps.readBrand ?? readPublicBrandFile;
@@ -398,10 +506,30 @@ export function createApp(deps: AppDeps = {}): Hono {
   const giftStore = deps.giftStore ?? new InMemoryGiftStore();
   const btcUsdRates = deps.btcUsdRates ?? new InMemoryBtcUsdStore();
   const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
+  const fxSpotStore = deps.fxSpotStore ?? new InMemoryFxSpotStore();
   const messageStore = deps.messageStore ?? new InMemoryMessageStore();
   const shopIdentityStore =
     deps.shopIdentityStore ?? new InMemoryShopIdentityStore(messageStore, now);
   const env = deps.env ?? process.env;
+  const loginGate = new LoginGate(
+    deps.loginGateStore ?? new InMemoryLoginGateStore(),
+    resolveLoginsOpenDefault(env),
+  );
+  const requiredAppBuild = resolveRequiredAppBuild(env);
+  const invoiceRateCaps =
+    deps.invoiceRateCaps === undefined ? resolveTestInvoiceRateCaps(env) : deps.invoiceRateCaps;
+  if (invoiceRateCaps !== null) {
+    console.warn(
+      `test invoice rate caps burst=${invoiceRateCaps.burstCap}/10s hour=${invoiceRateCaps.hourCap}/h`,
+    );
+  }
+  const lnurlServer = resolveLnurlServerConfig(env);
+  const receivingDeps = lnurlServer === null ? {} : { lnurlServer };
+  const sparkInvoices =
+    lnurlServer !== null && resolveFreePaymentsConfig(env) !== null
+      ? (deps.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
+      : undefined;
+  const sparkDeps = sparkInvoices === undefined ? {} : { sparkInvoices };
   const translationStore = deps.translationStore ?? new InMemoryTranslationStore();
   if (messageStore instanceof InMemoryMessageStore) {
     messageStore.useProfileNoteIds(async () => {
@@ -431,8 +559,35 @@ export function createApp(deps: AppDeps = {}): Hono {
   const contactStore = deps.contactStore ?? new InMemoryContactStore();
   const memberHabitStore = deps.memberHabitStore ?? new InMemoryMemberHabitStore();
   const posStore = deps.posStore ?? new InMemoryPosStore();
+  const shopConfig = resolveShopPaymentConfig(env);
+  const shopPayments =
+    lnurlServer === null
+      ? undefined
+      : (deps.shopPayments ??
+        new ShopPayments({
+          store: new InMemoryShopPaymentStore(posStore),
+          posStore,
+          auth: store,
+          lnurlServer,
+          config: shopConfig,
+          orchestra:
+            shopConfig === null
+              ? null
+              : new OrchestraClient({
+                  baseUrl: shopConfig.orchestraBaseUrl,
+                  apiKey: shopConfig.orchestraApiKey,
+                  fetchImpl,
+                  now,
+                }),
+          fxSpot: fxSpotStore,
+          fetchImpl,
+          now,
+        }));
+  const shopDeps = shopPayments === undefined ? {} : { shopPayments };
   const apiLogStore = deps.apiLogStore ?? new InMemoryApiLogStore();
   const diagnosticStore = deps.diagnosticStore ?? new InMemoryDiagnosticStore();
+  const walletStore = deps.walletStore ?? new InMemoryWalletStore();
+  const memberEventStore = deps.memberEventStore ?? new InMemoryMemberEventStore();
   setDiagnosticSink((event, fields) => {
     void diagnosticStore
       .append({
@@ -451,6 +606,10 @@ export function createApp(deps: AppDeps = {}): Hono {
   const conversationStore = deps.conversationStore ?? new InMemoryConversationStore();
   const notificationStore = deps.notificationStore ?? new InMemoryNotificationStore();
   const pushStore = deps.pushStore ?? new InMemoryPushStore();
+  // A social recovery commit deletes the account's push subscriptions in the same step.
+  if (store instanceof InMemoryAuthStore && pushStore instanceof InMemoryPushStore) {
+    store.usePushStore(pushStore);
+  }
   const trustStore = deps.trustStore ?? new InMemoryTrustStore();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   const bannerStore = deps.bannerStore ?? new InMemoryBannerStore();
@@ -459,10 +618,17 @@ export function createApp(deps: AppDeps = {}): Hono {
   const webAuthnRpName = deps.webAuthnRpName ?? process.env['WEBAUTHN_RP_NAME'];
   const passkeyCeremony = deps.passkeyCeremony ?? new SimpleWebAuthnPasskeyCeremony();
   const spendApiToken = deps.spendApiToken ?? process.env['SPEND_API_TOKEN'];
+  setAddressRefKey(spendApiToken);
   const rosterStore = deps.rosterStore ?? new InMemoryDailyRosterStore();
   const spendPing =
     deps.spendPing ??
-    resolveSpendPing(process.env, fetchImpl, { gifts: giftStore, now, rosterStore });
+    resolveSpendPing(process.env, fetchImpl, {
+      gifts: giftStore,
+      now,
+      rosterStore,
+      accounts: store,
+      ...(lnurlServer === null ? {} : { lnurlServer }),
+    });
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
@@ -481,6 +647,26 @@ export function createApp(deps: AppDeps = {}): Hono {
       maxAge: 86400,
     }),
   );
+  // Payer-facing LNURL routes are public like `/.well-known/*` when the
+  // self-hosted LNURL server is configured.
+  if (lnurlServer !== null) {
+    app.use(
+      '/lnurlp/*',
+      cors({
+        origin: '*',
+        allowMethods: ['GET', 'OPTIONS'],
+        maxAge: 86400,
+      }),
+    );
+    app.use(
+      '/verify/*',
+      cors({
+        origin: '*',
+        allowMethods: ['GET', 'OPTIONS'],
+        maxAge: 86400,
+      }),
+    );
+  }
   // Browser origin is the apex (21.gifts); the api still listens on api.21.gifts.
   // CORS covers the apex, transitional app.* aliases, and localhost.
   // Bearer sessions are headers (no cookies), credentials off.
@@ -489,18 +675,74 @@ export function createApp(deps: AppDeps = {}): Hono {
       await next();
       return;
     }
+    if (
+      lnurlServer !== null &&
+      (c.req.path.startsWith('/lnurlp/') || c.req.path.startsWith('/verify/'))
+    ) {
+      await next();
+      return;
+    }
+    const allowHeaders = ['Authorization', 'Content-Type', 'Time-Zone', 'X-App-Build'];
+    if (lnurlServer !== null && c.req.path.startsWith('/lnurlpay/')) {
+      allowHeaders.push('X-Breez-Signature', 'X-Breez-Timestamp');
+    }
     return cors({
       origin: allowedOrigins,
       allowMethods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-      allowHeaders: ['Authorization', 'Content-Type', 'Time-Zone'],
+      allowHeaders,
       maxAge: 86400,
     })(c, next);
   });
   app.use('*', sundayRest(now));
+  const goalRateDay = bindGoalRateDay({
+    store: giftStore,
+    rates: btcUsdRates,
+    fiatRates,
+    now,
+  });
 
   app.route('/', brandRoutes({ read: readBrand }));
   app.route('/', pushRoutes({ authStore: store, pushStore, now, vapidPublicKey }));
-  app.route('/healthz', healthRoute);
+  const webhookSecret = resolvePaymentWebhookSecret(env);
+  if (webhookSecret !== null) {
+    app.route(
+      '/webhooks',
+      webhookRoutes({
+        secret: webhookSecret,
+        auth: store,
+        pushStore,
+        hasLiveDevice: (accountId) =>
+          accountHasLiveSubscription(pushStore, store, now(), accountId),
+        notifications: notificationStore,
+        inboxUnreadCount: inboxUnreadCountFor(conversationStore, store),
+        now,
+      }),
+    );
+  }
+  app.route(
+    '/',
+    walletReportRoutes({
+      authStore: store,
+      walletStore,
+      messages: messageStore,
+      posStore,
+      now,
+      ...receivingDeps,
+    }),
+  );
+  app.route('/', walletHeartRoutes({ authStore: store, messages: messageStore, now }));
+  app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
+  app.route(
+    '/',
+    myLoansRoutes({
+      store: messageStore,
+      authStore: store,
+      now,
+      goalRateDay,
+      ...receivingDeps,
+    }),
+  );
+  app.route('/healthz', healthRoute(walletFeatures(env, webAuthnRpId, allowedOrigins)));
   app.route('/info', infoRoute);
   app.route('/translate', translateRoutes({ env }));
   app.route(
@@ -511,10 +753,37 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       posStore,
       now,
+      ...(lnurlServer === null ? {} : { lnurlServer }),
+      ...shopDeps,
       shops: { identities: shopIdentityStore, messages: messageStore },
     }),
   );
-  app.route('/pay', payRoutes({ auth: store, fetchImpl, posStore, now }));
+  if (lnurlServer !== null) {
+    app.route(
+      '/',
+      lnurlServerRoutes({
+        auth: store,
+        config: lnurlServer,
+        fetchImpl,
+        now,
+        posStore,
+        ...shopDeps,
+      }),
+    );
+  }
+  app.route(
+    '/pay',
+    payRoutes({
+      auth: store,
+      fetchImpl,
+      posStore,
+      now,
+      ...receivingDeps,
+      ...(sparkInvoices === undefined ? {} : { freePayments: true }),
+      ...shopDeps,
+    }),
+  );
+  app.route('/lnurl', lnurlRoutes({ auth: store, fetchImpl, now, env }));
   app.route(
     '/auth',
     authRoutes({
@@ -526,6 +795,10 @@ export function createApp(deps: AppDeps = {}): Hono {
       passkeyCeremony,
       messages: messageStore,
       fundingStore,
+      loginGate,
+      requiredAppBuild,
+      fetchImpl,
+      ...receivingDeps,
       ...(nostrKek === undefined ? {} : { nostrKek }),
     }),
   );
@@ -537,8 +810,6 @@ export function createApp(deps: AppDeps = {}): Hono {
       store,
       messages: messageStore,
       now,
-      payer: invoicePayer,
-      fetchImpl,
       pushStore,
       notificationStore,
       conversationStore,
@@ -546,16 +817,20 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      fetchImpl,
+      ...receivingDeps,
       shopIdentities: shopIdentityStore,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
+      ...(deps.recoveryShareKek === undefined ? {} : { recoveryShareKek: deps.recoveryShareKek }),
     }),
   );
   app.route(
     '/members',
     membersRoutes({
       authStore: store,
+      ...receivingDeps,
       messageStore,
       trustStore,
       fundingStore,
@@ -572,7 +847,16 @@ export function createApp(deps: AppDeps = {}): Hono {
   app.route('/links', linksRoutes({ messages: messageStore, accounts: store }));
   app.route(
     '/view',
-    viewRoutes({ store, messageStore, giftStore, rates: btcUsdRates, fiatRates, now }),
+    viewRoutes({
+      store,
+      messageStore,
+      giftStore,
+      rates: btcUsdRates,
+      fiatRates,
+      now,
+      fundingStore,
+      ...receivingDeps,
+    }),
   );
   app.route(
     '/lightning-address',
@@ -583,7 +867,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     debugRoutes({
       store,
       debugToken,
-      fetchImpl,
+      ...receivingDeps,
       conversationStore,
       messageStore,
       pushStore,
@@ -592,6 +876,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.mergeDb === undefined ? {} : { mergeDb: deps.mergeDb }),
     }),
   );
+  app.route('/debug', debugLoginsRoutes({ authStore: store, loginGate, now, debugToken }));
   app.route('/debug/contacts', debugContactsRoutes({ store: contactStore, debugToken }));
   app.route('/debug/api-log', debugApiLogRoutes({ store: apiLogStore, debugToken }));
   app.route('/debug/diagnostics', debugDiagnosticsRoutes({ store: diagnosticStore, debugToken }));
@@ -625,11 +910,26 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       fundingStore,
+      conversationStore,
+      trustStore,
+      giftStore,
+      ...receivingDeps,
+      welcomeSweep: deps.welcomeSweep ?? { enabled: false },
     }),
   );
   app.route(
     '/debug/push-ping',
     debugPushRoutes({
+      authStore: store,
+      pushStore,
+      now,
+      debugToken,
+      vapidPublicKey,
+    }),
+  );
+  app.route(
+    '/debug/push-broadcast',
+    debugPushBroadcastRoutes({
       authStore: store,
       pushStore,
       now,
@@ -682,6 +982,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       listBtcUsdDaily: (limit) => debugList(btcUsdRates, limit),
       listUsdFiatDaily: (limit) => debugList(fiatRates, limit),
       ...(deps.listDbChange === undefined ? {} : { listDbChange: deps.listDbChange }),
+      ...receivingDeps,
       debugToken,
     }),
   );
@@ -696,6 +997,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       pushStore,
       conversationStore,
       messages: messageStore,
+      ...receivingDeps,
+      giftStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(debugToken === undefined ? {} : { debugToken }),
       ...(debugReadToken === undefined ? {} : { debugReadToken }),
@@ -707,6 +1010,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       fundingStore,
       messageStore,
+      ...receivingDeps,
       now,
       gifts: giftStore,
       ...(spendApiToken === undefined ? {} : { spendApiToken }),
@@ -721,6 +1025,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     '/gifts/stats',
     giftsStatsRoutes({ store: giftStore, rates: btcUsdRates, fiatRates, now }),
   );
+  app.route('/fx', fxRoutes({ store: fxSpotStore }));
   app.route(
     '/messages',
     messagesRoutes({
@@ -728,19 +1033,17 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      ...receivingDeps,
+      ...sparkDeps,
       pushStore,
       notificationStore,
       conversationStore,
       env,
       translationStore,
       fundingStore,
+      giftStore,
       shopIdentities: shopIdentityStore,
-      goalRateDay: bindGoalRateDay({
-        store: giftStore,
-        rates: btcUsdRates,
-        fiatRates,
-        now,
-      }),
+      goalRateDay,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),
       ...(deps.nostrPublisher === undefined ? {} : { nostrPublisher: deps.nostrPublisher }),
@@ -748,6 +1051,12 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),
       postLimiter,
+      ...(invoiceRateCaps === null
+        ? {}
+        : {
+            invoiceLimiter: new InvoiceRateLimiter(invoiceRateCaps),
+            repaymentLimiter: new InvoiceRateLimiter(invoiceRateCaps),
+          }),
       ...(debugToken === undefined ? {} : { debugToken }),
       ...(debugReadToken === undefined ? {} : { debugReadToken }),
     }),
@@ -765,7 +1074,13 @@ export function createApp(deps: AppDeps = {}): Hono {
   );
   app.route(
     '/habits',
-    memberHabitRoutes({ store: memberHabitStore, authStore: store, now, fetchImpl }),
+    memberHabitRoutes({
+      store: memberHabitStore,
+      authStore: store,
+      now,
+      fetchImpl,
+      ...receivingDeps,
+    }),
   );
   const activity = resolveActivityPing(env, fetchImpl);
   app.route(
@@ -775,10 +1090,16 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       now,
       fetchImpl,
+      spot: fxSpotStore,
       messageStore,
       ...(activity === undefined ? {} : { activity }),
+      ...receivingDeps,
+      ...shopDeps,
     }),
   );
+  if (shopPayments !== undefined) {
+    app.route('/debug/shop-proofs', debugShopProofsRoutes({ shop: shopPayments, debugToken }));
+  }
   app.route(
     '/shops/activity',
     shopActivityRoutes({ authStore: store, now, messages: messageStore, pos: posStore }),
@@ -791,6 +1112,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       identities: shopIdentityStore,
       env,
       now,
+      ...receivingDeps,
     }),
   );
   app.route(
@@ -812,6 +1134,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       messageStore,
       now,
       fetchImpl,
+      ...receivingDeps,
+      ...sparkDeps,
       fundingStore,
       env,
       ...(nostrKek === undefined ? {} : { nostrKek }),
@@ -847,6 +1171,8 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       fiatRates,
       gifts: giftStore,
+      ...receivingDeps,
+      giftStore,
       ...(giftRecorder === undefined ? {} : { giftRecorder }),
     }),
   );
@@ -860,6 +1186,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       gifts: giftStore,
       rosterStore,
       now,
+      ...receivingDeps,
     }),
   );
 

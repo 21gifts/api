@@ -20,10 +20,13 @@ import {
   PUSH_WORKER_BATCH,
   PUSH_WORKER_INTERVAL_MS,
   PUSH_WORKER_LEASE_MS,
+  enqueueBroadcastPush,
   enqueueDebugPush,
   enqueueForumPushes,
   enqueueReplyPush,
   enqueueZapPush,
+  accountHasLiveSubscription,
+  listAccountIdsWithLiveSubscriptions,
   runPushWorkerTick,
   startPushWorker,
   sweepPushStore,
@@ -92,8 +95,6 @@ async function authWithSessions(
       linkingKey: null,
       role: 'basis',
       name: null,
-      lightningAddress: null,
-      lightningAddressVerified: false,
       forumLawsDismissed: false,
       location: null,
       viewKey: index.toString(16).padStart(64, '0'),
@@ -222,6 +223,109 @@ describe('enqueueDebugPush', () => {
       tag: 'debug',
       title: 'Test notification',
     });
+  });
+});
+
+describe('enqueueBroadcastPush', () => {
+  const MESSAGE = {
+    broadcastId: '0b6c3f4e-2a1d-4c5b-9e8f-7a6b5c4d3e2f',
+    title: 'Update',
+    body: 'Please log in again.',
+    url: '/welcome',
+  };
+
+  it('enqueues one row per distinct account with the broadcast id and payload', async () => {
+    const store = new InMemoryPushStore();
+    expect(await enqueueBroadcastPush(store, ['author', 'other', 'author'], MESSAGE, 5)).toBe(2);
+    const claimed = await store.claimPending(10, 5, 1000);
+    expect(claimed.map((row) => row.accountId)).toEqual(
+      expect.arrayContaining(['author', 'other']),
+    );
+    expect(claimed).toHaveLength(2);
+    for (const row of claimed) {
+      expect(row).toMatchObject({ type: 'zap', messageId: MESSAGE.broadcastId, status: 'pending' });
+      expect(row.createdAt.getTime()).toBe(5);
+      expect(JSON.parse(row.payload)).toEqual({
+        type: 'zap',
+        title: 'Update',
+        body: 'Please log in again.',
+        url: '/welcome',
+        tag: `broadcast:${MESSAGE.broadcastId}`,
+      });
+    }
+  });
+
+  it('returns 0 and enqueues nothing for no accounts', async () => {
+    const store = new InMemoryPushStore();
+    expect(await enqueueBroadcastPush(store, [], MESSAGE, 5)).toBe(0);
+    expect(await store.listAllOutbox(10)).toEqual([]);
+  });
+
+  it('is delivered by the worker tick and counted by outcome', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription(SUB_B);
+    await enqueueBroadcastPush(store, ['author', 'other', 'third'], MESSAGE, 5);
+    const sender = new FakeSender(true, [{ ok: true }, { ok: false, reason: 'fail', status: 500 }]);
+    const auth = await authWithSessions(['author', 'other']);
+    await runPushWorkerTick({ store, sender, now: () => 10, authStore: auth });
+    expect(sender.calls).toHaveLength(2);
+    expect(await store.countBroadcastOutbox(MESSAGE.broadcastId)).toEqual({
+      queued: 3,
+      pending: 1,
+      delivered: 1,
+      dropped: 1,
+      failed: 0,
+    });
+  });
+});
+
+describe('listAccountIdsWithLiveSubscriptions', () => {
+  it('returns each account once when a subscription session still authenticates it', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    await store.upsertSubscription({ ...SUB_A, endpoint: 'https://push.example/a2' });
+    await store.upsertSubscription(SUB_B);
+    await store.upsertSubscription({ ...SUB_C, sessionToken: null });
+    await store.upsertSubscription({
+      ...SUB_C,
+      endpoint: 'https://push.example/c2',
+      sessionToken: 'tok-author',
+    });
+    const auth = await authWithSessions(['author', 'other', 'third'], ['other']);
+    expect(await listAccountIdsWithLiveSubscriptions(store, auth, 1)).toEqual(['author']);
+    expect(await store.listAllSubscriptions()).toHaveLength(5);
+  });
+
+  it('drops a session once it has expired', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription(SUB_A);
+    const auth = await authWithSessions(['author']);
+    expect(
+      await listAccountIdsWithLiveSubscriptions(store, auth, SESSION_AT + SESSION_TTL_MS + 1),
+    ).toEqual([]);
+  });
+});
+
+describe('accountHasLiveSubscription', () => {
+  it('is true only when one of the account subscriptions has a live session', async () => {
+    const store = new InMemoryPushStore();
+    await store.upsertSubscription({ ...SUB_C, sessionToken: null });
+    await store.upsertSubscription(SUB_B);
+    const auth = await authWithSessions(['author', 'other'], ['other']);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_C.accountId)).toBe(false);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_B.accountId)).toBe(false);
+    expect(await accountHasLiveSubscription(store, auth, 1, 'nobody')).toBe(false);
+    await store.upsertSubscription(SUB_A);
+    expect(await accountHasLiveSubscription(store, auth, 1, SUB_A.accountId)).toBe(true);
+    expect(
+      await accountHasLiveSubscription(
+        store,
+        auth,
+        SESSION_AT + SESSION_TTL_MS + 1,
+        SUB_A.accountId,
+      ),
+    ).toBe(false);
   });
 });
 

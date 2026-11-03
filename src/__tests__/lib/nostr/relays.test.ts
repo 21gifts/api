@@ -10,10 +10,8 @@ import {
   resolvePublicApiBase,
   INDEXER_RELAY_URL,
   SEARCH_RELAY_URL,
-  ZAP_RECEIPT_READ_RELAYS,
   readRelaysFromKind10002,
   replyHintRelay,
-  resolveZapReadRelays,
   resolveZapRelays,
   writeRelayUrls,
 } from '@/lib/nostr/relays';
@@ -93,60 +91,16 @@ describe('relays', () => {
     ).toEqual(['wss://space', 'wss://a']);
   });
 
-  it('defaults zap read relays to space, public list, then receipt-read URLs', () => {
-    expect(resolveZapReadRelays({})).toEqual([...resolveZapRelays({}), ...ZAP_RECEIPT_READ_RELAYS]);
-    expect(ZAP_RECEIPT_READ_RELAYS).toEqual(['wss://nostr.wine', 'wss://nostr.bitcoiner.social']);
-  });
-
-  it('includes public defaults for zap read relays when publish-public is on', () => {
-    expect(
-      resolveZapReadRelays({
-        NOSTR_PUBLISH_PUBLIC: '1',
-        NOSTR_RELAY_SPACE: 'wss://space',
-      }),
-    ).toEqual(['wss://space', ...DEFAULT_RELAY_PUBLIC, ...ZAP_RECEIPT_READ_RELAYS]);
-  });
-
-  it('keeps a public-list wine URL in place and appends missing bitcoiner', () => {
-    expect(
-      resolveZapReadRelays({
-        NOSTR_RELAY_SPACE: 'wss://space',
-        NOSTR_RELAY_PUBLIC: 'wss://a, wss://nostr.wine, wss://b',
-      }),
-    ).toEqual([
-      'wss://space',
-      'wss://a',
-      'wss://nostr.wine',
-      'wss://b',
-      'wss://nostr.bitcoiner.social',
-    ]);
-  });
-
-  it('does not append receipt-read URLs already present as space or public', () => {
-    expect(
-      resolveZapReadRelays({
-        NOSTR_RELAY_SPACE: 'wss://nostr.wine',
-        NOSTR_RELAY_PUBLIC: 'wss://nostr.bitcoiner.social',
-      }),
-    ).toEqual(['wss://nostr.wine', 'wss://nostr.bitcoiner.social']);
-  });
-
-  it('appends receipt-read URLs when the public override filters to none', () => {
-    expect(
-      resolveZapReadRelays({
-        NOSTR_RELAY_SPACE: 'wss://space',
-        NOSTR_RELAY_PUBLIC: ',',
-      }),
-    ).toEqual(['wss://space', ...ZAP_RECEIPT_READ_RELAYS]);
-  });
-
-  it('appends receipt-read URLs by exact string match only', () => {
-    expect(
-      resolveZapReadRelays({
-        NOSTR_RELAY_SPACE: 'wss://space',
-        NOSTR_RELAY_PUBLIC: 'wss://Nostr.wine',
-      }),
-    ).toEqual(['wss://space', 'wss://Nostr.wine', ...ZAP_RECEIPT_READ_RELAYS]);
+  it('always names the space relay, so the read list is never empty', () => {
+    for (const env of [
+      {},
+      { NOSTR_RELAY_PUBLIC: ' , ' },
+      { NOSTR_RELAY_SPACE: 'wss://space', NOSTR_RELAY_PUBLIC: 'wss://a' },
+    ]) {
+      const urls = resolveZapRelays(env);
+      expect(urls.length).toBeGreaterThan(0);
+      expect(urls[0]).toBe(resolveRelaySpace(env));
+    }
   });
 
   it('maps site PUBLIC_BASE_URL to the API origin', () => {

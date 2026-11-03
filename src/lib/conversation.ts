@@ -161,6 +161,12 @@ export interface PublicConversation {
   unreadMessageCount: number;
   /** Counterpart 21.gifts account id. Omitted for Damus-only counterparts. */
   accountId?: string;
+  /**
+   * Whether the counterpart can receive a payment (a verified in-app wallet
+   * with the LNURL server configured). False for a counterpart without a
+   * 21.gifts account, the moderator group, and a missing account.
+   */
+  canReceive: boolean;
 }
 
 /** Member-facing conversation message. */
@@ -254,7 +260,8 @@ export function conversationIsInbound(args: {
  * @param unread - Whether the viewer has unread inbound messages in this thread.
  * @param unreadMessageCount - Inbound messages after last-read; `0` when none.
  * @param accountId - Counterpart 21.gifts account id; omitted when null/empty.
- * @returns Public fields only.
+ * @param canReceive - Whether the counterpart can receive; `false` when omitted.
+ * @returns Public fields only (`canReceive` always present).
  */
 export function serializeConversation(
   thread: ConversationThread,
@@ -262,6 +269,7 @@ export function serializeConversation(
   unread: boolean,
   unreadMessageCount: number,
   accountId?: string | null,
+  canReceive = false,
 ): PublicConversation {
   const json: PublicConversation = {
     id: thread.id,
@@ -278,6 +286,7 @@ export function serializeConversation(
     amountPhp: thread.lastAmountPhp ?? null,
     unread,
     unreadMessageCount,
+    canReceive,
   };
   if (typeof accountId === 'string' && accountId !== '') {
     json.accountId = accountId;

@@ -3,11 +3,13 @@ import type { Account } from '@/lib/auth/store';
 /**
  * Next owner setup step. The api is the source of truth; clients only route.
  *
- * Order is name, username, Lightning Address, then living-room rules.
- * The recovery phrase is not a setup step and does not change `setup`
- * or `missing`. Username cannot be skipped. Wallet backup is not
- * a setup step and not an action requirement. Skip timestamps count as
- * done for the name and Lightning Address wizard steps. `null` means
+ * Order is name, username, receiving wallet, then living-room rules.
+ * The receiving-wallet step keeps the token `lightning-address`: it is done
+ * once the in-app wallet is verified (`sparkPubkeyVerifiedAt` set), the only
+ * address a member receives on. The recovery phrase is not a setup step and
+ * does not change `setup` or `missing`. Username cannot be skipped. Wallet
+ * backup is not a setup step and not an action requirement. Skip timestamps
+ * count as done for the name and receiving-wallet wizard steps. `null` means
  * the account may use the signed-in app.
  */
 export type AccountSetup = 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules' | null;
@@ -16,7 +18,7 @@ export type AccountSetup = 'wallet' | 'name' | 'username' | 'lightning-address' 
  * Account fields that are factually unset (skip does not count).
  *
  * Used by action gates via {@link requireAction}; order is `name`,
- * `username`, `lightning-address`, `rules`. Wallet backup is not a
+ * `username`, `lightning-address` (no verified wallet), `rules`. Wallet backup is not a
  * setup step and not an action requirement.
  */
 export type AccountMissingField = 'wallet' | 'name' | 'username' | 'lightning-address' | 'rules';
@@ -43,10 +45,9 @@ export function accountSetup(account: Account): AccountSetup {
   if (usernameBlank) {
     return 'username';
   }
-  const lnBlank = account.lightningAddress === null || account.lightningAddress.trim() === '';
-  const lnSkipped =
+  const walletSkipped =
     account.lightningAddressSkippedAt !== null && account.lightningAddressSkippedAt !== undefined;
-  if (lnBlank && !lnSkipped) {
+  if (typeof account.sparkPubkeyVerifiedAt !== 'number' && !walletSkipped) {
     return 'lightning-address';
   }
   if (account.rulesAgreedAt === null) {
@@ -57,6 +58,8 @@ export function accountSetup(account: Account): AccountSetup {
 
 /**
  * Factually missing account fields (skip timestamps do not clear them).
+ * Only a verified wallet (`sparkPubkeyVerifiedAt` set) clears
+ * `lightning-address`, so a member without one cannot post.
  *
  * @param account - Stored account.
  * @returns Missing fields in order: name, username, lightning-address,
@@ -74,7 +77,7 @@ export function accountMissing(account: Account): AccountMissingField[] {
   ) {
     missing.push('username');
   }
-  if (account.lightningAddress === null || account.lightningAddress.trim() === '') {
+  if (typeof account.sparkPubkeyVerifiedAt !== 'number') {
     missing.push('lightning-address');
   }
   if (account.rulesAgreedAt === null) {

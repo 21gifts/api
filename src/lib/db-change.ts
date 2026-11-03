@@ -36,7 +36,7 @@ BEGIN
   IF j IS NULL THEN
     RETURN NULL;
   END IF;
-  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints', 'skip_endpoints', 'session_token']
+  FOREACH k IN ARRAY ARRAY['token', 'challenge', 'nostr_nsec_ciphertext', 'nonce', 'view_key', 'endpoint', 'p256dh', 'auth', 'delivered_endpoints', 'skip_endpoints', 'session_token', 'recovery_share_ciphertext']
   LOOP
     IF outj ? k AND jsonb_typeof(outj -> k) IS DISTINCT FROM 'null' THEN
       outj := jsonb_set(

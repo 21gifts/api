@@ -1,6 +1,5 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
-import { InMemoryFiatStore } from '@/lib/usd-fiat-store';
 import {
   CONVERSATION_LIST_LIMIT,
   unsignedConversationDefaults,
@@ -183,62 +182,25 @@ describe('migrateConversationSchema', () => {
     expect(sql.executes.map((e) => e.text)).toEqual([...CONVERSATION_SCHEMA_SQL]);
   });
 
-  function updates(sql: MockSql): { text: string; params: readonly unknown[] }[] {
-    return sql.executes.filter(
-      (row) => row.text.includes('UPDATE conversation_message') && row.text.includes('fiat_usd'),
-    );
-  }
-
-  it('writes stored fiat for a priced message and skips a bad timestamp and a day without a rate', async () => {
+  it('does not update conversation_message fiat columns', async () => {
     const sql = new MockSql();
     sql.queryImpl = (text) => {
       if (text.includes('btc_usd_daily')) {
         return [
           { day: '2026-06-01', usd_per_btc: '100000', quote: null, rate: null },
-          { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: null },
           { day: '2026-06-01', usd_per_btc: '100000', quote: 'CHF', rate: '0.80' },
+          { day: '2026-06-01', usd_per_btc: '100000', quote: 'EUR', rate: '0.90' },
           { day: '2026-06-01', usd_per_btc: '100000', quote: 'PHP', rate: '50' },
         ];
       }
-      if (text.includes('fiat_usd IS NULL')) {
-        return [
-          { id: 'm-priced', created_at: new Date('2026-06-01T12:00:00.000Z'), amount_sats: 1000 },
-          { id: 'm-bad', created_at: 'not-a-date', amount_sats: 1000 },
-          { id: 'm-norate', created_at: '2026-07-01T00:00:00.000Z', amount_sats: 1000 },
-        ];
-      }
       return [];
     };
     await migrateConversationSchema(sql);
-    expect(updates(sql)).toEqual([
-      expect.objectContaining({
-        params: ['m-priced', '1.00', '0.80', null, '50.00'],
-      }),
-    ]);
-  });
-
-  it('does not update when every created_at is invalid', async () => {
-    const sql = new MockSql();
-    sql.queryImpl = (text) =>
-      text.includes('fiat_usd IS NULL')
-        ? [{ id: 'm-bad', created_at: 'nope', amount_sats: 21 }]
-        : [];
-    await migrateConversationSchema(sql);
-    expect(updates(sql)).toEqual([]);
-  });
-
-  it('does not update when the day has no BTC rate', async () => {
-    const sql = new MockSql();
-    sql.queryImpl = (text) => {
-      if (text.includes('fiat_usd IS NULL')) {
-        return [
-          { id: 'm-open', created_at: new Date('2026-06-01T00:00:00.000Z'), amount_sats: 21 },
-        ];
-      }
-      return [];
-    };
-    await migrateConversationSchema(sql);
-    expect(updates(sql)).toEqual([]);
+    expect(
+      sql.executes.filter(
+        (row) => row.text.includes('UPDATE conversation_message') && row.text.includes('fiat_usd'),
+      ),
+    ).toEqual([]);
   });
 });
 
@@ -2222,22 +2184,32 @@ describe('conversation payment fiat snapshot', () => {
       });
   }
 
-  it('freezes spot crosses when a paid message omits fiat', async () => {
+  it('the omitted snapshot stays null when a paid message omits fiat', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryConversationStore([], [], [], {
-      fetchImpl: spotFetch('100000'),
-      fiatRates: new InMemoryFiatStore({
-        '2026-08-29': { CHF: '0.80', EUR: '0.90', PHP: '50' },
-      }),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
+      fiatRates: {
+        ensureDays: async () => {
+          rateCalls += 1;
+          return new Map([['2026-08-29', { CHF: '0.80', EUR: '0.90', PHP: '50' }]]);
+        },
+      },
       now: () => NOW.getTime(),
     });
     const thread = await store.openMemberMember('a', 'b', NOW);
     const created = await store.appendMessage(
       message({ conversationId: thread.id, sats: 1000, createdAt: NOW }),
     );
-    expect(created.amountUsd).toBe('1.00');
-    expect(created.amountChf).toBe('0.80');
-    expect(created.amountEur).toBe('0.90');
-    expect(created.amountPhp).toBe('50.00');
+    expect(created.amountUsd).toBeNull();
+    expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
   it('stores null fiat when the spot lookup fails', async () => {
@@ -2252,11 +2224,17 @@ describe('conversation payment fiat snapshot', () => {
     expect(created.amountChf).toBeNull();
   });
 
-  it('still freezes USD when the cross book throws', async () => {
+  it('the omitted snapshot stays null when the cross book throws', async () => {
+    let spotCalls = 0;
+    let rateCalls = 0;
     const store = new InMemoryConversationStore([], [], [], {
-      fetchImpl: spotFetch('100000'),
+      fetchImpl: async () => {
+        spotCalls += 1;
+        return spotFetch('100000')('https://example.invalid');
+      },
       fiatRates: {
         ensureDays: async () => {
+          rateCalls += 1;
           throw new Error('frankfurter down');
         },
       },
@@ -2265,8 +2243,12 @@ describe('conversation payment fiat snapshot', () => {
     const created = await store.appendMessage(
       message({ conversationId: thread.id, sats: 1000, createdAt: NOW }),
     );
-    expect(created.amountUsd).toBe('1.00');
+    expect(created.amountUsd).toBeNull();
     expect(created.amountChf).toBeNull();
+    expect(created.amountEur).toBeNull();
+    expect(created.amountPhp).toBeNull();
+    expect(spotCalls).toBe(0);
+    expect(rateCalls).toBe(0);
   });
 
   it('stores null fiat when the spot text cannot be priced', async () => {

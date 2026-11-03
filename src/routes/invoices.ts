@@ -1,31 +1,34 @@
 import { createHash } from 'node:crypto';
 import { Hono } from 'hono';
 import { z } from 'zod';
-import type { AuthStore } from '@/lib/auth/store';
+import type { Account, AuthStore } from '@/lib/auth/store';
 import { decodeBolt11 } from '@/lib/bolt11';
-import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
-import { GIFT_INVOICE_MAX_MSAT, GIFT_INVOICE_MIN_MSAT, GIFT_INVOICE_TTL_MS } from '@/lib/config';
+import {
+  GIFT_INVOICE_MAX_MSAT,
+  GIFT_INVOICE_MIN_MSAT,
+  GIFT_INVOICE_TTL_MS,
+  type LnurlServerConfig,
+} from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
+import { WELCOME_GIFT_DESCRIPTION } from '@/lib/gift';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { GiftStore } from '@/lib/gift-store';
 import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice-store';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
+import {
+  accountByReceivingAddress,
+  lnurlServerFetch,
+  receivingAddress,
+} from '@/lib/receiving-address';
 import { MESSAGE_LIST_LIMIT, unsignedNostrDefaults } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
-import {
-  crossForPaymentDay,
-  fiatFromSats,
-  fiatFromUsd,
-  normalizeAmountUsd,
-  paymentRateDays,
-  type FiatAmounts,
-  type FiatCrossRates,
-} from '@/lib/money';
+import { fiatFromUsd, normalizeAmountUsd, type FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
-import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import type { FiatRateBook } from '@/lib/usd-fiat-store';
+import { effectiveStatus } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
+import { loadPayoutEligibility } from '@/lib/payout-eligibility';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import { welcomeGiftPaidOnUtcDay } from '@/lib/spend-instruction';
 import {
@@ -34,11 +37,13 @@ import {
   type GiftRecorder,
 } from '@/lib/gift-recorder';
 import { logEvent } from '@/lib/log';
+import { accountWelcomed } from '@/lib/welcome-media';
 import { MESSAGE_ID_RE } from '@/routes/messages';
 
 /**
  * Spend-worker invoice routes: check passkey eligibility, a funding grant
- * (`eligibleToday`), and a live top-level forum post, fetch a recipient
+ * with the member's 21.gifts recovery share (`loadPayoutEligibility`, which
+ * applies `eligibleToday`), and a live top-level forum post, fetch a recipient
  * BOLT11 via LNURL-pay, then accept the payment preimage as proof. A proof
  * with `messageId` attaches a platform gift-reply when that message is a
  * top-level post. If `messageId` is already a reply, the proof persists a
@@ -55,16 +60,17 @@ export interface InvoiceRouteDeps {
   /** Issued-invoice store. */
   store: InvoiceStore;
   /**
-   * Auth store for Lightning Address → account, passkey, platform, and
-   * custodial pubkey lookup. Distinct from {@link InvoiceStore} (`store`).
+   * Auth store for receiving address → account (by username), passkey,
+   * platform, custodial pubkey, and recovery share lookup. Distinct from
+   * {@link InvoiceStore} (`store`).
    */
   authStore: Pick<
     AuthStore,
-    | 'getAccountByLightningAddress'
+    | 'getAccountByUsername'
     | 'accountHasPasskey'
     | 'listAccounts'
     | 'getNostrPublicKey'
-    | 'getAccount'
+    | 'hasRecoveryShareForVerifiedWallet'
   >;
   /**
    * Forum store for live top-level post lookup, GET `/posted` `hasMedia`,
@@ -76,6 +82,7 @@ export interface InvoiceRouteDeps {
     | 'accountHasLiveTopLevelPost'
     | 'accountHasLiveTopLevelMediaPost'
     | 'latestLiveTopLevelMediaId'
+    | 'accountHasWelcomeGift'
     | 'getById'
     | 'addSats'
     | 'addReceivedSats'
@@ -85,8 +92,20 @@ export interface InvoiceRouteDeps {
   >;
   /** Clock, epoch milliseconds. */
   now: () => number;
-  /** Injected fetch for LNURL-pay. */
+  /** Injected fetch for LNURL-pay (wallet-backed host stays internal). */
   fetchImpl: FetchFn;
+  /**
+   * LNURL server config. A member is looked up by their wallet-backed
+   * `<username>@<host of PUBLIC_BASE_URL>`; omitted → no member is found.
+   */
+  lnurlServer?: LnurlServerConfig;
+  /**
+   * Outbound house gifts. A `welcome` gift paid to the member's legacy
+   * external address, or one with description `21gifts welcome` recorded under
+   * the member's username at or after the wallet verification, counts as a
+   * paid welcome gift. Omitted → only the platform `Welcome` reply counts.
+   */
+  giftStore?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
   /**
    * Persist a proven gift into `gift` for `/gifts/stats`. Default no-op.
    * Insert failures are logged; proof still returns 200.
@@ -108,9 +127,7 @@ export interface InvoiceRouteDeps {
    */
   gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
-   * USD→CHF/EUR/PHP crosses for the payment-time snapshot (default: empty
-   * {@link InMemoryFiatStore}). A missing cross or a Frankfurter failure
-   * leaves that currency null and does not fail proof.
+   * Accepted and not read by proof.
    */
   fiatRates?: FiatRateBook;
 }
@@ -186,35 +203,119 @@ function authGate(
   return null;
 }
 
+/** Local part of a Lightning Address, as `normalizeLightningAddress` accepts it. */
+const LOCAL_PART = /^[a-zA-Z0-9._%+-]+$/;
+
 /**
- * Whether a normalised Lightning Address belongs to an account that already
- * has a passkey credential. Missing account → false (fail closed).
+ * Validate a spend lookup address. Any `local@domain.tld` passes, and so does
+ * an address with exactly one `@`, a valid local part, and the configured
+ * wallet host, whose `PUBLIC_BASE_URL` host may carry a port or be an IP
+ * address that the general check refuses.
  *
- * @param authStore - Account and credential lookup.
+ * @param raw - The address as sent by the spend worker.
+ * @param lnurlServer - LNURL server config, or `undefined` when off.
+ * @returns The trimmed address, or `null` when it is not valid.
+ */
+function spendLookupAddress(
+  raw: string,
+  lnurlServer: LnurlServerConfig | undefined,
+): string | null {
+  const valid = normalizeLightningAddress(raw);
+  if (valid !== null || lnurlServer === undefined) {
+    return valid;
+  }
+  const trimmed = raw.trim();
+  const at = trimmed.lastIndexOf('@');
+  return trimmed.length <= 255 &&
+    at > 0 &&
+    LOCAL_PART.test(trimmed.slice(0, at)) &&
+    trimmed.slice(at + 1).toLowerCase() === lnurlServer.host.toLowerCase()
+    ? trimmed
+    : null;
+}
+
+/**
+ * The member who receives on `address` (their verified wallet), if any.
+ *
+ * @param deps - Auth store and LNURL server config.
+ * @param address - Normalised `local@domain`.
+ * @returns The account, or `undefined` for another domain or no verified wallet.
+ */
+async function receiverOf(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'lnurlServer'>,
+  address: string,
+): Promise<Account | undefined> {
+  return (await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer))?.account;
+}
+
+/**
+ * Whether a normalised address belongs to a member with a verified wallet who
+ * already has a passkey credential. Missing account → false (fail closed).
+ *
+ * @param deps - Account and credential lookup, LNURL server config.
  * @param address - Normalised `local@domain`.
  * @returns `true` only when both account and credential exist.
  */
 async function addressHasPasskey(
-  authStore: InvoiceRouteDeps['authStore'],
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'lnurlServer'>,
   address: string,
 ): Promise<boolean> {
-  const account = await authStore.getAccountByLightningAddress(address);
-  return account !== undefined && (await authStore.accountHasPasskey(account.id));
+  const account = await receiverOf(deps, address);
+  return account !== undefined && (await deps.authStore.accountHasPasskey(account.id));
+}
+
+/**
+ * Whether `address` is a wallet address whose member has a passkey but no
+ * verified wallet yet, so it cannot receive.
+ *
+ * @param deps - Account and credential lookup, LNURL server config.
+ * @param address - Normalised `local@domain`.
+ * @returns `true` only for such a member; another domain, an unknown
+ *   username, or the LNURL server off is `false`.
+ */
+async function passkeyWithoutWallet(
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'lnurlServer'>,
+  address: string,
+): Promise<boolean> {
+  const at = address.lastIndexOf('@');
+  if (
+    deps.lnurlServer === undefined ||
+    address.slice(at + 1).toLowerCase() !== deps.lnurlServer.host.toLowerCase()
+  ) {
+    return false;
+  }
+  const account = await deps.authStore.getAccountByUsername(address.slice(0, at).toLowerCase());
+  return (
+    account !== undefined &&
+    receivingAddress(account, deps.lnurlServer) === null &&
+    (await deps.authStore.accountHasPasskey(account.id))
+  );
 }
 
 /**
  * Welcome media flag for `GET /invoices/posted`. Includes the About-me note.
- * Daily `hasMedia` still excludes that note.
+ * Daily `hasMedia` still excludes that note. An account that already received
+ * the welcome gift reports no welcome media.
  *
- * @param store - Forum store.
+ * @param deps - Auth store, forum store, and optional gift store.
  * @param account - Address owner.
  * @returns `welcomeHasMedia` and the newest media note id (or null).
  */
 async function welcomePostedFields(
-  store: Pick<MessageStore, 'latestLiveTopLevelMediaId'>,
-  account: { id: string },
+  deps: Pick<InvoiceRouteDeps, 'authStore' | 'messageStore' | 'giftStore'>,
+  account: Pick<Account, 'id' | 'username' | 'sparkPubkeyVerifiedAt'>,
 ): Promise<{ welcomeHasMedia: boolean; welcomeMessageId: string | null }> {
-  const welcomeMessageId = await store.latestLiveTopLevelMediaId(account.id);
+  if (
+    await accountWelcomed({
+      auth: deps.authStore,
+      messages: deps.messageStore,
+      gifts: deps.giftStore,
+      account,
+    })
+  ) {
+    return { welcomeHasMedia: false, welcomeMessageId: null };
+  }
+  const welcomeMessageId = await deps.messageStore.latestLiveTopLevelMediaId(account.id);
   return {
     welcomeHasMedia: welcomeMessageId !== null,
     welcomeMessageId,
@@ -222,88 +323,48 @@ async function welcomePostedFields(
 }
 
 /**
- * Whether a normalised Lightning Address belongs to an account that has at
- * least one live top-level forum row that is not the auto-created profile
- * note. Replies do not count. Missing account → false (fail closed).
+ * Whether an account has at least one live top-level forum row that is not
+ * the auto-created profile note. Replies do not count.
  *
- * @param authStore - Account lookup.
  * @param messageStore - Live top-level post lookup.
- * @param address - Normalised `local@domain`.
+ * @param account - Receiving account.
  * @returns `true` only when the account has a live top-level non-profile forum row.
  */
-async function addressHasPosted(
-  authStore: InvoiceRouteDeps['authStore'],
+async function accountHasPosted(
   messageStore: InvoiceRouteDeps['messageStore'],
-  address: string,
+  account: Account,
 ): Promise<boolean> {
-  const account = await authStore.getAccountByLightningAddress(address);
-  return (
-    account !== undefined &&
-    (await messageStore.accountHasLiveTopLevelPost(account.id, account.profileMessageId ?? null))
-  );
+  return messageStore.accountHasLiveTopLevelPost(account.id, account.profileMessageId ?? null);
 }
 
 /**
  * Build the `/invoices` route group.
  *
  * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional gift recorder, optional conversation store, optional funding store.
+ *   optional LNURL server config, optional gift recorder, optional
+ *   conversation store, optional funding store.
  * @returns Hono app mounted at `/invoices`.
  */
 export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
   const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
-  const fiatRates = deps.fiatRates ?? new InMemoryFiatStore();
 
   /**
    * One payment-time snapshot for the gift, the forum credit, and the group row.
    *
-   * A caller-supplied `amountUsd` stays the USD string (not a sats conversion).
-   * Otherwise one Coinbase spot is used. Each of CHF, EUR, and PHP comes from
-   * the payment UTC day, or from the nearest earlier quote within 10 days
-   * when that day has not been published yet. When loading that window throws,
-   * the earlier days are loaded on their own, so one failed fetch of today
-   * still uses a rate already on file. A second failure keeps the sent USD and
-   * leaves the missing crosses null. A spot failure yields null amounts and
-   * does not throw.
+   * An omitted `amountUsd` is null for USD, CHF, EUR, and PHP. A supplied `amountUsd` is stored as
+   * that USD string. CHF, EUR, and PHP stay null. The daily rate book is not read. A string that is
+   * not normalized stores null.
    *
    * @param invoice - Proven invoice.
-   * @param paidAtMs - Proof clock, epoch milliseconds.
-   * @returns Snapshot, or `null` when pricing is unavailable.
+   * @returns Snapshot, or `null` when `amountUsd` was omitted or the string is not normalized.
    */
-  async function paymentFiat(invoice: GiftInvoice, paidAtMs: number): Promise<FiatAmounts | null> {
-    const day = new Date(paidAtMs).toISOString().slice(0, 10);
-    const window = paymentRateDays(day);
-    let crosses: FiatCrossRates = {};
-    try {
-      const found = await fiatRates.ensureDays(window, paidAtMs);
-      crosses = crossForPaymentDay(found, day);
-    } catch {
-      logEvent('invoice.fiat_failed', { id: invoice.id });
-      try {
-        const found = await fiatRates.ensureDays(window.slice(1), paidAtMs);
-        crosses = crossForPaymentDay(found, day);
-      } catch {
-        crosses = {};
-      }
-    }
-    if (invoice.amountUsd !== undefined) {
-      try {
-        return fiatFromUsd(invoice.amountUsd, crosses);
-      } catch {
-        return null;
-      }
-    }
-    const sats = Math.floor(invoice.amountMsat / 1000);
-    if (sats <= 0) {
-      return null;
-    }
-    const spot = await fetchBtcUsdSpot(deps.fetchImpl);
-    if (spot === null) {
+  async function paymentFiat(invoice: GiftInvoice): Promise<FiatAmounts | null> {
+    if (invoice.amountUsd === undefined) {
       return null;
     }
     try {
-      return fiatFromSats(sats, spot, crosses);
+      return fiatFromUsd(invoice.amountUsd, {});
     } catch {
       return null;
     }
@@ -321,7 +382,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         feeSats: 0,
         recipientWosUser: recipientHandleFromAddress(invoice.address),
         lightningInvoice: invoice.pr,
-        description: invoice.groupMessageId !== undefined ? '21gifts moderator' : '21gifts daily',
+        description:
+          invoice.groupMessageId !== undefined
+            ? '21gifts moderator'
+            : invoice.comment === 'Welcome'
+              ? WELCOME_GIFT_DESCRIPTION
+              : '21gifts daily',
         kind:
           invoice.groupMessageId !== undefined
             ? 'moderator'
@@ -462,7 +528,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         logEvent('invoice.group_gift.failed');
         return;
       }
-      const recipient = await deps.authStore.getAccountByLightningAddress(invoice.address);
+      const recipient = await receiverOf(deps, invoice.address);
       const recipientName = recipient?.name?.trim() ?? '';
       const comment = invoice.comment ?? '';
       const text =
@@ -500,7 +566,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
   }
 
   async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
-    const fiat = await paymentFiat(invoice, paidAtMs);
+    const fiat = await paymentFiat(invoice);
     await persistProvenGift(invoice, paidAtMs, fiat);
     await attachSpendGiftReply(invoice, paidAtMs, fiat);
     await attachSpendGroupGift(invoice, paidAtMs, fiat);
@@ -516,12 +582,12 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const hasPasskey = await addressHasPasskey(deps.authStore, address);
+      const hasPasskey = await addressHasPasskey(deps, address);
       return c.json({ hasPasskey }, 200);
     })
     .get('/eligible', async (c) => {
@@ -533,24 +599,23 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const account = await deps.authStore.getAccountByLightningAddress(address);
+      const account = await receiverOf(deps, address);
       if (account === undefined || account.role === 'basis') {
         return c.json({ eligible: false, status: 'none' }, 200);
       }
-      const grant = await fundingStore.getByAccountId(account.id);
       const nowMs = deps.now();
-      return c.json(
-        {
-          eligible: eligibleToday(account.role, grant, nowMs),
-          status: effectiveStatus(grant, nowMs),
-        },
-        200,
+      const { grant, eligible } = await loadPayoutEligibility(
+        fundingStore,
+        deps.authStore,
+        account,
+        nowMs,
       );
+      return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
     })
     .get('/posted', async (c) => {
       const denied = authGate(
@@ -561,13 +626,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return denied;
       }
 
-      const address = normalizeLightningAddress(c.req.query('address') ?? '');
+      const address = spendLookupAddress(c.req.query('address') ?? '', deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined) {
+      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (receiver === undefined) {
         return c.json(
           {
             hasPosted: false,
@@ -580,7 +645,8 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           200,
         );
       }
-      const welcome = await welcomePostedFields(deps.messageStore, account);
+      const { account } = receiver;
+      const welcome = await welcomePostedFields(deps, account);
       const excludeId = account.profileMessageId ?? null;
       const hasPosted = await deps.messageStore.accountHasLiveTopLevelPost(account.id, excludeId);
       if (!hasPosted) {
@@ -649,7 +715,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
-      const address = normalizeLightningAddress(parsed.data.address);
+      const address = spendLookupAddress(parsed.data.address, deps.lnurlServer);
       if (address === null) {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
@@ -658,16 +724,44 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
-      const account = await deps.authStore.getAccountByLightningAddress(address);
-      if (account === undefined || !(await deps.authStore.accountHasPasskey(account.id))) {
+      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+      if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
+        logEvent('invoice.wallet_required', { address });
+        return c.json({ error: 'Wallet required' }, 403);
+      }
+      if (
+        receiver === undefined ||
+        !(await deps.authStore.accountHasPasskey(receiver.account.id))
+      ) {
         logEvent('invoice.passkey_required', { address });
         return c.json({ error: 'Passkey required' }, 403);
       }
+      const account = receiver.account;
 
-      const grant = await fundingStore.getByAccountId(account.id);
-      if (!eligibleToday(account.role, grant, deps.now())) {
+      const { eligible } = await loadPayoutEligibility(
+        fundingStore,
+        deps.authStore,
+        account,
+        deps.now(),
+      );
+      if (!eligible) {
         logEvent('invoice.funding_required', { address });
         return c.json({ error: 'Funding grant required' }, 403);
+      }
+
+      const welcomeRefused = async (): Promise<boolean> =>
+        parsed.data.comment === 'Welcome' &&
+        (await accountWelcomed({
+          auth: deps.authStore,
+          messages: deps.messageStore,
+          gifts: deps.giftStore,
+          account,
+        }));
+      // With a groupMessageId the check waits until it is resolved: a resolved
+      // moderator payout is recorded as `moderator`, not as a welcome.
+      if (parsed.data.groupMessageId === undefined && (await welcomeRefused())) {
+        logEvent('invoice.welcome_already_paid', { address });
+        return c.json({ error: 'Welcome gift already paid' }, 409);
       }
 
       let resolvedGroupMessageId: string | undefined;
@@ -680,13 +774,6 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           message.accountId === null ||
           message.accountId !== account.id
         ) {
-          logEvent('invoice.forum_post_required', { address });
-          return c.json({ error: 'Forum post required' }, 403);
-        }
-        const author = await deps.authStore.getAccount(message.accountId);
-        const authorAddress =
-          author === undefined ? null : normalizeLightningAddress(author.lightningAddress ?? '');
-        if (author === undefined || authorAddress !== address) {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
         }
@@ -704,7 +791,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           return c.json({ error: 'Platform account is not configured' }, 503);
         }
       } else {
-        const hasPosted = await addressHasPosted(deps.authStore, deps.messageStore, address);
+        const hasPosted = await accountHasPosted(deps.messageStore, account);
         if (!hasPosted) {
           logEvent('invoice.forum_post_required', { address });
           return c.json({ error: 'Forum post required' }, 403);
@@ -743,6 +830,15 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       }
 
       if (
+        parsed.data.groupMessageId !== undefined &&
+        resolvedGroupMessageId === undefined &&
+        (await welcomeRefused())
+      ) {
+        logEvent('invoice.welcome_already_paid', { address });
+        return c.json({ error: 'Welcome gift already paid' }, 409);
+      }
+
+      if (
         parsed.data.comment !== 'Welcome' &&
         resolvedGroupMessageId === undefined &&
         deps.gifts !== undefined
@@ -771,9 +867,9 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         comment?: string;
         fetchImpl: FetchFn;
       } = {
-        address,
+        address: receiver.receiving.address,
         amountMsat,
-        fetchImpl: deps.fetchImpl,
+        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
       };
       if (parsed.data.comment !== undefined) {
         fetchArgs.comment = parsed.data.comment;
@@ -794,12 +890,13 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const id = newInvoiceId();
       deps.store.put({
         id,
-        address,
+        address: receiver.receiving.address,
         pr: fetched.pr,
         paymentHash: decoded.paymentHash,
         amountMsat,
         createdAt: now,
         expiresAt: now + GIFT_INVOICE_TTL_MS,
+        ...(parsed.data.comment === undefined ? {} : { comment: parsed.data.comment }),
         ...(parsed.data.messageId === undefined
           ? {}
           : {

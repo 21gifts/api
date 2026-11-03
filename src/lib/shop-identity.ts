@@ -1355,8 +1355,8 @@ export class InMemoryShopIdentityStore implements ShopIdentityStore {
   }
 
   /**
-   * Rows in claim order (the `ORDER BY … claimed_until ASC NULLS FIRST,
-   * message_id` of the Postgres adapter): a null lease (never claimed)
+   * Rows in claim order (the `ORDER BY claimed_until ASC NULLS FIRST, message_id`
+   * of the Postgres adapter): a null lease (never claimed)
    * first, then the earliest stored end of the last claim (the lease end of
    * a failed send, the time of every other end of a claim), then the message
    * id (the sort is stable).

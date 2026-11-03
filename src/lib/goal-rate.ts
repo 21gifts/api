@@ -7,6 +7,7 @@
  */
 
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { canonicalDecimal } from '@/lib/decimal';
 
 /** Whole-sat ceiling for a frozen ask (`GIFT_INVOICE_MAX_MSAT / 1000`). */
 export const GOAL_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
@@ -40,23 +41,14 @@ export interface GoalRateDay {
  * Trim, then accept comma or dot with at most eight fractional digits.
  * The result is a dot decimal with no exponent, no leading zeros, and no
  * trailing fractional zeros (`00010.10` → `10.1`, `0.10` → `0.1`, `10.` → `10`).
- * String editing only — not `parseFloat`.
+ * String editing only — not `parseFloat`; the trimming is
+ * {@link canonicalDecimal} with eight decimals.
  *
  * @param raw - JSON or multipart `goalAmount`.
  * @returns The canonical string, or `null` when the grammar fails.
  */
 export function canonicalGoalAmount(raw: string): string | null {
-  const trimmed = raw.trim();
-  if (!/^\d+([.,]\d{0,8})?$/.test(trimmed)) {
-    return null;
-  }
-  const normalized = trimmed.replace(',', '.');
-  const dot = normalized.indexOf('.');
-  const wholeRaw = dot === -1 ? normalized : normalized.slice(0, dot);
-  const fracRaw = dot === -1 ? '' : normalized.slice(dot + 1);
-  const whole = wholeRaw.replace(/^0+(?=\d)/, '');
-  const frac = fracRaw.replace(/0+$/, '');
-  return frac === '' ? whole : `${whole}.${frac}`;
+  return canonicalDecimal(raw, 8);
 }
 
 /** A day is usable when it is present, `sats` is finite, and `sats > 0`. */

@@ -1,14 +1,16 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
-import type { FundingGrant } from '@/lib/funding';
+import { CURRENT_GRANT_ROUND, type FundingGrant, type GrantRound } from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { removeForumVideo, writeForumVideo } from '@/lib/video';
-import { fundingRoutes } from '@/routes/funding';
+import { fundingRoutes, GRANT_PLACES_FULL_ERROR } from '@/routes/funding';
+import { storeRecoveryShare } from '@/__tests__/helpers/recovery';
+import { LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
 const now = (): number => 1_700_000_000_000;
 const TODAY = '2023-11-14';
@@ -19,8 +21,6 @@ const SUBJECT = '33333333-3333-4333-8333-333333333333';
 const OTHER = '44444444-4444-4444-8444-444444444444';
 const VERIFIED = '55555555-5555-4555-8555-555555555555';
 const JOEY = '77777777-7777-4777-8777-777777777777';
-const VINCENT = '88888888-8888-4888-8888-888888888888';
-const JEWEL = '99999999-9999-4999-8999-999999999999';
 const VINCENT_OTHER = '12121212-1212-4121-8121-121212121212';
 const APPLY_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
 
@@ -35,8 +35,6 @@ function account(partial: Pick<Account, 'id' | 'role'> & Partial<Account>): Acco
   return {
     linkingKey: null,
     name: partial.name ?? partial.id,
-    lightningAddress: null,
-    lightningAddressVerified: false,
     forumLawsDismissed: false,
     location: null,
     viewKey: `${partial.id.replace(/-/g, '')}${'a'.repeat(64)}`.slice(0, 64),
@@ -67,7 +65,9 @@ async function staffed(
   await authStore.createAccount(account({ id: FOUNDER, role: 'founder', name: 'Founder' }));
   await authStore.createAccount(account({ id: MOD, role: 'moderator', name: 'Mod' }));
   await authStore.createAccount(account({ id: OTHER, role: 'basis', name: 'Other' }));
-  await authStore.createAccount(account({ id: VERIFIED, role: 'verified', name: 'Ada' }));
+  await authStore.createAccount(
+    account({ id: VERIFIED, role: 'verified', name: 'Ada', walletRequired: true }),
+  );
   await authStore.createSession({ token: 'founder', accountId: FOUNDER, createdAt: now() });
   await authStore.createSession({ token: 'mod', accountId: MOD, createdAt: now() });
   await authStore.createSession({ token: 'other', accountId: OTHER, createdAt: now() });
@@ -85,7 +85,7 @@ function mount(
   spendPing?: { ping: (address: string, messageId: string, kind?: string) => Promise<void> },
   gifts: GiftStore = new InMemoryGiftStore(),
   clock: () => number = now,
-  applicationsPaused?: boolean,
+  grantRound?: GrantRound,
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -95,19 +95,11 @@ function mount(
       messageStore,
       now: clock,
       gifts,
+      lnurlServer: LNURL_SERVER,
       ...(spendPing === undefined ? {} : { spendPing }),
-      ...(applicationsPaused === undefined ? {} : { applicationsPaused }),
+      ...(grantRound === undefined ? {} : { grantRound }),
     }),
   );
-}
-
-/** Apply walk with the pause switch off. Production omits the switch and stays paused. */
-function mountOpen(
-  authStore: InMemoryAuthStore,
-  fundingStore: FundingStore,
-  messageStore: InMemoryMessageStore = new InMemoryMessageStore(),
-): Hono {
-  return mount(authStore, fundingStore, messageStore, undefined, undefined, now, false);
 }
 
 async function seedApplyProfile(
@@ -146,15 +138,13 @@ async function seedApplyProfile(
 const LIVE_PHOTO = { contentType: 'image/jpeg' as const, bytes: APPLY_JPEG };
 const PHOTO_A = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const PHOTO_B = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-const DAY_MS = 86_400_000;
 
-async function setLightning(
-  authStore: InMemoryAuthStore,
-  accountId: string,
-  lightningAddress: string | null,
-): Promise<void> {
+/** Give `accountId` the username `ada` and a verified wallet (`ada@example.test`). */
+async function setWallet(authStore: InMemoryAuthStore, accountId: string): Promise<void> {
   const existing = await authStore.getAccount(accountId);
-  await authStore.updateAccount({ ...existing!, lightningAddress });
+  await authStore.updateAccount({ ...existing!, username: 'ada' });
+  await authStore.claimSparkPubkey(accountId, WALLET_PUBKEY);
+  await authStore.markSparkPubkeyVerified(accountId, WALLET_PUBKEY, 'ada', 1);
 }
 
 async function seedLivePhoto(
@@ -224,6 +214,9 @@ const boomStore: FundingStore = {
   expireTrialIfUnchanged: async () => {
     throw new Error('boom');
   },
+  admitWithinPlaces: async () => {
+    throw new Error('boom');
+  },
 };
 
 describe('POST /funding/apply', () => {
@@ -267,145 +260,7 @@ describe('POST /funding/apply', () => {
     expect(await fundingStore.getByAccountId(JOEY)).toBeUndefined();
   });
 
-  it('returns paused 403 when about me, photo, and location are missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const res = await post(mount(authStore, fundingStore), '/funding/apply', 'verified');
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Applications are paused' });
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === VERIFIED,
-      ),
-    ).toBe(true);
-    expect(await fundingStore.getByAccountId(VERIFIED)).toBeUndefined();
-  });
-
-  it('returns paused 403 and writes no grant for a verified caller who would previously have been accepted', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const messageStore = new InMemoryMessageStore();
-    await seedApplyProfile(authStore, messageStore, VERIFIED);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore),
-      '/funding/apply',
-      'verified',
-    );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Applications are paused' });
-    expect(await fundingStore.getByAccountId(VERIFIED)).toBeUndefined();
-    expect(
-      parsedEvents(warn).some(
-        (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === VERIFIED,
-      ),
-    ).toBe(true);
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.applied')).toBe(false);
-  });
-
-  it('returns paused 403 without calling a throwing store', async () => {
-    const { authStore } = await staffed();
-    const getByAccountId = vi.fn(boomStore.getByAccountId);
-    const listGrants = vi.fn(boomStore.listGrants);
-    const upsert = vi.fn(boomStore.upsert);
-    const transition = vi.fn(boomStore.transition);
-    const expireTrialIfUnchanged = vi.fn(boomStore.expireTrialIfUnchanged);
-    const store: FundingStore = {
-      getByAccountId,
-      listGrants,
-      upsert,
-      transition,
-      expireTrialIfUnchanged,
-    };
-    const res = await post(mount(authStore, store), '/funding/apply', 'verified');
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Applications are paused' });
-    expect(getByAccountId).not.toHaveBeenCalled();
-    expect(listGrants).not.toHaveBeenCalled();
-    expect(upsert).not.toHaveBeenCalled();
-    expect(transition).not.toHaveBeenCalled();
-    expect(expireTrialIfUnchanged).not.toHaveBeenCalled();
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(false);
-  });
-
-  it('returns paused 403 when already pending, trial, or admitted', async () => {
-    const { authStore, fundingStore } = await staffed();
-    const app = mount(authStore, fundingStore);
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending', appliedAt: now() }));
-    const pending = await post(app, '/funding/apply', 'verified');
-    expect(pending.status).toBe(403);
-    expect(await pending.json()).toEqual({ error: 'Applications are paused' });
-    expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('pending');
-
-    await fundingStore.upsert(
-      grant({ accountId: MOD, status: 'trial', trialUtcDate: TODAY, appliedAt: now() }),
-    );
-    const trial = await post(app, '/funding/apply', 'mod');
-    expect(trial.status).toBe(403);
-    expect(await trial.json()).toEqual({ error: 'Applications are paused' });
-    expect((await fundingStore.getByAccountId(MOD))?.status).toBe('trial');
-
-    await fundingStore.upsert(
-      grant({
-        accountId: FOUNDER,
-        status: 'admitted',
-        admittedAt: now(),
-        appliedAt: now(),
-      }),
-    );
-    const admitted = await post(app, '/funding/apply', 'founder');
-    expect(admitted.status).toBe(403);
-    expect(await admitted.json()).toEqual({ error: 'Applications are paused' });
-    expect((await fundingStore.getByAccountId(FOUNDER))?.status).toBe('admitted');
-  });
-
-  it.each([
-    ['joey-rosima', JOEY, 'joey'],
-    ['vincent', VINCENT, 'vincent'],
-    ['jewel-bacolbas', JEWEL, 'jewel'],
-  ] as const)(
-    'returns 200 and pending funding for paused exempt username %s',
-    async (username, id, token) => {
-      const { authStore, fundingStore } = await staffed([
-        account({ id, role: 'verified', name: username, username }),
-      ]);
-      await authStore.createSession({ token, accountId: id, createdAt: now() });
-      const messageStore = new InMemoryMessageStore();
-      await seedApplyProfile(authStore, messageStore, id);
-      const res = await post(mount(authStore, fundingStore, messageStore), '/funding/apply', token);
-      expect(res.status).toBe(200);
-      expect(await res.json()).toEqual({
-        funding: {
-          status: 'pending',
-          trialUtcDate: null,
-          admittedAt: null,
-          reviewedByName: null,
-          dailyPayoutStoppedNotice: false,
-        },
-      });
-      expect(
-        parsedEvents(warn).some((e) => e['event'] === 'funding.applied' && e['accountId'] === id),
-      ).toBe(true);
-      expect(
-        parsedEvents(warn).some(
-          (e) => e['event'] === 'funding.apply.paused' && e['accountId'] === id,
-        ),
-      ).toBe(false);
-    },
-  );
-
-  it('returns 400 when paused exempt joey-rosima has no about me', async () => {
-    const { authStore, fundingStore } = await staffed([
-      account({ id: JOEY, role: 'verified', name: 'Joey', username: 'joey-rosima' }),
-    ]);
-    await authStore.createSession({ token: 'joey', accountId: JOEY, createdAt: now() });
-    const messageStore = new InMemoryMessageStore();
-    const existing = await authStore.getAccount(JOEY);
-    await authStore.updateAccount({ ...existing!, location: 'Zurich' });
-    const res = await post(mount(authStore, fundingStore, messageStore), '/funding/apply', 'joey');
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'About me is required' });
-    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
-  });
-
-  it('returns paused 403 for username vincent-other with a complete profile', async () => {
+  it('accepts a verified caller with a complete profile and any username', async () => {
     const { authStore, fundingStore } = await staffed([
       account({
         id: VINCENT_OTHER,
@@ -426,13 +281,13 @@ describe('POST /funding/apply', () => {
       '/funding/apply',
       'vincent-other',
     );
-    expect(res.status).toBe(403);
-    expect(await res.json()).toEqual({ error: 'Applications are paused' });
-    expect(await fundingStore.getByAccountId(VINCENT_OTHER)).toBeUndefined();
+    expect(res.status).toBe(200);
+    expect((await fundingStore.getByAccountId(VINCENT_OTHER))?.status).toBe('pending');
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.apply.paused')).toBe(false);
   });
 });
 
-describe('POST /funding/apply when the pause switch is off', () => {
+describe('POST /funding/apply profile walk', () => {
   let warn: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
@@ -448,7 +303,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     const messageStore = new InMemoryMessageStore();
     await seedApplyProfile(authStore, messageStore, VERIFIED);
     const res = await post(
-      mountOpen(authStore, fundingStore, messageStore),
+      mount(authStore, fundingStore, messageStore),
       '/funding/apply',
       'verified',
     );
@@ -470,7 +325,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     const messageStore = new InMemoryMessageStore();
     const existing = await authStore.getAccount(VERIFIED);
     await authStore.updateAccount({ ...existing!, location: 'Zurich' });
-    const app = mountOpen(authStore, fundingStore, messageStore);
+    const app = mount(authStore, fundingStore, messageStore);
     const missing = await post(app, '/funding/apply', 'verified');
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({ error: 'About me is required' });
@@ -486,7 +341,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     const messageStore = new InMemoryMessageStore();
     await seedApplyProfile(authStore, messageStore, VERIFIED, { hasPhoto: false });
     const res = await post(
-      mountOpen(authStore, fundingStore, messageStore),
+      mount(authStore, fundingStore, messageStore),
       '/funding/apply',
       'verified',
     );
@@ -498,7 +353,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     const { authStore, fundingStore } = await staffed();
     const messageStore = new InMemoryMessageStore();
     await seedApplyProfile(authStore, messageStore, VERIFIED, { location: null });
-    const app = mountOpen(authStore, fundingStore, messageStore);
+    const app = mount(authStore, fundingStore, messageStore);
     const missing = await post(app, '/funding/apply', 'verified');
     expect(missing.status).toBe(400);
     expect(await missing.json()).toEqual({ error: 'Location is required' });
@@ -520,9 +375,10 @@ describe('POST /funding/apply when the pause switch is off', () => {
       upsert: () => Promise.resolve(grant({ accountId: VERIFIED, status: 'pending' })),
       transition: () => Promise.resolve(undefined),
       expireTrialIfUnchanged: () => Promise.resolve(undefined),
+      admitWithinPlaces: () => Promise.resolve(undefined),
     };
     expect(
-      (await post(mountOpen(authStore, store, messageStore), '/funding/apply', 'verified')).status,
+      (await post(mount(authStore, store, messageStore), '/funding/apply', 'verified')).status,
     ).toBe(409);
   });
 
@@ -532,7 +388,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     await seedApplyProfile(authStore, messageStore, VERIFIED);
     await seedApplyProfile(authStore, messageStore, MOD);
     await seedApplyProfile(authStore, messageStore, FOUNDER);
-    const app = mountOpen(authStore, fundingStore, messageStore);
+    const app = mount(authStore, fundingStore, messageStore);
     expect((await post(app, '/funding/apply', 'verified')).status).toBe(200);
     expect((await post(app, '/funding/apply', 'verified')).status).toBe(409);
 
@@ -566,7 +422,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
       }),
     );
     const res = await post(
-      mountOpen(authStore, fundingStore, messageStore),
+      mount(authStore, fundingStore, messageStore),
       '/funding/apply',
       'verified',
     );
@@ -578,11 +434,7 @@ describe('POST /funding/apply when the pause switch is off', () => {
     const { authStore } = await staffed();
     const messageStore = new InMemoryMessageStore();
     await seedApplyProfile(authStore, messageStore, VERIFIED);
-    const res = await post(
-      mountOpen(authStore, boomStore, messageStore),
-      '/funding/apply',
-      'verified',
-    );
+    const res = await post(mount(authStore, boomStore, messageStore), '/funding/apply', 'verified');
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Funding is unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.write.failed')).toBe(true);
@@ -771,17 +623,9 @@ describe('GET /funding/applications/:accountId', () => {
     expect(body.messages[0]?.text).toBe('hello');
   });
 
-  it('marks a post payable when the applicant has a Lightning Address and event id', async () => {
+  it('marks a post payable when the applicant has a verified wallet and event id', async () => {
     const { authStore, fundingStore } = await staffed();
-    const existing = await authStore.getAccount(VERIFIED);
-    expect(existing).toBeDefined();
-    if (existing === undefined) {
-      throw new Error('expected verified');
-    }
-    await authStore.updateAccount({
-      ...existing,
-      lightningAddress: 'ada@walletofsatoshi.com',
-    });
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const postId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
     const messageStore = new InMemoryMessageStore([
@@ -804,6 +648,68 @@ describe('GET /funding/applications/:accountId', () => {
     expect(res.status).toBe(200);
     const body = (await res.json()) as { messages: Array<{ payable?: boolean }> };
     expect(body.messages[0]?.payable).toBe(true);
+    expect(
+      (body as unknown as { account: { lightningAddress: string } }).account.lightningAddress,
+    ).toBe('ada@example.test');
+  });
+
+  it('marks a wallet-only applicant post payable only with the LNURL server configured', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const existing = await authStore.getAccount(VERIFIED);
+    if (existing === undefined) {
+      throw new Error('expected verified');
+    }
+    const original = authStore.getAccount.bind(authStore);
+    vi.spyOn(authStore, 'getAccount').mockImplementation(async (id) =>
+      id === VERIFIED
+        ? {
+            ...existing,
+            username: 'ada',
+            sparkPubkey: `02${'ab'.repeat(32)}`,
+            sparkPubkeyVerifiedAt: 1,
+          }
+        : original(id),
+    );
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    const postId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaab';
+    const messageStore = new InMemoryMessageStore([
+      {
+        id: postId,
+        accountId: VERIFIED,
+        name: 'Ada',
+        text: 'hello',
+        createdAt: new Date(now()),
+        hasPhoto: false,
+        ...unsignedNostrDefaults(),
+        eventId: 'e'.repeat(64),
+      },
+    ]);
+    const payable = async (app: Hono): Promise<boolean | undefined> => {
+      const res = await get(app, `/funding/applications/${VERIFIED}`, 'founder');
+      const body = (await res.json()) as { messages: Array<{ payable?: boolean }> };
+      return body.messages[0]?.payable;
+    };
+    const withoutServer = new Hono().route(
+      '/funding',
+      fundingRoutes({ authStore, fundingStore, messageStore, now, gifts: new InMemoryGiftStore() }),
+    );
+    expect(await payable(withoutServer)).toBe(false);
+    const withServer = new Hono().route(
+      '/funding',
+      fundingRoutes({
+        authStore,
+        fundingStore,
+        messageStore,
+        now,
+        gifts: new InMemoryGiftStore(),
+        lnurlServer: {
+          baseUrl: 'http://lnurl.internal',
+          publicBaseUrl: 'https://21.gifts',
+          host: '21.gifts',
+        },
+      }),
+    );
+    expect(await payable(withServer)).toBe(true);
   });
 
   it('subtracts missing-file video replies from replyCount', async () => {
@@ -1072,7 +978,7 @@ describe('POST /funding/trial', () => {
 
   it("pings today's live top-level photo after trial from pending", async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1087,7 +993,7 @@ describe('POST /funding/trial', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_A, 'daily', 'trial');
+    expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', 'trial');
     expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
@@ -1103,6 +1009,9 @@ describe('POST /funding/trial', () => {
         throw new Error('boom');
       },
       expireTrialIfUnchanged: async () => {
+        throw new Error('boom');
+      },
+      admitWithinPlaces: async () => {
         throw new Error('boom');
       },
     };
@@ -1121,6 +1030,7 @@ describe('POST /funding/trial', () => {
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
       expireTrialIfUnchanged: () => Promise.resolve(undefined),
+      admitWithinPlaces: () => Promise.resolve(undefined),
     };
     expect(
       (await post(mount(authStore, store), '/funding/trial', 'founder', { accountId: VERIFIED }))
@@ -1200,6 +1110,7 @@ describe('POST /funding/admit', () => {
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
       expireTrialIfUnchanged: () => Promise.resolve(undefined),
+      admitWithinPlaces: () => Promise.resolve(undefined),
     };
     const app = mount(authStore, store);
     expect((await post(app, '/funding/admit', 'founder', { accountId: VERIFIED })).status).toBe(
@@ -1242,13 +1153,12 @@ describe('POST /funding/admit', () => {
     );
   });
 
-  it('pings the newest of two today media posts after admit from pending', async () => {
+  it("pings today's live top-level photo after admit from pending", async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, '  ada@walletofsatoshi.com  ');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - 1), { text: 'older' });
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { text: 'newer' });
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()));
     const ping = vi.fn(async () => {
       expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
     });
@@ -1260,13 +1170,13 @@ describe('POST /funding/admit', () => {
     );
     expect(res.status).toBe(200);
     expect(ping).toHaveBeenCalledTimes(1);
-    expect(ping).toHaveBeenCalledWith('ada@walletofsatoshi.com', PHOTO_B, 'daily', 'admitted');
+    expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_B, 'daily', 'admitted');
     expect(ping.mock.calls[0]).toHaveLength(4);
   });
 
   it('does not ping when admitting from an active trial the same UTC day', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'trial', trialUtcDate: TODAY }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1281,78 +1191,9 @@ describe('POST /funding/admit', () => {
     expect(ping).not.toHaveBeenCalled();
   });
 
-  it('does not ping when the only live media post is the previous UTC day', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const messageStore = new InMemoryMessageStore();
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now() - DAY_MS));
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
-  });
-
-  it('does not ping admit-from-pending with no media, a null address, or a whitespace address', async () => {
-    const ping = vi.fn(async () => undefined);
-
-    const noMedia = await staffed();
-    await setLightning(noMedia.authStore, VERIFIED, 'ada@walletofsatoshi.com');
-    await noMedia.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    expect(
-      (
-        await post(
-          mount(noMedia.authStore, noMedia.fundingStore, new InMemoryMessageStore(), { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
-    const nullAddress = await staffed();
-    await setLightning(nullAddress.authStore, VERIFIED, null);
-    await nullAddress.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const nullMessages = new InMemoryMessageStore();
-    await seedLivePhoto(nullMessages, VERIFIED, PHOTO_A, new Date(now()));
-    expect(
-      (
-        await post(
-          mount(nullAddress.authStore, nullAddress.fundingStore, nullMessages, { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
-    const whitespace = await staffed();
-    await setLightning(whitespace.authStore, VERIFIED, '   ');
-    await whitespace.fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const whitespaceMessages = new InMemoryMessageStore();
-    await seedLivePhoto(whitespaceMessages, VERIFIED, PHOTO_A, new Date(now()));
-    expect(
-      (
-        await post(
-          mount(whitespace.authStore, whitespace.fundingStore, whitespaceMessages, { ping }),
-          '/funding/admit',
-          'founder',
-          { accountId: VERIFIED },
-        )
-      ).status,
-    ).toBe(200);
-
-    expect(ping).not.toHaveBeenCalled();
-  });
-
   it('returns 200 and admits when ping throws', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
     const messageStore = new InMemoryMessageStore();
     await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(now()));
@@ -1368,60 +1209,6 @@ describe('POST /funding/admit', () => {
     expect(res.status).toBe(200);
     expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe('admitted');
     expect(parsedEvents(warn).some((e) => e['event'] === 'funding.daily_ping.failed')).toBe(true);
-  });
-
-  it('does not ping a photo reply with no top-level media', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const messageStore = new InMemoryMessageStore();
-    await messageStore.create({
-      id: PHOTO_A,
-      accountId: VERIFIED,
-      name: 'Ada',
-      text: 'parent',
-      createdAt: new Date(now()),
-      hasPhoto: false,
-      ...unsignedNostrDefaults(),
-    });
-    await seedLivePhoto(messageStore, VERIFIED, PHOTO_B, new Date(now()), { parentId: PHOTO_A });
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
-  });
-
-  it('does not ping admit-from-pending when the media row is missing', async () => {
-    const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
-    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
-    const inner = new InMemoryMessageStore();
-    await seedLivePhoto(inner, VERIFIED, PHOTO_A, new Date(now()));
-    const messageStore = new Proxy(inner, {
-      get(target, prop, receiver) {
-        if (prop === 'getById') {
-          return async () => undefined;
-        }
-        const value = Reflect.get(target, prop, receiver) as unknown;
-        return typeof value === 'function'
-          ? (value as (...args: never[]) => unknown).bind(target)
-          : value;
-      },
-    }) as InMemoryMessageStore;
-    const ping = vi.fn(async () => undefined);
-    const res = await post(
-      mount(authStore, fundingStore, messageStore, { ping }),
-      '/funding/admit',
-      'founder',
-      { accountId: VERIFIED },
-    );
-    expect(res.status).toBe(200);
-    expect(ping).not.toHaveBeenCalled();
   });
 
   it('still returns 200 on admit-from-pending when spendPing is omitted', async () => {
@@ -1462,12 +1249,106 @@ describe('POST /funding/admit', () => {
       expireTrialIfUnchanged: async () => {
         throw new Error('boom');
       },
+      admitWithinPlaces: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/admit', 'mod', {
       accountId: VERIFIED,
     });
     expect(res.status).toBe(503);
   });
+});
+
+describe('trial and admit pings from the grant gate day', () => {
+  const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
+  const gateClock = (): number => GATE_NOW;
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  /** Staff session `gate`, the member's verified wallet, a pending grant, and today's photo. */
+  async function gated(share: boolean): Promise<{
+    authStore: InMemoryAuthStore;
+    fundingStore: InMemoryFundingStore;
+    messageStore: InMemoryMessageStore;
+  }> {
+    const { authStore, fundingStore } = await staffed();
+    await authStore.createSession({ token: 'gate', accountId: FOUNDER, createdAt: GATE_NOW });
+    await setWallet(authStore, VERIFIED);
+    if (share) {
+      await storeRecoveryShare(authStore, VERIFIED, WALLET_PUBKEY);
+    }
+    await fundingStore.upsert(
+      grant({ accountId: VERIFIED, status: 'pending', appliedAt: GATE_NOW - 60_000 }),
+    );
+    const messageStore = new InMemoryMessageStore();
+    await seedLivePhoto(messageStore, VERIFIED, PHOTO_A, new Date(GATE_NOW));
+    return { authStore, fundingStore, messageStore };
+  }
+
+  for (const route of ['trial', 'admit'] as const) {
+    const status = route === 'trial' ? 'trial' : 'admitted';
+
+    it(`does not ping after ${route} without a recovery share`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(false);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe(status);
+      expect(ping).not.toHaveBeenCalled();
+      expect(parsedEvents(warn)).toContainEqual(
+        expect.objectContaining({ event: 'spend.ping.skipped', reason: 'not_eligible' }),
+      );
+    });
+
+    it(`pings after ${route} with a recovery share`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(true);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', status);
+    });
+
+    it(`answers 200 after ${route} when the share read throws after the grant write`, async () => {
+      const { authStore, fundingStore, messageStore } = await gated(true);
+      vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet').mockRejectedValue(
+        new Error('share down'),
+      );
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(authStore, fundingStore, messageStore, { ping }, undefined, gateClock),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { id: string; funding: { status: string } };
+      expect(body.id).toBe(VERIFIED);
+      expect(body.funding.status).toBe(status);
+      expect((await fundingStore.getByAccountId(VERIFIED))?.status).toBe(status);
+      expect(ping).not.toHaveBeenCalled();
+      const names = parsedEvents(warn).map((e) => e['event']);
+      expect(names).toContain('funding.daily_ping.failed');
+      expect(names).not.toContain('funding.write.failed');
+    });
+  }
 });
 
 describe('POST /funding/reject', () => {
@@ -1560,6 +1441,9 @@ describe('POST /funding/reject', () => {
       expireTrialIfUnchanged: async () => {
         throw new Error('boom');
       },
+      admitWithinPlaces: async () => {
+        throw new Error('boom');
+      },
     };
     const res = await post(mount(authStore, store), '/funding/reject', 'founder', {
       accountId: VERIFIED,
@@ -1576,6 +1460,7 @@ describe('POST /funding/reject', () => {
       upsert: () => Promise.resolve(pending),
       transition: () => Promise.resolve(undefined),
       expireTrialIfUnchanged: () => Promise.resolve(undefined),
+      admitWithinPlaces: () => Promise.resolve(undefined),
     };
     expect(
       (await post(mount(authStore, store), '/funding/reject', 'founder', { accountId: VERIFIED }))
@@ -1625,7 +1510,7 @@ describe('GET /funding/payout-days', () => {
 
   it('returns missed days for an admitted member and paid only for a daily gift', async () => {
     const { authStore, fundingStore } = await staffed();
-    await setLightning(authStore, VERIFIED, 'ada@walletofsatoshi.com');
+    await setWallet(authStore, VERIFIED);
     await fundingStore.upsert(
       grant({
         accountId: VERIFIED,
@@ -1674,6 +1559,93 @@ describe('GET /funding/payout-days', () => {
     expect(parsedEvents(warn).some((event) => event['event'] === 'funding.payouts.failed')).toBe(
       true,
     );
+  });
+});
+
+describe('grant round places', () => {
+  const ROUND: GrantRound = { number: 1, startsAtMs: now() - 1_000, places: 1, nextGoalShops: 20 };
+  let warn: ReturnType<typeof vi.spyOn>;
+
+  beforeEach(() => {
+    warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+  });
+
+  afterEach(() => {
+    warn.mockRestore();
+  });
+
+  function roundApp(
+    authStore: InMemoryAuthStore,
+    fundingStore: FundingStore,
+    round?: GrantRound,
+  ): Hono {
+    return mount(
+      authStore,
+      fundingStore,
+      new InMemoryMessageStore(),
+      undefined,
+      undefined,
+      now,
+      round,
+    );
+  }
+
+  it('GET /funding/places is public and reports the current round by default', async () => {
+    const { authStore, fundingStore } = await staffed();
+    const res = await get(roundApp(authStore, fundingStore), '/funding/places', undefined);
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      round: CURRENT_GRANT_ROUND.number,
+      startsAt: new Date(CURRENT_GRANT_ROUND.startsAtMs).toISOString(),
+      places: CURRENT_GRANT_ROUND.places,
+      admitted: 0,
+      placesLeft: CURRENT_GRANT_ROUND.places,
+      nextGoalShops: CURRENT_GRANT_ROUND.nextGoalShops,
+    });
+  });
+
+  it('GET /funding/places counts only admissions inside the round', async () => {
+    const { authStore, fundingStore } = await staffed();
+    await fundingStore.upsert(
+      grant({ accountId: VERIFIED, status: 'admitted', admittedAt: now() }),
+    );
+    await fundingStore.upsert(
+      grant({ accountId: MOD, status: 'admitted', admittedAt: ROUND.startsAtMs - 1 }),
+    );
+    await fundingStore.upsert(grant({ accountId: OTHER, status: 'rejected', admittedAt: now() }));
+    const round = { ...ROUND, places: 3 };
+    const res = await get(roundApp(authStore, fundingStore, round), '/funding/places', undefined);
+    expect(await res.json()).toMatchObject({ admitted: 1, placesLeft: 2, places: 3 });
+  });
+
+  it('GET /funding/places returns 503 when the store throws', async () => {
+    const { authStore } = await staffed();
+    const res = await get(roundApp(authStore, boomStore), '/funding/places', undefined);
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Funding is unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'funding.places.failed')).toBe(true);
+  });
+
+  it('POST /funding/admit refuses the admission after the last place', async () => {
+    const { authStore, fundingStore } = await staffed([
+      account({ id: SUBJECT, role: 'verified', name: 'Sub' }),
+    ]);
+    await fundingStore.upsert(grant({ accountId: VERIFIED, status: 'pending' }));
+    await fundingStore.upsert(grant({ accountId: SUBJECT, status: 'pending' }));
+    const app = roundApp(authStore, fundingStore, ROUND);
+
+    const first = await post(app, '/funding/admit', 'mod', { accountId: VERIFIED });
+    expect(first.status).toBe(200);
+
+    const second = await post(app, '/funding/admit', 'mod', { accountId: SUBJECT });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toEqual({ error: GRANT_PLACES_FULL_ERROR });
+    expect((await fundingStore.getByAccountId(SUBJECT))?.status).toBe('pending');
+    const full = parsedEvents(warn).filter((e) => e['event'] === 'funding.admit.full');
+    expect(full).toEqual([expect.objectContaining({ accountId: SUBJECT, actorId: MOD })]);
+
+    const places = await get(app, '/funding/places', undefined);
+    expect(await places.json()).toMatchObject({ admitted: 1, placesLeft: 0 });
   });
 });
 
