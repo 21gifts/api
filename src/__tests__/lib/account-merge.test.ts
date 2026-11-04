@@ -255,6 +255,7 @@ describe('mergeAccounts', () => {
 
     const deletes = [
       'DELETE FROM recovery_share WHERE account_id = $1',
+      'DELETE FROM held_share_box WHERE account_id = $1',
       'DELETE FROM pending_recovery WHERE account_id = $1',
       'DELETE FROM previous_wallet WHERE account_id = $1',
       "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
@@ -273,6 +274,30 @@ describe('mergeAccounts', () => {
       expect(index).toBeLessThan(challengeMove);
       expect(index).toBeLessThan(catalog);
     }
+  });
+
+  it('deletes the source held-share boxes before the catalog loop could move them', async () => {
+    const { db, queries } = fakeDatabase({
+      columns: [{ schema_name: 'public', table_name: 'held_share_box', column_name: 'account_id' }],
+    });
+
+    await expect(mergeAccounts(db, { from: FROM, into: INTO, verify: 'into' })).resolves.toEqual({
+      ok: true,
+      messages: 1,
+    });
+
+    const deleted = queries.findIndex(
+      (query) => query.text === 'DELETE FROM held_share_box WHERE account_id = $1',
+    );
+    const moved = queries.findIndex(
+      (query) =>
+        query.text ===
+        'UPDATE "public"."held_share_box" SET "account_id" = $1 WHERE "account_id" = $2',
+    );
+    expect(queries[deleted]?.params).toEqual([FROM]);
+    // The catalog loop still runs over the table, but no source row is left to move.
+    expect(deleted).toBeGreaterThanOrEqual(0);
+    expect(deleted).toBeLessThan(moved);
   });
 
   it('clears the source free first post mark before moving messages when the survivor has one', async () => {

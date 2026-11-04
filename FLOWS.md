@@ -110,8 +110,14 @@ grant program is funding-eligible only with it (journeys 4 and 5).
 
 **Mein Konto absichern.** The owner's app splits the 12 words 2-of-3 and
 hands share 1 and share 2 by QR code to two people. Each holder scans it in
-their own signed-in app, which keeps it in that browser under the holder's
-account; no person's share reaches the api. The app then stores share 3 with
+their own signed-in app, which first reads the holder's own boxes
+(`GET /me/held-shares`) and refuses a second share of the same set, then
+encrypts the share in the browser under a key from the holder's own 12 words
+and stores the box with `PUT /me/held-shares/:id` (201; 409 `Box id in use`
+or `Too many held shares`). The api cannot open a box and does not know whose
+share it holds. A holder deletes an old share when the owner asks
+(`DELETE /me/held-shares/:id`, 204). These three routes are always mounted.
+The app then stores share 3 with
 `PUT /me/recovery-share` (`{ sparkPubkey, share }`); the api keeps it
 encrypted and answers the owner JSON with `socialRecoverySetUp: true`. A
 second setup replaces that share. Without the LNURL server the route is not
@@ -153,7 +159,7 @@ words again and sends the rest; once that wallet reads 0, the owner drops it
 with `DELETE /me/previous-wallets/:sparkPubkey` (204), which also deletes
 its 21.gifts share.
 
-HTTP cited: `/me/recovery-share`, `/auth/passkey/recovery/begin`,
+HTTP cited: `/me/held-shares`, `/me/held-shares/:id`, `/me/recovery-share`, `/auth/passkey/recovery/begin`,
 `/auth/passkey/recovery/finish`, `/lnurlpay/:pubkey/transfer`,
 `/lnurlpay/:pubkey/recover`, `/auth/passkey/authenticate/begin`,
 `/auth/passkey/authenticate/finish`, `/me/events`, `/me/previous-wallets`,

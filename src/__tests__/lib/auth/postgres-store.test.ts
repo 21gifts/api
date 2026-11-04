@@ -2979,4 +2979,105 @@ describe('PostgresAuthStore social recovery', () => {
     );
     expect(sql.queries[0]?.text).not.toContain('recovery_share_ciphertext');
   });
+
+  describe('held-share boxes', () => {
+    const BOX = 'a'.repeat(32);
+    const put = (script: unknown[][], limit = 50) => {
+      const tx = transactions(script);
+      const store = new PostgresAuthStore(new MockSql(), tx.db);
+      const ciphertext = Uint8Array.of(1, 2, 3);
+      return {
+        tx,
+        ciphertext,
+        result: store.putHeldShareBox({ accountId: 'acc', id: BOX, ciphertext, now: NOW, limit }),
+      };
+    };
+
+    it('throws without a transaction port', async () => {
+      const sql = new MockSql();
+      await expect(
+        new PostgresAuthStore(sql).putHeldShareBox({
+          accountId: 'acc',
+          id: BOX,
+          ciphertext: Uint8Array.of(1),
+          now: NOW,
+          limit: 50,
+        }),
+      ).rejects.toThrow('auth transactions are not configured');
+      expect(sql.queries).toEqual([]);
+    });
+
+    it('locks the account, counts, and creates a box under the limit', async () => {
+      const created = put([[holder()], [], [{ boxes: 49 }], [{ id: BOX }]]);
+      expect(await created.result).toBe('created');
+      const texts = created.tx.queries.map((query) => query.text.replace(/\s+/g, ' '));
+      expect(texts[0]).toContain('FROM account WHERE id = $1 FOR UPDATE');
+      expect(created.tx.queries[0]?.params).toEqual(['acc']);
+      expect(created.tx.queries[1]).toEqual({
+        text: 'SELECT account_id FROM held_share_box WHERE id = $1',
+        params: [BOX],
+      });
+      expect(created.tx.queries[2]).toEqual({
+        text: 'SELECT count(*)::int AS boxes FROM held_share_box WHERE account_id = $1',
+        params: ['acc'],
+      });
+      expect(texts[3]).toBe(
+        'INSERT INTO held_share_box (id, account_id, ciphertext, created_at, updated_at) VALUES ($1, $2, $3, to_timestamp($4::double precision / 1000.0), to_timestamp($4::double precision / 1000.0)) ON CONFLICT (id) DO UPDATE SET ciphertext = EXCLUDED.ciphertext, updated_at = EXCLUDED.updated_at WHERE held_share_box.account_id = EXCLUDED.account_id RETURNING id',
+      );
+      expect(created.tx.queries[3]?.params).toEqual([BOX, 'acc', created.ciphertext, NOW]);
+      expect(await put([[holder()], [], [], [{ id: BOX }]]).result).toBe('created');
+    });
+
+    it('replaces an own box without counting', async () => {
+      const replaced = put([[holder()], [{ account_id: 'acc' }], [{ id: BOX }]], 0);
+      expect(await replaced.result).toBe('replaced');
+      expect(replaced.tx.queries).toHaveLength(3);
+      // The third query is the upsert itself, not a count.
+      expect(replaced.tx.queries[2]?.text).toContain('INSERT INTO held_share_box');
+      expect(replaced.tx.queries[2]?.params).toEqual([BOX, 'acc', replaced.ciphertext, NOW]);
+    });
+
+    it('answers taken for another account’s id, also when one appears before the write', async () => {
+      const other = put([[holder()], [{ account_id: 'other' }]]);
+      expect(await other.result).toBe('taken');
+      expect(other.tx.queries).toHaveLength(2);
+      const raced = put([[holder()], [], [{ boxes: '0' }], []]);
+      expect(await raced.result).toBe('taken');
+    });
+
+    it('answers full at the limit without a write', async () => {
+      const full = put([[holder()], [], [{ boxes: '50' }]]);
+      expect(await full.result).toBe('full');
+      expect(full.tx.queries).toHaveLength(3);
+    });
+
+    it('lists oldest first and deletes only by id and account', async () => {
+      const sql = new MockSql();
+      const store = new PostgresAuthStore(sql);
+      sql.nextQueryRows = [
+        [
+          {
+            id: BOX,
+            ciphertext: Uint8Array.of(1, 7),
+            created_at: new Date(NOW),
+            updated_at: '1970-01-01T00:00:01.000Z',
+          },
+        ],
+      ];
+      expect(await store.listHeldShareBoxes('acc')).toEqual([
+        { id: BOX, ciphertext: Uint8Array.of(1, 7), createdAt: NOW, updatedAt: 1000 },
+      ]);
+      expect(sql.queries[0]?.text.replace(/\s+/g, ' ')).toBe(
+        'SELECT id, ciphertext, created_at, updated_at FROM held_share_box WHERE account_id = $1 ORDER BY created_at ASC, id COLLATE "C" ASC',
+      );
+      expect(sql.queries[0]?.params).toEqual(['acc']);
+      await store.deleteHeldShareBox('acc', BOX);
+      expect(sql.executes).toEqual([
+        {
+          text: 'DELETE FROM held_share_box WHERE id = $1 AND account_id = $2',
+          params: [BOX, 'acc'],
+        },
+      ]);
+    });
+  });
 });

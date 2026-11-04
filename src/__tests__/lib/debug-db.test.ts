@@ -309,4 +309,51 @@ describe('PostgresDebugDbStore', () => {
       'octet_length("recovery_share_ciphertext") AS "recovery_share_ciphertext"',
     );
   });
+
+  it('shows a held-share box only as its octet length', async () => {
+    const calls: Call[] = [];
+    const sql: SqlClient = {
+      query: <T>(text: string, params: readonly unknown[] = []): Promise<T[]> => {
+        calls.push({ text, params });
+        if (text.includes('relkind')) {
+          return Promise.resolve([{ name: 'held_share_box' }] as T[]);
+        }
+        if (text.includes('pg_index')) {
+          return Promise.resolve([{ name: 'id' }] as T[]);
+        }
+        if (text.includes('pg_attribute')) {
+          return Promise.resolve([
+            { name: 'id', type: 'text' },
+            { name: 'account_id', type: 'uuid' },
+            { name: 'ciphertext', type: 'bytea' },
+            { name: 'created_at', type: 'timestamptz' },
+            { name: 'updated_at', type: 'timestamptz' },
+          ] as T[]);
+        }
+        return Promise.resolve([
+          {
+            id: 'a'.repeat(32),
+            account_id: 'acc',
+            ciphertext: '77',
+            created_at: '2026-10-30T00:00:00.000Z',
+            updated_at: '2026-10-30T00:00:00.000Z',
+          },
+        ] as T[]);
+      },
+      execute: () => Promise.resolve(),
+    };
+    expect(DEBUG_DB_SECRET_COLUMNS).toContain('ciphertext');
+    const page = await new PostgresDebugDbStore(sql).readPage('held_share_box', null);
+    expect(page?.rows).toEqual([
+      {
+        id: 'a'.repeat(32),
+        account_id: 'acc',
+        ciphertext: 77,
+        created_at: '2026-10-30T00:00:00.000Z',
+        updated_at: '2026-10-30T00:00:00.000Z',
+      },
+    ]);
+    const select = calls.find((call) => call.text.includes('FROM "held_share_box"'));
+    expect(select?.text).toContain('octet_length("ciphertext") AS "ciphertext"');
+  });
 });
