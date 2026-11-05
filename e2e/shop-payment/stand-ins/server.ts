@@ -116,6 +116,7 @@ const TABLE: readonly ChainRow[] = [
 ];
 
 const RPC_CHAIN_IDS = new Set(Object.keys(RPC_PORTS).map(Number));
+const XAUT_CONTRACT = '0xf1815bd50389c46847f0bda824ec8da914045d14';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 /** ERC-4337 EntryPoint v0.7 and its `UserOperationEvent` topic. */
 const ENTRY_POINT = '0x0000000071727de22e5e9d8baf0edac6f37da032';
@@ -133,6 +134,8 @@ const UNITS_PER_SAT_6 = 1000n;
  * offers no stablecoin.
  */
 const SPOT_USD_PER_BTC = '100000';
+const SPOT_USD_PER_XAUT = '4000';
+let xautSpotReads = 0;
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const FINAL = new Set(['completed', 'refunded', 'failed', 'fallback_delivered', 'expired']);
 
@@ -141,6 +144,7 @@ const DEFAULT_BEHAVIOUR: ShopBehaviour = {
   completeAfterMs: 500,
   quoteTtlMs: 120_000,
   refusePairs: [],
+  xautOverpriced: false,
   mineAfterMs: null,
 };
 
@@ -418,6 +422,14 @@ function routesResponse(): Response {
     }
   }
   assets.push({
+    chain: 'polygon',
+    asset: 'XAUT0',
+    contractAddress: getAddress(XAUT_CONTRACT),
+    decimals: 6,
+    chainId: '137',
+    route: { to: 'all', exactOutTo: ['lightning:BTC'] },
+  });
+  assets.push({
     chain: 'tron',
     asset: 'USDT',
     contractAddress: 'TR7NHqjeKQxGTCi8q8ZY4pL8otSzgjLj6t',
@@ -494,7 +506,10 @@ async function quoteRoute(req: Request): Promise<Response> {
     const asset = b['sourceAsset'];
     const expect: Array<[boolean, string]> = [
       [row !== undefined, `sourceChain ${String(b['sourceChain'])} is not in the table`],
-      [asset === 'USDT' || asset === 'USDC', 'sourceAsset is not USDT or USDC'],
+      [
+        asset === 'USDT' || asset === 'USDC' || (asset === 'XAUT0' && row?.chain === 'polygon'),
+        'unsupported sourceAsset',
+      ],
       [b['destinationChain'] === 'lightning', 'destinationChain is not lightning'],
       [b['destinationAsset'] === 'BTC', 'destinationAsset is not BTC'],
       [b['amountMode'] === 'exact_out', 'amountMode is not exact_out'],
@@ -521,7 +536,10 @@ async function quoteRoute(req: Request): Promise<Response> {
     if (String(invoice.amountMsat / 1000) !== b['amount']) {
       violation('orchestra quote: amount is not the BOLT11 amount in sats');
     }
-    if (row === undefined || (asset !== 'USDT' && asset !== 'USDC')) {
+    if (
+      row === undefined ||
+      (asset !== 'USDT' && asset !== 'USDC' && !(asset === 'XAUT0' && row.chain === 'polygon'))
+    ) {
       return { status: 400, answer: { error: { code: 'unsupported_route', message: 'route' } } };
     }
     const behaviour = behaviourOf(invoice.username);
@@ -530,9 +548,14 @@ async function quoteRoute(req: Request): Promise<Response> {
     }
     const sats = BigInt(invoice.amountMsat / 1000);
     const base = sats * UNITS_PER_SAT_6 * 10n ** BigInt(row.decimals - 6);
-    const amountIn = (base * 1005n) / 1000n + 1n;
+    const xautNumerator = sats * 100_000n * 1_000_000n * (behaviour.xautOverpriced ? 1060n : 1005n);
+    const xautDenominator = 4_000n * 100_000_000n * 1000n;
+    const amountIn =
+      asset === 'XAUT0'
+        ? (xautNumerator + xautDenominator - 1n) / xautDenominator + 1n
+        : (base * 1005n) / 1000n + 1n;
     const deposit = address();
-    const token = asset === 'USDT' ? row.usdt : row.usdc;
+    const token = asset === 'USDT' ? row.usdt : asset === 'USDC' ? row.usdc : XAUT_CONTRACT;
     const expiresAt = new Date(Date.now() + behaviour.quoteTtlMs).toISOString();
     const quote: Quote = {
       quoteId: `q_${randomUUID()}`,
@@ -1119,12 +1142,16 @@ async function control(req: Request): Promise<Response> {
   if (url.pathname === '/__spot' && req.method === 'GET') {
     return json({ data: { currency: 'BTC', rates: { USD: SPOT_USD_PER_BTC } } });
   }
+  if (url.pathname === '/__xaut_spot' && req.method === 'GET') {
+    xautSpotReads += 1;
+    return json({ error: [], result: { XAUTUSD: { c: [SPOT_USD_PER_XAUT, '1'] } } });
+  }
   if (parts[0] !== '__control') {
     return json({ error: 'Not found' }, 404);
   }
   try {
     if (parts[1] === 'violations' && req.method === 'GET') {
-      return json({ violations });
+      return json({ violations, xautSpotReads });
     }
     if (parts[1] === 'broadcasts' && req.method === 'GET') {
       return json({ broadcasts });

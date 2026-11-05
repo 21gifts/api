@@ -52,6 +52,7 @@ import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
+import { startXautSpotWorker } from './lib/xaut-spot';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
 /* v8 ignore start — Bun runtime boot path; exercised by smoke tests, not unit tests */
@@ -229,6 +230,11 @@ if (import.meta.main) {
       ? (boot.sparkInvoiceStore ?? new InMemorySparkInvoiceStore())
       : undefined;
   const shopConfig = resolveShopPaymentConfig(process.env);
+  const xautUrl = process.env['XAUT_USD_SPOT_URL']?.trim() ?? '';
+  const xautSpot =
+    shopConfig !== null && lnurlServer !== undefined && xautUrl !== ''
+      ? startXautSpotWorker({ url: xautUrl, fetchImpl: globalThis.fetch, now: Date.now })
+      : undefined;
   const shopPayments =
     lnurlServer === undefined
       ? undefined
@@ -251,6 +257,7 @@ if (import.meta.main) {
                   now: Date.now,
                 }),
           fxSpot: fxSpotStore,
+          ...(xautSpot === undefined ? {} : { xautSpot: xautSpot.latest }),
           fetchImpl: globalThis.fetch,
           now: Date.now,
         });

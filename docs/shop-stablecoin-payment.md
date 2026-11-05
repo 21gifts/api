@@ -8,6 +8,10 @@ mounted when `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` resolve, and
 `ORCHESTRA_BASE_URL`, `ORCHESTRA_API_KEY`, `SHOP_EVM_RPC`, and
 `SHOP_REFUND_ADDRESS` resolve too.
 
+XAUt on Polygon is offered only when Orchestra lists its contract with
+exact-out to Lightning for the server key and `XAUT_USD_SPOT_URL` is set
+and supplies a fresh price. Tether Wallet 1.11.0 does not pay XAUt.
+
 A payer settles a shop payment in USDT or USDC. Orchestra (Flashnet)
 takes the stablecoin and pays one BOLT11 for the shop's sats. That
 invoice is minted by the mint `POST /pay/:username/invoice` already uses,
@@ -158,17 +162,17 @@ the standard requires: the method "must match exactly the method name
 from the `transferAmounts` array". Requests are matched without regard to
 case, as DFX matches them.
 
-| Method              | `chainId` | Orchestra `sourceChain` | USDT contract                                | USDC contract                                | Decimals | Tether 1.11.0 pays |
-| ------------------- | --------- | ----------------------- | -------------------------------------------- | -------------------------------------------- | -------- | ------------------ |
-| `Ethereum`          | 1         | `ethereum`              | `0xdac17f958d2ee523a2206206994597c13d831ec7` | `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48` | 6        | USDT               |
-| `Arbitrum`          | 42161     | `arbitrum`              | `0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9` | `0xaf88d065e77c8cc2239327c5edb3a432268e5831` | 6        | USDT               |
-| `Optimism`          | 10        | `optimism`              | `0x94b008aa00579c1307b0ef2c499ad98a8ce58e58` | `0x0b2c639c533813f4aa9d7837caf62653d097ff85` | 6        | no                 |
-| `Polygon`           | 137       | `polygon`               | `0xc2132d05d31c914a87c6611c10748aeb04b58e8f` | `0x3c499c542cef5e3811e1192ce70d8cc03d5c3359` | 6        | USDT               |
-| `Base`              | 8453      | `base`                  | `0xfde4c96c8593536e31f229ea8f37b2ada2699bb2` | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` | 6        | no                 |
-| `BinanceSmartChain` | 56        | `bsc`                   | `0x55d398326f99059ff775485246999027b3197955` | `0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d` | 18       | no                 |
+| Method              | `chainId` | Orchestra `sourceChain` | USDT contract                                | USDC contract                                | XAUt contract                                | Decimals | Tether 1.11.0 pays |
+| ------------------- | --------- | ----------------------- | -------------------------------------------- | -------------------------------------------- | -------------------------------------------- | -------- | ------------------ |
+| `Ethereum`          | 1         | `ethereum`              | `0xdac17f958d2ee523a2206206994597c13d831ec7` | `0xa0b86991c6218b36c1d19d4a2e9eb0ce3606eb48` | —                                            | 6        | USDT               |
+| `Arbitrum`          | 42161     | `arbitrum`              | `0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9` | `0xaf88d065e77c8cc2239327c5edb3a432268e5831` | —                                            | 6        | USDT               |
+| `Optimism`          | 10        | `optimism`              | `0x94b008aa00579c1307b0ef2c499ad98a8ce58e58` | `0x0b2c639c533813f4aa9d7837caf62653d097ff85` | —                                            | 6        | no                 |
+| `Polygon`           | 137       | `polygon`               | `0xc2132d05d31c914a87c6611c10748aeb04b58e8f` | `0x3c499c542cef5e3811e1192ce70d8cc03d5c3359` | `0xf1815bd50389c46847f0bda824ec8da914045d14` | 6        | USDT               |
+| `Base`              | 8453      | `base`                  | `0xfde4c96c8593536e31f229ea8f37b2ada2699bb2` | `0x833589fcd6edb6e08f4c7c32d4f71b54bda02913` | —                                            | 6        | no                 |
+| `BinanceSmartChain` | 56        | `bsc`                   | `0x55d398326f99059ff775485246999027b3197955` | `0x8ac76a51cc950d9822d68b83fe1ad97b32cd580d` | —                                            | 18       | no                 |
 
-The table is the contract. Its contracts and decimals are the values
-Orchestra's route list names for those pairs on 2026-10-14. The three
+The table is the contract. Its USDT and USDC contracts and decimals are the
+values Orchestra's route list names for those pairs on 2026-10-14. The three
 USDT contracts that Tether 1.11.0 pays are also the contracts in that
 wallet's own token list.
 
@@ -195,7 +199,10 @@ until a fetch succeeds.
 
 Pairs are requested in this order, so that a short budget still serves
 Tether 1.11.0 first: USDT on `Ethereum`, `Arbitrum`, and `Polygon`, then
-the remaining pairs in table order, USDT before USDC.
+Polygon/XAUt, then the remaining pairs in table order, USDT before USDC.
+USDT and USDC are matched by symbol; XAUt is matched by source chain and
+contract because the Orchestra symbol may differ. The quote's `sourceAsset`
+is the matched route entry's symbol; OpenCryptoPay keeps the name `XAUt`.
 
 Not offered, by decision:
 
@@ -837,6 +844,19 @@ An Orchestra quote becomes an offer only when every check holds:
 A failed check means the pair is not offered. The api logs
 `shop.offer.rejected` with the name of the check. A shared deposit
 address also logs `shop.alert.shared_deposit_address`.
+
+For XAUt, `XAUT_USD_SPOT_URL` has no default: blank or unset disables
+XAUt offers. The independent Kraken ticker is fetched at boot and every
+`FX_SPOT_REFRESH_MS`, with a 10-second timeout; failures retain the last
+good rate. No request waits for a fetch. A rate at least
+`SHOP_SPOT_MAX_AGE_MS` old fails the `price` check. Before requesting
+quotes, an absent or stale XAUt rate removes XAUt pairs and logs
+`shop.offer.rejected` with `check: 'price'`; it does not consume a quote
+budget slot. The same rate is checked for freshness again when each quote
+is checked. With `btc` and `xaut`
+both parsed by `parseUsdPerBtc` as USD times 10^8, its bound is
+`amountIn × xaut × 10^16 × 100 ≤ sats × btc × 10^decimals × 10^8 × 105`.
+The expected URL is `https://api.kraken.com/0/public/Ticker?pair=XAUTUSD`.
 
 ## Callback
 
@@ -1925,6 +1945,8 @@ amount it held before the payment.
 11. For every offered pair, two staging quotes created one after the other
     return two different EVM deposit addresses, and a submit without
     `sourceAddress` for a deposit to one of them returns its order.
+12. A live XAUt payment on Polygon through a staging shop, after Orchestra lists
+    XAUT0 with exact-out to Lightning for the staging key.
 
 ## Unchanged
 

@@ -189,7 +189,9 @@ describe('SHOP_PAYMENT_SCHEMA_SQL', () => {
 
   it('is idempotent DDL only', () => {
     for (const statement of SHOP_PAYMENT_SCHEMA_SQL) {
-      expect(statement).toMatch(/^CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS /);
+      expect(statement).toMatch(
+        /^(CREATE (UNIQUE )?(TABLE|INDEX) IF NOT EXISTS |DO \$shop_offer_asset\$)/,
+      );
     }
   });
 });

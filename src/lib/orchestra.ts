@@ -58,7 +58,7 @@ export interface OrchestraQuoteRequest {
   /** Orchestra chain id, e.g. `polygon`. */
   sourceChain: string;
   /** Stablecoin symbol. */
-  sourceAsset: 'USDT' | 'USDC';
+  sourceAsset: string;
   /** Sats the BOLT11 asks for; sent as the exact-out amount. */
   amountSats: number;
   /** The payment's BOLT11, sent as `recipientAddress`. */

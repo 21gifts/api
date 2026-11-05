@@ -178,7 +178,14 @@ test('the pay request and a detail of an open amount are the bodies the contract
     },
     stable('Ethereum'),
     stable('Arbitrum'),
-    stable('Polygon'),
+    {
+      ...stable('Polygon'),
+      assets: [
+        { asset: 'USDT', amount: units('Polygon', 'USDT') },
+        { asset: 'USDC', amount: units('Polygon', 'USDC') },
+        { asset: 'XAUt', amount: '0.000378' },
+      ],
+    },
   ]);
   // The Arbitrum USDT detail: the four EVM fields, URI in lowercase, hint ends with the proof URL.
   const offer = offered.find((q) => q.sourceChain === 'arbitrum' && q.asset === 'USDT');

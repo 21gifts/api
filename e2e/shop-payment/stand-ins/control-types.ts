@@ -23,6 +23,8 @@ export interface ShopBehaviour {
   quoteTtlMs: number;
   /** Pairs whose quote answers 400 `unsupported_route`, as `<sourceChain>:<asset>`. */
   refusePairs: string[];
+  /** Quote XAUT0 at 6% above spot instead of the usual 0.5%. */
+  xautOverpriced: boolean;
   /**
    * A raw transaction the api broadcasts to one of this shop's deposit
    * addresses is mined (gets its receipt) this many milliseconds after its

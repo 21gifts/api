@@ -146,10 +146,10 @@ function methodOf(sourceChain: string) {
 
 function defaultRoutes(): OrchestraRouteAsset[] {
   return SHOP_METHODS.flatMap((method) =>
-    SHOP_ASSETS.map((asset) => ({
+    (['USDT', 'USDC'] as const).map((asset) => ({
       chain: method.sourceChain,
       asset,
-      contractAddress: method.contracts[asset],
+      contractAddress: method.contracts[asset]!,
       decimals: method.decimals,
       exactOutToLightning: true,
     })),
@@ -213,7 +213,9 @@ class FakeOrchestra {
       expiresAt: new Date(clock + 120_000).toISOString(),
       transaction: {
         chainId: method.chainId,
-        to: method.contracts[request.sourceAsset],
+        to: (request.sourceAsset === 'XAUT0'
+          ? method.contracts.XAUt
+          : method.contracts[request.sourceAsset as 'USDT' | 'USDC'])!,
         data: erc20TransferData(deposit, amountIn),
         value: '0',
       },
@@ -402,6 +404,7 @@ async function setup(
     config?: 'off';
     orchestra?: 'off';
     fxSpot?: FxSpotStore;
+    xautSpot?: () => { rate: string; asOfMs: number } | null;
     username?: string;
     sleep?: 'default';
     now?: () => number;
@@ -428,6 +431,7 @@ async function setup(
     config: options.config === 'off' ? null : config,
     orchestra: options.orchestra === 'off' ? null : (orchestra as unknown as OrchestraClient),
     fxSpot: options.fxSpot ?? freshSpot(now),
+    ...(options.xautSpot === undefined ? {} : { xautSpot: options.xautSpot }),
     fetchImpl: fakeFetch(net),
     now,
     ...(options.sleep === 'default'
@@ -498,7 +502,7 @@ function offerRow(quoteId: string, over: Partial<ShopOffer> = {}): ShopOffer {
     method: 'Polygon',
     chainId: 137,
     asset: 'USDT',
-    tokenAddress: SHOP_METHODS[3]!.contracts.USDT,
+    tokenAddress: SHOP_METHODS[3]!.contracts.USDT!,
     depositAddress: `0x${(0xe0000000 + offerSeq).toString(16).padStart(40, '0')}`,
     amountIn: '1000',
     requiredAmountIn: '990',
@@ -667,7 +671,13 @@ describe('method table and pair order (Methods)', () => {
         18,
       ],
     ]);
-    expect(SHOP_ASSETS).toEqual(['USDT', 'USDC']);
+    expect(SHOP_ASSETS).toEqual(['USDT', 'USDC', 'XAUt']);
+    expect(
+      SHOP_METHODS.filter((row) => row.contracts.XAUt !== undefined).map((row) => [
+        row.method,
+        row.contracts.XAUt,
+      ]),
+    ).toEqual([['Polygon', '0xf1815bd50389c46847f0bda824ec8da914045d14']]);
   });
 
   it('requests USDT on Ethereum, Arbitrum, Polygon first, then the rest in table order, USDT before USDC', () => {
@@ -675,6 +685,7 @@ describe('method table and pair order (Methods)', () => {
       'Ethereum/USDT',
       'Arbitrum/USDT',
       'Polygon/USDT',
+      'Polygon/XAUt',
       'Ethereum/USDC',
       'Arbitrum/USDC',
       'Optimism/USDT',
@@ -692,6 +703,42 @@ describe('method table and pair order (Methods)', () => {
     expect(shopMethodByName('POLYGON')?.chainId).toBe(137);
     expect(shopMethodByName('Tron')).toBeUndefined();
     expect(shopMethodByName('Lightning')).toBeUndefined();
+  });
+
+  it('matches XAUt by contract and carries the provider symbol only for exact-out', () => {
+    const rpc = new Map([[137, 'https://rpc.example']]);
+    const contractAddress = '0xf1815bd50389c46847f0bda824ec8da914045d14';
+    const route = {
+      chain: 'polygon',
+      asset: 'XAUT0',
+      contractAddress,
+      decimals: 6,
+      exactOutToLightning: true,
+    };
+    expect(candidatePairs([route], rpc, 'p')).toEqual([
+      expect.objectContaining({ asset: 'XAUt', sourceAsset: 'XAUT0' }),
+    ]);
+    expect(candidatePairs([{ ...route, exactOutToLightning: false }], rpc, 'p')).toEqual([]);
+    expect(
+      candidatePairs(
+        [
+          {
+            ...route,
+            asset: 'XAUt',
+            contractAddress: '0x0000000000000000000000000000000000000001',
+          },
+        ],
+        rpc,
+        'p',
+      ),
+    ).toEqual([]);
+    const logged = vi.spyOn(log, 'logEvent');
+    expect(candidatePairs([{ ...route, decimals: 18 }], rpc, 'p')).toEqual([]);
+    expect(logged).toHaveBeenCalledWith('shop.route.mismatch', {
+      paymentId: 'p',
+      method: 'Polygon',
+      asset: 'XAUt',
+    });
   });
 
   it('offers a pair only when the route list names it with the table values, lightning:BTC, and an RPC endpoint', () => {
@@ -864,6 +911,18 @@ describe('amounts, pay request, and error bodies (Open amount, Error bodies)', (
     ]);
   });
 
+  it('renders XAUt on Polygon from base units and uses its token in the detail URI', () => {
+    const tokenAddress = '0xf1815bd50389c46847f0bda824ec8da914045d14';
+    const offer = offerRow('q', { asset: 'XAUt', tokenAddress, amountIn: '1234567' });
+    expect(transferAmountsFor(1000, [offer])[1]).toMatchObject({
+      method: 'Polygon',
+      assets: [{ asset: 'XAUt', amount: '1.234567' }],
+    });
+    expect(offerUri(offer)).toBe(
+      `ethereum:${tokenAddress}@137/transfer?address=${offer.depositAddress}&uint256=1234567`,
+    );
+  });
+
   it('sets quote.expiration to the earliest of window end and offer expiry minus 30 s; window end when Lightning-only', () => {
     const windowEnds = new Date(T0 + 300_000);
     expect(quoteExpiration(windowEnds, []).toISOString()).toBe(windowEnds.toISOString());
@@ -969,7 +1028,7 @@ describe('offer checks (Offer checks)', () => {
         expiresAt: new Date(T0 + 120_000).toISOString(),
         transaction: {
           chainId: 137,
-          to: polygonUsdt.method.contracts.USDT,
+          to: polygonUsdt.method.contracts.USDT!,
           data: erc20TransferData(deposit, 1_234_000n),
           value: '0',
         },
@@ -992,12 +1051,42 @@ describe('offer checks (Offer checks)', () => {
         input({
           transaction: {
             ...input().quote.transaction!,
-            to: polygonUsdt.method.contracts.USDT.toUpperCase().replace('0X', '0x'),
+            to: polygonUsdt.method.contracts.USDT!.toUpperCase().replace('0X', '0x'),
             value: '000',
           },
         }),
       ),
     ).toBeNull();
+  });
+
+  it('checks XAUt at the exact five percent boundary using its independent price', () => {
+    const pair = shopPairOrder().find((item) => item.asset === 'XAUt')!;
+    const amount = 1_050_000n;
+    const build = (units: bigint, rate: string | null): OfferCheckInput =>
+      input(
+        {
+          amountIn: units.toString(),
+          requiredAmountIn: null,
+          maxAcceptedAmountIn: null,
+          transaction: {
+            chainId: 137,
+            to: pair.method.contracts.XAUt!,
+            data: erc20TransferData(deposit, units),
+            value: '0',
+          },
+          targetAmountOut: '100000',
+        },
+        { pair, amountSats: 100_000, usdPerBtc: '100000', usdPerXaut: rate },
+      );
+    expect(checkOffer(build(amount, '100'))).toBeNull();
+    expect(checkOffer(build(amount + 1n, '100'))).toBe('price');
+    expect(checkOffer(build(amount, null))).toBe('price');
+    expect(checkOffer(build(amount, 'invalid'))).toBe('price');
+  });
+
+  it('keeps the USDT boundary unchanged when an XAUt rate is present', () => {
+    expect(checkOffer(input({}, { usdPerBtc: '95238.1', usdPerXaut: '4000' }))).toBeNull();
+    expect(checkOffer(input({}, { usdPerBtc: '95238', usdPerXaut: '4000' }))).toBe('price');
   });
 
   it('requires targetAmountOut to equal the sat count', () => {
@@ -1036,7 +1125,7 @@ describe('offer checks (Offer checks)', () => {
     expect(
       checkOffer(
         input({
-          transaction: { ...input().quote.transaction!, to: polygonUsdt.method.contracts.USDC },
+          transaction: { ...input().quote.transaction!, to: polygonUsdt.method.contracts.USDC! },
         }),
       ),
     ).toBe('token');
@@ -1129,7 +1218,7 @@ describe('offer checks (Offer checks)', () => {
           maxAcceptedAmountIn: null,
           transaction: {
             chainId: pair.method.chainId,
-            to: pair.method.contracts[pair.asset],
+            to: pair.method.contracts[pair.asset]!,
             data: erc20TransferData(deposit, amountIn),
             value: '0',
           },
@@ -2379,7 +2468,11 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
       h.orchestra.quoteCalls.map(
         (call) => `${call.request.sourceChain}/${call.request.sourceAsset}`,
       ),
-    ).toEqual(shopPairOrder().map((pair) => `${pair.method.sourceChain}/${pair.asset}`));
+    ).toEqual(
+      shopPairOrder()
+        .filter((pair) => pair.asset !== 'XAUt')
+        .map((pair) => `${pair.method.sourceChain}/${pair.asset}`),
+    );
     for (const call of h.orchestra.quoteCalls) {
       expect(call.request).toMatchObject({
         amountSats: SATS,
@@ -3156,6 +3249,178 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     // Exactly within the bound at a spot 599 999 ms old: offered.
     const fresh = await setup({ fxSpot: freshSpot(() => T0 + 1_000 - 599_999, '95238.1') });
     expect((await fresh.svc.createForPayer(fresh.account, USER, SATS, clock)).kind).toBe('payment');
+  });
+
+  it('quotes the matched XAUT0 symbol and only offers XAUt with a fresh spot', async () => {
+    for (const [spot, offered] of [
+      [undefined, false],
+      [{ rate: '1', asOfMs: T0 - 600_000 }, false],
+      [{ rate: '1', asOfMs: T0 - 599_999 }, true],
+      [{ rate: 'bad', asOfMs: T0 }, false],
+      [{ rate: '1', asOfMs: T0 }, true],
+    ] as const) {
+      const xautSpot = vi.fn(() => spot ?? null);
+      const h = await setup({ xautSpot });
+      h.orchestra.routesResult = {
+        ok: true,
+        validForMs: 60_000,
+        assets: [
+          ...defaultRoutes(),
+          {
+            chain: 'polygon',
+            asset: 'XAUT0',
+            contractAddress: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+            decimals: 6,
+            exactOutToLightning: true,
+          },
+        ],
+      };
+      const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+      expect(created.kind).toBe('payment');
+      expect(xautSpot).toHaveBeenCalledTimes(1);
+      expect(h.orchestra.quoteCalls.some((call) => call.request.sourceAsset === 'XAUT0')).toBe(
+        spot !== undefined && clock - spot.asOfMs < 600_000,
+      );
+      expect(h.orchestra.quoteCalls.some((call) => call.request.sourceAsset === 'USDT')).toBe(true);
+      if (created.kind !== 'payment') throw new Error('payment not created');
+      const quotes = await h.store.transaction((tx) => tx.quotesOf(created.payment.id));
+      const offers = await h.store.transaction((tx) => tx.offersOf(quotes[0]!.id));
+      expect(offers.some((offer) => offer.asset === 'XAUt')).toBe(offered);
+      if (offered) {
+        const detail = await h.svc.callback(h.account, USER, {
+          amount: null,
+          quote: quotes[0]!.id,
+          method: 'polygon',
+          asset: 'xaut',
+          repeated: false,
+        });
+        const body = await responseJson(detail);
+        const offer = offers.find((row) => row.asset === 'XAUt')!;
+        expect(body.status).toBe(200);
+        expect(body.json).toMatchObject({
+          blockchain: 'Polygon',
+          uri: `ethereum:0xf1815bd50389c46847f0bda824ec8da914045d14@137/transfer?address=${offer.depositAddress}&uint256=${offer.amountIn}`,
+        });
+      }
+    }
+  });
+
+  it('offers USDT but not XAUt when the XAUt spot dependency is absent', async () => {
+    const h = await setup();
+    h.orchestra.routesResult = {
+      ok: true,
+      validForMs: 60_000,
+      assets: [
+        ...defaultRoutes(),
+        {
+          chain: 'polygon',
+          asset: 'XAUT0',
+          contractAddress: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+          decimals: 6,
+          exactOutToLightning: true,
+        },
+      ],
+    };
+    const created = await h.svc.createForPayer(h.account, USER, SATS, clock);
+    expect(created.kind).toBe('payment');
+    expect(h.orchestra.quoteCalls.some((call) => call.request.sourceAsset === 'XAUT0')).toBe(false);
+    expect(h.orchestra.quoteCalls.some((call) => call.request.sourceAsset === 'USDT')).toBe(true);
+    expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toContainEqual({
+      paymentId: created.kind === 'payment' ? created.payment.id : '',
+      method: 'Polygon',
+      asset: 'XAUt',
+      check: 'price',
+    });
+    if (created.kind !== 'payment') throw new Error('payment not created');
+    const quotes = await h.store.transaction((tx) => tx.quotesOf(created.payment.id));
+    const offers = await h.store.transaction((tx) => tx.offersOf(quotes[0]!.id));
+    expect(offers.some((offer) => offer.asset === 'USDT')).toBe(true);
+    expect(offers.some((offer) => offer.asset === 'XAUt')).toBe(false);
+  });
+
+  it('does not spend the quote budget on an XAUt pair without a fresh rate', async () => {
+    const h = await setup({ xautSpot: () => null });
+    h.orchestra.budget = 4;
+    h.orchestra.routesResult = {
+      ok: true,
+      validForMs: 60_000,
+      assets: [
+        ...defaultRoutes(),
+        {
+          chain: 'polygon',
+          asset: 'XAUT0',
+          contractAddress: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+          decimals: 6,
+          exactOutToLightning: true,
+        },
+      ],
+    };
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('payment');
+    expect(
+      h.orchestra.quoteCalls.map(
+        (call) => `${call.request.sourceChain}/${call.request.sourceAsset}`,
+      ),
+    ).toEqual(['ethereum/USDT', 'arbitrum/USDT', 'polygon/USDT', 'ethereum/USDC']);
+  });
+
+  it('sends no quotes when the only candidate is XAUt without a fresh rate', async () => {
+    const h = await setup({ xautSpot: () => null });
+    h.orchestra.routesResult = {
+      ok: true,
+      validForMs: 60_000,
+      assets: [
+        {
+          chain: 'polygon',
+          asset: 'XAUT0',
+          contractAddress: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+          decimals: 6,
+          exactOutToLightning: true,
+        },
+      ],
+    };
+    expect((await h.svc.createForPayer(h.account, USER, SATS, clock)).kind).toBe('unavailable');
+    expect(h.orchestra.quoteCalls).toEqual([]);
+    expect(eventsNamed('shop.offer.rejected').at(-1)?.fields).toMatchObject({
+      method: 'Polygon',
+      asset: 'XAUt',
+      check: 'price',
+    });
+  });
+
+  it('rejects a quoted XAUt offer when the sampled spot becomes stale during the quote', async () => {
+    const xautSpot = vi.fn(() => ({ rate: '1', asOfMs: T0 - 599_999 }));
+    const h = await setup({ xautSpot });
+    h.orchestra.routesResult = {
+      ok: true,
+      validForMs: 60_000,
+      assets: [
+        ...defaultRoutes(),
+        {
+          chain: 'polygon',
+          asset: 'XAUT0',
+          contractAddress: '0xf1815bd50389c46847f0bda824ec8da914045d14',
+          decimals: 6,
+          exactOutToLightning: true,
+        },
+      ],
+    };
+    h.orchestra.onQuote = async (request) => {
+      if (request.sourceAsset === 'XAUT0') {
+        clock = T0 + 1;
+      }
+    };
+    const created = await h.svc.createForPayer(h.account, USER, SATS, T0);
+    expect(created.kind).toBe('payment');
+    expect(xautSpot).toHaveBeenCalledTimes(1);
+    expect(h.orchestra.quoteCalls.some((call) => call.request.sourceAsset === 'XAUT0')).toBe(true);
+    if (created.kind !== 'payment') throw new Error('payment not created');
+    const quotes = await h.store.transaction((tx) => tx.quotesOf(created.payment.id));
+    const offers = await h.store.transaction((tx) => tx.offersOf(quotes[0]!.id));
+    expect(offers.some((offer) => offer.asset === 'XAUt')).toBe(false);
+    expect(offers.some((offer) => offer.asset === 'USDT')).toBe(true);
+    expect(eventsNamed('shop.offer.rejected').map((entry) => entry.fields)).toContainEqual(
+      expect.objectContaining({ method: 'Polygon', asset: 'XAUt', check: 'price' }),
+    );
   });
 
   it('step 5 / price check: without a stored USD spot younger than 10 min no Orchestra call is sent and no pair is offered', async () => {

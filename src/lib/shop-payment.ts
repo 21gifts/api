@@ -1,5 +1,5 @@
 /**
- * Shop payment in USDT and USDC (`docs/shop-stablecoin-payment.md`):
+ * Shop payment in USDT, USDC, and XAUt (`docs/shop-stablecoin-payment.md`):
  * the method table, amounts, the OpenCryptoPay pay request and error body,
  * offer checks, the creation procedure, quote replacement, the pay link,
  * the callback, the wait route, the till hooks, settlement, and the proof
@@ -133,8 +133,8 @@ export interface ShopMethod {
   /** Orchestra `sourceChain`. */
   sourceChain: string;
   /** Token contract per asset, lowercase. */
-  contracts: Readonly<Record<ShopAsset, string>>;
-  /** Token decimals of both assets. */
+  contracts: Readonly<Partial<Record<ShopAsset, string>>>;
+  /** Token decimals of every asset in this row. */
   decimals: number;
 }
 
@@ -177,6 +177,7 @@ export const SHOP_METHODS: readonly ShopMethod[] = [
     contracts: {
       USDT: '0xc2132d05d31c914a87c6611c10748aeb04b58e8f',
       USDC: '0x3c499c542cef5e3811e1192ce70d8cc03d5c3359',
+      XAUt: '0xf1815bd50389c46847f0bda824ec8da914045d14',
     },
     decimals: 6,
   },
@@ -203,19 +204,21 @@ export const SHOP_METHODS: readonly ShopMethod[] = [
 ];
 
 /** The assets of the table, USDT first. */
-export const SHOP_ASSETS: readonly ShopAsset[] = ['USDT', 'USDC'];
+export const SHOP_ASSETS: readonly ShopAsset[] = ['USDT', 'USDC', 'XAUt'];
 
 /** One method and asset of the table. */
 export interface ShopPair {
   /** The table row. */
   method: ShopMethod;
-  /** `USDT` or `USDC`. */
+  /** OpenCryptoPay asset name. */
   asset: ShopAsset;
+  /** Matched Orchestra symbol, when this pair came from its route list. */
+  sourceAsset?: string;
 }
 
 /**
  * Pairs in request order: USDT on `Ethereum`, `Arbitrum`, and `Polygon`
- * first (what Tether Wallet 1.11.0 pays), then the remaining pairs in table
+ * first (what Tether Wallet 1.11.0 pays), then Polygon/XAUt, then the remaining pairs in table
  * order, USDT before USDC within a method.
  *
  * @returns Every pair of the table, in request order.
@@ -231,9 +234,16 @@ export function shopPairOrder(): ShopPair[] {
     }
     ordered.push({ method, asset: 'USDT' });
   }
+  const polygon = SHOP_METHODS.find((row) => row.method === 'Polygon');
+  if (polygon !== undefined && polygon.contracts.XAUt !== undefined) {
+    ordered.push({ method: polygon, asset: 'XAUt' });
+  }
   for (const method of SHOP_METHODS) {
     for (const asset of SHOP_ASSETS) {
-      if (!ordered.some((pair) => pair.method === method && pair.asset === asset)) {
+      if (
+        method.contracts[asset] !== undefined &&
+        !ordered.some((pair) => pair.method === method && pair.asset === asset)
+      ) {
         ordered.push({ method, asset });
       }
     }
@@ -254,7 +264,7 @@ export function shopMethodByName(name: string): ShopMethod | undefined {
 
 /**
  * Pairs that a quote may request: in the table, named by Orchestra's route
- * list with `exactOutTo` admitting `lightning:BTC`, the table contract and
+ * list by symbol (or by contract for XAUt), with `exactOutTo` admitting `lightning:BTC`, the table contract and
  * decimals, and an RPC endpoint for the chain. A route-list pair whose
  * contract or decimals differ from the table logs `shop.route.mismatch`
  * with the payment the pairs are for.
@@ -272,7 +282,11 @@ export function candidatePairs(
   const candidates: ShopPair[] = [];
   for (const pair of shopPairOrder()) {
     const route = routes.find(
-      (asset) => asset.chain === pair.method.sourceChain && asset.asset === pair.asset,
+      (asset) =>
+        asset.chain === pair.method.sourceChain &&
+        (pair.asset === 'XAUt'
+          ? asset.contractAddress === pair.method.contracts[pair.asset]
+          : asset.asset === pair.asset),
     );
     if (route === undefined) {
       continue;
@@ -287,7 +301,7 @@ export function candidatePairs(
     if (!route.exactOutToLightning || !evmRpc.has(pair.method.chainId)) {
       continue;
     }
-    candidates.push(pair);
+    candidates.push(pair.asset === 'XAUt' ? { ...pair, sourceAsset: route.asset } : pair);
   }
   return candidates;
 }
@@ -652,6 +666,8 @@ export interface OfferCheckInput {
    * whose price cannot be checked could overcharge the payer.
    */
   usdPerBtc: string | null;
+  /** USD per XAUt when a fresh independent quote is available. */
+  usdPerXaut?: string | null;
   /** Clock (epoch ms). */
   nowMs: number;
 }
@@ -686,6 +702,36 @@ function withinPriceBound(
     return false;
   }
   return amountIn * 10n ** 16n * 100n <= BigInt(sats) * rate * 10n ** BigInt(decimals) * 105n;
+}
+
+/**
+ * Check XAUt's USD value with independently sourced rates, without rounding:
+ * `amountIn × xaut × 10^16 × 100 ≤ sats × btc × 10^decimals × 10^8 × 105`.
+ *
+ * @param amountIn - Token base units.
+ * @param decimals - Token decimals.
+ * @param sats - Payment sats.
+ * @param usdPerBtc - USD per BTC.
+ * @param usdPerXaut - USD per XAUt, or null when unavailable.
+ * @returns Whether the price is within the bound and both rates parse.
+ */
+function withinXautPriceBound(
+  amountIn: bigint,
+  decimals: number,
+  sats: number,
+  usdPerBtc: string,
+  usdPerXaut: string | null,
+): boolean {
+  try {
+    const xaut = parseUsdPerBtc(usdPerXaut ?? '');
+    const btc = parseUsdPerBtc(usdPerBtc);
+    return (
+      amountIn * xaut * 10n ** 16n * 100n <=
+      BigInt(sats) * btc * 10n ** BigInt(decimals) * 10n ** 8n * 105n
+    );
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -746,7 +792,15 @@ export function checkOffer(input: OfferCheckInput): OfferCheck | null {
   }
   if (
     input.usdPerBtc === null ||
-    !withinPriceBound(amountIn, pair.method.decimals, input.amountSats, input.usdPerBtc)
+    (pair.asset === 'XAUt'
+      ? !withinXautPriceBound(
+          amountIn,
+          pair.method.decimals,
+          input.amountSats,
+          input.usdPerBtc,
+          input.usdPerXaut ?? null,
+        )
+      : !withinPriceBound(amountIn, pair.method.decimals, input.amountSats, input.usdPerBtc))
   ) {
     return 'price';
   }
@@ -1449,6 +1503,8 @@ export interface ShopPaymentsDeps {
    * minutes no stablecoin pair is offered.
    */
   fxSpot: FxSpotStore;
+  /** Latest independent XAUt spot, if configured. */
+  xautSpot?: () => { rate: string; asOfMs: number } | null;
   /** Fetch for the LNURL server and the EVM RPC endpoints. */
   fetchImpl: FetchFn;
   /** Clock in epoch milliseconds. */
@@ -1775,7 +1831,9 @@ export class ShopPayments {
    * offer checks. Pairs beyond the quote budget are skipped in request order.
    * Without a stored USD spot younger than ten minutes it sends no call and
    * logs `shop.offer.rejected` with `check` `price` per pair, because no
-   * pair could pass the price check. A failed quote logs
+   * pair could pass the price check. An absent or stale XAUt spot removes
+   * XAUt pairs before the quote budget is applied and logs the same check.
+   * A failed quote logs
    * `shop.offer.rejected` too: `check` `body` for an HTTP 200 whose body does
    * not parse, `http` for a request sent without an HTTP 200 answer, and
    * `budget` when no request could be sent (budget, pause, or deadline).
@@ -1796,13 +1854,13 @@ export class ShopPayments {
     if (orchestra === null || config === null) {
       return { offers: [], sent: false };
     }
-    const allowed = pairs.slice(0, Math.max(0, orchestra.quoteBudgetLeft()));
-    if (allowed.length === 0) {
+    const budget = Math.max(0, orchestra.quoteBudgetLeft());
+    if (pairs.length === 0 || budget === 0) {
       return { offers: [], sent: false };
     }
     const spot = await this.#spot();
     if (spot === null) {
-      for (const pair of allowed) {
+      for (const pair of pairs.slice(0, budget)) {
         logEvent('shop.offer.rejected', {
           paymentId: target.paymentId,
           method: pair.method.method,
@@ -1810,6 +1868,26 @@ export class ShopPayments {
           check: 'price',
         });
       }
+      return { offers: [], sent: false };
+    }
+    const xautSpot = this.#deps.xautSpot?.() ?? null;
+    const xautFresh =
+      xautSpot !== null && this.#deps.now() - xautSpot.asOfMs < SHOP_SPOT_MAX_AGE_MS;
+    const allowed = pairs
+      .filter((pair) => {
+        if (pair.asset !== 'XAUt' || xautFresh) {
+          return true;
+        }
+        logEvent('shop.offer.rejected', {
+          paymentId: target.paymentId,
+          method: pair.method.method,
+          asset: pair.asset,
+          check: 'price',
+        });
+        return false;
+      })
+      .slice(0, budget);
+    if (allowed.length === 0) {
       return { offers: [], sent: false };
     }
     const chainIds = [...new Set(allowed.map((pair) => pair.method.chainId))];
@@ -1834,7 +1912,7 @@ export class ShopPayments {
         const result = await orchestra.quote(
           {
             sourceChain: pair.method.sourceChain,
-            sourceAsset: pair.asset,
+            sourceAsset: pair.sourceAsset ?? pair.asset,
             amountSats: target.amountSats,
             bolt11: target.bolt11,
             tag: target.paymentId,
@@ -1869,6 +1947,10 @@ export class ShopPayments {
         bolt11ExpiresAtMs: target.bolt11ExpiresAtMs,
         batchDeposits,
         usdPerBtc: nowMs - spot.asOfMs < SHOP_SPOT_MAX_AGE_MS ? spot.usd : null,
+        usdPerXaut:
+          xautSpot !== null && nowMs - xautSpot.asOfMs < SHOP_SPOT_MAX_AGE_MS
+            ? xautSpot.rate
+            : null,
         nowMs,
       });
       const fields = {
@@ -1890,6 +1972,11 @@ export class ShopPayments {
         continue;
       }
       const deposit = result.quote.depositAddress.toLowerCase();
+      const tokenAddress = pair.method.contracts[pair.asset];
+      /* v8 ignore next 3 -- candidatePairs keeps only pairs with a table contract */
+      if (tokenAddress === undefined) {
+        continue;
+      }
       batchDeposits.add(deposit);
       offers.push({
         id: this.#newId(),
@@ -1897,7 +1984,7 @@ export class ShopPayments {
         method: pair.method.method,
         chainId: pair.method.chainId,
         asset: pair.asset,
-        tokenAddress: pair.method.contracts[pair.asset],
+        tokenAddress,
         depositAddress: deposit,
         amountIn: result.quote.amountIn,
         requiredAmountIn: result.quote.requiredAmountIn,

@@ -30,7 +30,8 @@ export function satsToBtcString(sats: number): string {
 }
 
 /**
- * Parse a USD-per-BTC rate string into an 8-decimal scaled integer.
+ * Parse a USD-per-BTC rate string into an 8-decimal scaled integer. The
+ * XAUt offer check reuses this parser for its USD-per-XAUt rate.
  *
  * Extra fractional digits beyond eight are rounded half-up. Values `<= 0`
  * and non-decimal shapes throw.
