@@ -177,13 +177,6 @@ row (`createdAt` desc, then `id` desc), both without changing `role`.
 | Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. |
 | Initiator | Rank 2, same rank as moderator. Forum tag.                                                                                                                                                       |
 | Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                                        |
-| Role      | Capabilities                                                                                                                                                                                     |
-| ---       | ---                                                                                                                                                                                              |
-| Basis     | Log in, maintain a profile, receive gifts (default). No forum tag.                                                                                                                               |
-| Verified  | Everything Basis can, plus a forum tag: a moderator physically met this person. Not a verified wallet. May reply without a Bitcoin payment.                                                      |
-| Moderator | Everything Verified can, plus content moderation, the staff inbox, the closed Moderators group and the staff trust routes (verify a member, propose, confirm, or reject a moderator). Forum tag. |
-| Initiator | Rank 2, same rank as moderator. Forum tag.                                                                                                                                                       |
-| Founder   | Everything Moderator can, plus appointing moderators directly. Forum tag.                                                                                                                        |
 
 Becoming a **donor** is an upgrade available to every account, not a role of
 its own (see below). The forum shows a tag only for Verified, Moderator,
@@ -545,7 +538,7 @@ app repo (`21gifts/app`) only carries frontend-specific docs.
 **Durability**: Durable Postgres writes are also appended to `db_change` with
 `at` / `op` / `before` / `after`. Secret columns `token`, `challenge`,
 `nostr_nsec_ciphertext`, `nonce`, `view_key`, `endpoint`, `p256dh`, `auth`,
-`delivered_endpoints`, `skip_endpoints`, `recovery_share_ciphertext`, and
+`delivered_endpoints`, `skip_endpoints`, `session_token`, `recovery_share_ciphertext`, and
 `ciphertext` (`held_share_box`) are stored as SHA-256 hex in that JSON; other columns including `name` stay
 plaintext.
 
