@@ -651,6 +651,8 @@ server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can po
 test asserts 409 `missing: ['lightning-address']`);
 `canonicalGoalAmount`, which freezes a BTC ask on post and maps an empty `goal_amount_text` on read (its catalog
 test still answers 409 `missing: ['lightning-address']`);
+`freezePosFiatCrosses`, which prices the three untyped currencies of a till charge and of a fiat ask from the spot, and runs only after a verified wallet resolves (`POST /pos` answers 400 `wallet_required` before the freeze on the default boot; its catalog
+test answers 401 without a bearer);
 `loadLatestGoalRateDay` and `bindGoalRateDay`, which load the gift-day rate for a repayment share and are not called by a forum ask (their catalog
 tests still answer 409 `missing: ['lightning-address']`);
 `canonicalDecimal`, which `decimalAmount` and `btcAmount` also use on the shop payment surface (that surface answers the default 404 on the default boot);
