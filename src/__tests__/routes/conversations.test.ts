@@ -106,6 +106,7 @@ function mount(
     spendPing?: SpendPing;
     pushStore?: InMemoryPushStore;
     fundingStore?: InMemoryFundingStore;
+    recoveryShareRequiredFrom?: string | null;
     now?: () => number;
     translationStore?: InMemoryTranslationStore;
     env?: Record<string, string | undefined>;
@@ -122,6 +123,9 @@ function mount(
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.pushStore === undefined ? {} : { pushStore: extra.pushStore }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      ...(extra.recoveryShareRequiredFrom === undefined
+        ? {}
+        : { recoveryShareRequiredFrom: extra.recoveryShareRequiredFrom }),
       ...(extra.translationStore === undefined ? {} : { translationStore: extra.translationStore }),
       ...(extra.env === undefined ? {} : { env: extra.env }),
       ...(extra.fetchImpl === undefined ? {} : { fetchImpl: extra.fetchImpl }),
@@ -3346,6 +3350,7 @@ describe('moderator_group', () => {
       const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
         spendPing,
         fundingStore: admittedFunding(),
+        recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
         now: () => gateNow,
       }).request(`/conversations/${thread.id}`, {
         method: 'POST',
@@ -3366,6 +3371,33 @@ describe('moderator_group', () => {
       }
     });
   }
+
+  it.each([
+    ['the day before the start day', '2026-10-02'],
+    ['an unset start day', null],
+  ])('pings an admitted moderator without a share on %s', async (_label, requiredFrom) => {
+    const auth = await seeded('moderator');
+    await withPlatform(auth);
+    await verifyWallet(auth, 'acc', 'ada', ACC_PUBKEY);
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('plat', new Date(now()));
+    const spendPing = { ping: vi.fn(async () => undefined) };
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, conversations, livingRoomStore(new Date(gateNow)), {
+      spendPing,
+      fundingStore: admittedFunding(),
+      recoveryShareRequiredFrom: requiredFrom,
+      now: () => gateNow,
+    }).request(`/conversations/${thread.id}`, {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'hello mods' }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledWith('ada@example.test', created.id, 'moderator');
+  });
 
   it('does not ping when the moderator has no living-room post today', async () => {
     const auth = await seeded('moderator');

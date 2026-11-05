@@ -1,7 +1,12 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
-import { CURRENT_GRANT_ROUND, type FundingGrant, type GrantRound } from '@/lib/funding';
+import {
+  CURRENT_GRANT_ROUND,
+  FUNDING_REQUIRED_FROM_UTC,
+  type FundingGrant,
+  type GrantRound,
+} from '@/lib/funding';
 import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
@@ -86,6 +91,7 @@ function mount(
   gifts: GiftStore = new InMemoryGiftStore(),
   clock: () => number = now,
   grantRound?: GrantRound,
+  recoveryShareRequiredFrom: string | null = FUNDING_REQUIRED_FROM_UTC,
 ): Hono {
   return new Hono().route(
     '/funding',
@@ -96,6 +102,7 @@ function mount(
       now: clock,
       gifts,
       lnurlServer: LNURL_SERVER,
+      recoveryShareRequiredFrom,
       ...(spendPing === undefined ? {} : { spendPing }),
       ...(grantRound === undefined ? {} : { grantRound }),
     }),
@@ -1311,6 +1318,31 @@ describe('trial and admit pings from the grant gate day', () => {
       expect(parsedEvents(warn)).toContainEqual(
         expect.objectContaining({ event: 'spend.ping.skipped', reason: 'not_eligible' }),
       );
+    });
+
+    it.each([
+      ['the day before the start day', '2026-10-30'],
+      ['an unset start day', null],
+    ])(`pings after ${route} without a share on %s`, async (_label, requiredFrom) => {
+      const { authStore, fundingStore, messageStore } = await gated(false);
+      const ping = vi.fn(async () => undefined);
+      const res = await post(
+        mount(
+          authStore,
+          fundingStore,
+          messageStore,
+          { ping },
+          undefined,
+          gateClock,
+          undefined,
+          requiredFrom,
+        ),
+        `/funding/${route}`,
+        'gate',
+        { accountId: VERIFIED },
+      );
+      expect(res.status).toBe(200);
+      expect(ping).toHaveBeenCalledWith('ada@example.test', PHOTO_A, 'daily', status);
     });
 
     it(`pings after ${route} with a recovery share`, async () => {

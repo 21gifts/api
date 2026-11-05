@@ -85,6 +85,8 @@ export interface ReplayDeps {
   /** `spendPing.pingOnDay`, bound to its ping. */
   pingOnDay: NonNullable<SpendPing['pingOnDay']>;
   lnurlServer?: LnurlServerConfig;
+  /** First UTC day the 21.gifts recovery share is required for a payout; `null` → not required yet. */
+  recoveryShareRequiredFrom: string | null;
   now: () => number;
 }
 
@@ -263,6 +265,7 @@ function notEligibleDetail(
   grant: FundingGrant | undefined,
   eligible: boolean,
   nowMs: number,
+  recoveryShareRequiredFrom: string | null,
 ): string | null {
   if (eligible) {
     return null;
@@ -277,7 +280,9 @@ function notEligibleDetail(
   ) {
     return 'trial_day_passed';
   }
-  return eligibleToday(account.role, grant, nowMs, true) ? 'no_recovery_share' : 'grant';
+  return eligibleToday(account.role, grant, nowMs, true, recoveryShareRequiredFrom)
+    ? 'no_recovery_share'
+    : 'grant';
 }
 
 /**
@@ -288,7 +293,8 @@ function notEligibleDetail(
  * UTC day, also once it was stored as `pending`, is reported as `not_eligible`
  * / `trial_day_passed`, except for a `basis` account, which is never eligible
  * and is reported as `grant`; an account eligible but for the 21.gifts
- * recovery share of its current wallet is reported as `no_recovery_share`),
+ * recovery share of its current wallet, on a run from the share's start day
+ * on, is reported as `no_recovery_share`),
  * and has no payout of that kind on the event's UTC day: neither in the gift
  * ledger under its username or its legacy external address, nor earlier in
  * this run. Daily and moderator payouts go
@@ -397,8 +403,15 @@ export async function replayPayoutWindow(
       deps.auth,
       account,
       nowMs,
+      deps.recoveryShareRequiredFrom,
     );
-    const ineligible = notEligibleDetail(account, grant, eligible, nowMs);
+    const ineligible = notEligibleDetail(
+      account,
+      grant,
+      eligible,
+      nowMs,
+      deps.recoveryShareRequiredFrom,
+    );
     if (ineligible !== null) {
       skip('not_eligible', ineligible);
       continue;

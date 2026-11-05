@@ -534,8 +534,8 @@ function zapIngestRow(args: {
  * as a compose post/reply (`insertGiftReply`).
  *
  * @param args - Stores, clock, payment hash, operator note, optional preimage,
- *   and optional `spendPing`, `postLimiter`, `fundingStore`, `conversations`, and
- *   `lnurlServer` (the spend ping's receiving address) for platform-note compose.
+ *   and optional `spendPing`, `postLimiter`, `fundingStore`,
+ *   `recoveryShareRequiredFrom`, `conversations`, and `lnurlServer` (the spend ping's receiving address) for platform-note compose.
  * @returns The credited receipt details and resume status, or the first
  *   validation/lookup failure.
  * @throws Propagates store lookup, note-author lookup (before claim),
@@ -554,6 +554,7 @@ export async function settleInvoiceManually(args: {
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  recoveryShareRequiredFrom?: string | null;
   conversations?: ConversationStore;
   lnurlServer?: LnurlServerConfig;
   /** Accepted by callers. An unpinned settle does not read a spot. */
@@ -782,6 +783,9 @@ export async function settleInvoiceManually(args: {
         ...(args.spendPing === undefined ? {} : { spendPing: args.spendPing }),
         ...(args.postLimiter === undefined ? {} : { postLimiter: args.postLimiter }),
         ...(args.fundingStore === undefined ? {} : { fundingStore: args.fundingStore }),
+        ...(args.recoveryShareRequiredFrom === undefined
+          ? {}
+          : { recoveryShareRequiredFrom: args.recoveryShareRequiredFrom }),
         ...(args.conversations === undefined ? {} : { conversations: args.conversations }),
         ...(args.lnurlServer === undefined ? {} : { lnurlServer: args.lnurlServer }),
       });
@@ -994,7 +998,7 @@ export async function indexZapReceipt(args: {
  *   optional `eventIds` / `since` for hot mode; optional `pushStore`,
  *   `notificationStore`, and `conversations` (PN invoices append here;
  *   omitted → `rejected`/`conversation`); optional `spendPing`, `postLimiter`,
- *   and `fundingStore` for platform-note compose (`spendPing` only when
+ *   `fundingStore`, and `recoveryShareRequiredFrom` for platform-note compose (`spendPing` only when
  *   `eligibleToday`, same gate as `POST /messages`); optional `lnurlServer`
  *   for wallet-backed recipients.
  * @returns Resolves when the ingest pass finishes.
@@ -1022,6 +1026,7 @@ export async function indexOpenZapReceipts(args: {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  recoveryShareRequiredFrom?: string | null;
   /** Accepted by callers. An unpinned zap does not read the rate book. */
   fiatRates?: FiatRateBook;
   /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
@@ -1148,6 +1153,7 @@ async function queryAndIngestZapReceipts(
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
+    recoveryShareRequiredFrom?: string | null;
     fiatRates?: FiatRateBook;
     /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
     lnurlServer?: LnurlServerConfig;
@@ -1259,6 +1265,7 @@ async function ingestOneReceipt(
     spendPing?: SpendPing;
     postLimiter?: PostRateLimiter;
     fundingStore?: FundingStore;
+    recoveryShareRequiredFrom?: string | null;
     /** Accepted by callers. An unpinned zap does not read the rate book. */
     fiatRates?: FiatRateBook;
     /** LNURL server; wallet-backed recipients resolve their receipt signer through it. */
@@ -1971,6 +1978,7 @@ interface BaseGiftReplyDeps {
   spendPing?: SpendPing;
   postLimiter?: PostRateLimiter;
   fundingStore?: FundingStore;
+  recoveryShareRequiredFrom?: string | null;
   lnurlServer?: LnurlServerConfig;
 }
 
@@ -2511,6 +2519,7 @@ async function insertGiftReply(
         args.auth,
         args.payer,
         args.now(),
+        args.recoveryShareRequiredFrom ?? null,
       );
       if (!eligible) {
         logEvent('spend.ping.skipped', { reason: 'not_eligible' });

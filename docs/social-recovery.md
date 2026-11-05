@@ -217,28 +217,35 @@ UTC day, social recovery is a payout condition.
   so after a recovery the condition is open again until the owner sets up
   shares for the new words. The api reads only whether such a share is stored,
   never its content.
-- **Payouts.** `eligibleToday` (`src/lib/funding.ts`) also requires it
-  wherever this code runs. There is no start date of its own: the condition
-  holds on every day the grant is required (`FUNDING_REQUIRED_FROM_UTC`, the
-  grant's date). That function already requires the grant for every payout,
+- **Payouts.** From the UTC day `RECOVERY_SHARE_REQUIRED_FROM` (ISO date, read at boot)
+  `eligibleToday` (`src/lib/funding.ts`) also requires it. Before that day, or
+  while the variable is unset or blank, the share is not required, so payouts
+  continue while members set it up; an invalid value throws at boot. The
+  wallet requirement and the grant-program gate do not depend on this date.
+  `eligibleToday` already requires the grant for every payout,
   and `loadPayoutEligibility` (`src/lib/payout-eligibility.ts`) reads the
   share for each payout path, except two pings that follow a write (below).
-  Without a share the account is not eligible, with the same answers as for a
+  From the start day an account without a share is not eligible, with the same answers as for a
   missing grant, so the payout worker skips the trigger as it does today.
-  Storing the first share of the current wallet pings that UTC day's newest
+  From the start day, storing the first share of the current wallet pings that UTC day's newest
   media post, as `pingTodayMedia` (`src/lib/funding-ping.ts`) does when staff
   admit a grant, and later triggers that day pay as usual. That first-share
   ping calls `eligibleToday` directly with the share just stored. The staff
   trial and admit pings need the share as well; `pingTodayMedia` reads it
-  itself (`requireShare: true`). A day that ends without a share is not paid,
-  except by an operator replay, which checks eligibility when it runs.
+  itself (`requireShare: true`). Before the start day neither ping depends on
+  the share: the staff pings do not read it and the first-share ping is not sent,
+  because that share made nobody payable. From the start day a day that ends without a share is not paid,
+  except by an operator replay, which checks eligibility, and the start day, on
+  the clock when it runs.
 - **Owner field.** The owner account JSON carries `socialRecoverySetUp`,
   whether social recovery is set up, with no grant or date check. The
-  settings entry shows the fact, and the dialog and the payouts use it.
+  settings entry and the dialog use the fact; a payout decision reads the
+  share itself. The api returns no field about the start day.
 - **Prompt.** From the release on, a member in the grant program whose owner
   field is false sees a dialog on `/welcome`, like **Stell dich vor**
   (`IntroduceYourselfOverlay` in the app). It says that grant payouts need
-  social recovery and opens **Mein Konto absichern**. Closing it hides it
+  social recovery (`socialRecoveryPrompt.body` in the app), also before the
+  start day, when that is not yet true of a payout, and opens **Mein Konto absichern**. Closing it hides it
   until the next visit to `/welcome`. When both dialogs apply, **Stell dich
   vor** comes first.
 

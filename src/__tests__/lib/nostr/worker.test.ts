@@ -60,6 +60,7 @@ import { removeForumVideo } from '@/lib/video';
 
 vi.mock('@/lib/bolt11', () => ({
   decodeBolt11: vi.fn(),
+  inspectBolt11: vi.fn(() => null),
 }));
 
 // Pass-through spy: the shop kind 0 tests count and fail the worker's NIP-05 directory reads.
@@ -7802,6 +7803,122 @@ describe('zapReceiptIngest', () => {
     expect((await messages.getById('m-ingest'))?.sats).toBe(21);
     expect(calls).toContain('http://lnurl.internal/.well-known/lnurlp/ingest-wallet');
     expect(calls.some((url) => url.includes('gifts.test'))).toBe(false);
+  });
+
+  it.each([
+    ['the start day', '2026-10-29', 0],
+    ['the day before the start day', '2026-10-30', 1],
+  ])('passes the recovery share start day from env: %s', async (_label, requiredFrom, pings) => {
+    const nowMs = Date.parse('2026-10-29T12:00:00.000Z');
+    const auth = new InMemoryAuthStore();
+    const messages = new InMemoryMessageStore();
+    const eventId = 'ef'.repeat(32);
+    const receiptPubkey = 'ab'.repeat(32);
+    const base = {
+      linkingKey: null,
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      createdAt: 1,
+      rulesAgreedAt: 1,
+    };
+    await auth.createAccount({
+      ...base,
+      id: 'plat',
+      role: 'founder',
+      username: 'plat',
+      walletRequired: true,
+      viewKey: 'c'.repeat(64),
+      isPlatform: true,
+      profileMessageId: 'm-plat',
+    });
+    await auth.claimSparkPubkey('plat', `02${'c'.repeat(64)}`);
+    await auth.markSparkPubkeyVerified('plat', `02${'c'.repeat(64)}`, 'plat', 2);
+    await auth.createAccount({
+      ...base,
+      id: 'payer',
+      role: 'verified',
+      username: 'payer',
+      walletRequired: true,
+      viewKey: 'd'.repeat(64),
+    });
+    await auth.claimSparkPubkey('payer', `02${'d'.repeat(64)}`);
+    await auth.markSparkPubkeyVerified('payer', `02${'d'.repeat(64)}`, 'payer', 2);
+    await messages.create({
+      id: 'm-plat',
+      accountId: 'plat',
+      name: 'Ada',
+      text: 'platform note',
+      createdAt: new Date('2026-10-01T00:00:00.000Z'),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+      eventId,
+    });
+    await messages.recordInvoiceAttempt({
+      id: 'inv-plat',
+      createdAt: new Date('2026-10-29T00:00:00.000Z'),
+      messageId: 'm-plat',
+      payerAccountId: 'payer',
+      authorAccountId: 'plat',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: { content: 'Hello from Ada' },
+      result: 'ok',
+      httpStatus: 200,
+      pr: 'lnbc-plat',
+      paymentHash: 'd5'.repeat(32),
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: true,
+      lnurlResponse: null,
+    });
+    mockedDecode.mockReturnValue({ paymentHash: 'd5'.repeat(32), amountMsat: 21_000 });
+    const ping = vi.fn(async () => undefined);
+    const ingestOne = zapReceiptIngest(
+      deps({
+        messages,
+        auth,
+        kek: KEK,
+        publisher: new RecordingPublisher(),
+        now: () => nowMs,
+        env: { RECOVERY_SHARE_REQUIRED_FROM: requiredFrom },
+        verifyReceipt: () => true,
+        fetchImpl: async () =>
+          Response.json({
+            callback: 'https://gifts.test/lnurlp/plat/invoice',
+            minSendable: 1000,
+            maxSendable: 10_000_000,
+            allowsNostr: true,
+            nostrPubkey: receiptPubkey,
+          }),
+        lnurlServer: LNURL_SERVER,
+        spendPing: { ping },
+        postLimiter: new PostRateLimiter(),
+        fundingStore: new InMemoryFundingStore([
+          {
+            accountId: 'payer',
+            status: 'admitted',
+            appliedAt: 1,
+            decidedAt: 2,
+            decidedBy: 'staff',
+            trialUtcDate: null,
+            admittedAt: 2,
+            note: null,
+          },
+        ]),
+      }),
+    );
+    await ingestOne({
+      id: 'r-plat',
+      pubkey: receiptPubkey,
+      kind: 9735,
+      tags: [
+        ['e', eventId],
+        ['bolt11', 'lnbc-plat'],
+      ],
+    });
+    expect((await messages.listLatest(20)).some((row) => row.text === 'Hello from Ada')).toBe(true);
+    expect(ping).toHaveBeenCalledTimes(pings);
   });
 });
 

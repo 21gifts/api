@@ -70,7 +70,7 @@ const LNURL_ENV = {
 /**
  * Claim and verify the wallet of `acc-alice` (username `alice`) and, unless
  * `share` is false, store the 21.gifts recovery share that payouts need from
- * the grant gate day on.
+ * `RECOVERY_SHARE_REQUIRED_FROM` on.
  */
 async function verifyWallet(
   authStore: InMemoryAuthStore,
@@ -4755,10 +4755,67 @@ describe('payout gate: the 21.gifts recovery share', () => {
 
   beforeEach(() => {
     warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', FUNDING_REQUIRED_FROM_UTC);
   });
 
   afterEach(() => {
     warn.mockRestore();
+    vi.unstubAllEnvs();
+  });
+
+  it('throws at createApp for an invalid RECOVERY_SHARE_REQUIRED_FROM', () => {
+    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', '2026-02-30');
+    expect(() => createApp({ spendApiToken: TOKEN })).toThrow(
+      'RECOVERY_SHARE_REQUIRED_FROM must be an ISO date (YYYY-MM-DD)',
+    );
+  });
+
+  it.each([
+    ['the day before the start day', '2026-10-02'],
+    ['an unset start day', ''],
+  ])(
+    'issues to and reports eligible an admitted member without a share on %s',
+    async (_label, day) => {
+      vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', day);
+      const authStore = new InMemoryAuthStore();
+      await seedPasskeyAccount(authStore, { share: false });
+      const app = createApp({
+        spendApiToken: TOKEN,
+        authStore,
+        messageStore: livePostStore(),
+        fetchImpl: vi.fn<FetchFn>(happyFetch()),
+        now: () => GATE_MS,
+      });
+      const eligible = await app.request(
+        `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+        auth(),
+      );
+      expect(await eligible.json()).toEqual({ eligible: true, status: 'admitted' });
+      const issued = await app.request(
+        '/invoices',
+        auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+      );
+      expect(issued.status).toBe(200);
+    },
+  );
+
+  it('keeps the passkey and grant gates of POST /invoices while the share is not required', async () => {
+    vi.stubEnv('RECOVERY_SHARE_REQUIRED_FROM', '');
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, { share: false });
+    const res = await createApp({
+      spendApiToken: TOKEN,
+      authStore,
+      fundingStore: new InMemoryFundingStore(),
+      messageStore: livePostStore(),
+      fetchImpl: vi.fn<FetchFn>(happyFetch()),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
   });
 
   it('refuses an admitted member without a share like a missing grant', async () => {

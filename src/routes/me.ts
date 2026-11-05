@@ -14,7 +14,7 @@ import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
-import { effectiveStatus, eligibleToday } from '@/lib/funding';
+import { effectiveStatus, eligibleToday, recoveryShareRequired } from '@/lib/funding';
 import { pingTodayMedia } from '@/lib/funding-ping';
 import { normalizeLocation } from '@/lib/location';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -93,6 +93,8 @@ export interface MeRouteDeps {
    * recovery share (default: empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /**
    * Optional spend ping. After About me is saved, a verified account with a
    * live top-level photo or video (including this note) is welcome-pinged.
@@ -346,9 +348,10 @@ function ownerJson(deps: MeRouteDeps, account: Account): Promise<OwnerAccountRes
 
 /**
  * Daily ping after the first recovery share of the current wallet is stored:
- * reads the grant and, when the account is eligible today with that share,
- * pings today's newest media post through {@link pingTodayMedia} (no second
- * share read). No-op without a spend ping. A grant read failure logs
+ * from the share's start day on, reads the grant and, when the account is
+ * eligible today with that share, pings today's newest media post through
+ * {@link pingTodayMedia} (no second share read). Before that day the share
+ * made nobody payable, so nothing is read or pinged. No-op without a spend ping. A grant read failure logs
  * `funding.daily_ping.failed`; the route's answer never depends on this.
  *
  * @param deps - `/me` collaborators.
@@ -363,14 +366,15 @@ async function pingAfterShareStored(
   nowMs: number,
 ): Promise<void> {
   const spendPing = deps.spendPing;
-  if (spendPing === undefined) {
+  const requiredFrom = deps.recoveryShareRequiredFrom ?? null;
+  if (spendPing === undefined || !recoveryShareRequired(nowMs, requiredFrom)) {
     return;
   }
   try {
     const grant = await (deps.fundingStore ?? new InMemoryFundingStore()).getByAccountId(
       account.id,
     );
-    if (!eligibleToday(account.role, grant, nowMs, true)) {
+    if (!eligibleToday(account.role, grant, nowMs, true, requiredFrom)) {
       return;
     }
     await pingTodayMedia(

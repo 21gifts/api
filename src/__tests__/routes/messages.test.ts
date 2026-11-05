@@ -3955,6 +3955,7 @@ describe('POST /messages', () => {
       spendPing,
       lnurlServer: LNURL_SERVER,
       fundingStore: admittedFunding(),
+      recoveryShareRequiredFrom: FUNDING_REQUIRED_FROM_UTC,
       now: () => gateNow,
     }).request('/messages', {
       method: 'POST',
@@ -3968,6 +3969,40 @@ describe('POST /messages', () => {
         (e) => e['event'] === 'spend.ping.skipped' && e['reason'] === 'not_eligible',
       ),
     ).toBe(true);
+  });
+
+  it.each([
+    ['the day before the start day', '2026-10-02'],
+    ['an unset start day', null],
+  ])('daily-pings an admitted poster without a share on %s', async (_label, requiredFrom) => {
+    const spendPing = {
+      ping: vi.fn(async (_address: string, _messageId: string, _kind?: string) => undefined),
+    };
+    const gateNow = Date.parse(`${FUNDING_REQUIRED_FROM_UTC}T12:00:00.000Z`);
+    const auth = await namedStore('Ada');
+    await auth.createSession({ token: 'tok', accountId: 'acc', createdAt: gateNow });
+    const res = await mount(auth, new InMemoryMessageStore(), {
+      spendPing,
+      lnurlServer: LNURL_SERVER,
+      fundingStore: admittedFunding(),
+      recoveryShareRequiredFrom: requiredFrom,
+      now: () => gateNow,
+    }).request('/messages', {
+      method: 'POST',
+      headers: { ...AUTH, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        text: 'hello',
+        photo: { contentType: 'image/jpeg', data: JPEG_B64 },
+      }),
+    });
+    expect(res.status).toBe(200);
+    const created = (await res.json()) as { id: string };
+    expect(spendPing.ping).toHaveBeenCalledWith(
+      'ada@example.test',
+      created.id,
+      'daily',
+      'admitted',
+    );
   });
 
   it('daily-pings an admitted poster with a recovery share', async () => {

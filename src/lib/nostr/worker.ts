@@ -8,6 +8,7 @@ import { unsignedConversationDefaults, type ConversationThread } from '@/lib/con
 import { inboxUnreadCountFor, notifyConversationMessage } from '@/lib/conversation-push';
 import type { ConversationStore } from '@/lib/conversation-store';
 import type { LnurlServerConfig } from '@/lib/config';
+import { resolveRecoveryShareRequiredFrom } from '@/lib/funding';
 import type { FundingStore } from '@/lib/funding-store';
 import type { FiatRateBook } from '@/lib/usd-fiat-store';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -255,6 +256,9 @@ function reservedContent(
  * @param deps - Worker collaborators.
  * @param urls - Kind 9735 receipt-read URLs.
  * @returns Args object with identical optional collaborators for every call site.
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 function indexOpenZapReceiptsArgs(
   deps: ZapIngestDeps,
@@ -275,6 +279,7 @@ function indexOpenZapReceiptsArgs(
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+    recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(deps.env),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
     ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   };
@@ -289,6 +294,9 @@ function indexOpenZapReceiptsArgs(
  * @param deps - The worker collaborators the ingest uses.
  * @returns A function that ingests one kind 9735 event and resolves `true`
  *   when that receipt is credited.
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 export function zapReceiptIngest(
   deps: ZapIngestDeps,
@@ -443,6 +451,9 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * @param mode - Which lane work to run (default `'all'`).
  * @returns Resolves when the selected work has finished (notify failures are
  *   swallowed).
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 export async function runNostrWorkerTick(
   deps: NostrWorkerDeps,

@@ -54,6 +54,7 @@ interface MountOpts {
   recoveryShareKek?: Uint8Array;
   fetchImpl?: FetchFn;
   fundingStore?: FundingStore;
+  recoveryShareRequiredFrom?: string | null;
   spendPing?: SpendPing;
 }
 
@@ -72,6 +73,10 @@ function mount(store: InMemoryAuthStore, opts: MountOpts = {}): Hono {
       ...(opts.recoveryShareKek === undefined ? {} : { recoveryShareKek: opts.recoveryShareKek }),
       ...(opts.fetchImpl === undefined ? {} : { fetchImpl: opts.fetchImpl }),
       ...(opts.fundingStore === undefined ? {} : { fundingStore: opts.fundingStore }),
+      recoveryShareRequiredFrom:
+        opts.recoveryShareRequiredFrom === undefined
+          ? new Date(GATE_NOW).toISOString().slice(0, 10)
+          : opts.recoveryShareRequiredFrom,
       ...(opts.spendPing === undefined ? {} : { spendPing: opts.spendPing }),
     }),
   );
@@ -2664,6 +2669,29 @@ describe('PUT /me/recovery-share', () => {
       expect(ping).toHaveBeenCalledTimes(1);
       expect(ping).toHaveBeenCalledWith('alice@example.test', MEMBER_PHOTO, 'daily', 'admitted');
       expect(readsDuringPing).toBe(0);
+    });
+
+    it.each([
+      ['the day before the start day', new Date(GATE_NOW + 86_400_000).toISOString().slice(0, 10)],
+      ['an unset start day', null],
+    ])('does not ping on %s', async (_label, requiredFrom) => {
+      const store = await memberStore();
+      const ping = vi.fn(async () => undefined);
+      const res = await putShare(
+        mount(store, {
+          clock: gateClock,
+          walletEnabled: true,
+          recoveryShareKek: SHARE_KEK,
+          fundingStore: admitted(),
+          recoveryShareRequiredFrom: requiredFrom,
+          messages: await todayPhoto(),
+          spendPing: { ping },
+        }),
+        body,
+      );
+      expect(res.status).toBe(200);
+      expect(((await res.json()) as Record<string, unknown>)['socialRecoverySetUp']).toBe(true);
+      expect(ping).not.toHaveBeenCalled();
     });
 
     it('does not ping on a replacement', async () => {

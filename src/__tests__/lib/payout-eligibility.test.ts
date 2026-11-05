@@ -42,9 +42,16 @@ async function load(
   stored: FundingGrant | undefined,
   share: boolean | Error,
   nowMs: number,
+  requiredFrom: string | null = FUNDING_REQUIRED_FROM_UTC,
 ): Promise<{ result: Awaited<ReturnType<typeof loadPayoutEligibility>>; shareReads: number }> {
   const s = stores(stored, share);
-  const result = await loadPayoutEligibility(s.fundingStore, s.auth, { id: 'acc', role }, nowMs);
+  const result = await loadPayoutEligibility(
+    s.fundingStore,
+    s.auth,
+    { id: 'acc', role },
+    nowMs,
+    requiredFrom,
+  );
   expect(s.getByAccountId).toHaveBeenCalledWith('acc');
   if (s.hasRecoveryShareForVerifiedWallet.mock.calls.length > 0) {
     expect(s.hasRecoveryShareForVerifiedWallet).toHaveBeenCalledWith('acc');
@@ -126,6 +133,7 @@ describe('loadPayoutEligibility', () => {
         { hasRecoveryShareForVerifiedWallet },
         { id: 'acc', role: 'verified' },
         GATE_MS,
+        GATE_DAY,
       ),
     ).rejects.toThrow('grant down');
     expect(hasRecoveryShareForVerifiedWallet).not.toHaveBeenCalled();
@@ -135,5 +143,50 @@ describe('loadPayoutEligibility', () => {
     await expect(load('verified', grant(), new Error('share down'), GATE_MS)).rejects.toThrow(
       'share down',
     );
+  });
+
+  describe('with its own start day', () => {
+    const FROM = '2026-11-20';
+    const DAY_BEFORE_MS = Date.parse('2026-11-19T23:59:59.999Z');
+    const START_DAY_MS = Date.parse('2026-11-20T00:00:00.000Z');
+
+    it('pays without reading the share on the day before', async () => {
+      const admitted = grant();
+      expect(await load('verified', admitted, false, DAY_BEFORE_MS, FROM)).toEqual({
+        result: { grant: admitted, eligible: true },
+        shareReads: 0,
+      });
+    });
+
+    it('reads and needs the share on the start day', async () => {
+      const admitted = grant();
+      expect(await load('verified', admitted, false, START_DAY_MS, FROM)).toEqual({
+        result: { grant: admitted, eligible: false },
+        shareReads: 1,
+      });
+      expect(await load('verified', admitted, true, START_DAY_MS, FROM)).toEqual({
+        result: { grant: admitted, eligible: true },
+        shareReads: 1,
+      });
+    });
+
+    it('pays without reading the share when unset', async () => {
+      const admitted = grant();
+      expect(await load('verified', admitted, false, START_DAY_MS, null)).toEqual({
+        result: { grant: admitted, eligible: true },
+        shareReads: 0,
+      });
+    });
+
+    it('keeps the grant gate while the share is not required', async () => {
+      expect(await load('verified', undefined, false, DAY_BEFORE_MS, FROM)).toEqual({
+        result: { grant: undefined, eligible: false },
+        shareReads: 0,
+      });
+      expect(await load('basis', grant(), false, START_DAY_MS, null)).toEqual({
+        result: { grant: grant(), eligible: false },
+        shareReads: 0,
+      });
+    });
   });
 });

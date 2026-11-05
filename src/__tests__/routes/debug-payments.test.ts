@@ -48,6 +48,7 @@ function mount(
       >;
     };
     fundingStore?: InMemoryFundingStore;
+    recoveryShareRequiredFrom?: string | null;
     auth?: InMemoryAuthStore;
     now?: () => number;
     giftStore?: InMemoryGiftStore;
@@ -63,6 +64,9 @@ function mount(
       debugToken,
       ...(extra.spendPing === undefined ? {} : { spendPing: extra.spendPing }),
       ...(extra.fundingStore === undefined ? {} : { fundingStore: extra.fundingStore }),
+      ...(extra.recoveryShareRequiredFrom === undefined
+        ? {}
+        : { recoveryShareRequiredFrom: extra.recoveryShareRequiredFrom }),
       conversationStore: new InMemoryConversationStore(),
       trustStore: new InMemoryTrustStore(),
       giftStore: extra.giftStore ?? new InMemoryGiftStore(),
@@ -1455,11 +1459,13 @@ describe('debugPaymentsRoutes', () => {
     async function replay(
       deps: Awaited<ReturnType<typeof gated>>,
       spendPing: ReturnType<typeof spendPingMock>,
+      requiredFrom: string | null = '2026-10-29',
     ): Promise<Response> {
       const app = mount(deps.store, 'secret', {
         spendPing,
         auth: deps.auth,
         fundingStore: deps.fundingStore,
+        recoveryShareRequiredFrom: requiredFrom,
         now: GATE_NOW,
       });
       return app.request('/debug/spend-ping', {
@@ -1484,6 +1490,16 @@ describe('debugPaymentsRoutes', () => {
       expect(spendPing.pingOnDay).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['the day before the start day', '2026-10-30'],
+      ['an unset start day', null],
+    ])('replays for an admitted member without a share on %s', async (_label, requiredFrom) => {
+      const spendPing = spendPingMock();
+      const res = await replay(await gated(false), spendPing, requiredFrom);
+      expect(res.status).toBe(202);
+      expect(spendPing.pingOnDay).toHaveBeenCalledTimes(1);
+    });
+
     it('replays for an admitted member with a recovery share', async () => {
       const spendPing = spendPingMock();
       const res = await replay(await gated(true), spendPing);
@@ -1495,6 +1511,57 @@ describe('debugPaymentsRoutes', () => {
         '2026-10-29',
         'admitted',
       ]);
+    });
+
+    it.each([
+      ['the start day', '2026-10-29', false],
+      ['the day before the start day', '2026-10-30', true],
+    ])('settling a platform-note zap on %s', async (_label, requiredFrom, pinged) => {
+      const store = new InMemoryMessageStore();
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount(
+        account({
+          id: 'settle-author',
+          role: 'founder',
+          isPlatform: true,
+          profileMessageId: 'settle-message',
+        }),
+      );
+      await createReceiver(auth, {
+        id: 'settle-payer',
+        role: 'verified',
+        name: 'Ada',
+        forumLawsDismissed: false,
+      });
+      const preimage = '16'.repeat(32);
+      const paymentHash = createHash('sha256').update(Buffer.from(preimage, 'hex')).digest('hex');
+      await seedSettleInvoice(store, paymentHash);
+      const fundingStore = new InMemoryFundingStore([
+        {
+          accountId: 'settle-payer',
+          status: 'admitted',
+          appliedAt: 1,
+          decidedAt: 2,
+          decidedBy: 'staff',
+          trialUtcDate: null,
+          admittedAt: 2,
+          note: null,
+        },
+      ]);
+      const spendPing = { ping: vi.fn(async () => undefined) };
+      const res = await mount(store, 'secret', {
+        spendPing,
+        auth,
+        fundingStore,
+        recoveryShareRequiredFrom: requiredFrom,
+        now: GATE_NOW,
+      }).request('/debug/invoices/settle', {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret', 'content-type': 'application/json' },
+        body: JSON.stringify({ paymentHash, note: 'evidence', preimage }),
+      });
+      expect(res.status).toBe(200);
+      expect(spendPing.ping).toHaveBeenCalledTimes(pinged ? 1 : 0);
     });
 
     it('answers 503 when the share read throws', async () => {

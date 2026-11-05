@@ -1676,7 +1676,10 @@ describe('manual invoice settlement', () => {
     const GATE_NOW = Date.parse('2026-10-29T12:00:00.000Z');
 
     /** Settle an admitted payer's platform-note compose on a gated day. */
-    async function settleGated(share: boolean): Promise<{
+    async function settleGated(
+      share: boolean,
+      requiredFrom: string | null = '2026-10-29',
+    ): Promise<{
       ping: ReturnType<typeof vi.fn>;
       createdId: string | undefined;
       events: Array<Record<string, unknown>>;
@@ -1741,6 +1744,7 @@ describe('manual invoice settlement', () => {
         preimage,
         spendPing: { ping },
         fundingStore,
+        recoveryShareRequiredFrom: requiredFrom,
         postLimiter: new PostRateLimiter(),
         lnurlServer: LNURL_SERVER,
       });
@@ -1757,6 +1761,14 @@ describe('manual invoice settlement', () => {
 
     it('pings an admitted payer with a recovery share', async () => {
       const { ping, createdId } = await settleGated(true);
+      expect(ping).toHaveBeenCalledWith('ada-gated@example.test', createdId, 'daily', 'admitted');
+    });
+
+    it.each([
+      ['the day before the start day', '2026-10-30'],
+      ['an unset start day', null],
+    ])('pings an admitted payer without a share on %s', async (_label, requiredFrom) => {
+      const { ping, createdId } = await settleGated(false, requiredFrom);
       expect(ping).toHaveBeenCalledWith('ada-gated@example.test', createdId, 'daily', 'admitted');
     });
 

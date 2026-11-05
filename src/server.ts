@@ -65,6 +65,7 @@ import { debugShopNoteRoutes } from '@/routes/debug-shop-notes';
 import { debugTrustRoutes } from '@/routes/debug-trust';
 import { debugCatalogRoutes } from '@/routes/debug-catalog';
 import { debugLoginsRoutes } from '@/routes/debug-logins';
+import { resolveRecoveryShareRequiredFrom } from '@/lib/funding';
 import { LoginGate, resolveLoginsOpenDefault, resolveRequiredAppBuild } from '@/lib/login-gate';
 import { InMemoryLoginGateStore, type LoginGateStore } from '@/lib/login-gate-store';
 import { trustChainRoutes } from '@/routes/trust-chain';
@@ -488,7 +489,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   `APP_BUILD_REQUIRED` from env it gates the session-creating `/auth`
  *   routes and backs `/debug/logins` and `DELETE /debug/sessions`).
  * @throws {@link Error}
- * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`.
+ * When `LOGINS_OPEN_DEFAULT` is set to a value other than `open` or `closed`,
+ * or `RECOVERY_SHARE_REQUIRED_FROM` to anything but an ISO date.
  * @throws {@link Error}
  * When the trimmed read token is non-empty and equal to the trimmed write token, before routes mount. The message is `DEBUG_READ_TOKEN matches DEBUG_TOKEN` and includes neither token value. An empty or missing read token does not throw.
  * @returns A Hono app with all routes and middleware attached.
@@ -516,6 +518,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     resolveLoginsOpenDefault(env),
   );
   const requiredAppBuild = resolveRequiredAppBuild(env);
+  const recoveryShareRequiredFrom = resolveRecoveryShareRequiredFrom(env);
   const invoiceRateCaps =
     deps.invoiceRateCaps === undefined ? resolveTestInvoiceRateCaps(env) : deps.invoiceRateCaps;
   if (invoiceRateCaps !== null) {
@@ -817,6 +820,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       rates: btcUsdRates,
       fiatRates,
       fundingStore,
+      recoveryShareRequiredFrom,
       fetchImpl,
       ...receivingDeps,
       shopIdentities: shopIdentityStore,
@@ -910,6 +914,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       notificationStore,
       ...(spendPing === undefined ? {} : { spendPing }),
       fundingStore,
+      recoveryShareRequiredFrom,
       conversationStore,
       trustStore,
       giftStore,
@@ -1009,6 +1014,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     fundingRoutes({
       authStore: store,
       fundingStore,
+      recoveryShareRequiredFrom,
       messageStore,
       ...receivingDeps,
       now,
@@ -1041,6 +1047,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       env,
       translationStore,
       fundingStore,
+      recoveryShareRequiredFrom,
       giftStore,
       shopIdentities: shopIdentityStore,
       fxSpot: fxSpotStore,
@@ -1138,6 +1145,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...receivingDeps,
       ...sparkDeps,
       fundingStore,
+      recoveryShareRequiredFrom,
       env,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(spendPing === undefined ? {} : { spendPing }),
@@ -1170,6 +1178,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fetchImpl,
       conversationStore,
       fundingStore,
+      recoveryShareRequiredFrom,
       fiatRates,
       gifts: giftStore,
       ...receivingDeps,
@@ -1184,6 +1193,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       authStore: store,
       messageStore,
       fundingStore,
+      recoveryShareRequiredFrom,
       gifts: giftStore,
       rosterStore,
       now,

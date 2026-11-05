@@ -62,6 +62,8 @@ export interface SpendInstructionRouteDeps {
   >;
   /** Funding grants for spend eligibility. */
   fundingStore: Pick<FundingStore, 'getByAccountId'>;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /** Clock, epoch milliseconds. */
   now: () => number;
   /**
@@ -156,6 +158,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
           deps.authStore,
           account,
           nowMs,
+          deps.recoveryShareRequiredFrom ?? null,
         );
         eligible = payout.eligible;
         grantStatus = effectiveStatus(payout.grant, nowMs);

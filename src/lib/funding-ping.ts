@@ -6,7 +6,7 @@
 
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
-import { fundingGrantRequired, utcDayKey } from '@/lib/funding';
+import { recoveryShareRequired, utcDayKey } from '@/lib/funding';
 import { logEvent } from '@/lib/log';
 import type { MessageStore } from '@/lib/message-store';
 import { receivingAddress } from '@/lib/receiving-address';
@@ -23,13 +23,15 @@ export interface TodayMediaPingDeps {
   messageStore: Pick<MessageStore, 'latestLiveTopLevelMediaId' | 'getById'>;
   /** Auth store for the recovery share check when `requireShare` is set. */
   authStore: Pick<AuthStore, 'hasRecoveryShareForVerifiedWallet'>;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
 }
 
 /**
  * Daily spend ping for the newest live top-level photo or video posted
  * today UTC. No-op when spend ping is omitted, the account has no receiving
- * address, or there is no such post. With `requireShare` on a day the grant
- * gate is in force, an account without a 21.gifts recovery share for its
+ * address, or there is no such post. With `requireShare` on a day the share is
+ * required ({@link recoveryShareRequired}), an account without a 21.gifts recovery share for its
  * current verified wallet is not pinged (`spend.ping.skipped`,
  * `not_eligible`). Share read, lookup, and ping failures are logged as
  * `funding.daily_ping.failed` and swallowed, so this never throws.
@@ -58,7 +60,7 @@ export async function pingTodayMedia(
   try {
     if (
       requireShare &&
-      fundingGrantRequired(nowMs) &&
+      recoveryShareRequired(nowMs, deps.recoveryShareRequiredFrom ?? null) &&
       !(await deps.authStore.hasRecoveryShareForVerifiedWallet(account.id))
     ) {
       logEvent('spend.ping.skipped', { address, reason: 'not_eligible' });

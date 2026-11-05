@@ -79,11 +79,13 @@ function deps(
   authStore: InMemoryAuthStore,
   messageStore: InMemoryMessageStore,
   ping?: SpendPing['ping'],
+  requiredFrom: string | null = '2026-01-01',
 ): TodayMediaPingDeps {
   return {
     lnurlServer: LNURL_SERVER,
     messageStore,
     authStore,
+    recoveryShareRequiredFrom: requiredFrom,
     ...(ping === undefined ? {} : { spendPing: { ping } }),
   };
 }
@@ -294,6 +296,60 @@ describe('pingTodayMedia', () => {
         false,
       );
       expect(share).not.toHaveBeenCalled();
+      expect(ping).toHaveBeenCalledWith(ADDRESS, PHOTO_A, 'daily', 'admitted');
+    });
+
+    it.each([
+      [
+        'the day before the start day',
+        new Date(GATE_MS).toISOString().slice(0, 10),
+        GATE_MS - 86_400_000,
+      ],
+      ['an unset start day', null, GATE_MS],
+    ])('pings without reading the share on %s', async (_label, requiredFrom, nowMs) => {
+      const { authStore, account } = await member();
+      const share = vi.spyOn(authStore, 'hasRecoveryShareForVerifiedWallet');
+      const messageStore = new InMemoryMessageStore();
+      await seedLivePhoto(messageStore, PHOTO_A, new Date(nowMs));
+      const ping = vi.fn(async () => undefined);
+      await pingTodayMedia(
+        deps(authStore, messageStore, ping, requiredFrom),
+        account,
+        nowMs,
+        'admitted',
+        true,
+      );
+      expect(share).not.toHaveBeenCalled();
+      expect(ping).toHaveBeenCalledWith(ADDRESS, PHOTO_A, 'daily', 'admitted');
+    });
+
+    it('needs the share when the clock reaches the start day', async () => {
+      const { authStore, account } = await member();
+      const messageStore = new InMemoryMessageStore();
+      await seedLivePhoto(messageStore, PHOTO_A, new Date(GATE_MS));
+      const ping = vi.fn(async () => undefined);
+      await pingTodayMedia(
+        deps(authStore, messageStore, ping, new Date(GATE_MS).toISOString().slice(0, 10)),
+        account,
+        GATE_MS,
+        'admitted',
+        true,
+      );
+      expect(ping).not.toHaveBeenCalled();
+    });
+
+    it('treats an omitted start day as not required', async () => {
+      const { authStore, account } = await member();
+      const messageStore = new InMemoryMessageStore();
+      await seedLivePhoto(messageStore, PHOTO_A, new Date(GATE_MS));
+      const ping = vi.fn(async () => undefined);
+      await pingTodayMedia(
+        { lnurlServer: LNURL_SERVER, messageStore, authStore, spendPing: { ping } },
+        account,
+        GATE_MS,
+        'admitted',
+        true,
+      );
       expect(ping).toHaveBeenCalledWith(ADDRESS, PHOTO_A, 'daily', 'admitted');
     });
 

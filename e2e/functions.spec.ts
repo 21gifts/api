@@ -3263,6 +3263,16 @@ test('Function: buildFundingPayoutMatrix — default boot has no DATABASE_URL', 
 }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });
+test('Function: resolveRecoveryShareRequiredFrom — boots with a blank start day', async ({
+  request,
+}) => {
+  expect((await request.get('/healthz')).status()).toBe(200);
+});
+test('Function: recoveryShareRequired — GET /invoices/eligible unconfigured is 503', async ({
+  request,
+}) => {
+  expect((await request.get('/invoices/eligible?address=ada@127.0.0.1')).status()).toBe(503);
+});
 test('Function: eligibleToday — default boot has no DATABASE_URL', async ({ request }) => {
   expect((await request.get('/healthz')).status()).toBe(200);
 });

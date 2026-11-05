@@ -87,6 +87,8 @@ export interface ConversationRouteDeps {
    * empty {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /** LNURL fetch (invoice path). */
   fetchImpl?: FetchFn;
   /** LNURL server; omitted when off. A counterpart with a verified wallet receives on it. */
@@ -1015,6 +1017,7 @@ export function conversationRoutes(deps: ConversationRouteDeps): Hono {
                   deps.authStore,
                   account,
                   deps.now(),
+                  deps.recoveryShareRequiredFrom ?? null,
                 );
                 if (!eligible) {
                   logEvent('spend.ping.skipped', { reason: 'not_eligible' });
