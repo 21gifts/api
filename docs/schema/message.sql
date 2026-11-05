@@ -263,7 +263,7 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;
 -- Optional 21.gifts account on a top-level shop note. Not the author.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL;
--- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.
+-- Frozen ask: currency, numeric amount, typed amount text, and spot snapshots. All null when there is no currency ask.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8);
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount_text text;

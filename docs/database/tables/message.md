@@ -43,6 +43,7 @@ Source: [src/lib/message-store.ts](../../../src/lib/message-store.ts)
 | `mentions`               | JSON               | `jsonb`                    | No       | `[]`      | –                            |
 | `goal_currency`          | ENUM               | `text`                     | Yes      | –         | –                            |
 | `goal_amount`            | Decimal            | `numeric(20,8)`            | Yes      | –         | –                            |
+| `goal_amount_text`       | Free text          | `text`                     | Yes      | –         | –                            |
 | `goal_fiat_usd`          | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
 | `goal_fiat_chf`          | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
 | `goal_fiat_eur`          | Decimal            | `numeric(20,2)`            | Yes      | –         | –                            |
