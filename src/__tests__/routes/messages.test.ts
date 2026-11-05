@@ -11504,6 +11504,100 @@ describe('GET /messages/hidden', () => {
       expect(json).toEqual({ error: 'Messages are unavailable' });
     });
 
+    it('rounds a typed franc or euro past two decimals half-up', async () => {
+      const chf = await post(
+        { text: 'chf', goalCurrency: 'CHF', goalAmount: '1.235' },
+        askSpot(spot),
+      );
+      expect(chf.res.status).toBe(200);
+      expect(chf.json['goalAmount']).toBe('1.235');
+      expect(chf.json['goalAmountChf']).toBe('1.24');
+      expect(chf.json['goalSats']).toBe(2744);
+      const eur = await post(
+        { text: 'eur', goalCurrency: 'EUR', goalAmount: '1.234' },
+        askSpot(spot),
+      );
+      expect(eur.res.status).toBe(200);
+      expect(eur.json['goalAmount']).toBe('1.234');
+      expect(eur.json['goalAmountEur']).toBe('1.23');
+      expect(eur.json['goalSats']).toBe(2683);
+    });
+
+    it('bills one sat when a positive fiat amount rounds to zero', async () => {
+      const { res, json } = await post(
+        { text: 'dust', goalCurrency: 'USD', goalAmount: '0.00000001' },
+        askSpot({ ...spot, rates: { ...spot.rates, USD: '100000000.00' } }),
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalAmount']).toBe('0.00000001');
+      expect(json['goalAmountUsd']).toBe('0.00');
+      expect(json['goalSats']).toBe(1);
+    });
+
+    it('rounds the sat price of a fiat ask half-up', async () => {
+      const { res, json } = await post(
+        { text: 'up', goalCurrency: 'USD', goalAmount: '2' },
+        askSpot({ ...spot, rates: { ...spot.rates, USD: '30000.00' } }),
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalSats']).toBe(6667);
+      expect(json['goalAmountUsd']).toBe('2.00');
+    });
+
+    it('rejects a fiat ask whose rate cannot be parsed', async () => {
+      const { res, json } = await post(
+        { text: 'bad', goalCurrency: 'USD', goalAmount: '1' },
+        askSpot({ ...spot, rates: { ...spot.rates, USD: 'nope' } }),
+      );
+      expect(res.status).toBe(400);
+      expect(json).toEqual({ error: 'Ask amount is unavailable' });
+    });
+
+    it('rejects a fiat amount that is not a positive decimal', async () => {
+      const zero = await post(
+        { text: 'zero', goalCurrency: 'USD', goalAmount: '0' },
+        askSpot(spot),
+      );
+      expect(zero.res.status).toBe(400);
+      expect(zero.json).toEqual({
+        error: 'Send either goalSats or both goalCurrency and goalAmount',
+      });
+    });
+
+    it('rejects a fiat ask whose typed cents do not fit', async () => {
+      const { res, json } = await post(
+        { text: 'wide', goalCurrency: 'USD', goalAmount: '90071992547409.92' },
+        askSpot({
+          ...spot,
+          rates: { ...spot.rates, USD: '900719925474099200000' },
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(json).toEqual({ error: 'Ask amount is unavailable' });
+    });
+
+    it('leaves a missing or unusable BTC spot currency null', async () => {
+      const missing = await post(
+        { text: 'btc', goalCurrency: 'BTC', goalAmount: '10' },
+        askSpot({ ...spot, rates: { USD: '50000.00' } }),
+      );
+      expect(missing.res.status).toBe(200);
+      expect(missing.json['goalAmountUsd']).toBe('0.01');
+      expect(missing.json['goalAmountChf']).toBeNull();
+      expect(missing.json['goalAmountEur']).toBeNull();
+      expect(missing.json['goalAmountPhp']).toBeNull();
+      const bad = await post(
+        { text: 'btc-bad', goalCurrency: 'BTC', goalAmount: '10' },
+        askSpot({
+          ...spot,
+          rates: { USD: 'abc', CHF: '45000.00', EUR: '46000.00', PHP: '2800000.00' },
+        }),
+      );
+      expect(bad.res.status).toBe(200);
+      expect(bad.json['goalAmountUsd']).toBeNull();
+      expect(bad.json['goalAmountChf']).toBe('0.00');
+    });
+
     it('accepts a multipart currency ask', async () => {
       const form = new FormData();
       form.set('text', 'clip');
