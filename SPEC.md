@@ -4541,9 +4541,8 @@ every write back. Nothing is half-moved.
 
 The survivor keeps the login the operator chose. Name, username,
 location, and the in-app wallet key are not copied from the source, and
-neither is the wallet verification. Gifts are stored against
-the Wallet of Satoshi username, not the account id, so they are not
-reassigned. Nostr keys, the view key, and the linking key stay on the
+neither is the wallet verification. Gifts are stored against the recipient handle (the local part of the
+receiving address) and are not moved. Nostr keys, the view key, and the linking key stay on the
 survivor. `sessionRefused` stays the survivor's: closing an account
 does not lock the account that remains. Notification level and amount
 unit stay the survivor's. Locale and fiat are copied from the source
