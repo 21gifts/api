@@ -66,6 +66,8 @@ export interface FundingRouteDeps {
   authStore: AuthStore;
   /** Funding-grant persistence port. */
   fundingStore: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /** Forum persistence for staff application detail. */
   messageStore: MessageStore;
   /** LNURL server; omitted when off. A verified wallet makes an applicant's notes payable. */

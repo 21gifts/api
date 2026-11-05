@@ -307,6 +307,8 @@ export interface MessagesRouteDeps {
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /**
    * Outbound house gifts. A `welcome` gift with description `21gifts welcome` recorded under the author's
    * username at or after the wallet verification stops a second welcome ping.
@@ -1424,6 +1426,7 @@ async function persistForumPost(
           deps.authStore,
           account,
           deps.now(),
+          deps.recoveryShareRequiredFrom ?? null,
         );
         if (!eligible) {
           logEvent('spend.ping.skipped', { reason: 'not_eligible' });

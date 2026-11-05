@@ -155,6 +155,8 @@ export interface NostrWorkerDeps {
   postLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /** Optional profile-photo and wide-image store. Omitted → the shared icon and the shared banner. The About me photo is neither. */
   banners?: BannerStore;
   /** Optional crosses for the one spot taken per newly indexed zap. */
@@ -181,6 +183,7 @@ export type ZapIngestDeps = Pick<
   | 'spendPing'
   | 'postLimiter'
   | 'fundingStore'
+  | 'recoveryShareRequiredFrom'
   | 'fiatRates'
   | 'lnurlServer'
 >;
@@ -275,6 +278,9 @@ function indexOpenZapReceiptsArgs(
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+    ...(deps.recoveryShareRequiredFrom === undefined
+      ? {}
+      : { recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom }),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
     ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
   };

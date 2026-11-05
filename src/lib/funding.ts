@@ -1,4 +1,5 @@
 import type { AccountRole } from '@/lib/auth/store';
+import { isUtcDay } from '@/lib/gift';
 
 /**
  * Funding-program grant domain.
@@ -207,14 +208,47 @@ export function inGrantProgramToday(grant: FundingGrant | undefined, nowMs: numb
 }
 
 /**
+ * Read `RECOVERY_SHARE_REQUIRED_FROM`: the first UTC day a payout needs the
+ * 21.gifts recovery share.
+ *
+ * @param env - Process environment.
+ * @returns The trimmed `YYYY-MM-DD` day, or `null` when unset or blank (not required yet).
+ * @throws Error when the variable is set to anything but a real calendar day.
+ */
+export function resolveRecoveryShareRequiredFrom(
+  env: Record<string, string | undefined>,
+): string | null {
+  const raw = (env['RECOVERY_SHARE_REQUIRED_FROM'] ?? '').trim();
+  if (raw === '') {
+    return null;
+  }
+  if (!isUtcDay(raw)) {
+    throw new Error('RECOVERY_SHARE_REQUIRED_FROM must be an ISO date (YYYY-MM-DD)');
+  }
+  return raw;
+}
+
+/**
+ * Whether a payout needs the 21.gifts recovery share on this UTC day.
+ *
+ * @param nowMs - Epoch milliseconds.
+ * @param requiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
+ * @returns `true` when the grant gate is in force and the day is on or after
+ *   `requiredFrom`; `false` when `requiredFrom` is `null`.
+ */
+export function recoveryShareRequired(nowMs: number, requiredFrom: string | null): boolean {
+  return requiredFrom !== null && fundingGrantRequired(nowMs) && utcDayKey(nowMs) >= requiredFrom;
+}
+
+/**
  * Whether the account may receive a spend ping / spend invoice today.
  *
  * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
  * other role is true (passkey and living-room post still gate issue). From
- * that UTC day, true iff {@link inGrantProgramToday} and
- * `recoveryShareStored`. Expired trial, pending, rejected, and missing grants
- * are then false, and so is a grant without the share. The share condition
- * has no start date of its own.
+ * that UTC day, true iff {@link inGrantProgramToday} and, once
+ * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
+ * rejected, and missing grants are then false, and so is a grant without a
+ * required share.
  *
  * @param role - Live account role.
  * @param grant - Stored grant, or `undefined` when no row.
@@ -222,6 +256,7 @@ export function inGrantProgramToday(grant: FundingGrant | undefined, nowMs: numb
  * @param recoveryShareStored - Whether a 21.gifts recovery share is stored for
  *   the account's current verified wallet
  *   (`AuthStore.hasRecoveryShareForVerifiedWallet`).
+ * @param recoveryShareRequiredFrom - Result of {@link resolveRecoveryShareRequiredFrom}.
  * @returns `true` when money paths may proceed today.
  */
 export function eligibleToday(
@@ -229,6 +264,7 @@ export function eligibleToday(
   grant: FundingGrant | undefined,
   nowMs: number,
   recoveryShareStored: boolean,
+  recoveryShareRequiredFrom: string | null,
 ): boolean {
   if (role === 'basis') {
     return false;
@@ -236,7 +272,10 @@ export function eligibleToday(
   if (!fundingGrantRequired(nowMs)) {
     return true;
   }
-  return inGrantProgramToday(grant, nowMs) && recoveryShareStored;
+  return (
+    inGrantProgramToday(grant, nowMs) &&
+    (recoveryShareStored || !recoveryShareRequired(nowMs, recoveryShareRequiredFrom))
+  );
 }
 
 /**

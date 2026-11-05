@@ -83,6 +83,7 @@ async function harness(
     gifts?: GiftRow[];
     grants?: FundingGrant[];
     legacy?: Map<string, string>;
+    recoveryShareRequiredFrom?: string | null;
   } = {},
 ): Promise<{
   messages: InMemoryMessageStore;
@@ -132,6 +133,8 @@ async function harness(
     spendPing: spend,
     pingOnDay: spend.pingOnDay,
     lnurlServer: LNURL_SERVER,
+    recoveryShareRequiredFrom:
+      opts.recoveryShareRequiredFrom === undefined ? '2026-01-01' : opts.recoveryShareRequiredFrom,
     now: () => NOW,
   };
   return {
@@ -325,6 +328,36 @@ describe('replayPayoutWindow', () => {
     expect(second.events).toEqual([
       expect.objectContaining({ eventId: id(1), status: 'paid', day: DAY }),
       expect.objectContaining({ eventId: id(2), reason: 'already_paid', detail: 'spend' }),
+    ]);
+  });
+
+  it.each([
+    ['tomorrow', new Date(NOW + 86_400_000).toISOString().slice(0, 10)],
+    ['unset', null],
+  ])('pays a member without a share when the start day is %s', async (_label, requiredFrom) => {
+    const h = await harness({ grants: [admitted(ADA)], recoveryShareRequiredFrom: requiredFrom });
+    await h.member(ADA, 'ada', 'moderator', false);
+    await h.verifyWallet(ADA, 'ada', false);
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+    expect((await h.run()).events).toEqual([
+      expect.objectContaining({ eventId: id(1), status: 'paid' }),
+    ]);
+  });
+
+  it('reports no_recovery_share on the run of the start day', async () => {
+    const h = await harness({
+      grants: [admitted(ADA)],
+      recoveryShareRequiredFrom: new Date(NOW).toISOString().slice(0, 10),
+    });
+    await h.member(ADA, 'ada', 'moderator', false);
+    await h.verifyWallet(ADA, 'ada', false);
+    await h.post(id(1), ADA, '2026-10-29T23:30:00.000Z');
+    expect((await h.run()).events).toEqual([
+      expect.objectContaining({
+        eventId: id(1),
+        reason: 'not_eligible',
+        detail: 'no_recovery_share',
+      }),
     ]);
   });
 

@@ -84,6 +84,13 @@ function fakeStore(get?: DailyRosterStore['get']): DailyRosterStore {
   };
 }
 
+/** The clock's UTC day is the share's start day. */
+const START_DAY_ENV = {
+  ...process.env,
+  ...LNURL_ENV,
+  RECOVERY_SHARE_REQUIRED_FROM: new Date(NOW_MS).toISOString().slice(0, 10),
+};
+
 function createSpendApp(deps: Parameters<typeof createApp>[0] = {}): ReturnType<typeof createApp> {
   return createApp({
     spendApiToken: TOKEN,
@@ -365,12 +372,31 @@ describe('POST /spend/daily-instruction', () => {
     expect(await res.json()).toEqual({ action: 'skip', reason: 'not_eligible' });
   });
 
+  it.each([
+    ['the day before the start day', new Date(NOW_MS + 86_400_000).toISOString().slice(0, 10)],
+    ['an unset start day', ''],
+  ])('pays an admitted member without a share on %s', async (_label, requiredFrom) => {
+    const authStore = new InMemoryAuthStore();
+    await seedPasskeyAccount(authStore, 'verified', false);
+    const res = await createSpendApp({
+      authStore,
+      messageStore: await liveMediaPostStore(),
+      env: { ...process.env, ...LNURL_ENV, RECOVERY_SHARE_REQUIRED_FROM: requiredFrom },
+    }).request(
+      '/spend/daily-instruction',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ action: 'pay' });
+  });
+
   it('returns not_eligible for an admitted member without a recovery share', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore, 'verified', false);
     const res = await createSpendApp({
       authStore,
       messageStore: await liveMediaPostStore(),
+      env: START_DAY_ENV,
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),
@@ -381,6 +407,7 @@ describe('POST /spend/daily-instruction', () => {
     const paid = await createSpendApp({
       authStore,
       messageStore: await liveMediaPostStore(),
+      env: START_DAY_ENV,
     }).request(
       '/spend/daily-instruction',
       auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS }) }),

@@ -44,6 +44,8 @@ export interface DebugPaymentsRouteDeps {
   spendPing?: SpendPing;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /** LNURL server config for the spend ping's receiving address; omitted → none. */
   lnurlServer?: LnurlServerConfig;
   /** Moderator group messages for the window replay. */
@@ -222,6 +224,9 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
             : { notificationStore: deps.notificationStore }),
           ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
           ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
+          ...(deps.recoveryShareRequiredFrom === undefined
+            ? {}
+            : { recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom }),
           ...(deps.lnurlServer === undefined ? {} : { lnurlServer: deps.lnurlServer }),
         });
         if (result.ok) {
@@ -288,6 +293,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
               messages: deps.store,
               conversations: deps.conversationStore,
               funding: deps.fundingStore ?? new InMemoryFundingStore(),
+              recoveryShareRequiredFrom: deps.recoveryShareRequiredFrom ?? null,
               trust: deps.trustStore,
               gifts: deps.giftStore,
               spendPing: deps.spendPing,
@@ -359,6 +365,7 @@ export function debugPaymentsRoutes(deps: DebugPaymentsRouteDeps): Hono {
           deps.auth,
           account,
           deps.now(),
+          deps.recoveryShareRequiredFrom ?? null,
         );
       } catch {
         logEvent('debug.spend_ping.failed', { messageId });

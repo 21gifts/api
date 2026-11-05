@@ -121,6 +121,8 @@ export interface InvoiceRouteDeps {
    * {@link InMemoryFundingStore}).
    */
   fundingStore?: FundingStore;
+  /** First UTC day the 21.gifts recovery share is required for a payout (`RECOVERY_SHARE_REQUIRED_FROM`). Omitted or `null` → not required yet. */
+  recoveryShareRequiredFrom?: string | null;
   /**
    * Outbound gifts for the same-UTC-day welcome veto. Omitted → the rule
    * is not applied.
@@ -614,6 +616,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         deps.authStore,
         account,
         nowMs,
+        deps.recoveryShareRequiredFrom ?? null,
       );
       return c.json({ eligible, status: effectiveStatus(grant, nowMs) }, 200);
     })
@@ -743,6 +746,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         deps.authStore,
         account,
         deps.now(),
+        deps.recoveryShareRequiredFrom ?? null,
       );
       if (!eligible) {
         logEvent('invoice.funding_required', { address });

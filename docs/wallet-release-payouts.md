@@ -11,7 +11,8 @@ what must be true on release day for that to hold.
   every moderator stipend goes only to the member's own in-app wallet
   `<username>@21.gifts`. Nothing is paid to Wallet of Satoshi any more.
 - **Does anyone lose a payout?** Only a member in the grant program who has
-  not set up social recovery once it is on `main`. All 58 people paid from
+  not set up social recovery once its start day has come (`RECOVERY_SHARE_REQUIRED_FROM`,
+  unset until an operator picks the day). All 58 people paid from
   2026-10-13 to 2026-10-15 keep being paid without a gap on every day they are
   eligible for a grant, when these six conditions hold:
   1. The API release includes the roster account link at boot, so listed
@@ -30,16 +31,16 @@ what must be true on release day for that to hold.
      repository every production deploy run has completed, and the one that
      finished last succeeded on the release merge commit (see
      [Check again before release](#check-again-before-release)).
-  6. Once social recovery ([docs/social-recovery.md](social-recovery.md)) is
-     on `main`, possibly in the same release: the member has stored the 21.gifts
-     recovery share of their current verified wallet. A member in the grant
-     program without it is not paid until they set up social recovery (see
-     [Result](#result)).
+  6. From the UTC day `RECOVERY_SHARE_REQUIRED_FROM` (unset or blank: not yet), with
+     social recovery ([docs/social-recovery.md](social-recovery.md)) on `main`:
+     the member has stored the 21.gifts recovery share of their current verified
+     wallet. From that day a member in the grant program without it is not paid
+     until they set up social recovery (see [Result](#result)).
 - **What does a member do?** Open the app, tap **Log in**, confirm the
   passkey. The wallet sets itself up in a few seconds, then they post as
   before. One of the 58 members first confirms a passkey renew dialog once.
-  Once social recovery is on `main`, a member in the grant program also sets
-  it up once (**Mein Konto absichern**) to be paid.
+  From the start day `RECOVERY_SHARE_REQUIRED_FROM`, a member in the grant program also needs
+  social recovery set up once (**Mein Konto absichern**) to be paid.
 - **How does it ship?** The API change and the app change each go through the
   release pull requests `staging → develop` and `develop → main` of their
   repository, and both go live together.
@@ -70,6 +71,12 @@ The rest of this document is the evidence.
   `PUT /debug/welcome-sweep` and body `{"enabled":true}` only when that list
   holds no account that was welcomed before (see
   [Check again before release](#check-again-before-release)).
+- The start day of the recovery share is a setting, not a release step:
+  `RECOVERY_SHARE_REQUIRED_FROM` stays unset at the release, so payouts continue while
+  members set up social recovery. An operator sets the day in production's
+  environment when it is decided and restarts the API; no code changes. A
+  value that is not an ISO date stops the boot. See
+  [The recovery share period](#the-recovery-share-period).
 
 ## How a payout is triggered
 
@@ -307,15 +314,40 @@ day is not paid that day, before and after the release alike.
 
 Since social recovery ([docs/social-recovery.md](social-recovery.md)),
 `eligibleToday` also needs a stored 21.gifts recovery share for the member's
-current verified wallet, on the same days as the grant and with no start
-date of its own: wherever that code runs, on staging once merged there and
-on production once released to `main`. When social recovery reaches `main` in
-the same `develop → main` release as the wallet change, the condition starts
-on release day. A member in the grant program without
+current verified wallet from the UTC day `RECOVERY_SHARE_REQUIRED_FROM` on. From that
+day a member in the grant program without
 that share is not paid that day, with the same answers as for a missing
-grant; the staff trial and admit pings are skipped too. Storing the first
+grant; the staff trial and admit pings are skipped too. From that day, storing the first
 share of the current wallet pings that UTC day's newest media post, so later
 triggers that day pay as usual.
+
+### The recovery share period
+
+`RECOVERY_SHARE_REQUIRED_FROM` (ISO date, UTC) is read at boot in each environment.
+Unset or blank means the share is not required yet; any other value that is
+not a calendar day stops the boot. It is the start day of the share condition
+only: a verified wallet and the grant program stay required every day.
+
+| Where the rule is used                                                                                                 | Before the start day, or unset                                   | From the start day                             |
+| ---------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------- | ---------------------------------------------- |
+| `POST /invoices` (`src/routes/invoices.ts`, through `src/lib/payout-eligibility.ts`)                                   | The share is not read; a grant passes                            | 403 `Funding grant required` without the share |
+| `GET /invoices/eligible`, `POST /spend/daily-instruction`                                                              | `eligible: true` / `pay` for a grant without a share             | `eligible: false` / `skip`, `not_eligible`     |
+| Spend pings after a post, a zap-paid note, and a moderator-group message                                               | Sent for a grant without a share                                 | Skipped, `not_eligible`                        |
+| Staff `POST /funding/trial` and `POST /funding/admit` ping (`src/lib/funding-ping.ts`)                                 | Sent; the share is not read                                      | Skipped without the share                      |
+| First-share ping of `PUT /me/recovery-share` (`src/routes/me.ts`)                                                      | Not sent: the share made nobody payable, and the post was pinged | Sent                                           |
+| `POST /debug/spend-ping` (`src/routes/debug-payments.ts`, `src/lib/cutover-replay.ts`), judged on the clock of the run | Paid; a window replay never reports `no_recovery_share`          | 403 `Not eligible`; `no_recovery_share`        |
+
+The API returns no field that says a missing share blocks a payout.
+`socialRecoverySetUp` (owner account JSON) only says whether the share is
+stored, and it stays as it is. During the period the app still shows its
+dialog on `/welcome` to a grant member without the share. The dialog text
+`socialRecoveryPrompt.body` says grant payouts need Social Recovery (all four
+locales), and `socialRecoveryPrompt.title` names the grant; before the start
+day the first of those is not yet true of a payout. That text belongs to the
+app.
+
+An unset value on an environment changes what it does compared with a build
+that has no start date: to keep the share required there, set the day there.
 
 The welcome gift does not cut a payout for these 58. 50 of the 51 `verified`
 people already have the platform `Welcome` reply, so no welcome ping is sent
@@ -350,10 +382,12 @@ they are eligible, on the in-app wallet only, when all of these hold:
    before it waits for the deploy, so a later run that failed or was
    cancelled may already have moved `latest`, and a re-run of an older run
    keeps its creation time but pushes `latest` again.
-6. Once social recovery is on `main`: the member has stored the 21.gifts
-   recovery share of their current verified wallet. A member in the grant
-   program without it is not paid until they set up social recovery; storing
-   the first share pings that UTC day's newest media post.
+6. From the UTC day `RECOVERY_SHARE_REQUIRED_FROM`, with social recovery on `main`: the
+   member has stored the 21.gifts recovery share of their current verified
+   wallet. From that day a member in the grant program without it is not paid
+   until they set up social recovery; storing the first share pings that UTC
+   day's newest media post. Read the value on release day: unset keeps paying
+   members without a share.
 
 The 57 members with `wallet_required = true` need one **Log in** tap and one
 passkey confirmation, or a second one in the case described under

@@ -51,6 +51,7 @@ import { InMemoryShopPaymentStore, PostgresShopPaymentStore } from './lib/shop-p
 import { InMemorySparkInvoiceStore } from './lib/spark-invoice-store';
 import { startSparkInvoiceWorker } from './lib/spark-worker';
 import { startPosPaidWorker } from './lib/pos-paid-worker';
+import { resolveRecoveryShareRequiredFrom } from './lib/funding';
 import { resolveFxSpotUrl, startFxSpotWorker } from './lib/fx-spot';
 import { createApp, parseBindAddr, resolveBindAddr } from './server';
 
@@ -347,6 +348,7 @@ if (import.meta.main) {
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(spendPing === undefined ? {} : { spendPing }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
+    recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(process.env),
     fiatRates,
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   };
