@@ -4608,14 +4608,16 @@ unexpired pending till charge while the survivor has an `open` shop
 payment and no unexpired pending till charge of its own is the same
 **409** and nothing changes, so a till charge never lands next to another
 payment's open amount. Both refusals are checked under the locks of both
-account rows, before any write. When the survivor has a pending till
-charge (expired or not), the source's pending charges are deleted (below)
-and the merge goes on. The source's paid and closed shop payments move like
-every other row. All of the source's charge rows are locked first in the
-order of their ids (`SELECT id … ORDER BY id FOR UPDATE`), the pending
-charges among them are read, the source's shop payment rows are locked the
-same way, and then their `pos_charge_invoice` rows and the charges are
-deleted by those ids; a concurrent
+account rows, before any write. Due pending charges on either account are marked expired before the
+collision read. When the survivor still has an unexpired pending till
+charge, the source's unexpired pending charge is deleted (below) and the
+merge goes on. A due pending charge is not a collision and is not deleted.
+The source's paid and closed shop payments move like every other row. Every
+charge row of both accounts is locked first in id order (`SELECT id …
+WHERE account_id = $1 OR account_id = $2 ORDER BY id FOR UPDATE`), the
+source's shop payment rows are locked the same way, due pending charges are
+marked expired, the still-unexpired collision is read, and then their
+`pos_charge_invoice` rows and the charges are deleted by those ids; a concurrent
 `recordInvoice` for such a charge waits on the lock and then fails, which
 the invoice routes log as `pos.invoice.record_failed`, and a later one
 records nothing (`not_open`). A database that

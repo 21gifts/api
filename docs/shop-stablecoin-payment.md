@@ -528,13 +528,15 @@ the merge handles shop payments first, in the same transaction:
   minutes after its BOLT11 expired, and the merge can be repeated then.
 - The merged account's other shop payments are `paid` or closed and
   never change again; they move with the account like every other row.
-- The merge deletes a pending charge of the merged account when the
-  surviving account has one. It first locks all of the merged
-  account's charge rows in the order of their ids
-  (`SELECT … ORDER BY id FOR UPDATE`), as it already locks both
-  accounts, then its payment rows. It then deletes the charge's
-  `pos_charge_invoice` rows, whose `charge_id` has no cascade, and
-  then the charge. A `recordInvoice` for that charge
+- The merge marks due pending charges on both accounts expired, then
+  deletes the merged account's still-unexpired pending charge when the
+  surviving account still has an unexpired one. A due pending charge is
+  not deleted. It first locks every charge row of both accounts in id
+  order (`SELECT … WHERE account_id = $1 OR account_id = $2 ORDER BY id
+FOR UPDATE`), as it already locks both accounts, then the merged
+  account's payment rows. It then marks the due rows expired, reads the
+  collision, and deletes the charge's `pos_charge_invoice` rows, whose
+  `charge_id` has no cascade, and then the charge. A `recordInvoice` for that charge
   waits on the row lock in its foreign-key check and then fails, which
   the invoice routes log as `pos.invoice.record_failed`, as they do for
   any store error, so no row can appear between the two deletes. Any shop
