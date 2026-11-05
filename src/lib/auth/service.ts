@@ -17,6 +17,9 @@ import { SESSION_TTL_MS } from '@/lib/config';
  * @param store - Auth persistence port.
  * @param now - Current time in epoch milliseconds.
  * @param account - The account the session should authenticate.
+ * @param gate - When set, the session is written only while this passkey
+ * still belongs to `account`. Passkey finish passes the credential it just
+ * accepted. Operator session mint omits it.
  * @returns The new token and the current account row.
  * @throws Error with message {@link WRONG_ACCOUNT_ERROR} when
  * {@link isWrongAccount} is true or {@link AuthStore.tryCreateSession}
@@ -26,16 +29,20 @@ export async function issueSession(
   store: AuthStore,
   now: number,
   account: Account,
+  gate?: { passkeyCredentialId: string },
 ): Promise<{ token: string; account: Account }> {
   if (isWrongAccount(account)) {
     throw new Error(WRONG_ACCOUNT_ERROR);
   }
   const token = randomHex(32);
-  const inserted = await store.tryCreateSession({
-    token,
-    accountId: account.id,
-    createdAt: now,
-  });
+  const inserted = await store.tryCreateSession(
+    {
+      token,
+      accountId: account.id,
+      createdAt: now,
+    },
+    gate,
+  );
   if (!inserted) {
     throw new Error(WRONG_ACCOUNT_ERROR);
   }

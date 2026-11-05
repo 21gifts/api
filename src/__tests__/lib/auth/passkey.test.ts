@@ -695,6 +695,7 @@ describe('passkey authentication', () => {
 
   it('issues a session and bumps signCount', async () => {
     const { store, ceremony, accountId } = await seed();
+    const tryCreateSession = vi.spyOn(store, 'tryCreateSession');
     const begin = await startPasskeyAuthentication(store, ceremony, CONFIG, T0);
     const finish = await finishPasskeyAuthentication(
       store,
@@ -711,6 +712,9 @@ describe('passkey authentication', () => {
     }
     expect(finish.value.account.id).toBe(accountId);
     expect((await store.getPasskeyCredential('cred-1'))?.signCount).toBe(1);
+    expect(tryCreateSession).toHaveBeenCalledWith(expect.objectContaining({ accountId }), {
+      passkeyCredentialId: 'cred-1',
+    });
   });
 
   it('ensures a Nostr key on authenticate when a KEK is provided', async () => {

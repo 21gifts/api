@@ -851,15 +851,40 @@ LIMIT $2`,
     );
   }
 
-  async tryCreateSession(session: Session): Promise<boolean> {
+  async tryCreateSession(
+    session: Session,
+    gate?: { passkeyCredentialId: string },
+  ): Promise<boolean> {
     await this.#evictExpiredSessions(session.createdAt);
+    if (gate === undefined) {
+      const rows = await this.#sql.query<{ token: string }>(
+        `INSERT INTO auth_session (token, account_id, created_at)
+         SELECT $1, id, to_timestamp($3::double precision / 1000.0)
+         FROM account
+         WHERE id = $2 AND session_refused IS NOT TRUE
+         RETURNING token`,
+        [session.token, session.accountId, session.createdAt],
+      );
+      return rows.length > 0;
+    }
+    // Lock the same account row commitRecovery locks, and insert only while
+    // the authenticated credential still belongs to it. A recovery that
+    // already holds the lock is waited out; its credential delete is then
+    // visible and this insert writes nothing. A recovery that arrives second
+    // deletes this session with the rest of the account's bearers.
     const rows = await this.#sql.query<{ token: string }>(
       `INSERT INTO auth_session (token, account_id, created_at)
-       SELECT $1, id, to_timestamp($3::double precision / 1000.0)
+       SELECT $1, account.id, to_timestamp($3::double precision / 1000.0)
        FROM account
-       WHERE id = $2 AND session_refused IS NOT TRUE
+       WHERE account.id = $2
+         AND account.session_refused IS NOT TRUE
+         AND EXISTS (
+           SELECT 1 FROM passkey_credential
+           WHERE credential_id = $4 AND account_id = account.id
+         )
+       FOR UPDATE OF account
        RETURNING token`,
-      [session.token, session.accountId, session.createdAt],
+      [session.token, session.accountId, session.createdAt, gate.passkeyCredentialId],
     );
     return rows.length > 0;
   }

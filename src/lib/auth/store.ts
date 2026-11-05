@@ -437,6 +437,16 @@ export interface Session {
 }
 
 /**
+ * Extra condition for {@link AuthStore.tryCreateSession}.
+ * A passkey finish passes the credential that just authenticated so a social
+ * recovery commit cannot mint a bearer for a passkey it has already replaced.
+ */
+export interface SessionGate {
+  /** Credential id whose row must still belong to the session account. */
+  passkeyCredentialId: string;
+}
+
+/**
  * Result of {@link AuthStore.setUsername}: the username this write replaced,
  * or why the write did not run.
  *
@@ -717,11 +727,14 @@ export interface AuthStore {
   /**
    * Insert a session only when the account exists and `sessionRefused` is
    * not true. Used by {@link issueSession} so a concurrent flag flip cannot
-   * mint a bearer.
+   * mint a bearer. When `gate` is set, the credential must still belong to
+   * that account. The Postgres adapter locks the account row for that insert
+   * so {@link AuthStore.commitRecovery} cannot commit between the check and
+   * the write.
    *
    * @returns `false` when no session row was written.
    */
-  tryCreateSession(session: Session): Promise<boolean>;
+  tryCreateSession(session: Session, gate?: SessionGate): Promise<boolean>;
   /**
    * Set only `sessionRefused`. Other columns stay unchanged.
    *
@@ -1631,10 +1644,16 @@ export class InMemoryAuthStore implements AuthStore {
     this.#sessions.set(session.token, session);
   }
 
-  async tryCreateSession(session: Session): Promise<boolean> {
+  async tryCreateSession(session: Session, gate?: SessionGate): Promise<boolean> {
     const account = this.#accounts.get(session.accountId);
     if (account === undefined || account.sessionRefused === true) {
       return false;
+    }
+    if (gate !== undefined) {
+      const credential = this.#passkeyCredentials.get(gate.passkeyCredentialId);
+      if (credential === undefined || credential.accountId !== session.accountId) {
+        return false;
+      }
     }
     await this.createSession(session);
     return true;

@@ -368,6 +368,28 @@ describe('InMemoryAuthStore', () => {
       false,
     );
     expect(await store.getSession('refused')).toBeUndefined();
+    await store.setSessionRefused('acc', false);
+    await store.createPasskeyCredential({
+      credentialId: 'cred-1',
+      publicKey: Uint8Array.of(1),
+      signCount: 1,
+      accountId: 'acc',
+      createdAt: 1,
+    });
+    expect(
+      await store.tryCreateSession(
+        { token: 'gated', accountId: 'acc', createdAt: 1 },
+        { passkeyCredentialId: 'missing' },
+      ),
+    ).toBe(false);
+    expect(await store.getSession('gated')).toBeUndefined();
+    expect(
+      await store.tryCreateSession(
+        { token: 'held', accountId: 'acc', createdAt: 1 },
+        { passkeyCredentialId: 'cred-1' },
+      ),
+    ).toBe(true);
+    expect((await store.getSession('held'))?.accountId).toBe('acc');
   });
 
   it('setSessionRefused writes only that flag', async () => {
@@ -3175,6 +3197,19 @@ describe('InMemoryAuthStore social recovery', () => {
         createdAt: NOW + 9,
       });
       expect((await store.listSessions()).map((session) => session.accountId)).toEqual(['other']);
+      expect(
+        await store.tryCreateSession(
+          { token: 'c'.repeat(64), accountId: 'acc', createdAt: NOW + 9 },
+          { passkeyCredentialId: 'login' },
+        ),
+      ).toBe(false);
+      expect(await store.getSession('c'.repeat(64))).toBeUndefined();
+      expect(
+        await store.tryCreateSession(
+          { token: 'd'.repeat(64), accountId: 'acc', createdAt: NOW + 9 },
+          { passkeyCredentialId: 'new-credential' },
+        ),
+      ).toBe(true);
       expect(await push.listByAccount('acc')).toEqual([]);
       expect(await push.listByAccount('other')).toHaveLength(1);
       expect(await store.listPreviousWallets('acc')).toEqual([

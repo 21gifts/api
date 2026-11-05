@@ -329,7 +329,7 @@ export async function finishPasskeyRegistration(
       }
     }
     const claimed: Account = { ...existing, walletRequired: true };
-    return mintSession(store, now, claimed);
+    return mintSession(store, now, claimed, { passkeyCredentialId: verified.credentialId });
   }
   if (admit !== undefined && !(await admit(null))) {
     return { ok: false, error: LOGINS_CLOSED_ERROR };
@@ -398,7 +398,14 @@ export async function finishPasskeyRegistration(
     await store.deleteAccount(accountId);
     return { ok: false, error: 'Invalid passkey' };
   }
-  return mintSession(store, now, { ...account, walletRequired: true });
+  return mintSession(
+    store,
+    now,
+    { ...account, walletRequired: true },
+    {
+      passkeyCredentialId: verified.credentialId,
+    },
+  );
 }
 
 /**
@@ -534,19 +541,20 @@ export async function finishPasskeyAuthentication(
       logEvent('nostr.keygen.backfill.failed', { accountId: account.id });
     }
   }
-  return mintSession(store, now, account);
+  return mintSession(store, now, account, { passkeyCredentialId: latest.credentialId });
 }
 
 async function mintSession(
   store: AuthStore,
   now: number,
   account: Account,
+  gate: { passkeyCredentialId: string },
 ): Promise<
   | { ok: true; value: { token: string; account: Account } }
   | { ok: false; error: typeof WRONG_ACCOUNT_ERROR }
 > {
   try {
-    return { ok: true, value: await issueSession(store, now, account) };
+    return { ok: true, value: await issueSession(store, now, account, gate) };
   } catch (error) {
     if (error instanceof Error && error.message === WRONG_ACCOUNT_ERROR) {
       return { ok: false, error: WRONG_ACCOUNT_ERROR };

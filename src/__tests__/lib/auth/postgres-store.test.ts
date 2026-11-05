@@ -911,7 +911,27 @@ describe('PostgresAuthStore', () => {
     ).toBe(true);
     expect(sql.executes[0]?.text).toMatch(/DELETE FROM auth_session/);
     expect(sql.queries[0]?.text).toMatch(/session_refused IS NOT TRUE/);
+    expect(sql.queries[0]?.text).not.toMatch(/passkey_credential/);
     expect(sql.queries[0]?.params).toEqual(['tok', 'acc', 9_000]);
+  });
+
+  it('tryCreateSession locks the account and requires the passkey when a gate is set', async () => {
+    const sql = new MockSql();
+    sql.nextRows = [{ token: 'tok' }];
+    expect(
+      await new PostgresAuthStore(sql).tryCreateSession(
+        {
+          token: 'tok',
+          accountId: 'acc',
+          createdAt: 9_000,
+        },
+        { passkeyCredentialId: 'cred-1' },
+      ),
+    ).toBe(true);
+    expect(sql.queries[0]?.text).toMatch(/FOR UPDATE OF account/);
+    expect(sql.queries[0]?.text).toMatch(/passkey_credential/);
+    expect(sql.queries[0]?.text).toMatch(/credential_id = \$4/);
+    expect(sql.queries[0]?.params).toEqual(['tok', 'acc', 9_000, 'cred-1']);
   });
 
   it('tryCreateSession returns false when the insert matches no row', async () => {
