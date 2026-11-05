@@ -967,11 +967,11 @@ function freezeFiatAsk(
   sats: number,
   quote: FxSpotQuote,
 ): FrozenAsk | null {
-  if (!fitsGoalAmountColumn(amount)) {
-    return null;
-  }
   const typed = typedTwoDecimals(amount);
   if (typed === null) {
+    return null;
+  }
+  if (!fitsGoalAmountColumn(amount)) {
     return null;
   }
   const crosses = freezePosFiatCrosses(currency, amount, quote);
