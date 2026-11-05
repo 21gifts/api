@@ -47,7 +47,7 @@ interface FakeDatabaseOptions {
   columns?: readonly FakeCatalogColumn[];
   verifyExists?: readonly { exists: boolean }[];
   messageCount?: readonly { n: number }[];
-  /** Rows of the merged account's pending charge read (deleted when the survivor has one). */
+  /** Rows still pending after due charges are marked expired (deleted when the survivor still has one). */
   pendingCharges?: readonly { id: string }[];
   /** Rows of the survivor's open shop payment beside the merged account's pending charge. */
   openBesideCharge?: readonly { id: string }[];
@@ -502,7 +502,7 @@ describe('mergeAccounts', () => {
     const lock = chargeLockIndex(queries);
     expect(check).toBeGreaterThanOrEqual(0);
     expect(lock).toBeGreaterThan(check);
-    expect(queries[lock + 4]).toEqual({
+    expect(queries[lock + 5]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1"}'],
     });
@@ -521,10 +521,10 @@ describe('mergeAccounts', () => {
     // the deleted charge and the ones the catalog update moves.
     expect(queries[lock]).toEqual({
       text: `SELECT id FROM pos_charge
-       WHERE account_id = $1
+       WHERE account_id = $1 OR account_id = $2
        ORDER BY id
        FOR UPDATE`,
-      params: [FROM],
+      params: [FROM, INTO],
     });
     // It is the only charge lock, and it comes before the payment lock.
     expect(
@@ -532,27 +532,31 @@ describe('mergeAccounts', () => {
         (query) => query.text.includes('FROM pos_charge') && query.text.includes('FOR UPDATE'),
       ),
     ).toHaveLength(1);
-    // Then the pending charges to drop, rows already held, only while the kept
-    // account has one.
-    expect(doomedReadIndex(queries)).toBe(lock + 1);
-    expect(queries[lock + 1]?.params).toEqual([FROM, INTO]);
-    expect((queries[lock + 1]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
-      "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' ) ORDER BY id",
-    );
-    // Then the merged account's payment rows in id order, before the delete's
-    // `ON DELETE SET NULL` writes one of them.
-    expect(queries[lock + 2]).toEqual({
+    // Payments next, before any charge write, in id order.
+    expect(queries[lock + 1]).toEqual({
       text: `SELECT id FROM shop_payment
        WHERE account_id = $1
        ORDER BY id
        FOR UPDATE`,
       params: [FROM],
     });
-    expect(queries[lock + 3]).toEqual({
+    // Due pending rows stop being pending before the collision read.
+    expect(queries[lock + 2]?.params).toEqual([FROM, INTO]);
+    expect((queries[lock + 2]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      "UPDATE pos_charge SET status = 'expired' WHERE account_id IN ($1, $2) AND status = 'pending' AND expires_at <= now()",
+    );
+    // Then only charges that are still unexpired, rows already held, and only
+    // while the kept account still has an unexpired one.
+    expect(doomedReadIndex(queries)).toBe(lock + 3);
+    expect(queries[lock + 3]?.params).toEqual([FROM, INTO]);
+    expect((queries[lock + 3]?.text ?? '').replace(/\s+/g, ' ').trim()).toBe(
+      "SELECT id FROM pos_charge WHERE account_id = $1 AND status = 'pending' AND expires_at > now() AND EXISTS ( SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending' AND expires_at > now() ) ORDER BY id",
+    );
+    expect(queries[lock + 4]).toEqual({
       text: 'DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
     });
-    expect(queries[lock + 4]).toEqual({
+    expect(queries[lock + 5]).toEqual({
       text: 'DELETE FROM pos_charge WHERE id = ANY($1::uuid[])',
       params: ['{"c-from-1","c-from-2"}'],
     });
@@ -579,7 +583,7 @@ describe('mergeAccounts', () => {
       .map((query, index) => ({ query, index }))
       .filter(({ query }) => /^UPDATE ("public"\.)?"?shop_payment"?\b/.test(query.text))
       .map(({ index }) => index);
-    expect(chargeWrites).toHaveLength(2);
+    expect(chargeWrites).toHaveLength(3);
     expect(paymentWrites).toHaveLength(1);
     expect(chargeLock).toBeLessThan(paymentLock);
     for (const index of [...chargeWrites, ...paymentWrites]) {
