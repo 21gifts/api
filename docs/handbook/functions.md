@@ -55,7 +55,7 @@
 - **Purpose:** True when the value is exactly `USD`, `CHF`, `EUR`, or `PHP`. Does not trim.
 - **Inputs:** A string.
 - **Returns / side effects:** Boolean. No I/O.
-- **Used by:** The till body parse and `freezePosFiatCrosses`.
+- **Used by:** The till body parse (`readTypedFiat`).
 
 ## Function: freezePosFiatCrosses
 
