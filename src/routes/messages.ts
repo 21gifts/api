@@ -952,14 +952,24 @@ function freezeBtcAsk(sats: number, amount: string, quote: FxSpotQuote | null): 
  * @param amount - Typed decimal.
  * @param sats - Whole sats priced from that spot.
  * @param quote - Spot quote that contains the typed currency.
- * @returns The frozen ask, or null when the typed cents do not fit.
+ * @returns The frozen ask, or null when the typed cents do not fit or the
+ *   typed amount has more than twelve digits before the decimal point.
  */
+function fitsGoalAmountColumn(amount: string): boolean {
+  const dot = amount.indexOf('.');
+  const intPart = (dot < 0 ? amount : amount.slice(0, dot)).replace(/^0+/, '');
+  return intPart.length <= 12;
+}
+
 function freezeFiatAsk(
   currency: GoalFiatCode,
   amount: string,
   sats: number,
   quote: FxSpotQuote,
 ): FrozenAsk | null {
+  if (!fitsGoalAmountColumn(amount)) {
+    return null;
+  }
   const typed = typedTwoDecimals(amount);
   if (typed === null) {
     return null;

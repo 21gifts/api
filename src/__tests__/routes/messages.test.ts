@@ -11576,6 +11576,32 @@ describe('GET /messages/hidden', () => {
       expect(json).toEqual({ error: 'Ask amount is unavailable' });
     });
 
+    it('stores a fiat ask at the amount column limit', async () => {
+      const { res, json } = await post(
+        { text: 'edge', goalCurrency: 'USD', goalAmount: '999999999999.99' },
+        askSpot({
+          ...spot,
+          rates: { ...spot.rates, USD: '900719925474099100000' },
+        }),
+      );
+      expect(res.status).toBe(200);
+      expect(json['goalAmount']).toBe('999999999999.99');
+      expect(json['goalAmountUsd']).toBe('999999999999.99');
+      expect(json['goalSats']).toBe(1);
+    });
+
+    it('rejects a fiat ask the amount column cannot store', async () => {
+      const { res, json } = await post(
+        { text: 'column', goalCurrency: 'USD', goalAmount: '90071992547409.91' },
+        askSpot({
+          ...spot,
+          rates: { ...spot.rates, USD: '900719925474099100000' },
+        }),
+      );
+      expect(res.status).toBe(400);
+      expect(json).toEqual({ error: 'Ask amount is unavailable' });
+    });
+
     it('leaves a missing or unusable BTC spot currency null', async () => {
       const missing = await post(
         { text: 'btc', goalCurrency: 'BTC', goalAmount: '10' },
