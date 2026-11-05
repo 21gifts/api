@@ -997,6 +997,8 @@ async function readAskSpot(
   }
 }
 
+type AskOutcome = { ok: true; goal: FrozenAsk } | { ok: false; status: 400 | 503; error: string };
+
 /**
  * Freeze a top-level ask. Legacy sats skip the spot. A BTC ask still stores
  * the typed sats when the spot read throws or returns no quote. A fiat ask is
