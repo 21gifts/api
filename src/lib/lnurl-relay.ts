@@ -493,7 +493,7 @@ function pinnedRequest(
   stop: AbortSignal,
 ): Promise<{ connected: false } | { connected: true; fetched: FetchedJson }> {
   return new Promise((resolve) => {
-    if (stop.aborted || timeoutMs <= 0) {
+    if (timeoutMs <= 0) {
       resolve({ connected: false });
       return;
     }
@@ -611,9 +611,6 @@ async function pinnedRelayGet(
   stop: AbortSignal,
 ): Promise<FetchedJson> {
   for (const address of addresses) {
-    if (stop.aborted) {
-      return { ok: false, status: null };
-    }
     const outcome = await pinnedRequest(url, address, timeoutMs, stop);
     if (outcome.connected) {
       return outcome.fetched;
@@ -641,22 +638,23 @@ async function fetchRelayJson(
   deps: RelayRun,
 ): Promise<FetchedJson> {
   const done = new AbortController();
+  let result: FetchedJson;
   try {
     if (deps.transportImpl !== undefined) {
       const response = await deps.transportImpl(url, addresses, {
         signal: AbortSignal.any([done.signal, AbortSignal.timeout(stepMs(deps))]),
       });
-      return await responseToJson(response);
+      result = await responseToJson(response);
+    } else if (deps.lookupImpl === undefined) {
+      result = await pinnedRelayGet(url, addresses, stepMs(deps), done.signal);
+    } else {
+      result = await fetchAndParse(url, deps, done.signal);
     }
-    if (deps.lookupImpl === undefined) {
-      return await pinnedRelayGet(url, addresses, stepMs(deps), done.signal);
-    }
-    return await fetchAndParse(url, deps, done.signal);
   } catch {
-    return { ok: false, status: null };
-  } finally {
-    done.abort();
+    result = { ok: false, status: null };
   }
+  done.abort();
+  return result;
 }
 
 /**

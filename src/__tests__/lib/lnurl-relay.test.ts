@@ -164,6 +164,7 @@ function answerPinnedGet(): void {
           callback(response);
           response.emit('data', Buffer.from(JSON.stringify(PAY_REQUEST)));
           response.emit('end');
+          req.emit('close');
         },
       });
       return req;
@@ -601,6 +602,388 @@ describe('resolveRelayPayRequest', () => {
     const { fetchImpl } = payRequestFetch({ ...PAY_REQUEST, metadata });
     const result = await resolveRelayPayRequest({ target: 'bob@example.com', fetchImpl, ...DEPS });
     expect(result.ok && result.payRequest.description).toBe('');
+  });
+
+  it('does not connect once the deadline has passed', async () => {
+    let now = 1_700_000_000_000;
+    const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+    dnsLookupMock.mockImplementation(async () => {
+      now += 60_000;
+      return [{ address: '93.184.216.34' }];
+    });
+    httpsRequestMock.mockImplementation(() => {
+      throw new Error('must not connect');
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    try {
+      const result = await resolveRelayPayRequest({
+        target: 'bob@example.com',
+        fetchImpl,
+        ownHost: '21.gifts',
+      });
+      expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+      expect(httpsRequestMock).not.toHaveBeenCalled();
+      expect(fetchImpl).not.toHaveBeenCalled();
+    } finally {
+      clock.mockRestore();
+    }
+  });
+
+  it('a thrown socket open is unreachable', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(() => {
+      throw new Error('socket');
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('a socket timeout before headers tries nothing further', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(() => {
+      const req = new EventEmitter();
+      Object.assign(req, {
+        destroy() {
+          return undefined;
+        },
+        setTimeout(_ms: number, onTimeout?: () => void) {
+          onTimeout?.();
+          return req;
+        },
+        end() {
+          return undefined;
+        },
+      });
+      return req;
+    });
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it.each([
+    ['an undeclared length', {}],
+    ['a length that is not a number', { 'content-length': 'nope' }],
+    ['a length inside the cap', { 'content-length': '2' }],
+  ])('reads a body with %s', async (_label, headers) => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers,
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+            response.emit('data', Buffer.from(JSON.stringify(PAY_REQUEST)));
+            response.emit('end');
+          },
+        });
+        return req;
+      },
+    );
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ownHost: '21.gifts',
+    });
+    expect(result.ok).toBe(true);
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects a declared body larger than the cap', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers: { 'content-length': String(LNURL_RELAY_BODY_CAP_BYTES + 1) },
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+          },
+        });
+        return req;
+      },
+    );
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it('rejects a body that grows past the cap', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers: {},
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+            response.emit('data', Buffer.alloc(LNURL_RELAY_BODY_CAP_BYTES + 1));
+            response.emit('end');
+          },
+        });
+        return req;
+      },
+    );
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it.each([
+    ['below 200', 199],
+    ['outside 2xx', 404],
+    ['missing', undefined],
+  ])('rejects a pinned response whose status is %s', async (_label, statusCode) => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          headers: {},
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        if (statusCode !== undefined) {
+          Object.assign(response, { statusCode });
+        }
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+            response.emit('data', Buffer.from('no'));
+            response.emit('end');
+          },
+        });
+        return req;
+      },
+    );
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject(
+      statusCode === 404
+        ? { ok: false, status: 404, reason: 'not_found' }
+        : { ok: false, status: 502, reason: 'status' },
+    );
+  });
+
+  it('rejects a pinned body that is not JSON', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers: {},
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+            response.emit('data', Buffer.from('not-json'));
+            response.emit('end');
+          },
+        });
+        return req;
+      },
+    );
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it('rejects a pinned response that errors', async () => {
+    dnsLookupMock.mockResolvedValue([{ address: '93.184.216.34' }]);
+    httpsRequestMock.mockImplementation(
+      (_options: unknown, callback: (response: EventEmitter) => void) => {
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers: {},
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            callback(response);
+            response.emit('error', new Error('reset'));
+          },
+        });
+        return req;
+      },
+    );
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it.each([
+    ['a status below 200', 199],
+    ['a status outside 2xx', 404],
+  ])('treats %s from an injected transport as a failed fetch', async (_label, status) => {
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl,
+      ownHost: '21.gifts',
+      lookupImpl: async () => ['93.184.216.34'],
+      transportImpl: async () =>
+        status < 200 ? ({ status } as Response) : new Response('no', { status }),
+    });
+    expect(result).toMatchObject(
+      status === 404
+        ? { ok: false, status: 404, reason: 'not_found' }
+        : { ok: false, status: 502, reason: 'status' },
+    );
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+
+  it('rejects an injected transport body larger than the cap', async () => {
+    const bytes = new Uint8Array(LNURL_RELAY_BODY_CAP_BYTES + 1);
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+      lookupImpl: async () => ['93.184.216.34'],
+      transportImpl: async () =>
+        new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes);
+              controller.close();
+            },
+          }),
+        ),
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
+  });
+
+  it('rejects an injected transport body that is not JSON', async () => {
+    const result = await resolveRelayPayRequest({
+      target: 'bob@example.com',
+      fetchImpl: vi.fn(),
+      ownHost: '21.gifts',
+      lookupImpl: async () => ['93.184.216.34'],
+      transportImpl: async () => new Response('not-json', { status: 200 }),
+    });
+    expect(result).toMatchObject({ ok: false, status: 502, reason: 'fetch' });
   });
 });
 
