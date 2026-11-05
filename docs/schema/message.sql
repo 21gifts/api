@@ -266,6 +266,7 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES acc
 -- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount_text text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2);
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_chf numeric(20, 2);
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_eur numeric(20, 2);

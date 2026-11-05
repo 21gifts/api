@@ -4,6 +4,7 @@ import { chmod, mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { Hono } from 'hono';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { InMemoryMessageStore, type MessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -11273,13 +11274,26 @@ describe('GET /messages/hidden', () => {
   });
 
   describe('currency ask', () => {
-    const day = {
-      sats: 100_000_000,
-      usd: '50000.00',
-      chf: '45000.00',
-      eur: '46000.00',
-      php: '2800000.00',
+    const spot = {
+      asOf: '2026-08-28T12:00:00.000Z',
+      source: 'test',
+      rates: {
+        USD: '50000.00',
+        CHF: '45000.00',
+        EUR: '46000.00',
+        PHP: '2800000.00',
+      },
     };
+
+    function askSpot(quote: FxSpotQuote | null): {
+      fxSpot: { latest(): Promise<FxSpotQuote | null> };
+    } {
+      return {
+        fxSpot: {
+          latest: async () => quote,
+        },
+      };
+    }
 
     async function post(
       body: unknown,
@@ -11297,14 +11311,16 @@ describe('GET /messages/hidden', () => {
       return { res, messageStore, json: (await res.json()) as Record<string, unknown> };
     }
 
-    it('stores legacy goalSats and does not call the gift-day loader', async () => {
+    it('stores legacy goalSats and does not read the spot', async () => {
       let called = false;
       const { res, json, messageStore } = await post(
         { text: 'ask', goalSats: 21000 },
         {
-          goalRateDay: async () => {
-            called = true;
-            throw new Error('down');
+          fxSpot: {
+            latest: async () => {
+              called = true;
+              throw new Error('down');
+            },
           },
         },
       );
@@ -11328,16 +11344,16 @@ describe('GET /messages/hidden', () => {
       expect(bare.json).toHaveProperty('goalAmountPhp');
       const priced = await post(
         { text: 'btc-day', goalCurrency: 'BTC', goalAmount: '10' },
-        { goalRateDay: async () => day },
+        askSpot(spot),
       );
       expect(priced.res.status).toBe(200);
       expect(priced.json['goalAmountUsd']).toBe('0.01');
     });
 
-    it('freezes a fiat ask from the gift-day and keeps the typed amount', async () => {
+    it('freezes a fiat ask from the spot and keeps the typed amount', async () => {
       const { res, json } = await post(
         { text: 'usd', goalCurrency: 'USD', goalAmount: '1,5' },
-        { goalRateDay: async () => day },
+        askSpot(spot),
       );
       expect(res.status).toBe(200);
       expect(json['goalAmount']).toBe('1.5');
@@ -11346,13 +11362,19 @@ describe('GET /messages/hidden', () => {
       expect(json['goalAmountChf']).toBe('1.35');
       expect(json['goalAmountEur']).toBe('1.38');
       expect(json['goalAmountPhp']).toBe('84.00');
-      const php = await post(
-        { text: 'php', goalCurrency: 'PHP', goalAmount: '56' },
-        { goalRateDay: async () => day },
-      );
+      const php = await post({ text: 'php', goalCurrency: 'PHP', goalAmount: '56' }, askSpot(spot));
       expect(php.res.status).toBe(200);
       expect(php.json['goalCurrency']).toBe('PHP');
       expect(php.json['goalAmount']).toBe('56');
+      const kept = await post(
+        { text: 'kept', goalCurrency: 'USD', goalAmount: '5.00' },
+        askSpot(spot),
+      );
+      expect(kept.res.status).toBe(200);
+      expect(kept.json['goalAmount']).toBe('5.00');
+      expect(kept.json['goalAmountUsd']).toBe('5.00');
+      expect(kept.json['goalSats']).toBe(10000);
+      expect(kept.json['goalAmountChf']).toBe('4.50');
     });
 
     it('stores goalRepayable true on a currency ask', async () => {
@@ -11364,7 +11386,7 @@ describe('GET /messages/hidden', () => {
           goalRepayable: true,
           goalTermDays: 30,
         },
-        { goalRateDay: async () => day },
+        askSpot(spot),
       );
       expect(res.status).toBe(200);
       expect(json['goalRepayable']).toBe(true);
@@ -11377,13 +11399,13 @@ describe('GET /messages/hidden', () => {
       expect(omitted.json).toEqual({ error: 'Ask amount is unavailable' });
       const empty = await post(
         { text: 'usd', goalCurrency: 'CHF', goalAmount: '1' },
-        { goalRateDay: async () => null },
+        askSpot(null),
       );
       expect(empty.res.status).toBe(400);
       expect(empty.json).toEqual({ error: 'Ask amount is unavailable' });
       const huge = await post(
         { text: 'usd', goalCurrency: 'USD', goalAmount: '100000000' },
-        { goalRateDay: async () => ({ ...day, usd: '1.00' }) },
+        askSpot({ ...spot, rates: { ...spot.rates, USD: '1.00' } }),
       );
       expect(huge.res.status).toBe(400);
       expect(huge.json).toEqual({ error: 'Ask amount is unavailable' });
@@ -11428,9 +11450,11 @@ describe('GET /messages/hidden', () => {
       });
       let called = false;
       const res = await mount(await namedStore('Ada'), messageStore, {
-        goalRateDay: async () => {
-          called = true;
-          return day;
+        fxSpot: {
+          latest: async () => {
+            called = true;
+            return spot;
+          },
         },
       }).request('/messages', {
         method: 'POST',
@@ -11447,12 +11471,14 @@ describe('GET /messages/hidden', () => {
       expect(called).toBe(false);
     });
 
-    it('stores a BTC ask when the gift-day loader throws', async () => {
+    it('stores a BTC ask when the spot read throws', async () => {
       const { res, json } = await post(
         { text: 'btc', goalCurrency: 'BTC', goalAmount: '10' },
         {
-          goalRateDay: async () => {
-            throw new Error('fx.rate.missing');
+          fxSpot: {
+            latest: async () => {
+              throw new Error('fx.rate.missing');
+            },
           },
         },
       );
@@ -11463,12 +11489,14 @@ describe('GET /messages/hidden', () => {
       expect(json['goalAmountUsd']).toBeNull();
     });
 
-    it('returns 503 when the gift-day loader throws', async () => {
+    it('returns 503 when the spot read throws', async () => {
       const { res, json } = await post(
         { text: 'usd', goalCurrency: 'USD', goalAmount: '1' },
         {
-          goalRateDay: async () => {
-            throw new Error('fx down');
+          fxSpot: {
+            latest: async () => {
+              throw new Error('fx down');
+            },
           },
         },
       );
@@ -11482,12 +11510,12 @@ describe('GET /messages/hidden', () => {
       form.set('goalCurrency', 'USD');
       form.set('goalAmount', '1.0');
       const res = await mount(await namedStore('Ada'), new InMemoryMessageStore(), {
-        goalRateDay: async () => day,
+        ...askSpot(spot),
       }).request('/messages', { method: 'POST', headers: AUTH, body: form });
       expect(res.status).toBe(200);
       const json = (await res.json()) as Record<string, unknown>;
       expect(json['goalCurrency']).toBe('USD');
-      expect(json['goalAmount']).toBe('1');
+      expect(json['goalAmount']).toBe('1.0');
       expect(json['goalSats']).toBe(2000);
     });
   });

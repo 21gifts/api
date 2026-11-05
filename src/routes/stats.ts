@@ -50,7 +50,7 @@ export async function loadGiftStatsSnapshot(
 }
 
 /**
- * Latest gift-day proportion for a currency ask. Last `spendOverTime` day
+ * Latest gift-day proportion for a fiat repayment share. Last `spendOverTime` day
  * with `sats > 0` from {@link loadGiftStatsSnapshot} (no recipient filter).
  * Empty history is `null`. `sats` is that public day total. A currency field
  * stays that public sum only when every outbound gift on that UTC day stored
@@ -85,7 +85,8 @@ export async function loadLatestGoalRateDay(deps: {
 }
 
 /**
- * `goalRateDay` for `messagesRoutes`: one call of {@link loadLatestGoalRateDay}.
+ * `goalRateDay` for a fiat repayment share on `myLoansRoutes` and
+ * `messagesRoutes`: one call of {@link loadLatestGoalRateDay}.
  *
  * @param deps - The same collaborators as {@link loadLatestGoalRateDay}.
  * @returns A function that loads the latest gift-day on each call.

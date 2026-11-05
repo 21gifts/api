@@ -1,9 +1,9 @@
 /**
- * Gift-day ask conversion used when a forum note freezes a currency goal.
+ * Gift-day proportion used when a repayment share is priced.
  *
- * Same float math as the app composer (`Math.round`, not BigInt spot helpers).
- * Payment snapshots stay on the gift-day pin; this module does not call
- * Coinbase or fiatFromSats.
+ * A forum ask does not freeze from this proportion. Same float math as the
+ * app composer (`Math.round`, not BigInt spot helpers). This module does not
+ * call Coinbase or fiatFromSats.
  */
 
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
@@ -36,15 +36,15 @@ export interface GoalRateDay {
 }
 
 /**
- * Edit a typed ask amount into the canonical stored string.
+ * Edit a BTC ask amount into the whole-sat stored string.
  *
  * Trim, then accept comma or dot with at most eight fractional digits.
- * The result is a dot decimal with no exponent, no leading zeros, and no
- * trailing fractional zeros (`00010.10` → `10.1`, `0.10` → `0.1`, `10.` → `10`).
+ * The result drops trailing fractional zeros (`10.0` → `10`). A fiat ask
+ * does not use this function; it keeps the typed fraction.
  * String editing only — not `parseFloat`; the trimming is
  * {@link canonicalDecimal} with eight decimals.
  *
- * @param raw - JSON or multipart `goalAmount`.
+ * @param raw - JSON or multipart BTC `goalAmount`.
  * @returns The canonical string, or `null` when the grammar fails.
  */
 export function canonicalGoalAmount(raw: string): string | null {

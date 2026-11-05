@@ -2017,6 +2017,7 @@ WHERE message.id = ranked.id AND ranked.rn > 1`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS mentions jsonb NOT NULL DEFAULT '[]'::jsonb`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8)`,
+  `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount_text text`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2)`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_chf numeric(20, 2)`,
   `ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_eur numeric(20, 2)`,
@@ -5057,6 +5058,7 @@ interface MessageSqlRow {
   goal_funded_at?: Date | string | null;
   goal_currency?: string | null;
   goal_amount?: string | number | null;
+  goal_amount_text?: string | null;
   goal_fiat_usd?: string | number | null;
   goal_fiat_chf?: string | number | null;
   goal_fiat_eur?: string | number | null;
@@ -5352,7 +5354,10 @@ function mapMessageRow(row: MessageSqlRow): MessageRow {
           ? row.goal_funded_at
           : new Date(row.goal_funded_at),
     goalCurrency: mapGoalCurrency(row.goal_currency),
-    goalAmount: mapGoalAmountText(row.goal_amount),
+    goalAmount:
+      typeof row.goal_amount_text === 'string' && row.goal_amount_text !== ''
+        ? row.goal_amount_text
+        : mapGoalAmountText(row.goal_amount),
     goalAmountUsd: mapGoalFiatText(row.goal_fiat_usd),
     goalAmountChf: mapGoalFiatText(row.goal_fiat_chf),
     goalAmountEur: mapGoalFiatText(row.goal_fiat_eur),
@@ -5430,6 +5435,7 @@ const MESSAGE_SELECT_COLUMNS = `id, account_id, name, text, created_at,
               photo_taken_at, video_taken_at,
               goal_currency,
               goal_amount::text AS goal_amount,
+              goal_amount_text,
               goal_fiat_usd::text AS goal_fiat_usd,
               goal_fiat_chf::text AS goal_fiat_chf,
               goal_fiat_eur::text AS goal_fiat_eur,
@@ -5977,11 +5983,12 @@ export class PostgresMessageStore implements MessageStore {
          id, account_id, name, text, created_at, nostr_publish_state, sats, author_pubkey,
          event_id, nostr_event, goal_sats, place_lat, place_lng, place_label,
          goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php,
-         goal_repayable, goal_term_days, shop_account_id, mentions, first_post_free
+         goal_repayable, goal_term_days, shop_account_id, mentions, first_post_free,
+         goal_amount_text
        )
        SELECT $1,$2,$3,$4,$5,$6,$7,$8,$9,$10::jsonb,$11,$12,$13,$14,
               $15,$16::numeric,$17::numeric,$18::numeric,$19::numeric,$20::numeric,
-              $21,$22,$23,$24::jsonb,TRUE
+              $21,$22,$23,$24::jsonb,TRUE,$26
        WHERE NOT EXISTS (
          SELECT 1 FROM message
          WHERE account_id = $2
@@ -6016,6 +6023,7 @@ export class PostgresMessageStore implements MessageStore {
         stored.shopAccount?.id ?? null,
         JSON.stringify(stored.mentions ?? []),
         excludeId,
+        stored.goalAmount ?? null,
       ],
     );
     return inserted.length === 0 ? undefined : stored;
@@ -6701,6 +6709,7 @@ export class PostgresMessageStore implements MessageStore {
       );
     }
     params.push(JSON.stringify(marks));
+    params.push(stored.goalAmount ?? null);
     try {
       const createSql = `WITH inserted AS (
            INSERT INTO message (
@@ -6710,13 +6719,13 @@ export class PostgresMessageStore implements MessageStore {
            place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,
            goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,
            shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,
-           mentions
+           mentions, goal_amount_text
          )
          SELECT
            $1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14::jsonb,$15,$16,
            $17::numeric,$18::numeric,$19::numeric,$20::numeric,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,
            $31,$32::numeric,$33::numeric,$34::numeric,$35::numeric,$36::numeric,$37,$38,$39,
-           $40,$41::numeric,$42::numeric,$43::numeric,$44::numeric,$72::jsonb
+           $40,$41::numeric,$42::numeric,$43::numeric,$44::numeric,$72::jsonb,$73
          WHERE $11::uuid IS NULL OR EXISTS (
            SELECT 1 FROM message p WHERE p.id = $11 AND p.deleted_at IS NULL
          )

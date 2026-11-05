@@ -98,7 +98,7 @@ const JPEG2: ForumPhoto = {
 
 describe('MESSAGE_SCHEMA_SQL', () => {
   it('creates message with photo columns, Nostr columns, index, and additive ALTERs', () => {
-    expect(MESSAGE_SCHEMA_SQL).toHaveLength(118);
+    expect(MESSAGE_SCHEMA_SQL).toHaveLength(119);
     expect(MESSAGE_SCHEMA_SQL.at(-7)).toMatch(
       /ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false/,
     );
@@ -313,39 +313,39 @@ describe('MESSAGE_SCHEMA_SQL', () => {
     expect(fundedColumn).toBeGreaterThan(recordedColumn);
     expect(fundedBackfill).toBe(fundedColumn + 1);
     expect(recordedBackfill).toBe(fundedColumn + 2);
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain('FROM pg_trigger');
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain("tgname = 'trg_db_change'");
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain("jsonb_typeof(nostr_event) = 'string'");
-    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('EXCEPTION WHEN others');
-    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('EXCEPTION WHEN invalid_text_representation');
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain(
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain('FROM pg_trigger');
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain("tgname = 'trg_db_change'");
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain("jsonb_typeof(nostr_event) = 'string'");
+    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('EXCEPTION WHEN others');
+    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('EXCEPTION WHEN invalid_text_representation');
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain(
       'EXCEPTION WHEN data_exception OR statement_too_complex THEN',
     );
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain(
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain(
       "unwrapped := (repair_row.nostr_event #>> '{}')::jsonb;",
     );
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain('SET nostr_event = unwrapped');
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain('nostr_attempts = 0');
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain('CONTINUE;');
-    expect(MESSAGE_SCHEMA_SQL[96]).toContain('AND nostr_event = repair_row.nostr_event');
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain('SET nostr_event = unwrapped');
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain('nostr_attempts = 0');
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain('CONTINUE;');
+    expect(MESSAGE_SCHEMA_SQL[97]).toContain('AND nostr_event = repair_row.nostr_event');
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
       /WHERE id = repair_row\.id[\s\S]*?jsonb_typeof\(nostr_event\) = 'string'[\s\S]*?AND nostr_event = repair_row\.nostr_event;/,
     );
-    expect(MESSAGE_SCHEMA_SQL[96]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
       /unwrapped := \(repair_row\.nostr_event #>> '\{\}'\)::jsonb;[\s\S]*?EXCEPTION WHEN data_exception OR statement_too_complex THEN[\s\S]*?CONTINUE;[\s\S]*?END;[\s\S]*?UPDATE message/,
     );
-    expect(MESSAGE_SCHEMA_SQL[96]).not.toContain('repair_row.unwrapped_event');
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[97]).not.toContain('repair_row.unwrapped_event');
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/CREATE TABLE IF NOT EXISTS message_edit/);
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
       /CONSTRAINT message_edit_field_chk CHECK \(field IN \('text', 'place', 'shop_account'\)\)/,
     );
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/before jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[97]).toMatch(/after jsonb NOT NULL/);
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/REFERENCES message \(id\) ON DELETE CASCADE/);
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/before jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(/after jsonb NOT NULL/);
+    expect(MESSAGE_SCHEMA_SQL[99]).toMatch(
       /CREATE INDEX IF NOT EXISTS message_edit_message_created_idx/,
     );
-    expect(MESSAGE_SCHEMA_SQL[98]).toMatch(
+    expect(MESSAGE_SCHEMA_SQL[99]).toMatch(
       /ON message_edit \(message_id, created_at DESC, id DESC\)/,
     );
   });
@@ -6129,7 +6129,7 @@ describe('PostgresMessageStore', () => {
     const insert = sql.queries[0];
     expect(insert?.text).toMatch(/INSERT INTO message/);
     expect(insert?.text).toMatch(/first_post_free/);
-    expect(insert?.text).toMatch(/TRUE\s+WHERE NOT EXISTS/);
+    expect(insert?.text).toMatch(/TRUE,\$26\s+WHERE NOT EXISTS/);
     expect(insert?.text).not.toMatch(/deleted_at/);
     expect(insert?.text).toMatch(/\$25::uuid IS NULL OR id <> \$25::uuid/);
     expect(insert?.text).toMatch(/ON CONFLICT DO NOTHING/);
@@ -6159,6 +6159,7 @@ describe('PostgresMessageStore', () => {
       null,
       '[]',
       'prof',
+      null,
     ]);
     sql.nextRows = [];
     expect(await store.createFirstPost(LATE, null)).toBeUndefined();
@@ -6203,6 +6204,7 @@ describe('PostgresMessageStore', () => {
       JSON.stringify([{ accountId: 'bob', username: 'bob' }]),
       null,
     ]);
+    expect(sql.queries[0]?.params.at(-1)).toBe('10');
   });
 
   it('createFirstPost rejects a reply or a row without an account', async () => {
@@ -7268,10 +7270,10 @@ describe('PostgresMessageStore', () => {
     };
     const created = await store.create(row);
     expect(sql.executes[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions, goal_amount_text\s*\)/,
     );
     expect(sql.executes[0]?.text).toMatch(
-      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric/,
+      /\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric,\$72::jsonb,\$73/,
     );
     expect(sql.executes[0]?.text).not.toMatch(/ON CONFLICT/i);
     expect(sql.executes[0]?.params.slice(0, 44)).toEqual([
@@ -7320,9 +7322,10 @@ describe('PostgresMessageStore', () => {
       null,
       null,
     ]);
-    expect(sql.executes[0]?.params).toHaveLength(72);
+    expect(sql.executes[0]?.params).toHaveLength(73);
     expect(sql.executes[0]?.params.slice(44, 71)).toEqual(Array(27).fill(null));
     expect(sql.executes[0]?.params[71]).toBe('[]');
+    expect(sql.executes[0]?.params[72]).toBeNull();
     expect(created.id).toBe(row.id);
     expect(created.hasVideo).toBe(false);
     expect(created.receivedSats).toBe(0);
@@ -7562,10 +7565,10 @@ describe('PostgresMessageStore', () => {
     const created = await store.create(row);
     expect(sql.executes).toEqual([]);
     expect(sql.queries[0]?.text).toMatch(
-      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions\s*\)/,
+      /INSERT INTO message \(\s*id, account_id, name, text, photo, photo_content_type, video_content_type, created_at,\s*nostr_publish_state, sats, parent_id, author_pubkey, event_id, nostr_event, content_fp, goal_sats,\s*fiat_usd, fiat_chf, fiat_eur, fiat_php, photo_taken_at, video_taken_at,\s*place_lat, place_lng, place_label, place_street, place_house_number, place_postal_code, place_city, place_country,\s*goal_currency, goal_amount, goal_fiat_usd, goal_fiat_chf, goal_fiat_eur, goal_fiat_php, goal_repayable, goal_term_days,\s*shop_account_id, received_sats, received_fiat_usd, received_fiat_chf, received_fiat_eur, received_fiat_php,\s*mentions, goal_amount_text\s*\)/,
     );
     expect(sql.queries[0]?.text).toMatch(
-      /SELECT\s+\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric/,
+      /SELECT\s+\$1,\$2,\$3,\$4,\$5,\$6,\$7,\$8,\$9,\$10,\$11,\$12,\$13,\$14::jsonb,\$15,\$16,\s*\$17::numeric,\$18::numeric,\$19::numeric,\$20::numeric,\$21,\$22,\$23,\$24,\$25,\$26,\$27,\$28,\$29,\$30,\s*\$31,\$32::numeric,\$33::numeric,\$34::numeric,\$35::numeric,\$36::numeric,\$37,\$38,\$39,\s*\$40,\$41::numeric,\$42::numeric,\$43::numeric,\$44::numeric,\$72::jsonb,\$73/,
     );
     expect(sql.queries[0]?.text).toMatch(
       /WHERE \$11::uuid IS NULL OR EXISTS \(\s*SELECT 1 FROM message p WHERE p\.id = \$11 AND p\.deleted_at IS NULL\s*\)/,
@@ -7618,9 +7621,10 @@ describe('PostgresMessageStore', () => {
       null,
       null,
     ]);
-    expect(sql.queries[0]?.params).toHaveLength(72);
+    expect(sql.queries[0]?.params).toHaveLength(73);
     expect(sql.queries[0]?.params.slice(44, 71)).toEqual(Array(27).fill(null));
     expect(sql.queries[0]?.params[71]).toBe('[]');
+    expect(sql.queries[0]?.params[72]).toBeNull();
     expect(created.id).toBe('child-1');
     expect(created.parentId).toBe('parent-1');
   });
@@ -12165,6 +12169,27 @@ describe('message fiat accumulator SQL', () => {
     expect(mapped?.goalCurrency).toBe('USD');
     expect(mapped?.goalAmount).toBe('1.5');
     expect(mapped?.goalAmountUsd).toBe('1.50');
+    sql.nextRows = [
+      {
+        id: 'm-cur',
+        account_id: 'acc',
+        name: 'Ada',
+        text: 'ask',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+        has_photo: false,
+        goal_sats: '10000',
+        goal_currency: 'USD',
+        goal_amount: '5.00000000',
+        goal_amount_text: '5.00',
+        goal_fiat_usd: '5.00',
+        goal_fiat_chf: '4.50',
+        goal_fiat_eur: null,
+        goal_fiat_php: null,
+      },
+    ];
+    const kept = await store.getById('m-cur');
+    expect(kept?.goalAmount).toBe('5.00');
+    expect(kept?.goalAmountUsd).toBe('5.00');
     expect(mapped?.goalAmountEur).toBe('1.40');
     expect(mapped?.goalAmountChf).toBeNull();
     sql.nextRows = [

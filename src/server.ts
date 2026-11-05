@@ -1043,6 +1043,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       fundingStore,
       giftStore,
       shopIdentities: shopIdentityStore,
+      fxSpot: fxSpotStore,
       goalRateDay,
       ...(nostrKek === undefined ? {} : { nostrKek }),
       ...(shopKek === undefined ? {} : { shopKek }),

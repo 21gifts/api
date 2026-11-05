@@ -8,10 +8,9 @@ import { staffTagOf, type Account, type AccountRole, type AuthStore } from '@/li
 import { inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
 import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
 import { payerDebtUnits, repaymentSchedule } from '@/lib/credit-repayment';
+import type { FxSpotQuote } from '@/lib/fx-spot';
 import {
   canonicalGoalAmount,
-  fiatToSats,
-  satsToFiatAmount,
   type GoalCurrency,
   type GoalFiatCode,
   type GoalRateDay,
@@ -23,7 +22,14 @@ import { isOperatorBearer } from '@/lib/debug-token';
 import type { GiftStore } from '@/lib/gift-store';
 import { attachHeartStats } from '@/lib/heart-stats';
 import { logEvent } from '@/lib/log';
-import { shownFiatFromBody, type FiatAmounts } from '@/lib/money';
+import {
+  parseUsdPerBtc,
+  satsToUsdCents,
+  shownFiatFromBody,
+  usdCentsToString,
+  type FiatAmounts,
+} from '@/lib/money';
+import { freezePosFiatCrosses, parseTypedFiatAmount } from '@/lib/pos-charge';
 import { buildPostStats } from '@/lib/post-stats';
 import type { FetchFn } from '@/lib/lnurlp';
 import { requestZapInvoice } from '@/lib/lnurl-pay';
@@ -354,9 +360,14 @@ export interface MessagesRouteDeps {
   /** Poll interval for `sinceSats` (tests inject; default {@link WAIT_SATS_POLL_MS}). */
   waitSatsPollMs?: number;
   /**
-   * Latest gift-day used to freeze a currency ask. Omitted means no day:
+   * Latest spot used to freeze a currency ask. Omitted or a null quote:
    * a BTC ask still posts; a fiat ask is 400. A throw is 503 for a fiat
    * ask; a BTC ask still stores the typed sats.
+   */
+  fxSpot?: { latest(): Promise<FxSpotQuote | null> };
+  /**
+   * Gift-day loader for a fiat repayment share. An ask does not read it.
+   * Omitted → a fiat repayment share cannot be priced.
    */
   goalRateDay?: () => Promise<GoalRateDay | null>;
   /** Operator write token. Unset → no operator read on the staff GET routes. */
@@ -820,32 +831,183 @@ function readFormGoalField(value: unknown): string | null | 'invalid' {
   return value;
 }
 
-function freezeSnapshots(
-  sats: number,
-  currency: GoalCurrency,
-  amount: string,
-  day: GoalRateDay | null,
-): FrozenAsk {
-  const quote = (code: GoalFiatCode): string | null => satsToFiatAmount(sats, day, code);
+function scale8(amount: string): bigint {
+  const dot = amount.indexOf('.');
+  const intPart = dot < 0 ? amount : amount.slice(0, dot);
+  const frac = dot < 0 ? '' : amount.slice(dot + 1);
+  return BigInt(intPart + frac.padEnd(8, '0'));
+}
+
+/**
+ * Two-decimal form of a typed fiat amount.
+ *
+ * Half-up past the second place. This is the typed number, not a satoshi
+ * round trip, so 5.00 stays 5.00.
+ *
+ * @param amount - Decimal already accepted by {@link parseTypedFiatAmount}.
+ * @returns Two decimals, or `null` when the cents do not fit a safe integer.
+ */
+function typedTwoDecimals(amount: string): string | null {
+  const dot = amount.indexOf('.');
+  const intPart = dot < 0 ? amount : amount.slice(0, dot);
+  const frac = dot < 0 ? '' : amount.slice(dot + 1);
+  let cents: bigint;
+  if (frac.length <= 2) {
+    cents = BigInt(intPart + frac.padEnd(2, '0'));
+  } else {
+    cents = BigInt(intPart + frac.slice(0, 2));
+    if (frac.charCodeAt(2) - 48 >= 5) {
+      cents += 1n;
+    }
+  }
+  if (cents > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return usdCentsToString(Number(cents));
+}
+
+/**
+ * Whole sats for a typed fiat amount at one fiat-per-BTC rate.
+ *
+ * Half-up. A positive amount that rounds to 0 sats becomes 1. Unusable when
+ * the rate cannot be parsed or the sats fall outside 1..{@link GOAL_SATS_MAX}.
+ *
+ * @param amount - Typed decimal.
+ * @param fiatPerBtc - Fiat units per 1 BTC.
+ * @returns Whole sats, or `null`.
+ */
+function satsFromSpot(amount: string, fiatPerBtc: string): number | null {
+  let rateScaled: bigint;
+  try {
+    rateScaled = parseUsdPerBtc(fiatPerBtc);
+  } catch {
+    return null;
+  }
+  const amountScaled = scale8(amount);
+  const numer = amountScaled * 100_000_000n;
+  const quot = numer / rateScaled;
+  const rem = numer % rateScaled;
+  let sats = rem * 2n >= rateScaled ? quot + 1n : quot;
+  if (sats === 0n && amountScaled > 0n) {
+    sats = 1n;
+  }
+  if (sats < 1n || sats > BigInt(GOAL_SATS_MAX) || sats > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return Number(sats);
+}
+
+/**
+ * One fiat snapshot of a BTC ask from the spot, or null when that rate is missing.
+ *
+ * @param sats - Whole sats stored on the ask.
+ * @param quote - Spot quote, or null.
+ * @param code - Currency to price.
+ * @returns Two decimals, or null.
+ */
+function spotFiat(sats: number, quote: FxSpotQuote | null, code: GoalFiatCode): string | null {
+  if (quote === null) {
+    return null;
+  }
+  const rate = quote.rates[code];
+  if (rate === undefined) {
+    return null;
+  }
+  try {
+    return usdCentsToString(satsToUsdCents(sats, rate));
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Freeze a BTC ask. The typed amount is the whole-sat string. Each fiat
+ * snapshot comes from the spot, or stays null.
+ *
+ * @param sats - Whole sats.
+ * @param amount - Canonical whole-sat string.
+ * @param quote - Spot quote, or null.
+ * @returns The frozen ask.
+ */
+function freezeBtcAsk(sats: number, amount: string, quote: FxSpotQuote | null): FrozenAsk {
   return {
     goalSats: sats,
-    goalCurrency: currency,
+    goalCurrency: 'BTC',
     goalAmount: amount,
-    goalAmountUsd: quote('USD'),
-    goalAmountChf: quote('CHF'),
-    goalAmountEur: quote('EUR'),
-    goalAmountPhp: quote('PHP'),
+    goalAmountUsd: spotFiat(sats, quote, 'USD'),
+    goalAmountChf: spotFiat(sats, quote, 'CHF'),
+    goalAmountEur: spotFiat(sats, quote, 'EUR'),
+    goalAmountPhp: spotFiat(sats, quote, 'PHP'),
     goalRepayable: null,
     goalTermDays: null,
   };
 }
 
-type AskOutcome = { ok: true; goal: FrozenAsk } | { ok: false; status: 400 | 503; error: string };
+/**
+ * Freeze a fiat ask. The typed currency is the typed amount, written to two
+ * decimals without a satoshi round trip. The other three currencies come from
+ * the same spot quote.
+ *
+ * @param currency - Currency the person typed.
+ * @param amount - Typed decimal.
+ * @param sats - Whole sats priced from that spot.
+ * @param quote - Spot quote that contains the typed currency.
+ * @returns The frozen ask, or null when the typed cents do not fit.
+ */
+function freezeFiatAsk(
+  currency: GoalFiatCode,
+  amount: string,
+  sats: number,
+  quote: FxSpotQuote,
+): FrozenAsk | null {
+  const typed = typedTwoDecimals(amount);
+  if (typed === null) {
+    return null;
+  }
+  const crosses = freezePosFiatCrosses(currency, amount, quote);
+  return {
+    goalSats: sats,
+    goalCurrency: currency,
+    goalAmount: amount,
+    goalAmountUsd: currency === 'USD' ? typed : crosses.fiatUsd,
+    goalAmountChf: currency === 'CHF' ? typed : crosses.fiatChf,
+    goalAmountEur: currency === 'EUR' ? typed : crosses.fiatEur,
+    goalAmountPhp: currency === 'PHP' ? typed : crosses.fiatPhp,
+    goalRepayable: null,
+    goalTermDays: null,
+  };
+}
 
 /**
- * Freeze a top-level ask. Legacy sats skip the loader. A BTC ask still stores
- * the typed sats when the loader throws or returns no day. A fiat ask is 503
- * when the loader throws and 400 when the day cannot price it.
+ * Read the spot once. A missing reader is a null quote. A throw is a failure.
+ *
+ * @param deps - Route deps.
+ * @returns The quote, or a failure when the read throws.
+ */
+async function readAskSpot(
+  deps: MessagesRouteDeps,
+): Promise<{ ok: true; quote: FxSpotQuote | null } | { ok: false }> {
+  if (deps.fxSpot === undefined) {
+    return { ok: true, quote: null };
+  }
+  try {
+    return { ok: true, quote: await deps.fxSpot.latest() };
+  } catch {
+    return { ok: false };
+  }
+}
+
+/**
+ * Freeze a top-level ask. Legacy sats skip the spot. A BTC ask still stores
+ * the typed sats when the spot read throws or returns no quote. A fiat ask is
+ * 503 when the read throws and 400 when the quote cannot price it. The typed
+ * fiat string keeps its fraction.
+ *
+ * @param deps - Route deps.
+ * @param legacy - Legacy whole-sat goal, or null.
+ * @param currency - Ask currency, or null when the new pair is absent.
+ * @param amount - Ask amount text, or null when the new pair is absent.
+ * @returns The frozen ask, or the 400/503 error.
  */
 async function freezeAsk(
   deps: MessagesRouteDeps,
@@ -856,32 +1018,36 @@ async function freezeAsk(
   if (currency === null || amount === null) {
     return { ok: true, goal: { ...NO_ASK, goalSats: legacy } };
   }
-  const canonical = canonicalGoalAmount(amount);
-  if (canonical === null) {
-    return { ok: false, status: 400, error: GOAL_PAIR_ERROR };
-  }
-  let day: GoalRateDay | null = null;
-  if (deps.goalRateDay !== undefined) {
-    try {
-      day = await deps.goalRateDay();
-    } catch {
-      if (currency !== 'BTC') {
-        return { ok: false, status: 503, error: 'Messages are unavailable' };
-      }
-    }
-  }
   if (currency === 'BTC') {
+    const canonical = canonicalGoalAmount(amount);
+    if (canonical === null) {
+      return { ok: false, status: 400, error: GOAL_PAIR_ERROR };
+    }
     const sats = Number(canonical);
     if (!/^\d+$/.test(canonical) || !Number.isInteger(sats) || sats < 1 || sats > GOAL_SATS_MAX) {
       return { ok: false, status: 400, error: 'Goal must be a positive whole-sat amount' };
     }
-    return { ok: true, goal: freezeSnapshots(sats, 'BTC', canonical, day) };
+    const spot = await readAskSpot(deps);
+    return { ok: true, goal: freezeBtcAsk(sats, canonical, spot.ok ? spot.quote : null) };
   }
-  const sats = fiatToSats(Number(canonical), day, currency);
-  if (sats === null || !Number.isInteger(sats) || sats < 1 || sats > GOAL_SATS_MAX) {
+  const typed = parseTypedFiatAmount(amount);
+  if (typed === null) {
+    return { ok: false, status: 400, error: GOAL_PAIR_ERROR };
+  }
+  const spot = await readAskSpot(deps);
+  if (!spot.ok) {
+    return { ok: false, status: 503, error: 'Messages are unavailable' };
+  }
+  const rate = spot.quote === null ? undefined : spot.quote.rates[currency];
+  const sats = rate === undefined || spot.quote === null ? null : satsFromSpot(typed, rate);
+  if (sats === null || spot.quote === null) {
     return { ok: false, status: 400, error: ASK_UNAVAILABLE };
   }
-  return { ok: true, goal: freezeSnapshots(sats, currency, canonical, day) };
+  const goal = freezeFiatAsk(currency, typed, sats, spot.quote);
+  if (goal === null) {
+    return { ok: false, status: 400, error: ASK_UNAVAILABLE };
+  }
+  return { ok: true, goal };
 }
 
 async function frozenAskResponse(

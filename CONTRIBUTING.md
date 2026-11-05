@@ -197,7 +197,7 @@ api/
 │   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (operator projections; `account` rows leave out the legacy `lightning_address` / `lightning_address_verified` and the derived `spark_address`; envelope hex, never decrypt)
 │   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, shop_identity, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, NOSTR_NSEC_KEK and RECOVERY_SHARE_KEK, db_change
 │   │   ├── money.ts          # Sats/BTC strings and historical USD cents
-│   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
+│   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of whole-sat BTC ask amounts and shop payment amounts
 │   │   ├── credit-repayment.ts # Repayment schedule, cent amounts, and the public ledger rows
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
 │   │   ├── btc-usd-store.ts  # btc_usd_daily migrate + rate book

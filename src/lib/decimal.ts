@@ -1,7 +1,8 @@
 /**
- * The canonical decimal form shared by stored ask amounts
+ * The canonical decimal form shared by whole-sat BTC ask amounts
  * (`canonicalGoalAmount`) and the shop payment amounts (`decimalAmount`,
- * `btcAmount`): string editing only, never `parseFloat`.
+ * `btcAmount`). A fiat ask keeps the typed fraction and does not use this
+ * form. String editing only, never `parseFloat`.
  */
 
 /**
