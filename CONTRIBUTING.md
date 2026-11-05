@@ -646,11 +646,14 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `lnurlServerRoutes`, `accountByReceivingAddress`, `readLookupAnswer`, `forwardRecoveryLookup`, `settleDecision`, `settleAfterLookup`, `fetchSparkAddressBalance` (the previous-wallet list),
 `startPasskeyRecovery` (social recovery begin answers 503 first), `lnurlTransferFromMessage`, `lnurlTransferToMessage`, `verifyLnurlDerSignature` (the address transfer route),
 `recoveryMessage` and `verifyRecoverySignature` (only for a recovery challenge, which only that begin issues), `duplicateInvoiceLogFields` (an invoice route with a pending charge), and `PaymentHashClaims` (a charge's invoice record or a shop payment of a memory boot), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
-`parseMultipartCoord`, `loadLatestGoalRateDay`,
-`bindGoalRateDay`, `canonicalGoalAmount`, and `canonicalDecimal`, which
-run only when a member may post; posting needs a verified wallet, which only the LNURL
-server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (their
-tests assert 409 `missing: ['lightning-address']`);
+`parseMultipartCoord`, which runs only when a member posts a place pin; posting needs a verified wallet, which only the LNURL
+server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (its
+test asserts 409 `missing: ['lightning-address']`);
+`canonicalGoalAmount`, which freezes a BTC ask on post and maps an empty `goal_amount_text` on read (its catalog
+test still answers 409 `missing: ['lightning-address']`);
+`loadLatestGoalRateDay` and `bindGoalRateDay`, which load the gift-day rate for a repayment share and are not called by a forum ask (their catalog
+tests still answer 409 `missing: ['lightning-address']`);
+`canonicalDecimal`, which `decimalAmount` and `btcAmount` also use on the shop payment surface (that surface answers the default 404 on the default boot);
 `fiatToSats`, which prices a fiat repayment share and is not called by a forum ask (its catalog
 test still answers 409 `missing: ['lightning-address']`);
 `satsToFiatAmount`, which has no production caller (the unit tests cover it; its catalog

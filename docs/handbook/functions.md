@@ -62,7 +62,7 @@
 - **Purpose:** Freeze the three currencies that were not typed, from one spot quote. The other amount is the typed amount times the other rate divided by the typed rate, then half-up to cents. The typed currency's numeric column stays null. A missing rate, a rate that cannot be parsed, or a result that does not fit numeric(20,2) is null for that currency. A throw while pricing one other currency does not leave the function; that currency stays null. amountSats is not an input. A null quote freezes nothing.
 - **Inputs:** `typed` (USD, CHF, EUR, or PHP), `amountText` already accepted by `parseTypedFiatAmount`, and the latest spot quote or null.
 - **Returns / side effects:** fiatUsd, fiatChf, fiatEur, and fiatPhp, each a two-decimal string or null. No I/O.
-- **Used by:** `POST /pos` at insert.
+- **Used by:** `POST /pos` at insert, and `messagesRoutes` when freezing a fiat ask.
 
 ## Function: serializePosFiat
 
