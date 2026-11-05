@@ -647,10 +647,14 @@ provider, so their tests assert the empty `GET /fx/spot` result for the pinned r
 `startPasskeyRecovery` (social recovery begin answers 503 first), `lnurlTransferFromMessage`, `lnurlTransferToMessage`, `verifyLnurlDerSignature` (the address transfer route),
 `recoveryMessage` and `verifyRecoverySignature` (only for a recovery challenge, which only that begin issues), `duplicateInvoiceLogFields` (an invoice route with a pending charge), and `PaymentHashClaims` (a charge's invoice record or a shop payment of a memory boot), which need `LNURL_SERVER_URL` and `PUBLIC_BASE_URL` to resolve;
 `parseMultipartCoord`, `loadLatestGoalRateDay`,
-`bindGoalRateDay`, `canonicalGoalAmount`, `canonicalDecimal`, `fiatToSats`, and `satsToFiatAmount`, which
+`bindGoalRateDay`, `canonicalGoalAmount`, and `canonicalDecimal`, which
 run only when a member may post; posting needs a verified wallet, which only the LNURL
 server (`LNURL_SERVER_URL`) can confirm, so no member on the default boot can post (their
 tests assert 409 `missing: ['lightning-address']`);
+`fiatToSats`, which prices a fiat repayment share and is not called by a forum ask (its catalog
+test still answers 409 `missing: ['lightning-address']`);
+`satsToFiatAmount`, which has no production caller (the unit tests cover it; its catalog
+test still answers 409 `missing: ['lightning-address']`);
 `receivingAddress` and `lnurlServerFetch` past the account lookup, which need a member with a
 verified wallet and therefore `LNURL_SERVER_URL` (their tests assert `GET /pay/:username` 404);
 `issueSparkInvoice`, which runs only after a reachable LNURL server mints a NIP-57 invoice;
