@@ -6085,7 +6085,6 @@ null the day's other currencies. A currency every listed gift lacks stays null.
 
 Public current price of 1 BTC in USD, CHF, EUR, and PHP. No auth. It is
 independent of gifts: it does not read `gift`.
-`GET /gifts/stats`. Gift stats are stored strings and do not read the daily rate books.
 
 A background worker fetches one Coinbase response with every pair
 (`BTC_FIAT_SPOT_URL`, default

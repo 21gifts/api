@@ -27,6 +27,7 @@ jobs:
           repository: 21gifts/spend
           ref: develop
           path: spend-src
+          persist-credentials: false
 
       - name: Record spend SHA
         id: src

@@ -26,6 +26,7 @@ jobs:
         with:
           repository: TaprootFreakAI/21gifts-spend
           ref: develop
+          persist-credentials: false
 
       - name: Record spend SHA
         id: src
