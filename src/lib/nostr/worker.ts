@@ -256,6 +256,9 @@ function reservedContent(
  * @param deps - Worker collaborators.
  * @param urls - Kind 9735 receipt-read URLs.
  * @returns Args object with identical optional collaborators for every call site.
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 function indexOpenZapReceiptsArgs(
   deps: ZapIngestDeps,
@@ -291,6 +294,9 @@ function indexOpenZapReceiptsArgs(
  * @param deps - The worker collaborators the ingest uses.
  * @returns A function that ingests one kind 9735 event and resolves `true`
  *   when that receipt is credited.
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 export function zapReceiptIngest(
   deps: ZapIngestDeps,
@@ -445,6 +451,9 @@ async function indexHotZapReceipts(deps: NostrWorkerDeps, nowMs: number): Promis
  * @param mode - Which lane work to run (default `'all'`).
  * @returns Resolves when the selected work has finished (notify failures are
  *   swallowed).
+ * @throws {@link Error}
+ * When `RECOVERY_SHARE_REQUIRED_FROM` in `deps.env` is set to anything but an
+ * ISO date; `createApp` refuses the same value at boot, before a worker starts.
  */
 export async function runNostrWorkerTick(
   deps: NostrWorkerDeps,
