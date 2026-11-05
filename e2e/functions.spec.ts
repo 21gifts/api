@@ -4724,12 +4724,31 @@ test('Function: migrateShopPaymentSchema — default boot has no DATABASE_URL', 
   await noDatabase(request);
 });
 
-test('Function: parseTypedFiatAmount — POST /pos without bearer is 401', async ({ request }) => {
-  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+test('Function: parseTypedFiatAmount — a typed amount is read before the wallet check', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/pos', {
+    headers: { authorization },
+    data: { amountSats: 21, amountCurrency: 'PHP', amount: '12.00' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({
+    error: 'Set up your wallet first',
+    code: 'wallet_required',
+  });
 });
 
-test('Function: isPosFiatCode — POST /pos without bearer is 401', async ({ request }) => {
-  expect((await request.post('/pos', { data: { amountSats: 21 } })).status()).toBe(401);
+test('Function: isPosFiatCode — a currency outside USD, CHF, EUR, and PHP is refused', async ({
+  request,
+}) => {
+  const { authorization } = await memberSession(request);
+  const res = await request.post('/pos', {
+    headers: { authorization },
+    data: { amountSats: 21, amountCurrency: 'usd', amount: '12.00' },
+  });
+  expect(res.status()).toBe(400);
+  expect(await res.json()).toEqual({ error: 'Expected a typed fiat amount' });
 });
 
 test('Function: freezePosFiatCrosses — POST /pos without bearer is 401', async ({ request }) => {
