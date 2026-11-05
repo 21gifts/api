@@ -8,7 +8,7 @@ name: Database change notice
 on:
   pull_request:
     types: [opened, edited, synchronize, reopened]
-    branches: [develop, staging]
+    branches: [develop, staging, main]
 
 permissions:
   contents: read
@@ -59,6 +59,10 @@ jobs:
             const sameRepository = release.head.repo?.full_name === `${context.repo.owner}/${context.repo.repo}`;
             if (sameRepository && release.head.ref === 'staging' && release.base.ref === 'develop') {
               core.info('Release pull request staging -> develop: its pull requests passed this check on staging.');
+              return;
+            }
+            if (sameRepository && release.head.ref === 'develop' && release.base.ref === 'main') {
+              core.info('Release pull request develop -> main: its pull requests passed this check on develop.');
               return;
             }
             const { existsSync, readFileSync } = require('node:fs');

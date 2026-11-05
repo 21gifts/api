@@ -70,6 +70,7 @@ api/
 │   │   ├── push.ts           # GET /push/vapid-public; POST/DELETE /me/push-subscriptions
 │   │   ├── webhooks.ts       # POST /webhooks/lnurl (LNURL server payment webhook; when LNURL_WEBHOOK_SECRET is set)
 │   │   ├── wallet-report.ts  # POST /me/wallet/report (Bearer; balance snapshot + payments with server-side category)
+│   │   ├── wallet-hearts.ts  # POST /me/wallet/hearts (Bearer; heart notes for payment hashes the caller paid or received)
 │   │   ├── member-events.ts  # POST /me/events (Bearer; allow-listed first-party interaction log)
 │   │   ├── stats.ts          # GET /gifts/stats (public gift totals)
 │   │   ├── fx.ts             # GET /fx/spot (public current BTC price in USD/CHF/EUR/PHP)
@@ -117,6 +118,8 @@ api/
 │   │   ├── username.ts       # LUD-16 / NIP-05 username trim/validate (no trailing/double dot) + boot backfill
 │   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)
 │   │   ├── message.ts        # Forum text/photo/video validate + public JSON (hasPhoto/hasVideo; no bytes)
+│   │   ├── heart-stats.ts    # heartCount and hearted on already serialized public messages
+│   │   ├── member-public-feed.ts  # Public posts, shops, credits, and replies for one member profile
 │   │   ├── mention.ts        # @username marks stored on a note at send time
 │   │   ├── mention-query.ts  # normalised @ prefix for GET /mentions (does not store marks)
 │   │   ├── video.ts          # Forum video magic-bytes, faststart, MEDIA_DIR, Range parse
@@ -192,7 +195,8 @@ api/
 │   │   ├── login-gate.ts     # LoginGate (login switch, allowlist, platform account), LOGINS_OPEN_DEFAULT and APP_BUILD_REQUIRED resolvers, X-App-Build check
 │   │   ├── login-gate-store.ts # LoginGateStore port, InMemory/Postgres adapters, LOGIN_GATE_SCHEMA_SQL (app_setting + login_allowlist)
 │   │   ├── debug-catalog.ts  # GET /debug/dump table loaders (operator projections; `account` rows leave out the legacy `lightning_address` / `lightning_address_verified` and the derived `spark_address`; envelope hex, never decrypt)
-│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, shop_identity, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, NOSTR_NSEC_KEK and RECOVERY_SHARE_KEK, db_change│   │   ├── money.ts          # Sats/BTC strings and historical USD cents
+│   │   ├── boot-stores.ts    # DATABASE_URL → auth, optional QueryGiftStore + SqlGiftRecorder, message, shop_identity, contact, conversation, notification, push, trust_edge, funding_grant, daily_roster, account_image, diagnostic_event, spark_invoice, shop_payment tables, BTC-USD and USD-fiat rates, BTC spot quote, NOSTR_NSEC_KEK and RECOVERY_SHARE_KEK, db_change
+│   │   ├── money.ts          # Sats/BTC strings and historical USD cents
 │   │   ├── decimal.ts        # canonicalDecimal: the canonical decimal form of ask amounts and shop payment amounts
 │   │   ├── credit-repayment.ts # Repayment schedule, cent amounts, and the public ledger rows
 │   │   ├── btc-usd-candles.ts # Coinbase Exchange BTC-USD daily closes
@@ -253,6 +257,9 @@ api/
 │       │   ├── spark-address.test.ts
 │       │   ├── spark-explorer.test.ts
 │       │   ├── wallet-report.test.ts
+│       │   ├── heart-stats.test.ts
+│       │   ├── member-public-feed.test.ts
+│       │   ├── payment-received.test.ts
 │       │   ├── wallet-category.test.ts
 │       │   ├── wallet-store.test.ts
 │       │   ├── member-event.test.ts
@@ -421,6 +428,7 @@ api/
 │           ├── debug-payments.test.ts
 │           ├── push.test.ts
 │           ├── wallet-report.test.ts
+│           ├── wallet-hearts.test.ts
 │           ├── member-events.test.ts
 │           ├── debug-push.test.ts
 │           ├── debug-push-broadcast.test.ts
@@ -473,6 +481,7 @@ api/
 │   ├── db-change-notice.mjs  # Database change notice: does a PR need the visible marker line
 │   ├── db-change-notice.test.mjs
 │   ├── gifts-debug.sh        # Operator CLI: list, account-by-id, dump tables, set role, refuse-session, messages, external-pubkeys, video-put, restore, spend, trust-edges, trust-edge, trust-edge-delete, api-log, logins, logins-open, logins-close, logins-allow, logins-disallow, end-sessions, funding-goal, payout-days, applications, daily-roster, daily-roster-links, trust-proposals, member-activity, hidden, edits (DEBUG_TOKEN)
+│   ├── shop-staging-e2e/     # Manual live shop payment on staging (pay.ts and return.py; not part of bun test)
 │   └── loan-e2e/             # Live loan cycle on Spark mainnet (manual; see its README)
 ├── integration/
 │   ├── db-schema-reference.ts       # Generates docs/database/ from a scratch boot schema
@@ -919,7 +928,7 @@ More will be added as concrete subsystems that need runtime configuration
 | Workflow                | Trigger                                                                | Action                                                                                                                                                                         |
 | ----------------------- | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `ci.yaml`               | PR (including drafts); not `ready_for_review`                          | Lint (`bun run lint` on Bun) + typecheck + handbook + e2e-check + test (100% coverage) + test:postgres + build + e2e; **10 minutes** for Lint, **15** for the rest             |
-| `db-change-notice.yaml` | PR into `develop` or `staging` (opened, edited, synchronize, reopened) | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code                                 |
+| `db-change-notice.yaml` | PR into `develop`, `staging`, or `main` (opened, edited, synchronize, reopened) | Require the visible `⚠️ 🗄️ Attention: database change` line for schema or database-access changes; rules from the base commit; runs no PR code. A same-repository release `staging` → `develop` or `develop` → `main` skips                                 |
 | `loan-e2e.yml`          | `workflow_dispatch` only                                               | Checks out this repo and `21gifts/app` (default ref `staging`) and runs the live loan through the app screens. Not a pull-request job. Six-hour cap. Pays real Spark invoices. |
 | `deploy-dev.yaml`       | push to `develop`                                                      | Docker build → push `21gifts/api:beta` and `21gifts/api:beta-<sha>` → notify → wait for deploy                                                                                 |
 | `deploy-staging.yaml`   | push to `staging`                                                      | Docker build → push `21gifts/api:staging` and `21gifts/api:staging-<sha>` → notify → wait for deploy                                                                           |
