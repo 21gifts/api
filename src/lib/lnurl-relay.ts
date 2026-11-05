@@ -7,8 +7,10 @@
  * checked as input: `https`, a DNS name with at least two labels, no
  * address literal, no `localhost` / `.localhost` / `.local` / `.internal`,
  * no port other than the default 443, no user name or password, and a name
- * that resolves to public addresses
- * only. The relay waits at most {@link LNURL_RELAY_TIMEOUT_MS} for each host
+ * that resolves to public addresses only. Each fetch then connects to one of
+ * those addresses and keeps the host name for TLS and the Host header, so a
+ * later DNS answer cannot move the connection. The relay waits at most
+ * {@link LNURL_RELAY_TIMEOUT_MS} for each host
  * lookup and each fetch, and at most {@link LNURL_RELAY_TOTAL_MS} for the whole
  * call; fetches do not follow redirects and read at most
  * {@link LNURL_RELAY_BODY_CAP_BYTES}.
@@ -16,6 +18,8 @@
 
 import { createHash } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
+import type { IncomingMessage } from 'node:http';
+import https from 'node:https';
 import { inspectBolt11 } from '@/lib/bolt11';
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -101,6 +105,16 @@ export interface RelayDeps {
   totalMs?: number;
   /** Host name resolver (tests supply a fake); defaults to the system resolver. */
   lookupImpl?: RelayLookup | undefined;
+  /**
+   * GET `url` on `addresses` (tests). Production omits this. With no
+   * `lookupImpl`, the relay connects to those addresses itself. With a
+   * `lookupImpl` and no transport, the injected `fetchImpl` runs instead.
+   */
+  transportImpl?: (
+    url: URL,
+    addresses: readonly string[],
+    init: { signal: AbortSignal },
+  ) => Promise<Response>;
 }
 
 /** Relay collaborators plus the deadline of the current call (epoch ms). */
@@ -138,8 +152,14 @@ type LoadedPayRequest = {
   ok: true;
   payRequest: RelayPayRequest;
   callback: URL;
+  /** Public addresses already accepted for `callback`. */
+  callbackAddresses: readonly string[];
   metadata: string;
 };
+
+/** A host that resolved to public addresses only, or why it did not. */
+type HostCheck =
+  { ok: true; addresses: string[] } | { ok: false; reason: 'private' | 'unresolved' };
 
 /** Outcome of one capped JSON fetch. */
 type FetchedJson = { ok: true; body: unknown } | { ok: false; status: number | null };
@@ -373,9 +393,9 @@ function isRelayAddress(ip: string): boolean {
  *
  * @param url - Checked outbound URL.
  * @param deps - Resolver and timeout.
- * @returns `ok`, `private` (some address is not public), or `unresolved`.
+ * @returns The public addresses, or `private` / `unresolved`.
  */
-async function hostAddresses(url: URL, deps: RelayRun): Promise<'ok' | 'private' | 'unresolved'> {
+async function hostAddresses(url: URL, deps: RelayRun): Promise<HostCheck> {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const late = new Promise<null>((resolve) => {
     timer = setTimeout(() => resolve(null), stepMs(deps));
@@ -388,9 +408,11 @@ async function hostAddresses(url: URL, deps: RelayRun): Promise<'ok' | 'private'
   }
   clearTimeout(timer);
   if (addresses === null || addresses.length === 0) {
-    return 'unresolved';
+    return { ok: false, reason: 'unresolved' };
   }
-  return addresses.every(isRelayAddress) ? 'ok' : 'private';
+  return addresses.every(isRelayAddress)
+    ? { ok: true, addresses }
+    : { ok: false, reason: 'private' };
 }
 
 /**
@@ -431,20 +453,210 @@ async function readCapped(response: Response, cap: number): Promise<string | nul
 }
 
 /**
+ * Parse one fetched response under the body cap.
+ *
+ * @param response - The GET response.
+ * @returns Parsed body, or the HTTP status (`null` for size or JSON failure).
+ */
+async function responseToJson(response: Response): Promise<FetchedJson> {
+  if (response.status < 200 || response.status >= 300) {
+    return { ok: false, status: response.status };
+  }
+  const text = await readCapped(response, LNURL_RELAY_BODY_CAP_BYTES);
+  if (text === null) {
+    return { ok: false, status: null };
+  }
+  try {
+    return { ok: true, body: JSON.parse(text) as unknown };
+  } catch {
+    return { ok: false, status: null };
+  }
+}
+
+/**
+ * One GET on a single already-checked address.
+ *
+ * The socket's `host` is that address. `servername` and the Host header stay
+ * the URL's host name. Another address is tried only when this one never
+ * returns an HTTP response (connect failure or timeout before headers).
+ *
+ * @param url - Checked outbound URL.
+ * @param address - One public address from {@link hostAddresses}.
+ * @param timeoutMs - Longest wait before the attempt is given up.
+ * @param stop - Aborted by the caller when the result is known.
+ * @returns The parsed body, or a miss so the caller can try the next address.
+ */
+function pinnedRequest(
+  url: URL,
+  address: string,
+  timeoutMs: number,
+  stop: AbortSignal,
+): Promise<{ connected: false } | { connected: true; fetched: FetchedJson }> {
+  return new Promise((resolve) => {
+    if (stop.aborted || timeoutMs <= 0) {
+      resolve({ connected: false });
+      return;
+    }
+    let settled = false;
+    let responded = false;
+    const finish = (
+      result: { connected: false } | { connected: true; fetched: FetchedJson },
+    ): void => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      resolve(result);
+    };
+    const req = https.request(
+      {
+        host: address,
+        port: 443,
+        servername: url.hostname,
+        method: 'GET',
+        path: `${url.pathname}${url.search}`,
+        headers: {
+          host: url.hostname,
+          accept: 'application/json',
+          connection: 'close',
+        },
+        rejectUnauthorized: true,
+      },
+      (response: IncomingMessage) => {
+        responded = true;
+        const status = response.statusCode ?? 0;
+        const rawLength = response.headers['content-length'];
+        const declared = typeof rawLength === 'string' ? Number(rawLength) : 0;
+        if (Number.isFinite(declared) && declared > LNURL_RELAY_BODY_CAP_BYTES) {
+          response.resume();
+          req.destroy();
+          finish({ connected: true, fetched: { ok: false, status: null } });
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let total = 0;
+        let over = false;
+        response.on('data', (chunk: Buffer) => {
+          total += chunk.length;
+          if (total > LNURL_RELAY_BODY_CAP_BYTES) {
+            over = true;
+            response.destroy();
+            return;
+          }
+          chunks.push(chunk);
+        });
+        response.on('end', () => {
+          if (over || status < 200 || status >= 300) {
+            finish({
+              connected: true,
+              fetched: { ok: false, status: over ? null : status },
+            });
+            return;
+          }
+          try {
+            const text = Buffer.concat(chunks).toString('utf8');
+            finish({
+              connected: true,
+              fetched: { ok: true, body: JSON.parse(text) as unknown },
+            });
+          } catch {
+            finish({ connected: true, fetched: { ok: false, status: null } });
+          }
+        });
+        response.on('error', () => {
+          finish({ connected: true, fetched: { ok: false, status: null } });
+        });
+      },
+    );
+    const giveUp = (connected: boolean): void => {
+      req.destroy();
+      finish(
+        connected
+          ? { connected: true, fetched: { ok: false, status: null } }
+          : { connected: false },
+      );
+    };
+    const onAbort = (): void => {
+      giveUp(responded);
+    };
+    stop.addEventListener('abort', onAbort, { once: true });
+    req.on('close', () => {
+      stop.removeEventListener('abort', onAbort);
+    });
+    req.setTimeout(timeoutMs, () => {
+      giveUp(responded);
+    });
+    req.on('error', () => {
+      if (!responded) {
+        finish({ connected: false });
+      }
+    });
+    req.end();
+  });
+}
+
+/**
+ * GET `url` on the addresses {@link hostAddresses} already accepted.
+ *
+ * @param url - Checked outbound URL.
+ * @param addresses - Public addresses, in resolver order.
+ * @param timeoutMs - Longest wait for one address.
+ * @param stop - Aborted by the caller when the result is known.
+ * @returns Parsed JSON, or a failure when every address misses.
+ */
+async function pinnedRelayGet(
+  url: URL,
+  addresses: readonly string[],
+  timeoutMs: number,
+  stop: AbortSignal,
+): Promise<FetchedJson> {
+  for (const address of addresses) {
+    if (stop.aborted) {
+      return { ok: false, status: null };
+    }
+    const outcome = await pinnedRequest(url, address, timeoutMs, stop);
+    if (outcome.connected) {
+      return outcome.fetched;
+    }
+  }
+  return { ok: false, status: null };
+}
+
+/**
  * GET `url` without redirects, with timeout and body cap, and parse JSON.
  *
  * The request is aborted when the status is not 2xx or the body is too
- * large, so an unread body does not keep the connection busy.
+ * large, so an unread body does not keep the connection busy. With no
+ * injected resolver the connection uses `addresses`. An injected resolver
+ * without {@link RelayDeps.transportImpl} uses {@link RelayDeps.fetchImpl}.
  *
  * @param url - Checked outbound URL.
+ * @param addresses - Public addresses already accepted for `url`'s host.
  * @param deps - Fetch and timeout.
  * @returns Parsed body, or the HTTP status (`null` for network, size, or JSON failure).
  */
-async function fetchRelayJson(url: URL, deps: RelayRun): Promise<FetchedJson> {
+async function fetchRelayJson(
+  url: URL,
+  addresses: readonly string[],
+  deps: RelayRun,
+): Promise<FetchedJson> {
   const done = new AbortController();
-  const result = await fetchAndParse(url, deps, done.signal);
-  done.abort();
-  return result;
+  try {
+    if (deps.transportImpl !== undefined) {
+      const response = await deps.transportImpl(url, addresses, {
+        signal: AbortSignal.any([done.signal, AbortSignal.timeout(stepMs(deps))]),
+      });
+      return await responseToJson(response);
+    }
+    if (deps.lookupImpl === undefined) {
+      return await pinnedRelayGet(url, addresses, stepMs(deps), done.signal);
+    }
+    return await fetchAndParse(url, deps, done.signal);
+  } catch {
+    return { ok: false, status: null };
+  } finally {
+    done.abort();
+  }
 }
 
 /**
@@ -524,13 +736,13 @@ async function loadPayRequest(
   }
   const domain = parsed.url.hostname.toLowerCase();
   const targetHost = await hostAddresses(parsed.url, deps);
-  if (targetHost === 'private') {
+  if (!targetHost.ok && targetHost.reason === 'private') {
     return fail(400, NOT_PAYABLE_ERROR, 'address');
   }
-  if (targetHost === 'unresolved') {
+  if (!targetHost.ok) {
     return fail(502, UNREACHABLE_ERROR, 'dns');
   }
-  const fetched = await fetchRelayJson(parsed.url, deps);
+  const fetched = await fetchRelayJson(parsed.url, targetHost.addresses, deps);
   if (!fetched.ok) {
     if (fetched.status === 404 || fetched.status === 410) {
       return fail(404, NOT_FOUND_ERROR, 'not_found');
@@ -574,10 +786,10 @@ async function loadPayRequest(
     return fail(400, NOT_PAYABLE_ERROR, 'callback');
   }
   const callbackHost = await hostAddresses(callbackUrl, deps);
-  if (callbackHost === 'private') {
+  if (!callbackHost.ok && callbackHost.reason === 'private') {
     return fail(400, NOT_PAYABLE_ERROR, 'callback_address');
   }
-  if (callbackHost === 'unresolved') {
+  if (!callbackHost.ok) {
     return fail(502, UNREACHABLE_ERROR, 'callback_dns');
   }
   return {
@@ -591,6 +803,7 @@ async function loadPayRequest(
       domain,
     },
     callback: callbackUrl,
+    callbackAddresses: callbackHost.addresses,
     metadata,
   };
 }
@@ -640,7 +853,7 @@ export async function requestRelayInvoice(
   if (!loaded.ok) {
     return loaded;
   }
-  const { payRequest, callback, metadata } = loaded;
+  const { payRequest, callback, callbackAddresses, metadata } = loaded;
   if (
     args.amountMsat < payRequest.minSendableMsat ||
     args.amountMsat > payRequest.maxSendableMsat
@@ -659,7 +872,7 @@ export async function requestRelayInvoice(
   const invoiceUrl = new URL(callback);
   invoiceUrl.search =
     invoiceUrl.search === '' ? `?${extra.join('&')}` : `${invoiceUrl.search}&${extra.join('&')}`;
-  const fetched = await fetchRelayJson(invoiceUrl, run);
+  const fetched = await fetchRelayJson(invoiceUrl, callbackAddresses, run);
   if (!fetched.ok) {
     return fail(
       502,

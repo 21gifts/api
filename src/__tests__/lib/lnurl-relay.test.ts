@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { EventEmitter } from 'node:events';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { InspectedBolt11 } from '@/lib/bolt11';
 import {
@@ -24,6 +25,11 @@ const inspectMock = vi.hoisted(() => vi.fn<(pr: string) => InspectedBolt11 | nul
 vi.mock('@/lib/bolt11', () => ({ inspectBolt11: inspectMock }));
 const dnsLookupMock = vi.hoisted(() => vi.fn());
 vi.mock('node:dns/promises', () => ({ lookup: dnsLookupMock }));
+const httpsRequestMock = vi.hoisted(() => vi.fn());
+vi.mock('node:https', () => ({
+  default: { request: httpsRequestMock },
+  request: httpsRequestMock,
+}));
 
 const METADATA = JSON.stringify([
   ['text/identifier', 'bob@example.com'],
@@ -131,8 +137,45 @@ function lnurl(url: string, hrp = 'lnurl'): string {
 const publicLookup = async (): Promise<string[]> => ['93.184.216.34'];
 const DEPS = { ownHost: '21.gifts', lookupImpl: publicLookup };
 
+/** A pinned GET that returns the pay request. Used when no resolver is injected. */
+function answerPinnedGet(): void {
+  httpsRequestMock.mockImplementation(
+    (_options: unknown, callback: (response: EventEmitter) => void) => {
+      const req = new EventEmitter();
+      const response = new EventEmitter();
+      Object.assign(response, {
+        statusCode: 200,
+        headers: {},
+        resume() {
+          return undefined;
+        },
+        destroy() {
+          return undefined;
+        },
+      });
+      Object.assign(req, {
+        destroy() {
+          return undefined;
+        },
+        setTimeout() {
+          return req;
+        },
+        end() {
+          callback(response);
+          response.emit('data', Buffer.from(JSON.stringify(PAY_REQUEST)));
+          response.emit('end');
+        },
+      });
+      return req;
+    },
+  );
+}
+
 beforeEach(() => {
   inspectMock.mockReset();
+  dnsLookupMock.mockReset();
+  httpsRequestMock.mockReset();
+  answerPinnedGet();
   inspectMock.mockReturnValue({
     paymentHash: 'a'.repeat(64),
     amountMsat: 21_000,
@@ -562,6 +605,108 @@ describe('resolveRelayPayRequest', () => {
 });
 
 describe('requestRelayInvoice', () => {
+  it('connects to the addresses it already accepted and keeps the host name', async () => {
+    const pins: { host: string; servername: string; headerHost: string }[] = [];
+    dnsLookupMock.mockImplementation(async (host: string) => {
+      if (host === 'example.com') {
+        return [{ address: '8.8.8.8' }, { address: '1.1.1.1' }];
+      }
+      if (host === 'pay.example.com') {
+        return [{ address: '9.9.9.9' }];
+      }
+      throw new Error(`lookup ${host}`);
+    });
+    httpsRequestMock.mockImplementation(
+      (
+        options: { host: string; servername: string; headers: { host: string } },
+        callback: (response: EventEmitter) => void,
+      ) => {
+        pins.push({
+          host: options.host,
+          servername: options.servername,
+          headerHost: options.headers.host,
+        });
+        const req = new EventEmitter();
+        const response = new EventEmitter();
+        Object.assign(response, {
+          statusCode: 200,
+          headers: {},
+          resume() {
+            return undefined;
+          },
+          destroy() {
+            return undefined;
+          },
+        });
+        Object.assign(req, {
+          destroy() {
+            return undefined;
+          },
+          setTimeout() {
+            return req;
+          },
+          end() {
+            if (options.host === '8.8.8.8') {
+              req.emit('error', new Error('connect'));
+              return;
+            }
+            const body =
+              options.servername === 'example.com' ? PAY_REQUEST : { pr: PR, routes: [] };
+            callback(response);
+            response.emit('data', Buffer.from(JSON.stringify(body)));
+            response.emit('end');
+          },
+        });
+        return req;
+      },
+    );
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      fetchImpl,
+      ownHost: '21.gifts',
+    });
+    expect(result).toEqual({ ok: true, pr: PR });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(pins).toEqual([
+      { host: '8.8.8.8', servername: 'example.com', headerHost: 'example.com' },
+      { host: '1.1.1.1', servername: 'example.com', headerHost: 'example.com' },
+      { host: '9.9.9.9', servername: 'pay.example.com', headerHost: 'pay.example.com' },
+    ]);
+  });
+
+  it('gives an injected transport the addresses and does not call fetch', async () => {
+    const seen: { url: string; addresses: readonly string[] }[] = [];
+    const fetchImpl = vi.fn(async () => {
+      throw new Error('fetch must not run');
+    });
+    const transportImpl = async (url: URL, addresses: readonly string[]): Promise<Response> => {
+      seen.push({ url: url.toString(), addresses: [...addresses] });
+      if (url.hostname === 'example.com') {
+        return json(PAY_REQUEST);
+      }
+      return json({ pr: PR, routes: [] });
+    };
+    const lookupImpl = async (host: string): Promise<string[]> =>
+      host === 'example.com' ? ['93.184.216.34'] : ['1.1.1.1'];
+    const result = await requestRelayInvoice({
+      target: 'bob@example.com',
+      amountMsat: 21_000,
+      fetchImpl,
+      ownHost: '21.gifts',
+      lookupImpl,
+      transportImpl,
+    });
+    expect(result).toEqual({ ok: true, pr: PR });
+    expect(fetchImpl).not.toHaveBeenCalled();
+    expect(seen.map((call) => call.addresses)).toEqual([['93.184.216.34'], ['1.1.1.1']]);
+    expect(seen[0]?.url).toBe(WELL_KNOWN);
+    expect(seen[1]?.url.startsWith('https://pay.example.com/cb?k=1&amount=21000')).toBe(true);
+  });
+
   it('returns the invoice and sends amount and comment to the callback', async () => {
     const { fetchImpl, calls } = payRequestFetch();
     const result = await requestRelayInvoice({

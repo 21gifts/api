@@ -491,7 +491,8 @@ export interface ShopTx {
 /** Persistence port for shop payments. */
 export interface ShopPaymentStore {
   /**
-   * Run `run` in one transaction. A rejection rolls back every write.
+   * Run `run` in one transaction. A rejection rolls back every shop-table
+   * write. Charge rows on an in-memory point-of-sale store are not undone.
    *
    * @param run - Callback receiving the transaction.
    * @returns The callback result.

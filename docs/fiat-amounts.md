@@ -13,9 +13,10 @@ A payment, charge, gift, loan, ask, repayment, or any other amount that already
 exists keeps the fiat figures fixed at that moment. A later read returns those
 figures. It does not compute new ones.
 
-If a person types an amount in one currency, that exact decimal string is what
-is stored and returned for that currency. Typing 5.00 stores 5.00. It is never
-derived again from the sats. Converting those sats back through any rate,
+If a person types an amount in one currency, the stored string is that decimal
+with a comma written as a dot and with spaces around it removed. Typing 5.00
+stores 5.00. Typing 12,00 stores 12.00. It is never derived again from the
+sats. Converting those sats back through any rate,
 including the rate used at that moment and including a stored daily close, can
 round 5.00 to 4.99. That rounding is forbidden for the currency that was typed.
 
@@ -29,9 +30,9 @@ or another row. The amount remains without that currency.
 ## A till charge returns the typed figure to the shop and to the payer
 
 The shop operator types the till amount. When that amount is typed in one
-currency, that exact decimal string is stored on the charge when the charge
-is created. The shop's till read and the payer's read of that same charge
-both return that string. The payer pays in bitcoin. That payment does not
+currency, the stored string is that decimal with a comma written as a dot and
+with spaces around it removed. The shop's till read and the payer's read of
+that same charge both return that string. The payer pays in bitcoin. That payment does not
 change the string.
 
 Typing 12.00 pesos stores 12.00. Both sides receive 12.00 and both show
