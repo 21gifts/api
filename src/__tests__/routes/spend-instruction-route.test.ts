@@ -115,7 +115,7 @@ function auth(init?: RequestInit): RequestInit {
 
 /**
  * Verify the wallet of `acc-alice` and, unless `share` is false, store the
- * 21.gifts recovery share a payout needs from the grant gate day on.
+ * 21.gifts recovery share a payout needs from `RECOVERY_SHARE_REQUIRED_FROM` on.
  */
 async function verifyWallet(authStore: InMemoryAuthStore, share = true): Promise<void> {
   await authStore.claimSparkPubkey('acc-alice', WALLET_PUBKEY);

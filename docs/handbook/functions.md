@@ -4022,7 +4022,7 @@ Builds the operator-only external-pubkey inspection route.
 - **Purpose:** Reads `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC), the first day a payout needs the 21.gifts recovery share, so the day can be set in the environment without a code change.
 - **Inputs:** Environment record.
 - **Returns / side effects:** The trimmed day, or `null` when unset or blank (not required yet). Throws `RECOVERY_SHARE_REQUIRED_FROM must be an ISO date (YYYY-MM-DD)` for anything that is not a real calendar day (`isUtcDay`), so a typo stops the boot instead of opening or closing payouts.
-- **Used by:** `createApp` (every route that decides a payout) and the boot path of `src/index.ts` (Nostr worker and Spark invoice worker zap ingest).
+- **Used by:** `createApp` (every route that decides a payout; an invalid value stops the boot here) and `indexOpenZapReceiptsArgs` in `src/lib/nostr/worker.ts` (Nostr worker and Spark invoice worker zap ingest, from the same `env` boot passes them).
 
 ## Function: recoveryShareRequired
 

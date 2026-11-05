@@ -70,7 +70,7 @@ const LNURL_ENV = {
 /**
  * Claim and verify the wallet of `acc-alice` (username `alice`) and, unless
  * `share` is false, store the 21.gifts recovery share that payouts need from
- * the grant gate day on.
+ * `RECOVERY_SHARE_REQUIRED_FROM` on.
  */
 async function verifyWallet(
   authStore: InMemoryAuthStore,

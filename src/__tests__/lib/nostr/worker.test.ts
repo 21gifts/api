@@ -7808,7 +7808,7 @@ describe('zapReceiptIngest', () => {
   it.each([
     ['the start day', '2026-10-29', 0],
     ['the day before the start day', '2026-10-30', 1],
-  ])('forwards the recovery share start day: %s', async (_label, requiredFrom, pings) => {
+  ])('passes the recovery share start day from env: %s', async (_label, requiredFrom, pings) => {
     const nowMs = Date.parse('2026-10-29T12:00:00.000Z');
     const auth = new InMemoryAuthStore();
     const messages = new InMemoryMessageStore();
@@ -7881,7 +7881,7 @@ describe('zapReceiptIngest', () => {
         kek: KEK,
         publisher: new RecordingPublisher(),
         now: () => nowMs,
-        env: {},
+        env: { RECOVERY_SHARE_REQUIRED_FROM: requiredFrom },
         verifyReceipt: () => true,
         fetchImpl: async () =>
           Response.json({
@@ -7894,7 +7894,6 @@ describe('zapReceiptIngest', () => {
         lnurlServer: LNURL_SERVER,
         spendPing: { ping },
         postLimiter: new PostRateLimiter(),
-        recoveryShareRequiredFrom: requiredFrom,
         fundingStore: new InMemoryFundingStore([
           {
             accountId: 'payer',

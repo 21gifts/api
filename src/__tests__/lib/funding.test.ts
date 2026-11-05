@@ -201,7 +201,7 @@ describe('eligibleToday', () => {
     expect(eligibleToday(NON_BASIS, trial(GATE_TODAY), GATE_MS, false, SHARE_FROM)).toBe(false);
   });
 
-  it('has no start date of its own for the share: it applies from the gate day', () => {
+  it('applies a share start day equal to the gate day from that day', () => {
     expect(eligibleToday(NON_BASIS, undefined, BEFORE_GATE_MS, false, SHARE_FROM)).toBe(true);
     expect(
       eligibleToday(NON_BASIS, grant({ status: 'admitted' }), GATE_MS, false, SHARE_FROM),

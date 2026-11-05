@@ -25,9 +25,9 @@ database URL that is set is fail-loud at boot. On the SQL path,
 KEK throws at boot. So is `RECOVERY_SHARE_KEK` (64 lowercase hex), the key
 of the 21.gifts recovery share, which must differ from `NOSTR_NSEC_KEK`; a
 missing or malformed value, or one equal to `NOSTR_NSEC_KEK`, throws at
-boot. `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read at boot on every
-boot path) is the first day a payout needs that share: unset or blank means
-not required yet, and any other value throws at boot. Public gift statistics
+boot. `RECOVERY_SHARE_REQUIRED_FROM` (ISO date `YYYY-MM-DD`, UTC, read from the
+environment) is the first day a payout needs that share: unset or blank means
+not required yet, and a value that is not a calendar day throws at boot. Public gift statistics
 (`GET /gifts/stats` and `GET /gifts?day=`) read the `gift` table when `DATABASE_URL` is set;
 without it the process still boots and returns empty stats. Amounts are
 also expressed as BTC and as the USD/CHF/EUR/PHP stored at payment time
