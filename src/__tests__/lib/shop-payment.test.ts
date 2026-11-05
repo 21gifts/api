@@ -5,6 +5,7 @@ import type { ShopPaymentConfig } from '@/lib/config';
 import { erc20TransferData } from '@/lib/evm-transfer';
 import { InMemoryFxSpotStore, type FxSpotStore } from '@/lib/fx-spot-store';
 import * as log from '@/lib/log';
+import { WAIT_SATS_POLL_MS } from '@/lib/message';
 import type {
   OrchestraClient,
   OrchestraQuote,
@@ -2345,7 +2346,9 @@ describe('wait route statuses (Wait)', () => {
     const payment = paymentRow();
     await h.store.transaction((tx) => tx.insertPayment(payment));
     const started = Date.now();
-    expect(await h.svc.wait(payment.id, 'open', 1)).toMatchObject({ paymentStatus: 'open' });
+    expect(await h.svc.wait(payment.id, 'open', WAIT_SATS_POLL_MS)).toMatchObject({
+      paymentStatus: 'open',
+    });
     expect(Date.now() - started).toBeGreaterThanOrEqual(200);
   });
 });
