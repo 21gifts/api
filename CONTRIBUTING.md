@@ -27,18 +27,18 @@ brew install oven-sh/bun/bun
 
 ## Project structure
 
-| Path                            | What lives there                                                                          |
-| ------------------------------- | ----------------------------------------------------------------------------------------- |
-| `src/index.ts`, `src/server.ts` | Bun runtime entry; `createApp()` factory and bind-address helpers                         |
-| `src/routes/`                   | One file per route group. Routes and their request/response contracts: [SPEC.md](SPEC.md) |
-| `src/lib/`                      | Modules the routes build on                                                               |
-| `src/__tests__/`                | Unit tests in a tree that mirrors `src/` (see Tests below)                                |
-| `docs/handbook/`                | Mandatory: every exported function/class and every HTTP endpoint (see Handbook below)     |
-| `docs/schema/`                  | Table definitions as `.sql` files                                                         |
-| `scripts/`                      | CI gates `check-handbook.mjs` and `check-e2e.mjs`; operator CLI `gifts-debug.sh`          |
-| `integration/`                  | Bun Postgres driver test; needs `DATABASE_URL`                                            |
-| `e2e/`                          | Playwright tests against the booted process                                               |
-| `public/`                       | Brand mark files served at the origin root                                                |
+| Path                            | What lives there                                                                                                                      |
+| ------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/index.ts`, `src/server.ts` | `index.ts`: Bun runtime entry (boot path, excluded from Vitest coverage); `server.ts`: `createApp()` factory and bind-address helpers |
+| `src/routes/`                   | One file per route group. Routes and their request/response contracts: [SPEC.md](SPEC.md)                                             |
+| `src/lib/`                      | Modules the routes build on                                                                                                           |
+| `src/__tests__/`                | Unit tests in a tree that mirrors `src/` (see Tests below)                                                                            |
+| `docs/handbook/`                | Mandatory: every exported function/class and every HTTP endpoint (see Handbook below)                                                 |
+| `docs/schema/`                  | Table definitions as `.sql` files                                                                                                     |
+| `scripts/`                      | CI gates `check-handbook.mjs` and `check-e2e.mjs`; operator CLI `gifts-debug.sh`                                                      |
+| `integration/`                  | Bun Postgres driver test; needs `DATABASE_URL`                                                                                        |
+| `e2e/`                          | Playwright tests against the booted process                                                                                           |
+| `public/`                       | Brand mark files served at the origin root                                                                                            |
 
 [CONCEPT.md](CONCEPT.md) is the canonical project documentation; [FLOWS.md](FLOWS.md) sketches the core UI journeys.
 
