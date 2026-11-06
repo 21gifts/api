@@ -155,13 +155,6 @@ export interface Account {
    */
   hadExternalWallet?: boolean;
   /**
-   * Lightning address stored in `account.lightning_address`, trimmed, or
-   * `null` when the column is null or blank. Read-only: `createAccount`
-   * keeps a value it is given and `updateAccount` never changes it. Omitted
-   * is the same as `null`. Not the public JSON `lightningAddress`.
-   */
-  legacyLightningAddress?: string | null;
-  /**
    * Durable capability secret for the public profile URL (`GET /view/:viewKey`).
    * 64 lowercase hex characters. Never a session; never accepted as Bearer.
    */
@@ -483,8 +476,8 @@ export interface AuthStore {
    * {@link AuthStore.setUsername}. The other
    * fields are written. Wallet columns (`sparkPubkey`, `sparkPubkeyVerifiedAt`)
    * are never written here. `walletIntroSeen` is only ever raised to true
-   * (a stale `false` does not clear a stored `true`); `hadExternalWallet` and
-   * `legacyLightningAddress` are never written.
+   * (a stale `false` does not clear a stored `true`); `hadExternalWallet` is
+   * never written.
    */
   updateAccount(account: Account): Promise<void>;
   /**
@@ -668,15 +661,6 @@ export interface AuthStore {
    * (unique index in Postgres; in-memory create/update refuse a taken handle).
    */
   getAccountByUsername(username: string): Promise<Account | undefined>;
-  /**
-   * Look up an account by its stored lightning address (`lower(trim)` match).
-   * A blank needle and a blank stored address are not a match. At most one
-   * row matches (unique index in Postgres).
-   *
-   * @param address - Address as given by the caller.
-   * @returns The account, or `undefined` when none is stored.
-   */
-  getAccountByLegacyLightningAddress(address: string): Promise<Account | undefined>;
   /**
    * Accounts `mentionAccountMatches` accepts for `prefix`, for `@` suggestions.
    *
@@ -1409,7 +1393,6 @@ export class InMemoryAuthStore implements AuthStore {
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
       walletIntroSeen: previous?.walletIntroSeen === true || account.walletIntroSeen === true,
       hadExternalWallet: previous?.hadExternalWallet === true,
-      legacyLightningAddress: previous?.legacyLightningAddress ?? null,
       locale: previous?.locale ?? null,
       fiat: previous?.fiat ?? null,
       sparkPubkey: previous?.sparkPubkey ?? null,
@@ -1551,20 +1534,6 @@ export class InMemoryAuthStore implements AuthStore {
         continue;
       }
       if (other === needle) {
-        return account;
-      }
-    }
-    return undefined;
-  }
-
-  async getAccountByLegacyLightningAddress(address: string): Promise<Account | undefined> {
-    const needle = address.trim().toLowerCase();
-    if (needle === '') {
-      return undefined;
-    }
-    for (const account of this.#accounts.values()) {
-      const raw = account.legacyLightningAddress;
-      if (typeof raw === 'string' && raw.trim().toLowerCase() === needle) {
         return account;
       }
     }

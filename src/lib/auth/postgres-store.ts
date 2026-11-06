@@ -49,7 +49,6 @@ interface AccountRow {
   forum_laws_dismissed: boolean;
   wallet_intro_seen?: boolean | null;
   had_external_wallet?: boolean | null;
-  lightning_address?: string | null;
   view_key: string | null;
   created_at: Date | string;
   rules_agreed_at: Date | string | null;
@@ -74,7 +73,7 @@ interface AccountRow {
   notify_hearts?: boolean | null;
 }
 
-const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, wallet_intro_seen, lightning_address, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
+const ACCOUNT_SELECT_COLUMNS = `id, linking_key, role, name, forum_laws_dismissed, view_key, created_at, rules_agreed_at, is_platform, name_skipped_at, lightning_address_skipped_at, profile_message_id, location, notification_level, username, session_refused, nostr_kek_id, nostr_key_custody, nostr_key_created_at, wallet_required, wallet_backup_seen_at, amount_unit, locale, fiat, staff_tag, spark_pubkey, spark_pubkey_verified_at, notify_hearts, wallet_intro_seen, (lightning_address IS NOT NULL AND btrim(lightning_address) <> '') AS had_external_wallet`;
 
 /** Escape `\`, `%`, and `_` so they are LIKE literals. Does not append `%`. */
 function mentionLikePattern(prefix: string): string {
@@ -687,22 +686,6 @@ export class PostgresAuthStore implements AuthStore {
       `SELECT ${ACCOUNT_SELECT_COLUMNS}
        FROM account WHERE username IS NOT NULL AND lower(trim(username)) = lower(trim($1))`,
       [username],
-    );
-    const row = rows[0];
-    return row === undefined ? undefined : mapAccount(row);
-  }
-
-  async getAccountByLegacyLightningAddress(address: string): Promise<Account | undefined> {
-    const needle = address.trim();
-    if (needle === '') {
-      return undefined;
-    }
-    const rows = await this.#sql.query<AccountRow>(
-      `SELECT ${ACCOUNT_SELECT_COLUMNS}
-       FROM account
-       WHERE lightning_address IS NOT NULL
-         AND lower(btrim(lightning_address)) = lower(btrim($1))`,
-      [address],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapAccount(row);
@@ -1667,20 +1650,6 @@ function parseRole(raw: string): AccountRole {
 }
 
 /**
- * Trimmed `account.lightning_address`, or `null` when the column is null or blank.
- *
- * @param raw - Column value.
- * @returns The stored address, without writing it back.
- */
-function storedLegacyLightningAddress(raw: string | null | undefined): string | null {
-  if (typeof raw !== 'string') {
-    return null;
-  }
-  const trimmed = raw.trim();
-  return trimmed === '' ? null : trimmed;
-}
-
-/**
  * Map a DB row to {@link Account}. Rows with a null `view_key` are skipped
  * (pre-backfill or incomplete migration) rather than inventing a key on read.
  */
@@ -1697,7 +1666,6 @@ function mapAccount(row: AccountRow): Account | undefined {
     forumLawsDismissed: row.forum_laws_dismissed,
     walletIntroSeen: row.wallet_intro_seen === true,
     hadExternalWallet: row.had_external_wallet === true,
-    legacyLightningAddress: storedLegacyLightningAddress(row.lightning_address),
     viewKey: row.view_key,
     createdAt: epochMs(row.created_at),
     rulesAgreedAt: row.rules_agreed_at === null ? null : epochMs(row.rules_agreed_at),

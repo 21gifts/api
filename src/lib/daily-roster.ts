@@ -6,7 +6,7 @@
 
 import type { Account } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
-import { payableAddress } from '@/lib/receiving-address';
+import { receivingAddress } from '@/lib/receiving-address';
 
 /** Spend 400 text for a comment the roster will not store. */
 export const DAILY_ROSTER_INVALID_COMMENT = 'Invalid comment';
@@ -109,9 +109,9 @@ export interface DailyRosterPayoutEntry {
   /** Trimmed lower-case username, or `null` when missing or blank. */
   username: string | null;
   /**
-   * The address the row is paid on (`payableAddress`): the verified wallet
-   * when the LNURL server is on, otherwise the lightning address stored on
-   * the account. `null` when the account is missing or has neither.
+   * The account's receiving address at read time (`receivingAddress`), or
+   * `null` when the account is missing, has no username or no verified
+   * wallet, or the LNURL server is off: the row is then not payable.
    */
   address: string | null;
   /** USD amount for this account. */
@@ -139,7 +139,7 @@ export interface DailyRosterPayoutDocument {
 /** Account fields the roster projections read. */
 export type DailyRosterAccount = Pick<
   Account,
-  'name' | 'username' | 'sparkPubkey' | 'sparkPubkeyVerifiedAt' | 'legacyLightningAddress'
+  'name' | 'username' | 'sparkPubkey' | 'sparkPubkeyVerifiedAt'
 >;
 
 /** Account lookup by id for the roster projections. */
@@ -272,20 +272,21 @@ async function attachPayoutAddress(
   return {
     accountId: row.accountId,
     username: rosterUsername(account),
-    address: account === undefined ? null : payableAddress(account, lnurlServer),
+    address:
+      account === undefined ? null : (receivingAddress(account, lnurlServer)?.address ?? null),
     amountUsd: row.amountUsd,
   };
 }
 
 /**
  * Copy a stored roster for spend: each row gets the address it is paid on,
- * resolved now through `payableAddress`, and its username.
+ * resolved now from the account's verified wallet through
+ * `receivingAddress`, and its username.
  *
- * A verified wallet with the LNURL server on is paid on
- * `<username>@<host>`. Otherwise the lightning address stored on the account
- * is used. A missing account, or an account with neither, gives
- * `address: null`. Lookup is called once per row, in parallel. Order, account
- * id, and amountUsd are unchanged. Lookup errors are not caught.
+ * A missing account, an account without a username or a verified wallet,
+ * or the LNURL server being off gives `address: null`. Lookup is called once per row, in
+ * parallel. Order, account id, and amountUsd are unchanged. Lookup errors are
+ * not caught.
  *
  * @param roster - Full stored document.
  * @param lookup - Account lookup by id.

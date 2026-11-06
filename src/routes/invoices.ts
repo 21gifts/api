@@ -17,7 +17,7 @@ import { newInvoiceId, type GiftInvoice, type InvoiceStore } from '@/lib/invoice
 import { normalizeLightningAddress } from '@/lib/lightning-address';
 import type { FetchFn } from '@/lib/lnurlp';
 import {
-  accountForPayableAddress,
+  accountByReceivingAddress,
   lnurlServerFetch,
   receivingAddress,
 } from '@/lib/receiving-address';
@@ -60,14 +60,13 @@ export interface InvoiceRouteDeps {
   /** Issued-invoice store. */
   store: InvoiceStore;
   /**
-   * Auth store for the payable address → account, passkey, platform,
-   * custodial pubkey, and recovery share lookup. Distinct from
+   * Auth store for receiving address → account (by username), passkey,
+   * platform, custodial pubkey, and recovery share lookup. Distinct from
    * {@link InvoiceStore} (`store`).
    */
   authStore: Pick<
     AuthStore,
     | 'getAccountByUsername'
-    | 'getAccountByLegacyLightningAddress'
     | 'accountHasPasskey'
     | 'listAccounts'
     | 'getNostrPublicKey'
@@ -238,21 +237,17 @@ function spendLookupAddress(
 }
 
 /**
- * The member who is paid on `address`, if any.
- *
- * A verified wallet matches `<username>@<host>`. Otherwise the lightning
- * address stored on the account matches, and a verified wallet is not also
- * matched on that old address.
+ * The member who receives on `address` (their verified wallet), if any.
  *
  * @param deps - Auth store and LNURL server config.
  * @param address - Normalised `local@domain`.
- * @returns The account, or `undefined` when nobody is paid on `address`.
+ * @returns The account, or `undefined` for another domain or no verified wallet.
  */
 async function receiverOf(
   deps: Pick<InvoiceRouteDeps, 'authStore' | 'lnurlServer'>,
   address: string,
 ): Promise<Account | undefined> {
-  return (await accountForPayableAddress(deps.authStore, address, deps.lnurlServer))?.account;
+  return (await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer))?.account;
 }
 
 /**
@@ -639,7 +634,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
       }
 
-      const receiver = await accountForPayableAddress(deps.authStore, address, deps.lnurlServer);
+      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
       if (receiver === undefined) {
         return c.json(
           {
@@ -732,7 +727,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
 
-      const receiver = await accountForPayableAddress(deps.authStore, address, deps.lnurlServer);
+      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
       if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
         logEvent('invoice.wallet_required', { address });
         return c.json({ error: 'Wallet required' }, 403);
@@ -876,7 +871,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         comment?: string;
         fetchImpl: FetchFn;
       } = {
-        address: receiver.address,
+        address: receiver.receiving.address,
         amountMsat,
         fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
       };
@@ -899,7 +894,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       const id = newInvoiceId();
       deps.store.put({
         id,
-        address: receiver.address,
+        address: receiver.receiving.address,
         pr: fetched.pr,
         paymentHash: decoded.paymentHash,
         amountMsat,
