@@ -6,20 +6,18 @@
  * `dev.21.gifts`); the app proxies same-origin. Direct hits on the API host
  * also work.
  *
- * With the self-hosted LNURL server configured and a verified wallet key,
- * this route serves that server's payRequest (callback under this api's
- * public base URL). A member without a verified wallet is answered from the
- * lightning address stored on the account. Any other username is not found.
- * While an unexpired pending point-of-sale charge exists, both sendable
- * bounds become that amount in millisats.
+ * A member receives only on their in-app wallet: with the self-hosted LNURL
+ * server configured and a verified wallet key, this route serves that
+ * server's payRequest (callback under this api's public base URL). Any other
+ * username is not found. While an unexpired pending point-of-sale charge
+ * exists, both sendable bounds become that amount in millisats.
  */
 
 import { Hono } from 'hono';
 import type { AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { IpRateLimiter } from '@/lib/ip-rate-limit';
-import { resolveLnurlpDocument, type FetchFn } from '@/lib/lnurlp';
-import { payableAddress } from '@/lib/receiving-address';
+import type { FetchFn } from '@/lib/lnurlp';
 import {
   LNURL_PAY_REQUEST_TIMEOUT_MS,
   callLnurlServer,
@@ -179,31 +177,6 @@ export function wellKnownRoutes(deps: WellKnownRouteDeps): Hono {
           }
           const pending = await posStore.currentPending(account.id, now());
           return c.json(pinned(doc, pending?.amountSats ?? null), 200, LNURLP_HEADERS);
-        }
-        if (account !== undefined) {
-          const payTo = payableAddress(account, deps.lnurlServer);
-          if (payTo !== null) {
-            const loaded = await resolveLnurlpDocument({ address: payTo, fetchImpl });
-            if (!loaded.ok) {
-              logEvent('lnurlp.unreachable', { username });
-              return c.json(
-                shopErrorBody(502, 'Lightning Address could not be resolved'),
-                502,
-                LNURLP_HEADERS,
-              );
-            }
-            logEvent('lnurlp.resolved', { username });
-            const pending = await posStore.currentPending(account.id, now());
-            const body =
-              pending === null
-                ? loaded.body
-                : {
-                    ...loaded.body,
-                    minSendable: pending.amountSats * 1000,
-                    maxSendable: pending.amountSats * 1000,
-                  };
-            return c.json(body, 200, LNURLP_HEADERS);
-          }
         }
         logEvent('lnurlp.unknown', { username });
         return c.json(shopErrorBody(404, 'Not found'), 404, LNURLP_HEADERS);

@@ -157,41 +157,6 @@ describe('withPayoutAddresses', () => {
     );
   });
 
-  it('pays the stored lightning address until a verified wallet is ready', async () => {
-    const accounts: Record<string, DailyRosterAccount> = {
-      [BEA]: {
-        name: 'Bea',
-        username: 'bea',
-        sparkPubkey: null,
-        sparkPubkeyVerifiedAt: null,
-        legacyLightningAddress: 'Bea@Wallets.example',
-      },
-      [ADA]: {
-        name: 'Ada',
-        username: 'ada',
-        sparkPubkey: WALLET_PUBKEY,
-        sparkPubkeyVerifiedAt: 1,
-        legacyLightningAddress: 'ada@wallets.example',
-      },
-    };
-    const only = {
-      ...ROSTER,
-      recipients: [
-        { accountId: BEA, amountUsd: 3 },
-        { accountId: ADA, amountUsd: 2 },
-      ],
-      moderators: [],
-    };
-    const read = (id: string): Promise<DailyRosterAccount | undefined> =>
-      Promise.resolve(accounts[id]);
-    expect(
-      (await withPayoutAddresses(only, read, LNURL_SERVER)).recipients.map((row) => row.address),
-    ).toEqual(['Bea@Wallets.example', `ada@${LNURL_SERVER.host}`]);
-    expect(
-      (await withPayoutAddresses(only, read, undefined)).recipients.map((row) => row.address),
-    ).toEqual(['Bea@Wallets.example', 'ada@wallets.example']);
-  });
-
   it('gives no address for a missing account or with the LNURL server off', async () => {
     const off = await withPayoutAddresses(ROSTER, lookup, undefined);
     expect(off.recipients.map((row) => row.address)).toEqual([null, null, null]);

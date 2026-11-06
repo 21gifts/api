@@ -16,7 +16,7 @@ import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { MESSAGE_LIST_LIMIT, type MessageRow } from '@/lib/message';
 import type { MessageStore } from '@/lib/message-store';
 import { loadPayoutEligibility } from '@/lib/payout-eligibility';
-import { accountForPayableAddress } from '@/lib/receiving-address';
+import { accountByReceivingAddress } from '@/lib/receiving-address';
 import { checkSpendAuth } from '@/lib/spend-auth';
 import {
   decideCliDailyInstruction,
@@ -41,20 +41,16 @@ export interface SpendInstructionRouteDeps {
   /** `SPEND_API_TOKEN` (blank/undefined → 503). */
   spendApiToken: string | undefined;
   /**
-   * Auth store for the payable address → account, passkey, and recovery
-   * share lookup.
+   * Auth store for receiving address → account (by username), passkey, and
+   * recovery share lookup.
    */
   authStore: Pick<
     AuthStore,
-    | 'getAccountByUsername'
-    | 'getAccountByLegacyLightningAddress'
-    | 'accountHasPasskey'
-    | 'hasRecoveryShareForVerifiedWallet'
+    'getAccountByUsername' | 'accountHasPasskey' | 'hasRecoveryShareForVerifiedWallet'
   >;
   /**
-   * LNURL server config. A verified wallet is looked up by
-   * `<username>@<host of PUBLIC_BASE_URL>`. Omitted, a member is still found
-   * by the lightning address stored on the account.
+   * LNURL server config. A member is looked up by their wallet-backed
+   * `<username>@<host of PUBLIC_BASE_URL>`; omitted → no member is found.
    */
   lnurlServer?: LnurlServerConfig;
   /**
@@ -138,7 +134,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
     }
 
     const nowMs = deps.now();
-    const account = (await accountForPayableAddress(deps.authStore, address, deps.lnurlServer))
+    const account = (await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer))
       ?.account;
     let hasPasskey = false;
     let hasPosted = false;
