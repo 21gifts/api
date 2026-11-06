@@ -32,8 +32,8 @@ brew install oven-sh/bun/bun
 | `src/index.ts`, `src/server.ts` | Bun runtime entry; `createApp()` factory and bind-address helpers                         |
 | `src/routes/`                   | One file per route group. Routes and their request/response contracts: [SPEC.md](SPEC.md) |
 | `src/lib/`                      | Modules the routes build on                                                               |
-| `src/__tests__/`                | Mirror tree; one `*.test.ts` per source file                                              |
-| `docs/handbook/`                | Mandatory: every function and HTTP endpoint (see Handbook below)                          |
+| `src/__tests__/`                | Unit tests in a tree that mirrors `src/` (see Tests below)                                |
+| `docs/handbook/`                | Mandatory: every exported function/class and every HTTP endpoint (see Handbook below)     |
 | `docs/schema/`                  | Table definitions as `.sql` files                                                         |
 | `scripts/`                      | CI gates `check-handbook.mjs` and `check-e2e.mjs`; operator CLI `gifts-debug.sh`          |
 | `integration/`                  | Bun Postgres driver test; needs `DATABASE_URL`                                            |
