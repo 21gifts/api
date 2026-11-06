@@ -21,14 +21,15 @@ import {
   type PosFiatNumbers,
 } from '@/lib/pos-charge';
 import type { PosStore } from '@/lib/pos-store';
-import { WALLET_REQUIRED, lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
+import { WALLET_REQUIRED, lnurlServerFetch, payableAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { bearerToken } from '@/routes/me';
 
 /**
  * `/pos` — signed-in member point-of-sale amount in whole sats.
- * Settlement goes to the member's receiving address (their verified wallet;
- * without one a charge is refused). The paid watcher marks a charge `paid`;
+ * Settlement goes to the member's verified wallet, or to the lightning address
+ * stored on the account when that wallet is not ready. Without either, a
+ * charge is refused. The paid watcher marks a charge `paid`;
  * `GET /pos` keeps returning it as `charge` for {@link POS_PAID_SHOW_MS}.
  * Shares the {@link AuthStore} with `/auth` and `/me`.
  */
@@ -147,8 +148,8 @@ export function posRoutes(deps: PosRouteDeps): Hono {
       if (username === '') {
         return c.json({ error: 'Set a username first' }, 400);
       }
-      const receiving = receivingAddress(account, deps.lnurlServer);
-      if (receiving === null) {
+      const payTo = payableAddress(account, deps.lnurlServer);
+      if (payTo === null) {
         return c.json({ error: 'Set up your wallet first', code: WALLET_REQUIRED }, 400);
       }
       const open = await deps.store.currentPending(account.id, deps.now());
@@ -156,7 +157,7 @@ export function posRoutes(deps: PosRouteDeps): Hono {
         return c.json({ error: 'A payment is already open' }, 409);
       }
       const resolved = await resolveLnurlp({
-        address: receiving.address,
+        address: payTo,
         fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
       });
       if (!resolved.ok) {

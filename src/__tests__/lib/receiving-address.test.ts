@@ -6,7 +6,9 @@ import { LNURL_SERVER_TIMEOUT_MS } from '@/lib/lnurl-server';
 import { InMemoryAuthStore } from '@/lib/auth/store';
 import {
   accountByReceivingAddress,
+  accountForPayableAddress,
   lnurlServerFetch,
+  payableAddress,
   receivingAddress,
   type ReceivingAccount,
 } from '@/lib/receiving-address';
@@ -217,5 +219,143 @@ describe('lnurlServerFetch', () => {
     expect((await routed('https://21.gifts/lnurlp/alice/invoice?amount=1000')).status).toBe(200);
     expect(timeout.mock.calls).toEqual([[LNURL_SERVER_TIMEOUT_MS]]);
     timeout.mockRestore();
+  });
+});
+
+const LEGACY = 'Ada@Wallets.example';
+
+function member(partial: Partial<Account> = {}): Account {
+  return {
+    id: '00000000-0000-4000-8000-000000000009',
+    linkingKey: null,
+    role: 'verified',
+    name: 'ada',
+    username: 'ada',
+    forumLawsDismissed: false,
+    location: null,
+    viewKey: 'c'.repeat(64),
+    createdAt: 1,
+    rulesAgreedAt: 1,
+    sparkPubkey: null,
+    sparkPubkeyVerifiedAt: null,
+    ...partial,
+  };
+}
+
+describe('payableAddress', () => {
+  it('uses the verified wallet and ignores the stored address', () => {
+    expect(payableAddress({ ...account(), legacyLightningAddress: LEGACY }, config)).toBe(
+      'alice@21.gifts',
+    );
+  });
+
+  it('uses the stored address when the wallet is not ready, and null otherwise', () => {
+    expect(
+      payableAddress(
+        { ...account({ sparkPubkeyVerifiedAt: null }), legacyLightningAddress: ` ${LEGACY} ` },
+        config,
+      ),
+    ).toBe(LEGACY);
+    expect(payableAddress({ ...account(), legacyLightningAddress: LEGACY }, undefined)).toBe(
+      LEGACY,
+    );
+    expect(payableAddress(account({ sparkPubkeyVerifiedAt: null }), config)).toBeNull();
+    expect(
+      payableAddress(
+        { ...account({ sparkPubkeyVerifiedAt: null }), legacyLightningAddress: 'not an address' },
+        config,
+      ),
+    ).toBeNull();
+    expect(
+      payableAddress(
+        { ...account({ sparkPubkeyVerifiedAt: null }), legacyLightningAddress: '   ' },
+        config,
+      ),
+    ).toBeNull();
+  });
+});
+
+describe('accountForPayableAddress', () => {
+  const id = '00000000-0000-4000-8000-000000000001';
+
+  async function stored(): Promise<InMemoryAuthStore> {
+    const store = new InMemoryAuthStore();
+    await store.createAccount({
+      ...member({ id, viewKey: 'a'.repeat(64), username: 'alice', legacyLightningAddress: LEGACY }),
+      walletRequired: true,
+    });
+    await store.createAccount(
+      member({
+        id: '00000000-0000-4000-8000-000000000002',
+        viewKey: 'b'.repeat(64),
+        username: 'blank',
+        legacyLightningAddress: '   ',
+      }),
+    );
+    await store.createAccount(
+      member({
+        id: '00000000-0000-4000-8000-000000000003',
+        viewKey: 'd'.repeat(64),
+        username: 'plain',
+      }),
+    );
+    return store;
+  }
+
+  it('finds the stored address, and not a blank or missing one', async () => {
+    const store = await stored();
+    expect(await store.getAccountByLegacyLightningAddress('  ')).toBeUndefined();
+    expect(
+      await new InMemoryAuthStore().getAccountByLegacyLightningAddress(LEGACY),
+    ).toBeUndefined();
+    const found = await accountForPayableAddress(store, ' ada@wallets.example ', undefined);
+    expect(found?.account.id).toBe(id);
+    expect(found?.address).toBe(LEGACY);
+    expect(
+      await accountForPayableAddress(store, 'missing@wallets.example', config),
+    ).toBeUndefined();
+    expect(await accountForPayableAddress(store, 'not an address', undefined)).toBeUndefined();
+  });
+
+  it('keeps the stored address across updateAccount and refuses a later write', async () => {
+    const store = await stored();
+    const current = await store.getAccount(id);
+    await store.updateAccount({
+      ...current!,
+      name: 'Changed',
+      legacyLightningAddress: 'other@wallets.example',
+    });
+    expect((await store.getAccount(id))?.legacyLightningAddress).toBe(LEGACY);
+    const plain = await store.getAccount('00000000-0000-4000-8000-000000000003');
+    await store.updateAccount({ ...plain!, legacyLightningAddress: LEGACY });
+    expect((await store.getAccount(plain!.id))?.legacyLightningAddress).toBeNull();
+  });
+
+  it('pays the wallet once it is verified and ignores the old address', async () => {
+    const store = await stored();
+    await store.claimSparkPubkey(id, WALLET_PUBKEY);
+    expect(await store.markSparkPubkeyVerified(id, WALLET_PUBKEY, 'alice', 1)).toBe(true);
+    const wallet = await accountForPayableAddress(store, 'alice@21.gifts', config);
+    expect(wallet?.address).toBe('alice@21.gifts');
+    expect(await accountForPayableAddress(store, LEGACY, config)).toBeUndefined();
+    const off = await accountForPayableAddress(store, 'ada@wallets.example', undefined);
+    expect(off?.address).toBe(LEGACY);
+  });
+
+  it('refuses a stored address the lookup did not ask for', async () => {
+    const wrong = member({ legacyLightningAddress: 'other@wallets.example' });
+    const invalid = member({ legacyLightningAddress: 'not an address' });
+    const store = {
+      getAccountByUsername: async () => undefined,
+      getAccountByLegacyLightningAddress: async () => wrong,
+    };
+    expect(await accountForPayableAddress(store, LEGACY, undefined)).toBeUndefined();
+    expect(
+      await accountForPayableAddress(
+        { ...store, getAccountByLegacyLightningAddress: async () => invalid },
+        LEGACY,
+        undefined,
+      ),
+    ).toBeUndefined();
   });
 });

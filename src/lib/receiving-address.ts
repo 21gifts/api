@@ -1,17 +1,19 @@
 /**
- * The address an account receives in-app payments on.
+ * The address an account receives on.
  *
- * A member receives only on their in-app wallet, at the wallet-backed
- * `<username>@<host of PUBLIC_BASE_URL>`. Without a verified wallet, or with
- * the self-hosted LNURL server off, an account cannot receive. Every money
- * route and the receipt ingest resolve the address through
- * {@link receivingAddress} and fetch LNURL documents through
- * {@link lnurlServerFetch}, which answers the wallet-backed host from the
- * LNURL server directly instead of over the public URL.
+ * A verified in-app wallet, with the self-hosted LNURL server on, receives
+ * only at `<username>@<host of PUBLIC_BASE_URL>` ({@link receivingAddress}).
+ * The till, the public pay link, and the payout list use {@link payableAddress}:
+ * that wallet address, or, when the wallet is not ready, the lightning address
+ * stored on the account. Zaps, conversations, repayment, and the public
+ * account JSON stay on the verified wallet only. LNURL documents are fetched
+ * through {@link lnurlServerFetch}, which answers the wallet-backed host from
+ * the LNURL server directly instead of over the public URL.
  */
 
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
+import { normalizeLightningAddress } from '@/lib/lightning-address';
 import { LNURL_SERVER_TIMEOUT_MS, callLnurlServer } from '@/lib/lnurl-server';
 import type { FetchFn } from '@/lib/lnurlp';
 import { normalizeUsername } from '@/lib/username';
@@ -108,6 +110,72 @@ export async function accountByReceivingAddress(
   return { account, receiving };
 }
 
+/** Account fields {@link payableAddress} reads. */
+export type PayableAccount = ReceivingAccount & { legacyLightningAddress?: string | null };
+
+/**
+ * Address the till, the public pay link, and the payout list use.
+ *
+ * A verified wallet with the LNURL server on wins: the stored lightning
+ * address is not also paid. Otherwise the stored address is used when it is
+ * a Lightning Address. Neither is `null`.
+ *
+ * @param account - Account fields.
+ * @param lnurlServer - LNURL server config, or `undefined` when the feature is off.
+ * @returns The payable address, or `null` when the account cannot be paid.
+ */
+export function payableAddress(
+  account: PayableAccount,
+  lnurlServer: LnurlServerConfig | undefined,
+): string | null {
+  const wallet = receivingAddress(account, lnurlServer);
+  if (wallet !== null) {
+    return wallet.address;
+  }
+  const raw = account.legacyLightningAddress;
+  if (typeof raw !== 'string') {
+    return null;
+  }
+  return normalizeLightningAddress(raw);
+}
+
+/**
+ * Find the member who is paid on `address`.
+ *
+ * A wallet-backed address is resolved first ({@link accountByReceivingAddress}).
+ * Any other Lightning Address matches the address stored on the account, and
+ * only when that account is not already receiving on a verified wallet. A
+ * verified wallet is therefore not paid on its old address.
+ *
+ * @param store - Username lookup and stored-address lookup.
+ * @param address - Address as given by the caller.
+ * @param lnurlServer - LNURL server config, or `undefined` when the feature is off.
+ * @returns The account and the address it is paid on, or `undefined`.
+ */
+export async function accountForPayableAddress(
+  store: Pick<AuthStore, 'getAccountByUsername' | 'getAccountByLegacyLightningAddress'>,
+  address: string,
+  lnurlServer: LnurlServerConfig | undefined,
+): Promise<{ account: Account; address: string } | undefined> {
+  const wallet = await accountByReceivingAddress(store, address, lnurlServer);
+  if (wallet !== undefined) {
+    return { account: wallet.account, address: wallet.receiving.address };
+  }
+  const normalized = normalizeLightningAddress(address);
+  if (normalized === null) {
+    return undefined;
+  }
+  const legacy = await store.getAccountByLegacyLightningAddress(normalized);
+  if (legacy === undefined || receivingAddress(legacy, lnurlServer) !== null) {
+    return undefined;
+  }
+  const payable = payableAddress(legacy, lnurlServer);
+  if (payable === null || payable.toLowerCase() !== normalized.toLowerCase()) {
+    return undefined;
+  }
+  return { account: legacy, address: payable };
+}
+
 /**
  * Wrap `fetchImpl` so LNURL requests to the wallet-backed host stay internal.
  *
@@ -117,8 +185,8 @@ export async function accountByReceivingAddress(
  * fixed `Host`, 15 s timeout); every other request goes to `fetchImpl`
  * unchanged. A LUD-16 document request for a username without a verified
  * wallet goes to `fetchImpl` too, like the public
- * `GET /.well-known/lnurlp/:username`, which answers it with 404 because such a
- * member cannot receive. A refused path segment or an unreachable LNURL server
+ * `GET /.well-known/lnurlp/:username`. That route answers 404 when the member
+ * also has no stored lightning address. A refused path segment or an unreachable LNURL server
  * rejects like a failed `fetch`.
  *
  * @param lnurlServer - LNURL server config, or `undefined` (returns `fetchImpl`).

@@ -440,6 +440,153 @@ describe('GET /.well-known/lnurlp/:username', () => {
       expect(res.status).toBe(404);
       expect(fetchImpl).not.toHaveBeenCalled();
     });
+
+    async function seedStoredAddress(address: string): Promise<InMemoryAuthStore> {
+      const auth = new InMemoryAuthStore();
+      await auth.createAccount({
+        id: '00000000-0000-4000-8000-000000000001',
+        linkingKey: null,
+        role: 'basis',
+        name: 'Ada',
+        username: 'ada',
+        forumLawsDismissed: false,
+        location: null,
+        viewKey: 'cd'.repeat(32),
+        createdAt: 1,
+        rulesAgreedAt: null,
+        walletRequired: true,
+        legacyLightningAddress: address,
+      });
+      return auth;
+    }
+
+    function storedPayDoc(): Record<string, unknown> {
+      return {
+        tag: 'payRequest',
+        callback: 'https://wallets.example/lnurlp/ada/invoice',
+        minSendable: 1000,
+        maxSendable: 2_000_000,
+      };
+    }
+
+    it('serves the stored lightning address when the wallet is not verified', async () => {
+      const auth = await seedStoredAddress('Ada@Wallets.example');
+      const fetchImpl = vi.fn<FetchFn>(
+        async () => new Response(JSON.stringify(storedPayDoc()), { status: 200 }),
+      );
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({
+          auth,
+          fetchImpl,
+          now: () => NOW,
+          lnurlServer: LNURL_CONFIG,
+        }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(res.headers.get('Cache-Control')).toBe('no-store');
+      expect(await res.json()).toEqual(storedPayDoc());
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://Wallets.example/.well-known/lnurlp/Ada');
+      expect(
+        parsedEvents(warn).some((e) => e['event'] === 'lnurlp.resolved' && e['username'] === 'ada'),
+      ).toBe(true);
+    });
+
+    it('serves the stored lightning address when the LNURL server is off', async () => {
+      const auth = await seedStoredAddress('ada@wallets.example');
+      const fetchImpl = vi.fn<FetchFn>(
+        async () => new Response(JSON.stringify(storedPayDoc()), { status: 200 }),
+      );
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({ auth, fetchImpl, now: () => NOW }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(storedPayDoc());
+      expect(fetchImpl.mock.calls[0]?.[0]).toBe('https://wallets.example/.well-known/lnurlp/ada');
+    });
+
+    it('pins a pending charge on the stored lightning address', async () => {
+      const auth = await seedStoredAddress('ada@wallets.example');
+      const posStore = new InMemoryPosStore();
+      await posStore.create({
+        id: '11111111-1111-4111-8111-111111111111',
+        accountId: '00000000-0000-4000-8000-000000000001',
+        amountSats: 21,
+        status: 'pending',
+        createdAt: new Date(NOW),
+        expiresAt: new Date(NOW + POS_CHARGE_TTL_MS),
+        paidAt: null,
+        sparkInvoice: null,
+        amountCurrency: null,
+        amountText: null,
+        fiatUsd: null,
+        fiatChf: null,
+        fiatEur: null,
+        fiatPhp: null,
+      });
+      const fetchImpl: FetchFn = async () =>
+        new Response(JSON.stringify(storedPayDoc()), { status: 200 });
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({ auth, fetchImpl, posStore, now: () => NOW }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual({
+        ...storedPayDoc(),
+        minSendable: 21_000,
+        maxSendable: 21_000,
+      });
+    });
+
+    it('returns 502 when the stored lightning address cannot be resolved', async () => {
+      const auth = await seedStoredAddress('ada@wallets.example');
+      const fetchImpl: FetchFn = async () => new Response('no', { status: 500 });
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({ auth, fetchImpl, now: () => NOW }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(502);
+      expect(await res.json()).toEqual(
+        shopErrorBody(502, 'Lightning Address could not be resolved'),
+      );
+      expect(
+        parsedEvents(warn).some(
+          (e) => e['event'] === 'lnurlp.unreachable' && e['username'] === 'ada',
+        ),
+      ).toBe(true);
+    });
+
+    it('keeps a verified wallet on the in-app pay request when a stored address also exists', async () => {
+      const auth = await seedStoredAddress('ada@wallets.example');
+      await auth.claimSparkPubkey('00000000-0000-4000-8000-000000000001', PUBKEY);
+      await auth.markSparkPubkeyVerified(
+        '00000000-0000-4000-8000-000000000001',
+        PUBKEY,
+        'ada',
+        NOW,
+      );
+      const fetchImpl = vi.fn<FetchFn>(
+        async () => new Response(JSON.stringify(walletPayDoc()), { status: 200 }),
+      );
+      const app = new Hono().route(
+        '/.well-known',
+        wellKnownRoutes({
+          auth,
+          fetchImpl,
+          now: () => NOW,
+          lnurlServer: LNURL_CONFIG,
+        }),
+      );
+      const res = await app.request('/.well-known/lnurlp/ada');
+      expect(res.status).toBe(200);
+      expect(await res.json()).toEqual(walletPayDoc());
+      expect(String(fetchImpl.mock.calls[0]?.[0])).not.toContain('wallets.example');
+    });
   });
 });
 

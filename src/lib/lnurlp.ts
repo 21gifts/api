@@ -141,3 +141,23 @@ export async function resolveLnurlp(args: {
   }
   return { ok: true, metadata: loaded.metadata };
 }
+
+/**
+ * Same fetch as {@link resolveLnurlp}, returning the pay-request JSON.
+ *
+ * The public pay link serves this body for a member who is paid on a stored
+ * lightning address. A failure is the same `unreachable` as {@link resolveLnurlp}.
+ *
+ * @param args - Address (`name@domain`) and injected fetch.
+ * @returns The JSON body, or `{ ok: false, reason: 'unreachable' }`.
+ */
+export async function resolveLnurlpDocument(args: {
+  address: string;
+  fetchImpl: FetchFn;
+}): Promise<{ ok: true; body: Record<string, unknown> } | { ok: false; reason: 'unreachable' }> {
+  const loaded = await loadLnurlpJson(args);
+  if (!loaded.ok) {
+    return loaded;
+  }
+  return { ok: true, body: loaded.body };
+}

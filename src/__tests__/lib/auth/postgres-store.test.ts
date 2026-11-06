@@ -436,13 +436,35 @@ describe('PostgresAuthStore', () => {
     expect(insert.text).not.toMatch(/spark_pubkey/);
   });
 
-  it('selects account rows without the stored external address', async () => {
+  it('selects the stored lightning address as legacyLightningAddress', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'old@example.com' }];
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: ' old@example.com ' }];
     const mapped = await new PostgresAuthStore(sql).getAccount('acc');
-    expect(sql.queries[0]?.text).not.toMatch(/lightning_address,|lightning_address_verified/);
+    expect(sql.queries[0]?.text).toMatch(/, lightning_address, /);
+    expect(sql.queries[0]?.text).not.toMatch(/lightning_address_verified/);
+    expect(mapped?.legacyLightningAddress).toBe('old@example.com');
     expect(mapped).not.toHaveProperty('lightningAddress');
     expect(mapped).not.toHaveProperty('lightningAddressVerified');
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: '   ' }];
+    expect((await new PostgresAuthStore(sql).getAccount('acc'))?.legacyLightningAddress).toBeNull();
+    sql.nextRows = [ACCOUNT_ROW];
+    expect((await new PostgresAuthStore(sql).getAccount('acc'))?.legacyLightningAddress).toBeNull();
+  });
+
+  it('looks up an account by the stored lightning address', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    expect(await store.getAccountByLegacyLightningAddress('   ')).toBeUndefined();
+    expect(sql.queries).toHaveLength(0);
+    sql.nextRows = [];
+    expect(await store.getAccountByLegacyLightningAddress('missing@example.com')).toBeUndefined();
+    expect(sql.queries[0]?.text).toContain('lower(btrim(lightning_address))');
+    expect(sql.queries[0]?.params).toEqual(['missing@example.com']);
+    sql.nextRows = [{ ...ACCOUNT_ROW, lightning_address: 'Old@Example.com' }];
+    const found = await store.getAccountByLegacyLightningAddress(' old@example.com ');
+    expect(found?.id).toBe('acc');
+    expect(found?.legacyLightningAddress).toBe('Old@Example.com');
+    expect(sql.queries[1]?.params).toEqual([' old@example.com ']);
   });
 
   it('writes a stored notificationLevel as $14', async () => {
