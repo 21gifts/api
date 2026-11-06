@@ -26,18 +26,18 @@ describe('credit repayment', () => {
     expect(dueDayCount(funded, funded, 1.5)).toBe(0);
   });
 
-  it('never starts before 2026-11-10', () => {
+  it('never starts before 2026-11-16', () => {
     const early = Date.UTC(2026, 9, 9, 6, 23);
-    expect(repaymentStartMs(early)).toBe(Date.UTC(2026, 10, 10));
-    expect(repaymentDueDate(early, 0)).toBe('2026-11-10');
-    expect(repaymentDueDate(early, 1)).toBe('2026-11-11');
-    expect(dueDayCount(early, Date.UTC(2026, 10, 9, 23, 59), 90)).toBe(0);
-    expect(dueDayCount(early, Date.UTC(2026, 10, 10), 90)).toBe(1);
-    expect(repaymentStartMs(Date.UTC(2026, 10, 1, 12))).toBe(Date.UTC(2026, 10, 10));
-    const eve = Date.UTC(2026, 10, 9, 23, 59);
-    expect(repaymentStartMs(eve)).toBe(Date.UTC(2026, 10, 10));
-    const first = Date.UTC(2026, 10, 10, 0, 1);
-    expect(repaymentStartMs(first)).toBe(Date.UTC(2026, 10, 11));
+    expect(repaymentStartMs(early)).toBe(Date.UTC(2026, 10, 16));
+    expect(repaymentDueDate(early, 0)).toBe('2026-11-16');
+    expect(repaymentDueDate(early, 1)).toBe('2026-11-17');
+    expect(dueDayCount(early, Date.UTC(2026, 10, 15, 23, 59), 90)).toBe(0);
+    expect(dueDayCount(early, Date.UTC(2026, 10, 16), 90)).toBe(1);
+    expect(repaymentStartMs(Date.UTC(2026, 10, 10, 12))).toBe(Date.UTC(2026, 10, 16));
+    const eve = Date.UTC(2026, 10, 15, 23, 59);
+    expect(repaymentStartMs(eve)).toBe(Date.UTC(2026, 10, 16));
+    const first = Date.UTC(2026, 10, 16, 0, 1);
+    expect(repaymentStartMs(first)).toBe(Date.UTC(2026, 10, 17));
   });
 
   it('puts the remainder on the last day', () => {
