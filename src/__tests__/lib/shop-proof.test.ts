@@ -265,6 +265,42 @@ describe('handleShopProof request checks', () => {
 });
 
 describe('handleShopProof with tx', () => {
+  it.each(['XAUt', 'xaut'])('matches a %s proof to its XAUt offer', async (asset) => {
+    const h = harness();
+    await seed(h);
+    const token = '0xf1815bd50389c46847f0bda824ec8da914045d14';
+    const deposit = `0x${'77'.repeat(20)}`;
+    const xautOffer = offerRow({
+      id: uid(0x777),
+      asset: 'XAUt',
+      tokenAddress: token,
+      depositAddress: deposit,
+      providerRef: 'q-xaut-pol',
+      idempotencyKey: uid(0x778),
+    });
+    await h.store.transaction((tx) => tx.insertOffers([xautOffer]));
+    h.rpc['eth_getTransactionReceipt'] = receiptFor(H1, [
+      transferLog(token, deposit, BigInt(AMOUNT_IN), 3),
+    ]);
+    h.orchestra.submit.mockResolvedValueOnce({
+      kind: 'order',
+      orderId: 'o-xaut',
+      status: 'processing',
+    });
+    expect(await answer(await prove(h, { tx: H1, asset }))).toEqual({
+      status: 200,
+      body: { txId: H1 },
+    });
+    expect((await proofsOf(h))[0]).toMatchObject({ offerId: xautOffer.id, result: 'accepted' });
+    expect(h.orchestra.submit).toHaveBeenCalledWith(
+      'q-xaut-pol',
+      H1,
+      expect.any(String),
+      'proof-first',
+      10_000,
+      expect.any(Object),
+    );
+  });
   it('verifies, stores, submits, and answers 200 once the order progresses', async () => {
     const h = harness();
     await seed(h);

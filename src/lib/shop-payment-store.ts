@@ -1,5 +1,5 @@
 /**
- * Persistence for shop payments in USDT and USDC
+ * Persistence for shop payments in USDT, USDC, and XAUt
  * (`docs/shop-stablecoin-payment.md`, Rows).
  *
  * Five tables: `shop_payment`, `shop_quote`, `shop_offer`, `shop_proof`, and
@@ -41,7 +41,7 @@ export type ShopEndReason =
   | 'expired_unpaid';
 
 /** `shop_offer.asset`. */
-export type ShopAsset = 'USDT' | 'USDC';
+export type ShopAsset = 'USDT' | 'USDC' | 'XAUt';
 
 /** `shop_proof.source`. */
 export type ShopProofSource = 'tx' | 'hex' | 'detected';
@@ -136,7 +136,7 @@ export interface ShopOffer {
   method: string;
   /** EVM chain id of the method. */
   chainId: number;
-  /** `USDT` or `USDC`. */
+  /** OpenCryptoPay asset name. */
   asset: ShopAsset;
   /** Token contract, lowercase `0x` + 40 hex. */
   tokenAddress: string;
@@ -554,7 +554,7 @@ export const SHOP_PAYMENT_SCHEMA_SQL: readonly string[] = [
   quote_id          uuid NOT NULL REFERENCES shop_quote (id),
   method            text NOT NULL,
   chain_id          integer NOT NULL,
-  asset             text NOT NULL CHECK (asset IN ('USDT', 'USDC')),
+  asset             text NOT NULL CHECK (asset IN ('USDT', 'USDC', 'XAUt')),
   token_address     text NOT NULL,
   deposit_address   text NOT NULL,
   amount_in         numeric(78, 0) NOT NULL CHECK (amount_in > 0),
@@ -569,6 +569,13 @@ export const SHOP_PAYMENT_SCHEMA_SQL: readonly string[] = [
   created_at        timestamptz NOT NULL,
   UNIQUE (quote_id, method, asset)
 )`,
+  `DO $shop_offer_asset$
+BEGIN
+  ALTER TABLE shop_offer DROP CONSTRAINT IF EXISTS shop_offer_asset_check;
+  ALTER TABLE shop_offer ADD CONSTRAINT shop_offer_asset_check
+    CHECK (asset IN ('USDT', 'USDC', 'XAUt'));
+END
+$shop_offer_asset$`,
   `CREATE UNIQUE INDEX IF NOT EXISTS shop_offer_deposit_idx ON shop_offer (deposit_address)`,
   `CREATE TABLE IF NOT EXISTS shop_proof (
   id                 uuid PRIMARY KEY,

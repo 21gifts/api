@@ -56,7 +56,7 @@ CREATE TABLE IF NOT EXISTS shop_offer (
   quote_id          uuid NOT NULL REFERENCES shop_quote (id),
   method            text NOT NULL,
   chain_id          integer NOT NULL,
-  asset             text NOT NULL CHECK (asset IN ('USDT', 'USDC')),
+  asset             text NOT NULL CHECK (asset IN ('USDT', 'USDC', 'XAUt')),
   token_address     text NOT NULL,
   deposit_address   text NOT NULL,
   amount_in         numeric(78, 0) NOT NULL CHECK (amount_in > 0),
@@ -71,6 +71,13 @@ CREATE TABLE IF NOT EXISTS shop_offer (
   created_at        timestamptz NOT NULL,
   UNIQUE (quote_id, method, asset)
 );
+DO $shop_offer_asset$
+BEGIN
+  ALTER TABLE shop_offer DROP CONSTRAINT IF EXISTS shop_offer_asset_check;
+  ALTER TABLE shop_offer ADD CONSTRAINT shop_offer_asset_check
+    CHECK (asset IN ('USDT', 'USDC', 'XAUt'));
+END
+$shop_offer_asset$;
 CREATE UNIQUE INDEX IF NOT EXISTS shop_offer_deposit_idx ON shop_offer (deposit_address);
 
 CREATE TABLE IF NOT EXISTS shop_proof (

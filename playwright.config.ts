@@ -80,6 +80,7 @@ const PINNED_OFF = {
   LNURL_WEBHOOK_SECRET: '',
   // Refused port: GET /fx/spot stays the empty result, independent of the network.
   BTC_FIAT_SPOT_URL: 'http://127.0.0.1:9/',
+  XAUT_USD_SPOT_URL: '',
   DEBUG_READ_TOKEN: '',
   WEBAUTHN_RP_ID: 'localhost',
 } as const;
@@ -140,6 +141,7 @@ const shopServers = [
       // The stand-ins' spot price (100 000 USD per BTC, the price of their
       // quotes): without a fresh spot the api offers no stablecoin.
       BTC_FIAT_SPOT_URL: `${CONTROL_URL}/__spot`,
+      XAUT_USD_SPOT_URL: `${CONTROL_URL}/__xaut_spot`,
       // Test-only: the stand-ins serve TLS with a certificate made at start.
       NODE_TLS_REJECT_UNAUTHORIZED: '0',
       DEBUG_TOKEN,

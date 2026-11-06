@@ -499,22 +499,22 @@ for it, with or without `timeout`, written with `Content-Type:
 application/json`, CORS `*`, methods `GET, OPTIONS`, and
 `Cache-Control: no-store`. The table is the complete body:
 
-| Field               | Value                                                                                                                    |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------ |
-| `id`                | the username                                                                                                             |
-| `tag`               | `payRequest`                                                                                                             |
-| `callback`          | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`                                                                                 |
-| `minSendable`       | the payment's sats times 1000                                                                                            |
-| `maxSendable`       | the same value                                                                                                           |
-| `metadata`          | the metadata of today's pay request, unchanged                                                                           |
-| `displayName`       | the trimmed account name, or the username when it is blank (as `GET /pay/:username`)                                     |
-| `standard`          | `OpenCryptoPay`                                                                                                          |
-| `possibleStandards` | `["OpenCryptoPay"]`                                                                                                      |
-| `displayQr`         | `false`                                                                                                                  |
-| `recipient`         | `{ "name": <the same shop name> }`                                                                                       |
-| `quote`             | `{ "id": <current quote id>, "expiration": <quote expiry>, "payment": <shop payment id> }`                               |
-| `requestedAmount`   | `{ "asset": "BTC", "amount": <sats / 100000000> }`, a JSON number in plain notation (never `1e-8`)                       |
-| `transferAmounts`   | the stored array of the current quote: Lightning first, then each offered method in method-table order, USDT before USDC |
+| Field               | Value                                                                                                                                                       |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `id`                | the username                                                                                                                                                |
+| `tag`               | `payRequest`                                                                                                                                                |
+| `callback`          | `<PUBLIC_BASE_URL>/lnurlp/cb/<username>`                                                                                                                    |
+| `minSendable`       | the payment's sats times 1000                                                                                                                               |
+| `maxSendable`       | the same value                                                                                                                                              |
+| `metadata`          | the metadata of today's pay request, unchanged                                                                                                              |
+| `displayName`       | the trimmed account name, or the username when it is blank (as `GET /pay/:username`)                                                                        |
+| `standard`          | `OpenCryptoPay`                                                                                                                                             |
+| `possibleStandards` | `["OpenCryptoPay"]`                                                                                                                                         |
+| `displayQr`         | `false`                                                                                                                                                     |
+| `recipient`         | `{ "name": <the same shop name> }`                                                                                                                          |
+| `quote`             | `{ "id": <current quote id>, "expiration": <quote expiry>, "payment": <shop payment id> }`                                                                  |
+| `requestedAmount`   | `{ "asset": "BTC", "amount": <sats / 100000000> }`, a JSON number in plain notation (never `1e-8`)                                                          |
+| `transferAmounts`   | the stored array of the current quote: Lightning first, then each offered method in method-table order, USDT before USDC and XAUt on Polygon when available |
 
 A `transferAmounts` entry is
 `{ "method", "minFee", "assets": [{ "asset", "amount" }], "available": true }`.
@@ -1125,7 +1125,7 @@ set, and in memory otherwise.
 `Polygon` (137), `Base` (8453), and `BinanceSmartChain` (56), each with
 USDT and USDC at the contracts and decimals of the contract's method
 table. Pairs are requested in this order: USDT on `Ethereum`,
-`Arbitrum`, and `Polygon`, then the remaining pairs in table order, USDT
+`Arbitrum`, and `Polygon`, then Polygon/XAUt, then the remaining pairs in table order, USDT
 before USDC. A pair is a candidate only when Orchestra's route list
 (`GET /v2/orchestration/routes`, 1 s timeout, reused only until its
 `validForMs` has passed since the request started; at most 25 fetches per
@@ -1133,6 +1133,10 @@ minute per process, `ORCHESTRA_ROUTES_PER_MINUTE`) names it with `exactOutTo` ad
 contract and decimals equal the table (otherwise `shop.route.mismatch`),
 and `SHOP_EVM_RPC` has an endpoint for the chain. Request matching of
 method and asset ignores case; responses write the table names.
+
+Polygon also has XAUt at `0xf1815bd50389c46847f0bda824ec8da914045d14`
+(6 decimals). It is offered only with a matching exact-out Orchestra route
+and a fresh independent price from configured `XAUT_USD_SPOT_URL`.
 
 **Creation.** A till charge (after `POST /pos`, or the first pay-link
 fetch) or `POST /pay/:username/payment` runs one procedure under the

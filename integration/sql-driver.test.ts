@@ -3331,6 +3331,45 @@ describe('PostgresShopPaymentStore', () => {
     };
   }
 
+  test('migrates the old shop offer asset check and still rejects unknown assets', async () => {
+    const { client, sql, store, newAccount } = await setup();
+    try {
+      await client.execute('ALTER TABLE shop_offer DROP CONSTRAINT shop_offer_asset_check');
+      await client.execute(
+        "ALTER TABLE shop_offer ADD CONSTRAINT shop_offer_asset_check CHECK (asset IN ('USDT', 'USDC'))",
+      );
+      await migrateShopPaymentSchema(client);
+      await migrateShopPaymentSchema(client);
+      const now = Date.now();
+      const payment = shopPayment(await newAccount(), now);
+      const quoteId = crypto.randomUUID();
+      await store.transaction(async (tx) => {
+        expect(await tx.insertPayment(payment)).toBe(true);
+        await tx.insertQuote({
+          id: quoteId,
+          paymentId: payment.id,
+          expiresAt: new Date(now + 120_000),
+          transferAmounts: [],
+          createdAt: new Date(now),
+        });
+        expect(
+          await tx.insertOffers([
+            shopOffer(quoteId, now, { asset: 'XAUt', method: 'Polygon', chainId: 137 }),
+          ]),
+        ).toHaveLength(1);
+      });
+      await expect(
+        store.transaction((tx) =>
+          tx.insertOffers([shopOffer(quoteId, now, { asset: 'UNKNOWN' as ShopOffer['asset'] })]),
+        ),
+      ).rejects.toThrow();
+      await client.execute('DELETE FROM shop_offer WHERE quote_id = $1', [quoteId]);
+    } finally {
+      await migrateShopPaymentSchema(client);
+      await closeIfPossible(sql);
+    }
+  });
+
   test('every ShopTx method on real Postgres, with conflicts that keep the transaction alive', async () => {
     const { client, sql, store, pos, newAccount } = await setup();
     try {

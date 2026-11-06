@@ -1,5 +1,21 @@
 # Functions
 
+## Function: fetchXautSpot
+
+Fetches the independent Kraken USD-per-XAUt last price with the shared spot timeout.
+
+- **Input:** URL, fetch implementation, and clock.
+- **Output:** Validated decimal rate and fetch time, or null.
+- **Failure:** Invalid responses, HTTP errors and timeouts return null.
+
+## Function: startXautSpotWorker
+
+Refreshes the in-memory XAUt price without delaying shop requests.
+
+- **Input:** URL, fetch implementation, and clock.
+- **Output:** Last-good quote accessor and stop handle.
+- **Timing:** Runs at boot and at `FX_SPOT_REFRESH_MS`, without overlapping ticks.
+
 ## Function: posRoutes
 
 - **Purpose:** Hono routes `GET /pos`, `POST /pos`, and `DELETE /pos` for one open point-of-sale amount in whole sats. Pins nothing itself; the well-known route reads the store. `GET /pos` returns the pending charge as `charge`, or else the newest row when it is `paid` with `paidAt` less than `POS_PAID_SHOW_MS` (60 s) ago, so the till can show the confirmation after a late poll.
@@ -210,6 +226,8 @@
 - **Used by:** `buildGiftStats`.
 
 ## Function: parseUsdPerBtc
+
+The shop payment XAUt check also uses this parser for USD per XAUt.
 
 - **Purpose:** Parse a USD-per-BTC decimal string into an 8-decimal scaled `bigint`.
 - **Inputs:** Rate string (e.g. `"95000.12"`). Extra fractional digits round half-up.
@@ -4547,6 +4565,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: shopPairOrder
 
+Polygon/XAUt follows the three Tether USDT pairs; absent table entries are omitted.
+
 - **Purpose:** Request order of the shop payment method table (`SHOP_METHODS`: `Ethereum` 1, `Arbitrum` 42161, `Optimism` 10, `Polygon` 137, `Base` 8453, `BinanceSmartChain` 56; USDT and USDC contracts in lowercase; 6 decimals, 18 on `BinanceSmartChain`). USDT on `Ethereum`, `Arbitrum`, and `Polygon` come first, because Tether Wallet 1.11.0 pays those, then the remaining pairs in table order, USDT before USDC.
 - **Inputs:** None.
 - **Returns / side effects:** Every `{ method, asset }` pair of the table, in that order. No I/O.
@@ -4560,6 +4580,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 - **Used by:** `handleShopProof` and the lookup duty of the shop payment watcher.
 
 ## Function: candidatePairs
+
+XAUt matches the Polygon contract rather than an Orchestra symbol and retains the matched source symbol.
 
 - **Purpose:** Select the pairs a quote may request: in the table, named by Orchestra's route list (`chain` equals the row's `sourceChain`, `asset` the asset) with `exactOutTo` admitting `lightning:BTC`, the table contract and decimals, and an RPC endpoint for the chain. A route-list pair whose contract or decimals differ from the table is skipped and logs `shop.route.mismatch` (`paymentId`, `method`, `asset`).
 - **Inputs:** Orchestra route assets, the configured RPC endpoints by chain id, and the id of the payment being created or whose quote is replaced (the creation picks it before its route-list read).
@@ -4687,6 +4709,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: checkOffer
 
+XAUt uses the independent USD-per-XAUt rate in the five percent price bound.
+
 - **Purpose:** Apply the contract's offer checks to one committed Orchestra quote, in this order: `target` (`targetAmountOut` equals the sats), `amount` (`amountIn` a positive integer string), `bounds` (`amountIn` within `requiredAmountIn` and `maxAcceptedAmountIn` when present), `chain` (calldata present and `transaction.chainId` equals the table), `token` (`transaction.to` equals the table contract, lowercase), `value` (zero), `data` (exactly `transfer(depositAddress, amountIn)`, 68 bytes), `deposit_shared` (deposit address already used in the batch), `expiry` (`expiresAt` minus 30 s at least 45 s ahead), `bolt11_margin` (BOLT11 at least 600 s after `expiresAt`), `price` (a spot rate under 10 minutes old is present, and `amountIn` in USD is at most 5 % above the sats' value at it: the rate goes through `parseUsdPerBtc`, and the check is `amountIn × 10^16 × 100 ≤ sats × rate × 10^decimals × 105` in BigInt with no rounding; a `null` rate or one `parseUsdPerBtc` refuses fails it).
 - **Inputs:** `OfferCheckInput`: pair, Orchestra quote, sats, BOLT11 expiry, batch deposit addresses, USD per BTC or `null` (no fresh spot), clock.
 - **Returns / side effects:** `null` when every check holds, otherwise the name of the failed check. No I/O.
@@ -4736,6 +4760,11 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 
 ## Function: ShopPayments
 
+Before applying the quote budget, creation and replacement remove XAUt pairs
+when the independent XAUt spot is absent or at least `SHOP_SPOT_MAX_AGE_MS`
+old, logging `shop.offer.rejected` with `check: 'price'` for each. They read
+that spot once and check the same rate's age again after each quote returns.
+
 - **Purpose:** Shop payment service in USDT and USDC, one instance per process, built when the LNURL server resolves (`createApp`, `src/index.ts`). Holds the per-account in-process creation locks, the two creation counters (`IpRateLimiter`: 60 per minute for the api under one fixed key, asked first, then 10 per minute per account), the 60 s no-pair waits, the cached route list (reused only until Orchestra's `validForMs` has passed since the request started, fetched with a 1 s timeout), and the count of waiting pay-link requests (at most 50). Every row change goes through `ShopPaymentStore.transaction`; every external call (LNURL server, Orchestra, EVM RPC) runs outside a transaction.
 - **Inputs:** `ShopPaymentsDeps`: `store`, `posStore` (the charge store the shop store's charge calls reach; step 4's `recordInvoice` and the payer's `findChargeForPayment`), `auth`, `lnurlServer`, `config` (`resolveShopPaymentConfig` or `null`), `orchestra` (`OrchestraClient` or `null`), `fxSpot` (the `FxSpotStore` that `startFxSpotWorker` refreshes; without a USD rate younger than 10 minutes no stablecoin pair is offered), `fetchImpl`, `now`, optional `newId` (default `crypto.randomUUID`) and `sleep`.
 - **Creation:** `createForCharge(account, username, charge, requestArrivedMs)` and `createForPayer(account, username, amountSats, requestArrivedMs, signal?)` run the procedure under the account lock (queued behind the account's running creation or quote replacement). `createForCharge` goes through the private `#chargeCreation`, which keeps one in-flight creation promise per charge id from the moment it is queued until it ends, also on a throw, like the in-flight map of `translate-note.ts`: a caller for a charge that already has one joins it instead of queueing another run, and the run keeps the arrival of the request that started it. The procedure (lock order: account row, then `pos_charge` rows, then `shop_payment` rows, in every transaction that takes both kinds): the re-check transaction (`#createLocked`) takes the account row lock first, then the charge row lock for a charge, or for a payer `pendingCharge`, which expires the account's overdue pending charges, and only then ends a lapsed `open` payment (`window`); a charge with a shop payment returns it, a charge no longer pending is `skipped`, a payer with a pending charge is `pending_charge`; `offersStablecoins`, the no-pair wait, and the counters give `unavailable`; the route list (reused only until its `validForMs` has passed since the request started; a failed fetch, or one the routes budget refuses, → `unavailable` without the wait) and `candidatePairs` (none → `unavailable` and the 60 s wait); one mint with `requestGiftInvoice` and a 4 s deadline (`mint_failed` on failure or another amount); a payment hash a shop payment already holds is `mint_failed` with `shop.alert.duplicate_invoice` (`paymentId` of this creation, and `holderPaymentId` and `holderChargeId` when known), except that the charge's own shop payment is returned and the procedure ends; for a charge `posStore.recordInvoice` in its own claim transaction, outside any shop transaction (`other_payment` → `mint_failed` with the alert, `not_open` → `skipped` without it, `recorded` or `this_charge` goes on; an error logs `pos.invoice.record_failed` with `accountId` and `paymentId`, writes nothing, and is `skipped`, so a fetch answers today's pinned request); for a payer `posStore.findChargeForPayment({ paymentHash })` (a hit → `mint_failed` with the alert, an error → `unavailable`, order 9, nothing written); the stored spot (`fxSpot.latest()`, never a fetch): without a USD rate whose `asOf` is younger than `SHOP_SPOT_MAX_AGE_MS` (10 minutes) no gas price or quote is requested and each pair `quoteBudgetLeft()` allows logs `shop.offer.rejected` with `check` `price`; otherwise gas prices and Orchestra quotes in parallel within 3 s for as many pairs as `quoteBudgetLeft()` allows, kept by `checkOffer` (with the rate while it is still younger than 10 minutes at the check, else `null`) and a readable gas price (`minFee` = `recommendedMinFee`); a failed quote logs `shop.offer.rejected` with `check` `body` (an HTTP 200 whose body does not parse), `http` (a request sent without an HTTP 200), or `budget` (no request could be sent); none → `unavailable` and the 60 s wait; then one transaction that takes `ShopTx.claimPaymentHash`, then the account row lock, then the charge row lock; after the locks it writes nothing and answers `unavailable` (order 9) when the request arrived `SHOP_CREATION_INSERT_LIMIT_MS` (16 s) or longer ago or, for a payer, its abort signal is set; a `pos_charge_invoice` row of another charge (always for a payer) stops it before anything is ended or inserted (`mint_failed`, `shop.alert.duplicate_invoice`); it then reads the payment holding the BOLT11's hash (this charge's own payment is used; any other holder rolls the whole transaction back, logs `shop.alert.duplicate_invoice`, deletes the charge invoice row only when this attempt recorded it, and answers `mint_failed`, so an `open` payment it ended stays `open`), ends the account's `open` payment (`window`, `superseded`, or `replaced`), inserts the payment (window = charge `expiresAt`, or five minutes for a payer), its first quote, and its offers (`ON CONFLICT (deposit_address)` drops an offer and logs `shop.alert.shared_deposit_address`), and resolves a lost insert on the payment hash; when the insert is refused because another charge's invoice row claimed the hash after the check (a memory boot's `InMemoryPosStore.recordInvoice` does not wait for the transaction), the whole transaction rolls back, so nothing stays ended or inserted, and it answers `mint_failed` with `shop.alert.duplicate_invoice`. `startForCharge(account, charge, requestArrivedMs)` runs the charge creation in the background through `createForCharge`, so it registers the charge's in-flight creation and a scan right after `POST /pos` joins it (`#chargeCreation` logs `shop.creation.failed` once with `accountId`, `chargeId`, and the error's `name`, `code`, and `errno` when the run throws, whether `POST /pos` or a pay-link fetch started it or joined it; the fetch then answers from the state). Logs `shop.payment.opened`, `shop.mint.failed`.
@@ -4779,6 +4808,8 @@ A missing pin and an empty label tell the caller the same thing. The create and 
 - **Used by:** `ShopPayments.chargePaid` and `ShopPayments.applySettlement`.
 
 ## Function: migrateShopPaymentSchema
+
+The migration replaces the existing shop offer asset check so it accepts XAUt.
 
 - **Purpose:** Apply the idempotent `SHOP_PAYMENT_SCHEMA_SQL` in order: `shop_payment` (one row per shop BOLT11, with the status, end-reason, and timestamp checks of the contract), its partial unique index `shop_payment_account_open_idx` (one `open` payment per account) and the history and settle watch indexes; `shop_quote` with `transfer_amounts jsonb` and its `(payment_id, created_at)` index; `shop_offer` with `numeric(78, 0)` amounts, `UNIQUE (quote_id, method, asset)` and the unique `shop_offer_deposit_idx`; `shop_proof` with its source/result checks, the unique `shop_proof_log_idx`, `shop_proof_unlogged_idx`, `shop_proof_order_idx`, and `shop_proof_payment_accepted_idx`, plus the user-operation and watcher indexes and the partial `shop_proof_superseded_idx` on `payment_id` where `superseded_by_order` is set; `shop_payment.successor_wait_until` and `shop_proof.superseded_by_order` are nullable columns; and `shop_proof_lookup` with `UNIQUE (chain_id, hash, quote_id)` and its due index. Every statement is `CREATE … IF NOT EXISTS`; `docs/schema/shop_payment.sql` mirrors the DDL byte for byte apart from its header comment.
 - **Inputs:** A `SqlClient`. `account` and `pos_charge` must exist first (`migrateAuthSchema`, `migratePosSchema`).
