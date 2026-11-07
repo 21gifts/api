@@ -782,7 +782,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       posStore,
       now,
       ...receivingDeps,
-      ...(sparkInvoices === undefined ? {} : { freePayments: true }),
+      ...sparkDeps,
       ...shopDeps,
     }),
   );

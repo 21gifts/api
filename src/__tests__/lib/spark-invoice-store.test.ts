@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
   InMemorySparkInvoiceStore,
+  MEMBER_SPARK_INVOICE_CAP,
   PostgresSparkInvoiceStore,
   SPARK_INVOICE_SCHEMA_SQL,
   migrateSparkInvoiceSchema,
+  type MemberSparkInvoiceIssue,
   type SparkInvoiceIssue,
 } from '@/lib/spark-invoice-store';
 
@@ -19,6 +21,22 @@ function issue(partial: Partial<SparkInvoiceIssue> = {}): SparkInvoiceIssue {
     bolt11: 'lnbc21n1',
     zapRequest: '{}',
     createdAt: new Date(T0),
+    ...partial,
+  };
+}
+
+const ACCOUNT = '00000000-0000-4000-8000-000000000001';
+const HOUR = 60 * 60_000;
+
+function member(partial: Partial<MemberSparkInvoiceIssue> = {}): MemberSparkInvoiceIssue {
+  return {
+    invoice: 'spark1m',
+    kind: 'pay',
+    accountId: ACCOUNT,
+    receiverPubkey: `02${'c'.repeat(64)}`,
+    amountSats: 21,
+    createdAt: new Date(T0),
+    expiresAt: new Date(T0 + HOUR),
     ...partial,
   };
 }
@@ -87,12 +105,87 @@ describe('InMemorySparkInvoiceStore', () => {
   });
 });
 
+describe('InMemorySparkInvoiceStore member invoices', () => {
+  it('stores a member invoice once and lists it while open and unexpired', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member());
+    await store.issueMember(member({ amountSats: 99 }));
+    expect(await store.listOpenMember(new Date(T0))).toEqual([{ ...member(), status: 'open' }]);
+    expect(await store.listOpenMember(new Date(T0 + HOUR))).toEqual([]);
+  });
+
+  it('keeps only the newest open invoices of one account', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member({ invoice: 'other', accountId: 'b', createdAt: new Date(T0) }));
+    for (let i = 0; i <= MEMBER_SPARK_INVOICE_CAP; i += 1) {
+      await store.issueMember(
+        member({ invoice: `m${String(i).padStart(2, '0')}`, createdAt: new Date(T0 + i) }),
+      );
+    }
+    const open = await store.listOpenMember(new Date(T0));
+    expect(open.map((row) => row.invoice)).not.toContain('m00');
+    expect(open.filter((row) => row.accountId === ACCOUNT)).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+    expect(open[0]?.invoice).toBe('other');
+  });
+
+  it('keeps the stored invoice even when it is not the newest', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    for (let i = 0; i < MEMBER_SPARK_INVOICE_CAP; i += 1) {
+      await store.issueMember(
+        member({ invoice: `m${String(i).padStart(2, '0')}`, createdAt: new Date(T0 + 10 + i) }),
+      );
+    }
+    await store.issueMember(member({ invoice: 'late', createdAt: new Date(T0) }));
+    const open = (await store.listOpenMember(new Date(T0))).map((row) => row.invoice);
+    expect(open).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+    expect(open).toContain('late');
+    expect(open).not.toContain('m00');
+  });
+
+  it('does not count notified invoices against the cap', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member({ invoice: 'paid', createdAt: new Date(T0 - 1) }));
+    expect(await store.markMemberNotified('paid')).toBe(true);
+    for (let i = 0; i < MEMBER_SPARK_INVOICE_CAP; i += 1) {
+      await store.issueMember(
+        member({ invoice: `m${String(i).padStart(2, '0')}`, createdAt: new Date(T0) }),
+      );
+    }
+    expect(await store.listOpenMember(new Date(T0))).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+    expect(await store.pruneMember(new Date(T0 + HOUR))).toBe(MEMBER_SPARK_INVOICE_CAP + 1);
+  });
+
+  it('marks an open member invoice notified once and returns copies', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    expect(await store.markMemberNotified('spark1m')).toBe(false);
+    await store.issueMember(member());
+    const listed = await store.listOpenMember(new Date(T0));
+    listed[0]?.createdAt.setTime(0);
+    listed[0]?.expiresAt.setTime(0);
+    expect((await store.listOpenMember(new Date(T0)))[0]?.expiresAt.getTime()).toBe(T0 + HOUR);
+    expect(await store.markMemberNotified('spark1m')).toBe(true);
+    expect(await store.markMemberNotified('spark1m')).toBe(false);
+    expect(await store.listOpenMember(new Date(T0))).toEqual([]);
+  });
+
+  it('prunes member invoices that expired at or before now', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(member({ invoice: 'a', expiresAt: new Date(T0) }));
+    await store.issueMember(member({ invoice: 'b', expiresAt: new Date(T0 + 1) }));
+    expect(await store.pruneMember(new Date(T0))).toBe(1);
+    expect((await store.listOpenMember(new Date(0))).map((row) => row.invoice)).toEqual(['b']);
+  });
+});
+
 describe('migrateSparkInvoiceSchema', () => {
   it('runs every DDL statement in order', async () => {
     const sql = new MockSql();
     await migrateSparkInvoiceSchema(sql);
     expect(sql.executes.map((e) => e.text)).toEqual([...SPARK_INVOICE_SCHEMA_SQL]);
     expect(SPARK_INVOICE_SCHEMA_SQL[0]).toContain('CREATE TABLE IF NOT EXISTS spark_invoice');
+    expect(SPARK_INVOICE_SCHEMA_SQL[2]).toContain(
+      'CREATE TABLE IF NOT EXISTS member_spark_invoice',
+    );
   });
 });
 
@@ -185,5 +278,62 @@ describe('PostgresSparkInvoiceStore', () => {
     expect(sql.queries[0]?.params).toEqual(['h', 'ff', 'e']);
     sql.rows = [];
     expect(await store.markSettled('h', null, 'e')).toBe(false);
+  });
+
+  it('stores a member invoice and trims the account to the cap in one statement', async () => {
+    const sql = new MockSql();
+    await new PostgresSparkInvoiceStore(sql).issueMember(member());
+    expect(sql.executes).toHaveLength(1);
+    expect(sql.executes[0]?.text).toContain('ON CONFLICT (invoice) DO NOTHING');
+    expect(sql.executes[0]?.text).toContain('DELETE FROM member_spark_invoice');
+    expect(sql.executes[0]?.params).toEqual([
+      'spark1m',
+      'pay',
+      ACCOUNT,
+      `02${'c'.repeat(64)}`,
+      21,
+      new Date(T0).toISOString(),
+      new Date(T0 + HOUR).toISOString(),
+      MEMBER_SPARK_INVOICE_CAP - 1,
+    ]);
+  });
+
+  it('lists open member invoices and maps driver values', async () => {
+    const sql = new MockSql();
+    sql.rows = [
+      {
+        invoice: 'i1',
+        kind: 'pay',
+        account_id: ACCOUNT,
+        receiver_pubkey: 'p1',
+        amount_sats: '21',
+        created_at: new Date(T0),
+        expires_at: new Date(T0 + HOUR).toISOString(),
+        status: 'open',
+      },
+    ];
+    const rows = await new PostgresSparkInvoiceStore(sql).listOpenMember(new Date(T0));
+    expect(sql.queries[0]?.text).toContain("WHERE status = 'open' AND expires_at > $1");
+    expect(sql.queries[0]?.params).toEqual([new Date(T0).toISOString()]);
+    expect(rows).toEqual([{ ...member({ invoice: 'i1', receiverPubkey: 'p1' }), status: 'open' }]);
+  });
+
+  it('marks only an open member invoice notified', async () => {
+    const sql = new MockSql();
+    const store = new PostgresSparkInvoiceStore(sql);
+    sql.rows = [{ invoice: 'i1' }];
+    expect(await store.markMemberNotified('i1')).toBe(true);
+    expect(sql.queries[0]?.text).toContain("WHERE invoice = $1 AND status = 'open'");
+    expect(sql.queries[0]?.params).toEqual(['i1']);
+    sql.rows = [];
+    expect(await store.markMemberNotified('i1')).toBe(false);
+  });
+
+  it('prunes expired member invoices and counts them', async () => {
+    const sql = new MockSql();
+    sql.rows = [{ invoice: 'a' }, { invoice: 'b' }];
+    expect(await new PostgresSparkInvoiceStore(sql).pruneMember(new Date(T0))).toBe(2);
+    expect(sql.queries[0]?.text).toContain('WHERE expires_at <= $1');
+    expect(sql.queries[0]?.params).toEqual([new Date(T0).toISOString()]);
   });
 });

@@ -3,7 +3,8 @@
  * and an open till when one is pending).
  * `POST /pay/:username/invoice` — one BOLT11 invoice via `requestGiftInvoice`,
  * plus a fee-free Spark invoice when free in-app payments are on: the open
- * till's invoice while a charge is pending, otherwise one for the posted amount.
+ * till's invoice while a charge is pending, otherwise one for the posted amount,
+ * stored so the Spark invoice worker can push when it is paid.
  *
  * Settlement goes to the member's receiving address (`receivingAddress`):
  * their verified wallet, resolved internally against the LNURL server. A
@@ -37,6 +38,8 @@ import {
 import { lnurlServerFetch, receivingAddress } from '@/lib/receiving-address';
 import type { ShopPayments } from '@/lib/shop-payment';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
+import type { SparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { SPARK_INVOICE_WINDOW_MS } from '@/lib/spark-worker';
 import { normalizeUsername } from '@/lib/username';
 
 /** Largest Spark invoice memo the Spark operators accept, in UTF-8 bytes. */
@@ -50,8 +53,8 @@ interface PayRouteDeps {
   now: () => number;
   /** LNURL server; omitted when off. */
   lnurlServer?: LnurlServerConfig;
-  /** `true` when free in-app payments are on (Spark invoices on `POST /:username/invoice`). */
-  freePayments?: boolean;
+  /** Issued Spark invoices; omitted when free in-app payments are off (no Spark invoices on `POST /:username/invoice`). */
+  sparkInvoices?: SparkInvoiceStore;
   /** Random bytes for the Spark invoice id; default `crypto.getRandomValues`. */
   randomBytes?: (length: number) => Uint8Array;
   /** Shop payments in USDT and USDC (`POST /:username/payment`); omitted → that route answers 404. */
@@ -235,7 +238,7 @@ async function chargeSparkInvoice(
   sparkPubkey: string,
   issuedAtMs: number,
 ): Promise<string | null> {
-  if (deps.freePayments !== true) {
+  if (deps.sparkInvoices === undefined) {
     return null;
   }
   const randomBytes =
@@ -290,9 +293,13 @@ function sparkMemo(comment: unknown, commentAllowed: number | undefined): string
  * Spark invoice for an amount with no open charge, when free in-app
  * payments are on: the member's verified wallet key, exactly `amountSats`,
  * and the memo from {@link sparkMemo} (built only when the feature is on).
- * Not stored; nothing waits for it.
+ * It is stored as a `pay` member invoice that expires after
+ * {@link SPARK_INVOICE_WINDOW_MS}, so the Spark invoice worker pushes to the
+ * member once it is paid. A store failure logs `pay.spark_invoice.store_failed`
+ * and still returns the invoice; only the push is lost.
  *
  * @param deps - Route collaborators.
+ * @param account - The receiving member.
  * @param sparkPubkey - The member's verified wallet key.
  * @param amountSats - Accepted amount in whole sats.
  * @param comment - The posted `comment`, unchecked.
@@ -300,26 +307,42 @@ function sparkMemo(comment: unknown, commentAllowed: number | undefined): string
  * @param issuedAtMs - Clock for the invoice id (epoch ms).
  * @returns The Spark invoice, or `null` when free in-app payments are off.
  */
-function memberSparkInvoice(
+async function memberSparkInvoice(
   deps: PayRouteDeps,
+  account: Account,
   sparkPubkey: string,
   amountSats: number,
   comment: unknown,
   commentAllowed: number | undefined,
   issuedAtMs: number,
-): string | null {
-  if (deps.freePayments !== true) {
+): Promise<string | null> {
+  const store = deps.sparkInvoices;
+  if (store === undefined) {
     return null;
   }
   const memo = sparkMemo(comment, commentAllowed);
   const randomBytes =
     deps.randomBytes ?? ((length: number) => crypto.getRandomValues(new Uint8Array(length)));
-  return encodeSparkInvoice({
+  const invoice = encodeSparkInvoice({
     identityPublicKey: sparkPubkey,
     id: uuidV7(issuedAtMs, randomBytes(10)),
     ...(memo === undefined ? {} : { memo }),
     amountSats,
   });
+  try {
+    await store.issueMember({
+      invoice,
+      kind: 'pay',
+      accountId: account.id,
+      receiverPubkey: sparkPubkey,
+      amountSats,
+      createdAt: new Date(issuedAtMs),
+      expiresAt: new Date(issuedAtMs + SPARK_INVOICE_WINDOW_MS),
+    });
+  } catch {
+    logEvent('pay.spark_invoice.store_failed', { accountId: account.id });
+  }
+  return invoice;
 }
 
 /**
@@ -366,8 +389,8 @@ function withinPayRange(lookup: Extract<PayLookup, { ok: true }>, amountSats: nu
  * Build the `/pay` route group.
  *
  * @param deps - Auth store, fetch, POS store, and clock (required), the
- *   optional LNURL server (omitted when it is off), `freePayments` (Spark
- *   invoices), and optional randomness.
+ *   optional LNURL server (omitted when it is off), `sparkInvoices` (Spark
+ *   invoices; omitted when free in-app payments are off), and optional randomness.
  * @returns Hono app with the two receipt reads, `GET /:username`, `POST /:username/invoice`, and `POST /:username/payment`.
  */
 export function payRoutes(deps: PayRouteDeps): Hono {
@@ -440,8 +463,9 @@ export function payRoutes(deps: PayRouteDeps): Hono {
       // The till pin makes any accepted amount the charge amount.
       let sparkInvoice: string | null;
       if (lookup.pending === null) {
-        sparkInvoice = memberSparkInvoice(
+        sparkInvoice = await memberSparkInvoice(
           deps,
+          lookup.account,
           lookup.sparkPubkey,
           amountSats,
           parsed.comment,
