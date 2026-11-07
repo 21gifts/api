@@ -21,7 +21,9 @@ CREATE INDEX IF NOT EXISTS spark_invoice_open_created_idx
 -- Member Spark invoices handed out by POST /pay/:username/invoice without a
 -- pending charge. The worker deletes rows whose expires_at has passed, and
 -- pushes "You received N sats" once for an open row the Spark coordinator
--- reports finalized. Each account keeps at most its 20 newest open rows.
+-- reports finalized. Each account keeps at most 20 open rows: the one just
+-- stored plus its 19 newest other open ones; storing one more deletes the
+-- oldest of the others.
 CREATE TABLE IF NOT EXISTS member_spark_invoice (
   invoice text PRIMARY KEY,
   kind text NOT NULL CHECK (kind IN ('pay')),
