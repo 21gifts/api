@@ -128,7 +128,7 @@ export interface SparkInvoiceStore {
   pruneMember(now: Date): Promise<number>;
 }
 
-/** Idempotent DDL for `spark_invoice` (matches `docs/schema/spark_invoice.sql`). */
+/** Idempotent DDL for `spark_invoice` and `member_spark_invoice` (matches `docs/schema/spark_invoice.sql`). */
 export const SPARK_INVOICE_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS spark_invoice (
   payment_hash text PRIMARY KEY,
