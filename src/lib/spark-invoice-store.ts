@@ -103,7 +103,8 @@ export interface SparkInvoiceStore {
   /**
    * Store a member Spark invoice and keep it plus that account's newest
    * other open member invoices, {@link MEMBER_SPARK_INVOICE_CAP} open rows in
-   * all; older open ones are deleted.
+   * all; older open ones are deleted. Concurrent calls for one account can
+   * briefly leave more open rows; the next call trims back.
    *
    * @param row - New member invoice.
    * @returns Resolves when stored.
