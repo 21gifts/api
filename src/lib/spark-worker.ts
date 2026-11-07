@@ -8,8 +8,13 @@
  * receipt is credited it publishes it to the relays named in the zap request
  * and marks the row settled; a payment hash already owned by another receipt
  * settles the row without publishing.
+ *
+ * The same tick watches the member Spark invoices of `POST /pay/:username/invoice`:
+ * one reported `FINALIZED` gets the "You received N sats" push through
+ * `notifyPaymentReceived`, keyed by the SHA-256 of the invoice string.
  */
 
+import { createHash } from 'node:crypto';
 import type { FreePaymentsConfig } from '@/lib/config';
 import { errorLogFields, logEvent } from '@/lib/log';
 import type { FetchFn } from '@/lib/lnurlp';
@@ -17,7 +22,12 @@ import type { MessageStore } from '@/lib/message-store';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { buildZapReceipt, zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
-import type { SparkInvoiceRow, SparkInvoiceStore } from '@/lib/spark-invoice-store';
+import type { PaymentReceived, PaymentReceivedOutcome } from '@/lib/payment-received';
+import type {
+  MemberSparkInvoiceRow,
+  SparkInvoiceRow,
+  SparkInvoiceStore,
+} from '@/lib/spark-invoice-store';
 import { SPARK_QUERY_LIMIT, querySparkInvoices } from '@/lib/spark-operator';
 
 /** Tick interval. */
@@ -43,6 +53,8 @@ export interface SparkWorkerDeps {
   ingest: (event: NostrEventFrame) => Promise<boolean>;
   /** Payment hash claims written by the receipt ingest. */
   claims: Pick<MessageStore, 'zapPaymentReceiptId'>;
+  /** The receive push of one paid member invoice (`notifyPaymentReceived` with its stores). */
+  notifyPayment: (payment: PaymentReceived) => Promise<PaymentReceivedOutcome>;
   /** Clock in epoch milliseconds. */
   now: () => number;
 }
@@ -110,20 +122,52 @@ async function settleRow(
 }
 
 /**
- * Poll the coordinator once for every open Spark invoice in the window.
+ * Push for one finalized member invoice, then mark it notified.
  *
- * Rows are sent in batches of {@link SPARK_QUERY_LIMIT}. A failed batch logs
- * `spark.query.failed` and the next batch still runs. Only `finalized`
- * settles; `not_found`, `pending`, `returned`, `mismatched`, and unknown
- * statuses leave the row open. A second receipt for the same payment hash is a
- * no-op in the ingest (the payment hash is claimed once).
+ * The push goes through `notifyPaymentReceived` with no zap request and the
+ * SHA-256 hex of the invoice string as its payment key, so the
+ * once-per-payment claim holds across ticks and restarts. Every outcome marks
+ * the row notified and logs `payment_received` with that outcome; a rejecting
+ * call logs `payment_received.failed` and leaves the row open for the next tick.
  *
  * @param deps - Worker collaborators.
- * @returns Resolves when every batch has been handled.
- * @throws Propagates store failures.
+ * @param row - The open member row.
  */
-export async function runSparkInvoiceTick(deps: SparkWorkerDeps): Promise<void> {
-  const rows = await deps.store.listOpen(new Date(deps.now() - SPARK_INVOICE_WINDOW_MS));
+async function notifyMemberRow(deps: SparkWorkerDeps, row: MemberSparkInvoiceRow): Promise<void> {
+  let outcome: PaymentReceivedOutcome;
+  try {
+    outcome = await deps.notifyPayment({
+      paymentHash: createHash('sha256').update(row.invoice, 'utf8').digest('hex'),
+      userPubkey: row.receiverPubkey,
+      amountSats: row.amountSats,
+      zapRequest: null,
+    });
+  } catch (error) {
+    logEvent('payment_received.failed', { kind: row.kind, ...errorLogFields(error) });
+    return;
+  }
+  logEvent('payment_received', { outcome, kind: row.kind });
+  await deps.store.markMemberNotified(row.invoice);
+}
+
+/**
+ * Ask the coordinator about `rows` in batches of {@link SPARK_QUERY_LIMIT}
+ * and hand each row reported `finalized` to `onFinalized`, once.
+ *
+ * A failed batch logs `spark.query.failed` and the next batch still runs.
+ * `not_found`, `pending`, `returned`, `mismatched`, and unknown statuses are
+ * skipped.
+ *
+ * @param deps - Worker collaborators.
+ * @param rows - Rows to poll.
+ * @param onFinalized - Handler of a finalized row and its transfer id.
+ * @returns Resolves when every batch has been handled.
+ */
+async function pollFinalized<Row extends { invoice: string }>(
+  deps: SparkWorkerDeps,
+  rows: readonly Row[],
+  onFinalized: (row: Row, transferId: string | null) => Promise<void>,
+): Promise<void> {
   for (let i = 0; i < rows.length; i += SPARK_QUERY_LIMIT) {
     const batch = rows.slice(i, i + SPARK_QUERY_LIMIT);
     const result = await querySparkInvoices(
@@ -145,9 +189,33 @@ export async function runSparkInvoiceTick(deps: SparkWorkerDeps): Promise<void> 
         continue;
       }
       byInvoice.delete(state.invoice);
-      await settleRow(deps, row, state.transferId);
+      await onFinalized(row, state.transferId);
     }
   }
+}
+
+/**
+ * Poll the coordinator once for every open Spark invoice in the window, then
+ * for every open member invoice.
+ *
+ * Zap rows issued in the last {@link SPARK_INVOICE_WINDOW_MS} are settled
+ * when `finalized`; a second receipt for the same payment hash is a no-op in
+ * the ingest (the payment hash is claimed once). Member rows whose
+ * `expiresAt` has passed are deleted first, so an unpaid member invoice is
+ * never pushed for after its window; an open one reported `finalized` gets
+ * one push. Rows reported in any other status stay open.
+ *
+ * @param deps - Worker collaborators.
+ * @returns Resolves when every batch has been handled.
+ * @throws Propagates store failures.
+ */
+export async function runSparkInvoiceTick(deps: SparkWorkerDeps): Promise<void> {
+  const now = deps.now();
+  const rows = await deps.store.listOpen(new Date(now - SPARK_INVOICE_WINDOW_MS));
+  await pollFinalized(deps, rows, (row, transferId) => settleRow(deps, row, transferId));
+  await deps.store.pruneMember(new Date(now));
+  const members = await deps.store.listOpenMember(new Date(now));
+  await pollFinalized(deps, members, (row) => notifyMemberRow(deps, row));
 }
 
 /**

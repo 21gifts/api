@@ -44,7 +44,11 @@ import {
   type ShopTx,
 } from '@/lib/shop-payment-store';
 import { encodeSparkAddress } from '@/lib/spark-address';
-import { migrateSparkInvoiceSchema, PostgresSparkInvoiceStore } from '@/lib/spark-invoice-store';
+import {
+  MEMBER_SPARK_INVOICE_CAP,
+  migrateSparkInvoiceSchema,
+  PostgresSparkInvoiceStore,
+} from '@/lib/spark-invoice-store';
 import { migrateMemberEventSchema, PostgresMemberEventStore } from '@/lib/member-event-store';
 import { migrateLoginGateSchema, PostgresLoginGateStore } from '@/lib/login-gate-store';
 import { parseWalletReport } from '@/lib/wallet-report';
@@ -1847,6 +1851,87 @@ describe('PostgresSparkInvoiceStore', () => {
             change.after?.['status'] === 'open',
         ),
       ).toBe(true);
+    } finally {
+      await closeIfPossible(sql);
+    }
+  });
+});
+
+describe('PostgresSparkInvoiceStore member invoices', () => {
+  test('store, cap per account, list open, notify once, prune, and db_change', async () => {
+    const { client, sql } = createBunSqlClient(databaseUrl);
+    try {
+      await migrateSparkInvoiceSchema(client);
+      await migrateDbChangeSchema(client);
+
+      const store = new PostgresSparkInvoiceStore(client);
+      const accountId = crypto.randomUUID();
+      const stamp = crypto.randomUUID().replaceAll('-', '');
+      const issuedAt = new Date(Date.now() - 10 * 60_000);
+      const expiresAt = new Date(issuedAt.getTime() + 60 * 60_000);
+      const invoiceAt = (i: number): string => `spark1pay${stamp}${String(i).padStart(2, '0')}`;
+      for (let i = 0; i <= MEMBER_SPARK_INVOICE_CAP; i += 1) {
+        await store.issueMember({
+          invoice: invoiceAt(i),
+          kind: 'pay',
+          accountId,
+          receiverPubkey: `02${'a'.repeat(64)}`,
+          amountSats: 21,
+          createdAt: new Date(issuedAt.getTime() + i),
+          expiresAt,
+        });
+      }
+      const mine = async (now: Date): Promise<string[]> =>
+        (await store.listOpenMember(now))
+          .filter((row) => row.accountId === accountId)
+          .map((row) => row.invoice);
+      const open = await mine(issuedAt);
+      expect(open).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+      expect(open).not.toContain(invoiceAt(0));
+      expect(open[0]).toBe(invoiceAt(1));
+      const first = (await store.listOpenMember(issuedAt)).find(
+        (row) => row.invoice === invoiceAt(1),
+      );
+      expect(first).toMatchObject({ kind: 'pay', amountSats: 21, status: 'open', expiresAt });
+
+      expect(await store.markMemberNotified(invoiceAt(1))).toBe(true);
+      expect(await store.markMemberNotified(invoiceAt(1))).toBe(false);
+      expect(await mine(issuedAt)).not.toContain(invoiceAt(1));
+      expect(await mine(expiresAt)).toEqual([]);
+
+      expect(await store.pruneMember(expiresAt)).toBeGreaterThanOrEqual(MEMBER_SPARK_INVOICE_CAP);
+      const left = await client.query<{ n: string }>(
+        `SELECT count(*)::text AS n FROM member_spark_invoice WHERE account_id = $1`,
+        [accountId],
+      );
+      expect(left[0]?.n).toBe('0');
+
+      const changes = await client.query<{
+        op: string;
+        before: Record<string, unknown> | null;
+        after: Record<string, unknown> | null;
+      }>(
+        `SELECT op, before, after
+         FROM db_change
+         WHERE table_name = 'member_spark_invoice'
+           AND (before ->> 'account_id' = $1 OR after ->> 'account_id' = $1)
+         ORDER BY id ASC`,
+        [accountId],
+      );
+      expect(changes.filter((change) => change.op === 'INSERT')).toHaveLength(
+        MEMBER_SPARK_INVOICE_CAP + 1,
+      );
+      expect(
+        changes.some(
+          (change) =>
+            change.op === 'UPDATE' &&
+            change.before?.['status'] === 'open' &&
+            change.after?.['status'] === 'notified',
+        ),
+      ).toBe(true);
+      expect(changes.filter((change) => change.op === 'DELETE')).toHaveLength(
+        MEMBER_SPARK_INVOICE_CAP + 1,
+      );
     } finally {
       await closeIfPossible(sql);
     }

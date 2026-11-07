@@ -1,12 +1,17 @@
+import { createHash } from 'node:crypto';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import type { Account } from '@/lib/auth/store';
 import { getPublicKey, verifyEvent } from 'nostr-tools/pure';
 import type { FreePaymentsConfig } from '@/lib/config';
 import { concatBytes, decodeProto, protoBytesField, protoVarintField } from '@/lib/protobuf';
 import { RecordingPublisher } from '@/lib/nostr/publish';
 import type { NostrEventFrame } from '@/lib/nostr/query';
 import { zapReceiptSecretKey } from '@/lib/nostr/zap-receipt';
+import { notifyPaymentReceived, type PaymentReceived } from '@/lib/payment-received';
+import { InMemoryPushStore } from '@/lib/push-store';
 import {
   InMemorySparkInvoiceStore,
+  type MemberSparkInvoiceIssue,
   type SparkInvoiceIssue,
   type SparkInvoiceStore,
 } from '@/lib/spark-invoice-store';
@@ -136,6 +141,7 @@ function deps(
       return claimed.get(hash) === event.id;
     },
     claims: { zapPaymentReceiptId: async (hash) => claimed.get(hash) },
+    notifyPayment: async () => 'queued',
     now: () => NOW,
     ingested,
     claimed,
@@ -478,6 +484,165 @@ describe('runSparkInvoiceTick', () => {
   });
 });
 
+describe('runSparkInvoiceTick member invoices', () => {
+  const MEMBER_ID = '00000000-0000-4000-8000-000000000001';
+
+  function memberRow(
+    n: number,
+    partial: Partial<MemberSparkInvoiceIssue> = {},
+  ): MemberSparkInvoiceIssue {
+    return {
+      invoice: `spark1pay${n}`,
+      kind: 'pay',
+      accountId: MEMBER_ID,
+      receiverPubkey: OWNER,
+      amountSats: 21,
+      createdAt: new Date(NOW - 1000),
+      expiresAt: new Date(NOW - 1000 + SPARK_INVOICE_WINDOW_MS),
+      ...partial,
+    };
+  }
+
+  /** The real receive push over an in-memory outbox, for an owner with a live device. */
+  function realNotify(push: InMemoryPushStore): SparkWorkerDeps['notifyPayment'] {
+    const owner = { id: MEMBER_ID, name: 'Bea' } as Account;
+    return (payment) =>
+      notifyPaymentReceived(
+        {
+          auth: {
+            getAccountByVerifiedSparkPubkey: async (pubkey) =>
+              pubkey === OWNER ? owner : undefined,
+            getAccountByPubkey: async () => undefined,
+            getNostrPublicKey: async () => undefined,
+          },
+          pushStore: push,
+          hasLiveDevice: async () => true,
+          notifications: { unreadCount: async () => 0 },
+          inboxUnreadCount: async () => 0,
+          now: () => NOW,
+        },
+        payment,
+      );
+  }
+
+  it('pushes once for a finalized member invoice, keyed by the SHA-256 of the invoice', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    const replies = new Map<string, Reply>([['spark1pay1', { status: 1 }]]);
+    const fetchImpl = operator(replies);
+    const notifyPayment = vi.fn<(payment: PaymentReceived) => Promise<'queued'>>(
+      async () => 'queued',
+    );
+    const d = deps(store, fetchImpl, { notifyPayment });
+
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).not.toHaveBeenCalled();
+
+    replies.set('spark1pay1', { status: 2, transferId: Uint8Array.of(0xab) });
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).toHaveBeenCalledWith({
+      paymentHash: createHash('sha256').update('spark1pay1').digest('hex'),
+      userPubkey: OWNER,
+      amountSats: 21,
+      zapRequest: null,
+    });
+    expect(await store.listOpenMember(new Date(NOW))).toEqual([]);
+    expect(events(warn)).toContainEqual(
+      expect.objectContaining({ event: 'payment_received', outcome: 'queued', kind: 'pay' }),
+    );
+
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).toHaveBeenCalledTimes(1);
+    expect(fetchImpl.batches).toEqual([['spark1pay1'], ['spark1pay1']]);
+    expect(d.ingested).toEqual([]);
+  });
+
+  it('marks the row notified for an outcome that queued nothing', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    const notifyPayment = vi.fn(async () => 'no_device' as const);
+    const d = deps(store, operator(new Map([['spark1pay1', { status: 2 }]])), { notifyPayment });
+    await runSparkInvoiceTick(d);
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueues one push across repeated ticks and a restart that lost the notified mark', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const push = new InMemoryPushStore();
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    // The process stops after the push was queued but before the row was marked.
+    vi.spyOn(store, 'markMemberNotified').mockResolvedValueOnce(false);
+    const fetchImpl = operator(new Map([['spark1pay1', { status: 2 }]]));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment: realNotify(push) }));
+    const outbox = await push.listAllOutbox(10);
+    expect(outbox).toHaveLength(1);
+    expect(JSON.parse(outbox[0]?.payload ?? '{}')).toMatchObject({
+      title: '21.gifts',
+      body: 'You received 21 sats.',
+      url: '/wallet',
+    });
+    expect(await store.listOpenMember(new Date(NOW))).toEqual([]);
+  });
+
+  it('never pushes for an unpaid invoice, and prunes it once expired', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    await store.issueMember(memberRow(2, { expiresAt: new Date(NOW) }));
+    const notifyPayment = vi.fn(async () => 'queued' as const);
+    const fetchImpl = operator(
+      new Map<string, Reply>([
+        ['spark1pay1', { status: 0 }],
+        ['spark1pay2', { status: 2 }],
+      ]),
+    );
+    const d = deps(store, fetchImpl, { notifyPayment });
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).not.toHaveBeenCalled();
+    expect(fetchImpl.batches).toEqual([['spark1pay1']]);
+
+    await runSparkInvoiceTick({ ...d, now: () => NOW - 1000 + SPARK_INVOICE_WINDOW_MS });
+    expect(fetchImpl.batches).toHaveLength(1);
+    expect(await store.pruneMember(new Date(0))).toBe(0);
+    expect(await store.listOpenMember(new Date(0))).toEqual([]);
+  });
+
+  it('logs a rejected push and retries the row on the next tick', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    const notifyPayment = vi
+      .fn<(payment: PaymentReceived) => Promise<'queued'>>()
+      .mockRejectedValueOnce(new Error('db down'))
+      .mockResolvedValueOnce('queued');
+    const d = deps(store, operator(new Map([['spark1pay1', { status: 2 }]])), { notifyPayment });
+    await runSparkInvoiceTick(d);
+    expect(events(warn)).toContainEqual(
+      expect.objectContaining({ event: 'payment_received.failed', kind: 'pay' }),
+    );
+    expect(await store.listOpenMember(new Date(NOW))).toHaveLength(1);
+    await runSparkInvoiceTick(d);
+    expect(notifyPayment).toHaveBeenCalledTimes(2);
+    expect(await store.listOpenMember(new Date(NOW))).toEqual([]);
+  });
+
+  it('skips a failed member batch', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const store = new InMemorySparkInvoiceStore();
+    await store.issueMember(memberRow(1));
+    const notifyPayment = vi.fn(async () => 'queued' as const);
+    const fetchImpl = vi.fn(async () => new Response('', { status: 503 }));
+    await runSparkInvoiceTick(deps(store, fetchImpl, { notifyPayment }));
+    expect(notifyPayment).not.toHaveBeenCalled();
+    expect(events(warn)).toContainEqual(expect.objectContaining({ event: 'spark.query.failed' }));
+  });
+});
+
 describe('startSparkInvoiceWorker', () => {
   it('ticks now and on the interval without overlapping, and stops', async () => {
     vi.useFakeTimers();
@@ -492,6 +657,10 @@ describe('startSparkInvoiceWorker', () => {
       issue: vi.fn(),
       listOpen,
       markSettled: vi.fn(),
+      issueMember: vi.fn(),
+      listOpenMember: vi.fn(async () => []),
+      markMemberNotified: vi.fn(),
+      pruneMember: vi.fn(async () => 0),
     };
     const handle = startSparkInvoiceWorker(deps(store, vi.fn()));
     expect(listOpen).toHaveBeenCalledTimes(1);
@@ -510,7 +679,15 @@ describe('startSparkInvoiceWorker', () => {
     vi.useFakeTimers();
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     const listOpen = vi.fn(() => Promise.reject(new Error('db down')));
-    const store: SparkInvoiceStore = { issue: vi.fn(), listOpen, markSettled: vi.fn() };
+    const store: SparkInvoiceStore = {
+      issue: vi.fn(),
+      listOpen,
+      markSettled: vi.fn(),
+      issueMember: vi.fn(),
+      listOpenMember: vi.fn(),
+      markMemberNotified: vi.fn(),
+      pruneMember: vi.fn(),
+    };
     const handle = startSparkInvoiceWorker(deps(store, vi.fn()), 1000);
     await vi.advanceTimersByTimeAsync(1000);
     expect(listOpen).toHaveBeenCalledTimes(2);
