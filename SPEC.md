@@ -9007,9 +9007,10 @@ stores its Spark invoice in `member_spark_invoice` (`docs/schema/spark_invoice.s
 (the verified wallet key the invoice pays), `amount_sats`, `created_at`,
 `expires_at` (60 minutes after `created_at`, the same window as zap
 invoices), and `status` (`open` / `notified`). Covered by `trg_db_change`.
-The route has no session, so each account keeps at most its 20 newest open
-member invoices; storing a 21st deletes the oldest open one, whose payment
-then gets no push. The same worker tick first deletes every member invoice
+The route has no session, so each account keeps at most 20 open member
+invoices: the one just stored plus its 19 newest other open ones. Storing one
+more deletes the oldest of the others in the same statement, and a payment of
+that deleted invoice gets no push. The same worker tick first deletes every member invoice
 whose `expires_at` has passed, then asks the coordinator about the open ones.
 For one reported `FINALIZED` it runs the receive push of
 `POST /webhooks/lnurl` (`notifyPaymentReceived`) with the stored wallet key and
