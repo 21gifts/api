@@ -56,9 +56,12 @@ export interface MemberSparkInvoiceRow {
   amountSats: number;
   /** When the invoice was handed out. */
   createdAt: Date;
-  /** End of the watch window; the worker never pushes for the row after it. */
+  /** End of the watch window; the worker stops polling the row and deletes it after it. */
   expiresAt: Date;
-  /** `open` until the worker handled the finalized transfer, then `notified`. */
+  /**
+   * `open` until the worker handled the finalized transfer, then `notified`,
+   * whether or not that queued a push (for example no device or notifications off).
+   */
   status: 'open' | 'notified';
 }
 
@@ -98,8 +101,9 @@ export interface SparkInvoiceStore {
     receiptEventId: string,
   ): Promise<boolean>;
   /**
-   * Store a member Spark invoice, then drop that account's open member
-   * invoices beyond the newest {@link MEMBER_SPARK_INVOICE_CAP}.
+   * Store a member Spark invoice and keep it plus that account's newest
+   * other open member invoices, {@link MEMBER_SPARK_INVOICE_CAP} open rows in
+   * all; older open ones are deleted.
    *
    * @param row - New member invoice.
    * @returns Resolves when stored.
@@ -254,9 +258,9 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
   }
 
   /**
-   * Store a member invoice (an existing invoice string is kept), then drop
-   * that account's open member invoices beyond the newest
-   * {@link MEMBER_SPARK_INVOICE_CAP}.
+   * Store a member invoice (an existing invoice string is kept), then keep
+   * it plus that account's newest other open member invoices,
+   * {@link MEMBER_SPARK_INVOICE_CAP} open rows in all.
    *
    * @param row - New member invoice.
    * @returns Resolves when stored.
@@ -265,10 +269,18 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
     if (!this.#members.has(row.invoice)) {
       this.#members.set(row.invoice, copyMemberRow({ ...row, status: 'open' }));
     }
-    const open = [...this.#members.values()]
-      .filter((member) => member.accountId === row.accountId && member.status === 'open')
+    const others = [...this.#members.values()]
+      .filter(
+        (member) =>
+          member.accountId === row.accountId &&
+          member.status === 'open' &&
+          member.invoice !== row.invoice,
+      )
       .sort(byCreatedAt);
-    for (const dropped of open.slice(0, Math.max(0, open.length - MEMBER_SPARK_INVOICE_CAP))) {
+    for (const dropped of others.slice(
+      0,
+      Math.max(0, others.length - (MEMBER_SPARK_INVOICE_CAP - 1)),
+    )) {
       this.#members.delete(dropped.invoice);
     }
   }
@@ -470,9 +482,12 @@ RETURNING payment_hash`,
   }
 
   /**
-   * Insert a member invoice (`ON CONFLICT (invoice) DO NOTHING`), then delete
-   * that account's open member invoices outside the newest
-   * {@link MEMBER_SPARK_INVOICE_CAP}.
+   * One statement, so the insert and the trim commit together: a
+   * data-modifying CTE inserts the invoice (`ON CONFLICT (invoice) DO NOTHING`),
+   * and the outer `DELETE` removes that account's other open member invoices
+   * outside the newest {@link MEMBER_SPARK_INVOICE_CAP} − 1. Two concurrent
+   * calls for one account can each miss the other's row, leaving one extra
+   * open row until that account's next insert.
    *
    * @param row - New member invoice.
    * @returns Resolves when stored.
@@ -480,10 +495,20 @@ RETURNING payment_hash`,
    */
   async issueMember(row: MemberSparkInvoiceIssue): Promise<void> {
     await this.#sql.execute(
-      `INSERT INTO member_spark_invoice
-  (invoice, kind, account_id, receiver_pubkey, amount_sats, created_at, expires_at, status)
-VALUES ($1, $2, $3, $4, $5, $6, $7, 'open')
-ON CONFLICT (invoice) DO NOTHING`,
+      `WITH inserted AS (
+  INSERT INTO member_spark_invoice
+    (invoice, kind, account_id, receiver_pubkey, amount_sats, created_at, expires_at, status)
+  VALUES ($1, $2, $3, $4, $5, $6, $7, 'open')
+  ON CONFLICT (invoice) DO NOTHING
+  RETURNING invoice
+)
+DELETE FROM member_spark_invoice
+WHERE account_id = $3 AND status = 'open' AND invoice <> $1 AND invoice NOT IN (
+  SELECT invoice FROM member_spark_invoice
+  WHERE account_id = $3 AND status = 'open' AND invoice <> $1
+  ORDER BY created_at DESC, invoice DESC
+  LIMIT $8
+)`,
       [
         row.invoice,
         row.kind,
@@ -492,17 +517,8 @@ ON CONFLICT (invoice) DO NOTHING`,
         row.amountSats,
         row.createdAt.toISOString(),
         row.expiresAt.toISOString(),
+        MEMBER_SPARK_INVOICE_CAP - 1,
       ],
-    );
-    await this.#sql.execute(
-      `DELETE FROM member_spark_invoice
-WHERE account_id = $1 AND status = 'open' AND invoice NOT IN (
-  SELECT invoice FROM member_spark_invoice
-  WHERE account_id = $1 AND status = 'open'
-  ORDER BY created_at DESC, invoice DESC
-  LIMIT $2
-)`,
-      [row.accountId, MEMBER_SPARK_INVOICE_CAP],
     );
   }
 

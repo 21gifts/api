@@ -128,6 +128,20 @@ describe('InMemorySparkInvoiceStore member invoices', () => {
     expect(open[0]?.invoice).toBe('other');
   });
 
+  it('keeps the stored invoice even when it is not the newest', async () => {
+    const store = new InMemorySparkInvoiceStore();
+    for (let i = 0; i < MEMBER_SPARK_INVOICE_CAP; i += 1) {
+      await store.issueMember(
+        member({ invoice: `m${String(i).padStart(2, '0')}`, createdAt: new Date(T0 + 10 + i) }),
+      );
+    }
+    await store.issueMember(member({ invoice: 'late', createdAt: new Date(T0) }));
+    const open = (await store.listOpenMember(new Date(T0))).map((row) => row.invoice);
+    expect(open).toHaveLength(MEMBER_SPARK_INVOICE_CAP);
+    expect(open).toContain('late');
+    expect(open).not.toContain('m00');
+  });
+
   it('does not count notified invoices against the cap', async () => {
     const store = new InMemorySparkInvoiceStore();
     await store.issueMember(member({ invoice: 'paid', createdAt: new Date(T0 - 1) }));
@@ -266,10 +280,12 @@ describe('PostgresSparkInvoiceStore', () => {
     expect(await store.markSettled('h', null, 'e')).toBe(false);
   });
 
-  it('stores a member invoice and trims the account to the cap', async () => {
+  it('stores a member invoice and trims the account to the cap in one statement', async () => {
     const sql = new MockSql();
     await new PostgresSparkInvoiceStore(sql).issueMember(member());
+    expect(sql.executes).toHaveLength(1);
     expect(sql.executes[0]?.text).toContain('ON CONFLICT (invoice) DO NOTHING');
+    expect(sql.executes[0]?.text).toContain('DELETE FROM member_spark_invoice');
     expect(sql.executes[0]?.params).toEqual([
       'spark1m',
       'pay',
@@ -278,9 +294,8 @@ describe('PostgresSparkInvoiceStore', () => {
       21,
       new Date(T0).toISOString(),
       new Date(T0 + HOUR).toISOString(),
+      MEMBER_SPARK_INVOICE_CAP - 1,
     ]);
-    expect(sql.executes[1]?.text).toContain('DELETE FROM member_spark_invoice');
-    expect(sql.executes[1]?.params).toEqual([ACCOUNT, MEMBER_SPARK_INVOICE_CAP]);
   });
 
   it('lists open member invoices and maps driver values', async () => {
