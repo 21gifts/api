@@ -3,7 +3,9 @@
  *
  * Charset is LUD-16 local-part: lowercase `a-z0-9-_.` only. Hyphen,
  * underscore, and dot are allowed; `+` is not stored. `_` alone is
- * forbidden because LUD-16 uses it as the default identifier.
+ * forbidden because LUD-16 uses it as the default identifier. A trailing
+ * dot or two dots in a row are refused (aligned with the self-hosted LNURL
+ * server name rules). Existing accounts are not migrated.
  */
 
 import type { AuthStore } from '@/lib/auth/store';
@@ -20,8 +22,8 @@ const USERNAME = /^[a-z0-9][a-z0-9._-]{0,31}$/;
  *
  * @param raw - The handle as entered by the user.
  * @returns The normalised username, or `null` when it is empty, `_`,
- *   longer than {@link USERNAME_MAX_LENGTH}, or outside `a-z0-9-_.`
- *   with a leading letter or digit.
+ *   longer than {@link USERNAME_MAX_LENGTH}, outside `a-z0-9-_.` with a
+ *   leading letter or digit, ends with `.`, or contains `..`.
  */
 export function normalizeUsername(raw: string): string | null {
   const trimmed = raw.trim().toLowerCase();
@@ -29,6 +31,9 @@ export function normalizeUsername(raw: string): string | null {
     return null;
   }
   if (trimmed === '_') {
+    return null;
+  }
+  if (trimmed.endsWith('.') || trimmed.includes('..')) {
     return null;
   }
   if (!USERNAME.test(trimmed)) {

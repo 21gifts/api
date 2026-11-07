@@ -263,9 +263,10 @@ ALTER TABLE message ADD COLUMN IF NOT EXISTS place_lng double precision;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_label text;
 -- Optional 21.gifts account on a top-level shop note. Not the author.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS shop_account_id uuid REFERENCES account (id) ON DELETE SET NULL;
--- Frozen ask: currency + typed amount + gift-day snapshots. All null when there is no currency ask.
+-- Frozen ask: currency, numeric amount, and typed amount text. A BTC ask prices all four fiat columns from the spot. A fiat ask stores the typed currency at two decimals and prices the other three from that spot. All null when there is no currency ask.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_currency text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount numeric(20, 8);
+ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_amount_text text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_usd numeric(20, 2);
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_chf numeric(20, 2);
 ALTER TABLE message ADD COLUMN IF NOT EXISTS goal_fiat_eur numeric(20, 2);
@@ -391,6 +392,19 @@ WHERE m.id = src.id AND m.parent_id IS NOT NULL AND m.received_sats IS NULL;
 UPDATE message SET received_sats = 0 WHERE received_sats IS NULL;
 ALTER TABLE message ALTER COLUMN received_sats SET DEFAULT 0;
 ALTER TABLE message ALTER COLUMN received_sats SET NOT NULL;
+-- Free first post: set only on the note a member posted without the fee
+-- because it was their first top-level note. At most one per account, so two
+-- concurrent first posts cannot both be stored free.
+ALTER TABLE message ADD COLUMN IF NOT EXISTS first_post_free boolean;
+CREATE UNIQUE INDEX IF NOT EXISTS message_first_post_free_uidx
+  ON message (account_id)
+  WHERE first_post_free IS TRUE;
+
+-- Wallet reports classify every payment by its hash (findOkInvoiceByPaymentHash).
+CREATE INDEX IF NOT EXISTS message_invoice_ok_payment_hash_idx
+  ON message_invoice (payment_hash, created_at DESC, id DESC)
+  WHERE result = 'ok';
+ALTER TABLE message_invoice ADD COLUMN IF NOT EXISTS heart boolean NOT NULL DEFAULT false;
 -- Structured postal address on a pin; all five columns or none.
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_street text;
 ALTER TABLE message ADD COLUMN IF NOT EXISTS place_house_number text;

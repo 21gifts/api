@@ -462,9 +462,7 @@ describe('kind0', () => {
   });
 
   it('includes lud16 when set', () => {
-    expect(JSON.parse(buildKind0Content('Ada', 'ada@walletofsatoshi.com')).lud16).toBe(
-      'ada@walletofsatoshi.com',
-    );
+    expect(JSON.parse(buildKind0Content('Ada', 'ada@21.gifts')).lud16).toBe('ada@21.gifts');
   });
 
   it('uses a personal photo for the avatar and the banner', () => {

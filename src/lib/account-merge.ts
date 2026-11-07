@@ -1,3 +1,5 @@
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
+
 /** One reserved database transaction connection used by an account merge. */
 export interface MergeTx {
   /**
@@ -25,7 +27,10 @@ type MergeInput = { from: string; into: string; verify: 'from' | 'into' };
 
 type MergeResult =
   | { ok: true; messages: number }
-  | { ok: false; error: 'not_found' | 'same_account' | 'platform' | 'both_grants' };
+  | {
+      ok: false;
+      error: 'not_found' | 'same_account' | 'platform' | 'both_grants' | 'shop_payment_open';
+    };
 
 interface LockedAccountRow {
   id: string;
@@ -52,6 +57,29 @@ function quoteIdentifier(identifier: string): string {
 
 /**
  * Fold one account into another on one reserved transaction connection.
+ *
+ * Under both account row locks it refuses with `shop_payment_open`, before
+ * any write, while the merged account has a shop payment that is neither
+ * paid nor closed, or has an unexpired pending charge while the surviving
+ * account has no unexpired pending charge and has an `open` shop payment.
+ * Before its first write to a charge or payment row it locks every
+ * `pos_charge` row of both accounts, then the merged account's
+ * `shop_payment` rows, each in id order
+ * (`SELECT … ORDER BY id FOR UPDATE`). Charges come before payments, as
+ * every transaction that writes both takes them, and payments follow
+ * `lockPaymentsForProofs`. It then marks due pending charges on both
+ * accounts `expired`. When both still have an unexpired pending charge, it
+ * deletes the merged account's `pos_charge_invoice` rows and the charge.
+ * The catalog update moves the rest. A due pending charge does not delete a
+ * charge that can still be paid. A daily
+ * roster row of the merged account in a bucket where the surviving account
+ * is listed too is deleted; the catalog update moves its other roster rows.
+ * Before the passkey challenges and the catalog-listed rows move, it deletes
+ * the merged account's `recovery_share`, `pending_recovery`, and
+ * `previous_wallet` rows and its `recovery` passkey challenges: they belong
+ * to the merged account's wallets, which go with its row. It also deletes the
+ * merged account's `held_share_box` rows: each box is sealed to the merged
+ * account's id and words, so the surviving account could never open it.
  *
  * @param db - Transaction-capable database port.
  * @param input - Source, destination, and verify-edge choice.
@@ -93,6 +121,40 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       return { ok: false, error: 'both_grants' };
     }
 
+    // A shop payment's BOLT11 pays the merged account's wallet, which the merge
+    // does not carry over: wait until every such payment is paid or closed.
+    const shopPayments = await tx.query<{ id: string }>(
+      `SELECT id FROM shop_payment
+       WHERE account_id = $1 AND status <> 'paid' AND closed_at IS NULL
+       LIMIT 1`,
+      [input.from],
+    );
+    if (shopPayments.length > 0) {
+      return { ok: false, error: 'shop_payment_open' };
+    }
+    // A pending charge of the merged account would land next to the survivor's
+    // open shop payment (a stranger's amount on the sticker), which `POST /pos`
+    // never allows: refuse the same way and change nothing. When the survivor
+    // has its own unexpired pending charge, the merged account's charge is
+    // deleted below instead, and the merge goes on.
+    const openBesideCharge = await tx.query<{ id: string }>(
+      `SELECT p.id FROM shop_payment AS p
+       WHERE p.account_id = $2 AND p.status = 'open'
+         AND EXISTS (
+           SELECT 1 FROM pos_charge AS c
+           WHERE c.account_id = $1 AND c.status = 'pending' AND c.expires_at > now()
+         )
+         AND NOT EXISTS (
+           SELECT 1 FROM pos_charge AS s
+           WHERE s.account_id = $2 AND s.status = 'pending' AND s.expires_at > now()
+         )
+       LIMIT 1`,
+      accountParams,
+    );
+    if (openBesideCharge.length > 0) {
+      return { ok: false, error: 'shop_payment_open' };
+    }
+
     const counts = await tx.query<{ n: number }>(
       'SELECT count(*)::int AS n FROM message WHERE account_id = $1',
       [input.from],
@@ -128,6 +190,18 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
              AND dst.parent_id IS NOT NULL
              AND dst.parent_id = src.parent_id
              AND dst.content_fp = src.content_fp
+         )`,
+      accountParams,
+    );
+    await tx.query(
+      `UPDATE message AS src
+       SET first_post_free = NULL
+       WHERE src.account_id = $1
+         AND src.first_post_free IS TRUE
+         AND EXISTS (
+           SELECT 1 FROM message AS dst
+           WHERE dst.account_id = $2
+             AND dst.first_post_free IS TRUE
          )`,
       accountParams,
     );
@@ -260,6 +334,21 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
 
+    // The source's social recovery rows belong to its own wallets, which go
+    // with the source row, and a share's additional data is the source id:
+    // delete them before the moves below would hand them to the survivor. A
+    // held-share box is sealed to the source id and the source's words, so
+    // the survivor could never open it either.
+    for (const statement of [
+      'DELETE FROM recovery_share WHERE account_id = $1',
+      'DELETE FROM held_share_box WHERE account_id = $1',
+      'DELETE FROM pending_recovery WHERE account_id = $1',
+      'DELETE FROM previous_wallet WHERE account_id = $1',
+      "DELETE FROM passkey_challenge WHERE account_id = $1 AND type = 'recovery'",
+    ]) {
+      await tx.query(statement, [input.from]);
+    }
+
     for (const statement of [
       'UPDATE message_invoice SET payer_account_id = $2 WHERE payer_account_id = $1',
       'UPDATE message_invoice SET author_account_id = $2 WHERE author_account_id = $1',
@@ -358,10 +447,79 @@ export async function mergeAccounts(db: MergeDb, input: MergeInput): Promise<Mer
       accountParams,
     );
     await tx.query(
-      `DELETE FROM pos_charge
-       WHERE account_id = $1 AND status = 'pending' AND EXISTS (
-         SELECT 1 FROM pos_charge WHERE account_id = $2 AND status = 'pending'
-       )`,
+      `DELETE FROM daily_roster_entry AS src
+       USING daily_roster_entry AS dst
+       WHERE src.account_id = $1 AND dst.account_id = $2 AND dst.bucket = src.bucket`,
+      accountParams,
+    );
+    // Every transaction that writes both `pos_charge` and `shop_payment` rows
+    // takes the charge rows before the payment rows. The merge writes charge
+    // rows of both accounts: it marks due pending rows expired, it deletes the
+    // merged account's still-valid pending charge when the survivor still has
+    // one, and the catalog loop below moves the rest in one unordered
+    // `UPDATE`. Lock every charge of both accounts here first, in id order, so
+    // a concurrent `recordInvoice` waits in its foreign-key check (and fails
+    // once the charge is gone).
+    await tx.query(
+      `SELECT id FROM pos_charge
+       WHERE account_id = $1 OR account_id = $2
+       ORDER BY id
+       FOR UPDATE`,
+      accountParams,
+    );
+    // Lock the merged account's payments before any charge write. A submit
+    // answer holds one payment row while it waits for another
+    // (`lockPaymentsForProofs`). Take them in id order, the order that answer
+    // takes them in, so neither waits for the other in opposite order. The
+    // charge delete's `ON DELETE SET NULL` then writes a payment row already
+    // held.
+    await tx.query(
+      `SELECT id FROM shop_payment
+       WHERE account_id = $1
+       ORDER BY id
+       FOR UPDATE`,
+      [input.from],
+    );
+    // A due pending row is not a live invoice. Mark those on both accounts
+    // before the collision read, so a stale pending charge cannot delete a
+    // charge that can still be paid. The rows are already held.
+    await tx.query(
+      `UPDATE pos_charge
+       SET status = 'expired'
+       WHERE account_id IN ($1, $2) AND status = 'pending' AND expires_at <= now()`,
+      accountParams,
+    );
+    // The merged account's still-valid pending charge goes when the survivor
+    // still has one. Its row is already held; drop its hashes
+    // (`pos_charge_invoice.charge_id` has no cascade) and the charge, both by
+    // these ids.
+    const doomed = await tx.query<{ id: string }>(
+      `SELECT id FROM pos_charge
+       WHERE account_id = $1 AND status = 'pending' AND expires_at > now() AND EXISTS (
+         SELECT 1 FROM pos_charge
+         WHERE account_id = $2 AND status = 'pending' AND expires_at > now()
+       )
+       ORDER BY id`,
+      accountParams,
+    );
+    if (doomed.length > 0) {
+      const ids = postgresTextArrayLiteral(doomed.map((row) => row.id));
+      await tx.query('DELETE FROM pos_charge_invoice WHERE charge_id = ANY($1::uuid[])', [ids]);
+      await tx.query('DELETE FROM pos_charge WHERE id = ANY($1::uuid[])', [ids]);
+    }
+    await tx.query(
+      `DELETE FROM wallet_payment AS src
+       WHERE src.account_id = $1
+         AND EXISTS (
+           SELECT 1 FROM wallet_payment AS dst
+           WHERE dst.account_id = $2 AND dst.payment_id = src.payment_id
+         )`,
+      accountParams,
+    );
+    // A payment between the two accounts would point at its own account after the merge.
+    await tx.query(
+      `UPDATE wallet_payment SET counterparty_account_id = NULL
+       WHERE account_id IN ($1, $2) AND counterparty_account_id IN ($1, $2)`,
       accountParams,
     );
     await tx.query('DELETE FROM auth_session WHERE account_id = $1', [input.from]);
@@ -437,6 +595,7 @@ SET
     ELSE LEAST(survivor.wallet_backup_seen_at, source.wallet_backup_seen_at)
   END,
   forum_laws_dismissed = survivor.forum_laws_dismissed OR source.forum_laws_dismissed,
+  wallet_intro_seen = survivor.wallet_intro_seen OR source.wallet_intro_seen,
   locale = COALESCE(survivor.locale, source.locale),
   fiat = COALESCE(survivor.fiat, source.fiat)
 FROM account AS source

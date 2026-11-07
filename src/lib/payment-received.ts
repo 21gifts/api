@@ -1,0 +1,247 @@
+/**
+ * Web Push for a payment a member received on their lightning address.
+ *
+ * The self-hosted LNURL server sends one `spark_payment_received` webhook per
+ * settled invoice, signed with HMAC-SHA256 of the raw body in
+ * `X-Breez-Signature`. Every field used here comes from that signed body; a
+ * sender is named only from a signed NIP-57 zap request that names the
+ * receiver and this amount. One push per payment hash
+ * (`PushStore.enqueuePaymentReceived`), also for a zap on a forum note, whose
+ * zap notification is a separate notification about the note.
+ */
+
+import { createHmac, timingSafeEqual } from 'node:crypto';
+import { verifyEvent } from 'nostr-tools/pure';
+import type { AuthStore } from '@/lib/auth/store';
+import { parseNotificationLevel, wantsNotification } from '@/lib/notification';
+import type { NotificationStore } from '@/lib/notification-store';
+import { normalizeHex32 } from '@/lib/proof';
+import { buildPaymentReceivedPushPayload } from '@/lib/push';
+import type { PushStore } from '@/lib/push-store';
+
+/** One settled payment from a signed LNURL server webhook. */
+export interface PaymentReceived {
+  /** BOLT11 payment hash, lowercase hex. */
+  paymentHash: string;
+  /** Receiver's Spark identity pubkey, as the LNURL server stores it. */
+  userPubkey: string;
+  /** Received amount in whole sats. */
+  amountSats: number;
+  /** Raw kind:9734 zap request bound to the invoice, or `null`. */
+  zapRequest: string | null;
+}
+
+/** Collaborators for {@link notifyPaymentReceived}. */
+export interface PaymentReceivedDeps {
+  /** Accounts, verified wallets, and custodial Nostr keys. */
+  auth: Pick<
+    AuthStore,
+    'getAccountByVerifiedSparkPubkey' | 'getAccountByPubkey' | 'getNostrPublicKey'
+  >;
+  /** Outbox and the once-per-payment claim. */
+  pushStore: Pick<PushStore, 'enqueuePaymentReceived'>;
+  /** Whether the account has a subscription the push worker would send to. */
+  hasLiveDevice: (accountId: string) => Promise<boolean>;
+  /** In-app unread for the badge. */
+  notifications: Pick<NotificationStore, 'unreadCount'>;
+  /** Listed inbox unread for the badge. */
+  inboxUnreadCount: (accountId: string) => Promise<number>;
+  /** Clock in epoch milliseconds. */
+  now: () => number;
+}
+
+/** What {@link notifyPaymentReceived} did with one payment. */
+export type PaymentReceivedOutcome =
+  'queued' | 'duplicate' | 'unknown' | 'self' | 'off' | 'no_device';
+
+/**
+ * Read the webhook secret shared with the LNURL server.
+ *
+ * @param env - Process environment slice.
+ * @returns The trimmed `LNURL_WEBHOOK_SECRET`, or `null` when unset or blank.
+ */
+export function resolvePaymentWebhookSecret(
+  env: Record<string, string | undefined>,
+): string | null {
+  const secret = env['LNURL_WEBHOOK_SECRET']?.trim() ?? '';
+  return secret === '' ? null : secret;
+}
+
+/**
+ * Check `X-Breez-Signature`: lowercase or uppercase hex of
+ * HMAC-SHA256(secret, raw body), compared in constant time.
+ *
+ * @param secret - Shared webhook secret.
+ * @param body - Raw request body.
+ * @param signature - Header value, or `null` when absent.
+ * @returns `true` only for a 64-hex signature that matches.
+ */
+export function breezSignatureValid(
+  secret: string,
+  body: string,
+  signature: string | null,
+): boolean {
+  if (signature === null || !/^[0-9a-fA-F]{64}$/.test(signature)) {
+    return false;
+  }
+  const expected = createHmac('sha256', secret).update(body, 'utf8').digest();
+  return timingSafeEqual(expected, Buffer.from(signature, 'hex'));
+}
+
+/**
+ * Parse a `spark_payment_received` webhook body.
+ *
+ * @param body - Raw JSON body.
+ * @returns The payment, or `null` for another template, malformed JSON, a
+ *   payment hash that is not 32-byte hex, a blank pubkey, or an amount that is
+ *   not a positive safe integer.
+ */
+export function parsePaymentReceived(body: string): PaymentReceived | null {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(body);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    return null;
+  }
+  const envelope = parsed as { template?: unknown; data?: unknown };
+  if (envelope.template !== 'spark_payment_received') {
+    return null;
+  }
+  if (envelope.data === null || typeof envelope.data !== 'object') {
+    return null;
+  }
+  const data = envelope.data as Record<string, unknown>;
+  const rawHash = data['payment_hash'];
+  const paymentHash = typeof rawHash === 'string' ? normalizeHex32(rawHash) : null;
+  const userPubkey = data['user_pubkey'];
+  const amountSats = data['amount_sat'];
+  const zapRequest = data['nostr_zap_request'];
+  if (
+    paymentHash === null ||
+    typeof userPubkey !== 'string' ||
+    userPubkey === '' ||
+    typeof amountSats !== 'number' ||
+    !Number.isSafeInteger(amountSats) ||
+    amountSats <= 0
+  ) {
+    return null;
+  }
+  return {
+    paymentHash,
+    userPubkey,
+    amountSats,
+    zapRequest: typeof zapRequest === 'string' ? zapRequest : null,
+  };
+}
+
+/** Signer of a zap request that is signed and names the receiver and this amount. */
+function zapRequestSigner(raw: string, receiverPubkey: string, amountSats: number): string | null {
+  let event: unknown;
+  try {
+    event = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (event === null || typeof event !== 'object') {
+    return null;
+  }
+  const shape = event as { kind?: unknown; tags?: unknown; pubkey?: unknown };
+  if (shape.kind !== 9734 || !Array.isArray(shape.tags) || typeof shape.pubkey !== 'string') {
+    return null;
+  }
+  if (!verifyEvent(event as Parameters<typeof verifyEvent>[0])) {
+    return null;
+  }
+  const tags = (shape.tags as unknown[]).filter(
+    (tag): tag is string[] => Array.isArray(tag) && typeof tag[1] === 'string',
+  );
+  if (!tags.some((tag) => tag[0] === 'p' && tag[1]?.toLowerCase() === receiverPubkey)) {
+    return null;
+  }
+  const amounts = tags.filter((tag) => tag[0] === 'amount').map((tag) => tag[1]);
+  if (amounts.length === 0 || amounts.some((amount) => amount !== String(amountSats * 1000))) {
+    return null;
+  }
+  return shape.pubkey.toLowerCase();
+}
+
+/**
+ * Enqueue one "You received N sats" Web Push to the receiver of a payment.
+ *
+ * The receiver is the account whose verified wallet is `userPubkey`. A zap
+ * request counts only when it is signed, names the receiver's Nostr pubkey in
+ * a `p` tag, and has at least one `amount` tag, every one equal to the
+ * received amount in millisats. Nothing is enqueued when a counted zap
+ * request comes from the receiver, when the receiver's notification level is
+ * `none`, or when the receiver has no push subscription whose login session
+ * is still live (nothing is claimed, so a later retry can still push). A zap on a forum
+ * note is pushed too: the zap notification is about the note and follows its
+ * own rules. The push names a sender only when the counted zap request's
+ * signer is a 21.gifts account with a name.
+ *
+ * @param deps - Stores and clock.
+ * @param payment - Parsed signed webhook payment.
+ * @returns What was done; `duplicate` when this payment hash was already pushed.
+ * @throws If a store read or the enqueue rejects.
+ */
+export async function notifyPaymentReceived(
+  deps: PaymentReceivedDeps,
+  payment: PaymentReceived,
+): Promise<PaymentReceivedOutcome> {
+  const account = await deps.auth.getAccountByVerifiedSparkPubkey(payment.userPubkey);
+  if (account === undefined) {
+    return 'unknown';
+  }
+  let senderName: string | null = null;
+  const receiverPubkey = (await deps.auth.getNostrPublicKey(account.id))?.toLowerCase();
+  const signer =
+    payment.zapRequest === null || receiverPubkey === undefined
+      ? null
+      : zapRequestSigner(payment.zapRequest, receiverPubkey, payment.amountSats);
+  if (signer !== null) {
+    const sender = await deps.auth.getAccountByPubkey(signer);
+    if (sender?.id === account.id) {
+      return 'self';
+    }
+    const name = sender?.name?.trim() ?? '';
+    senderName = name === '' ? null : name;
+  }
+  if (
+    !wantsNotification({
+      level: parseNotificationLevel(account.notificationLevel),
+      isActive: true,
+      mentionedAccountId: account.id,
+      recipientAccountId: account.id,
+    })
+  ) {
+    return 'off';
+  }
+  if (!(await deps.hasLiveDevice(account.id))) {
+    return 'no_device';
+  }
+  const unreadCount =
+    (await deps.notifications.unreadCount(account.id)) + (await deps.inboxUnreadCount(account.id));
+  const payload = buildPaymentReceivedPushPayload({
+    paymentHash: payment.paymentHash,
+    amountSats: payment.amountSats,
+    name: senderName,
+  });
+  const queued = await deps.pushStore.enqueuePaymentReceived(payment.paymentHash, {
+    id: crypto.randomUUID(),
+    accountId: account.id,
+    type: 'zap',
+    messageId: null,
+    payload: JSON.stringify({ ...payload, unreadCount }),
+    status: 'pending',
+    attempts: 0,
+    claimedUntil: null,
+    finishedAt: null,
+    createdAt: new Date(deps.now()),
+    deliveredEndpoints: [],
+    skipEndpoints: [],
+  });
+  return queued ? 'queued' : 'duplicate';
+}

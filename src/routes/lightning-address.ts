@@ -21,7 +21,7 @@ export interface LightningAddressRouteDeps {
   fetchImpl: FetchFn;
 }
 
-/** Error body shared with `POST /me/lightning-address` for bad LUD-16 shape. */
+/** Error body for a bad LUD-16 shape. */
 const INVALID_ADDRESS_ERROR = 'Not a valid Lightning Address (expected name@domain)';
 
 /**
