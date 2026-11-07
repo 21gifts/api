@@ -23,7 +23,8 @@ CREATE INDEX IF NOT EXISTS spark_invoice_open_created_idx
 -- pushes "You received N sats" once for an open row the Spark coordinator
 -- reports finalized. Each account keeps at most 20 open rows: the one just
 -- stored plus its 19 newest other open ones; storing one more deletes the
--- oldest of the others.
+-- oldest of the others. Concurrent stores for one account can briefly leave
+-- more open rows; the account's next store trims back.
 CREATE TABLE IF NOT EXISTS member_spark_invoice (
   invoice text PRIMARY KEY,
   kind text NOT NULL CHECK (kind IN ('pay')),

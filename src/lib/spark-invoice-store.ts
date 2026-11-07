@@ -485,9 +485,9 @@ RETURNING payment_hash`,
    * One statement, so the insert and the trim commit together: a
    * data-modifying CTE inserts the invoice (`ON CONFLICT (invoice) DO NOTHING`),
    * and the outer `DELETE` removes that account's other open member invoices
-   * outside the newest {@link MEMBER_SPARK_INVOICE_CAP} − 1. Two concurrent
-   * calls for one account can each miss the other's row, leaving one extra
-   * open row until that account's next insert.
+   * outside the newest {@link MEMBER_SPARK_INVOICE_CAP} − 1. Concurrent calls
+   * for one account can each miss the others' rows and briefly leave more
+   * open rows; that account's next call trims back.
    *
    * @param row - New member invoice.
    * @returns Resolves when stored.
