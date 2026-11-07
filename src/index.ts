@@ -38,7 +38,15 @@ import { ExternalIngestLimiter } from './lib/nostr/external';
 import { resolveVapidConfig } from './lib/push-config';
 import { UnconfiguredPushSender, WebPushSender, type PushSender } from './lib/push-sender';
 import { InMemoryPushStore } from './lib/push-store';
-import { PUSH_WORKER_INTERVAL_MS, startPushWorker } from './lib/push-worker';
+import {
+  accountHasLiveSubscription,
+  PUSH_WORKER_INTERVAL_MS,
+  startPushWorker,
+} from './lib/push-worker';
+import { InMemoryNotificationStore } from './lib/notification-store';
+import { InMemoryConversationStore } from './lib/conversation-store';
+import { inboxUnreadCountFor } from './lib/conversation-push';
+import { notifyPaymentReceived } from './lib/payment-received';
 import { resolveMediaDir } from './lib/video';
 import {
   resolveFreePaymentsConfig,
@@ -189,14 +197,15 @@ if (import.meta.main) {
     diagnosticStore,
     walletStore,
     memberEventStore,
-    conversationStore,
-    notificationStore,
     trustStore,
     fundingStore,
     rosterStore,
     debugDbStore,
   } = boot;
   const pushStore = boot.pushStore ?? new InMemoryPushStore();
+  // One instance each, shared by createApp and the Spark invoice worker's receive push.
+  const conversationStore = boot.conversationStore ?? new InMemoryConversationStore();
+  const notificationStore = boot.notificationStore ?? new InMemoryNotificationStore();
   const vapid = resolveVapidConfig(process.env);
   let sender: PushSender = new UnconfiguredPushSender();
   let vapidPublicKey: string | undefined;
@@ -288,8 +297,8 @@ if (import.meta.main) {
     ...(diagnosticStore === undefined ? {} : { diagnosticStore }),
     ...(walletStore === undefined ? {} : { walletStore }),
     ...(memberEventStore === undefined ? {} : { memberEventStore }),
-    ...(conversationStore === undefined ? {} : { conversationStore }),
-    ...(notificationStore === undefined ? {} : { notificationStore }),
+    conversationStore,
+    notificationStore,
     ...(trustStore === undefined ? {} : { trustStore }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     rosterStore,
@@ -343,8 +352,8 @@ if (import.meta.main) {
     env: process.env,
     pushStore,
     postLimiter,
-    ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
-    ...(notificationStore === undefined ? {} : { notificationStore }),
+    ...(boot.conversationStore === undefined ? {} : { conversations: boot.conversationStore }),
+    ...(boot.notificationStore === undefined ? {} : { notificationStore: boot.notificationStore }),
     ...(spendPing === undefined ? {} : { spendPing }),
     ...(fundingStore === undefined ? {} : { fundingStore }),
     fiatRates,
@@ -371,6 +380,19 @@ if (import.meta.main) {
       publisher: publisher ?? new WebsocketNostrPublisher(),
       ingest: zapReceiptIngest(ingestDeps),
       claims: forumMessages,
+      notifyPayment: (payment) =>
+        notifyPaymentReceived(
+          {
+            auth: authStore,
+            pushStore,
+            hasLiveDevice: (accountId) =>
+              accountHasLiveSubscription(pushStore, authStore, Date.now(), accountId),
+            notifications: notificationStore,
+            inboxUnreadCount: inboxUnreadCountFor(conversationStore, authStore),
+            now: Date.now,
+          },
+          payment,
+        ),
       now: Date.now,
     });
   }

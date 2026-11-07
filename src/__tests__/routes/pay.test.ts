@@ -10,6 +10,8 @@ import { ShopPayments, type ShopCreation } from '@/lib/shop-payment';
 import { InMemoryFxSpotStore } from '@/lib/fx-spot-store';
 import { InMemoryShopPaymentStore, type ShopPayment } from '@/lib/shop-payment-store';
 import { encodeSparkInvoice, uuidV7 } from '@/lib/spark-invoice';
+import { InMemorySparkInvoiceStore, type SparkInvoiceStore } from '@/lib/spark-invoice-store';
+import { SPARK_INVOICE_WINDOW_MS } from '@/lib/spark-worker';
 import {
   LNURL_SERVER,
   WALLET_PUBKEY,
@@ -786,7 +788,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
 
   async function tillApp(opts: {
     posStore: PosStore;
-    freePayments?: boolean;
+    sparkInvoices?: SparkInvoiceStore;
     randomBytes?: (length: number) => Uint8Array;
     commentAllowed?: number;
   }): Promise<Hono> {
@@ -806,7 +808,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
         posStore: opts.posStore,
         now: () => NOW_MS,
         lnurlServer: LNURL_SERVER,
-        ...(opts.freePayments === undefined ? {} : { freePayments: opts.freePayments }),
+        ...(opts.sparkInvoices === undefined ? {} : { sparkInvoices: opts.sparkInvoices }),
         ...(opts.randomBytes === undefined ? {} : { randomBytes: opts.randomBytes }),
       }),
     );
@@ -838,7 +840,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
     let fill = 0;
     const app = await tillApp({
       posStore,
-      freePayments: true,
+      sparkInvoices: new InMemorySparkInvoiceStore(),
       randomBytes: (length) => new Uint8Array(length).fill((fill += 1)),
     });
     const expected = encodeSparkInvoice({
@@ -885,7 +887,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
         posStore,
         now: () => clock,
         lnurlServer: LNURL_SERVER,
-        freePayments: true,
+        sparkInvoices: new InMemorySparkInvoiceStore(),
       }),
     );
     const body = (await (await mint(app)).json()) as { sparkInvoice: string | null };
@@ -904,7 +906,13 @@ describe('till payments on POST /pay/:username/invoice', () => {
 
   it('returns a Spark invoice for the posted amount without an open charge and records nothing', async () => {
     const posStore = new InMemoryPosStore();
-    const res = await mint(await tillApp({ posStore, freePayments: true, randomBytes: ONES }));
+    const res = await mint(
+      await tillApp({
+        posStore,
+        sparkInvoices: new InMemorySparkInvoiceStore(),
+        randomBytes: ONES,
+      }),
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({
       pr: PR,
@@ -913,6 +921,45 @@ describe('till payments on POST /pay/:username/invoice', () => {
     });
     expect(await posStore.listWatched(0)).toEqual([]);
     expect(events()).toEqual(['pay.invoice']);
+  });
+
+  it('stores the member Spark invoice it returns for the worker to watch', async () => {
+    const sparkInvoices = new InMemorySparkInvoiceStore();
+    const res = await mint(
+      await tillApp({ posStore: new InMemoryPosStore(), sparkInvoices, randomBytes: ONES }),
+    );
+    expect(await res.json()).toMatchObject({ sparkInvoice: memberInvoice() });
+    expect(await sparkInvoices.listOpenMember(new Date(NOW_MS))).toEqual([
+      {
+        invoice: memberInvoice(),
+        kind: 'pay',
+        accountId: ADA_ID,
+        receiverPubkey: WALLET_PUBKEY,
+        amountSats: PR_SATS,
+        createdAt: new Date(NOW_MS),
+        expiresAt: new Date(NOW_MS + SPARK_INVOICE_WINDOW_MS),
+        status: 'open',
+      },
+    ]);
+  });
+
+  it('still returns the member Spark invoice when storing it fails', async () => {
+    const sparkInvoices = new InMemorySparkInvoiceStore();
+    vi.spyOn(sparkInvoices, 'issueMember').mockRejectedValue(new Error('down'));
+    const res = await mint(
+      await tillApp({ posStore: new InMemoryPosStore(), sparkInvoices, randomBytes: ONES }),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ sparkInvoice: memberInvoice() });
+    expect(events()).toEqual(['pay.spark_invoice.store_failed', 'pay.invoice']);
+  });
+
+  it('stores no member Spark invoice while a charge is open', async () => {
+    const posStore = new InMemoryPosStore();
+    await posStore.create(pendingCharge());
+    const sparkInvoices = new InMemorySparkInvoiceStore();
+    await mint(await tillApp({ posStore, sparkInvoices, randomBytes: ONES }));
+    expect(await sparkInvoices.listOpenMember(new Date(NOW_MS))).toEqual([]);
   });
 
   it('returns no Spark invoice without an open charge when free in-app payments are off', async () => {
@@ -924,7 +971,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
   it('puts the trimmed comment into the memo without an open charge', async () => {
     const app = await tillApp({
       posStore: new InMemoryPosStore(),
-      freePayments: true,
+      sparkInvoices: new InMemorySparkInvoiceStore(),
       randomBytes: ONES,
       commentAllowed: 100,
     });
@@ -937,7 +984,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
   it('cuts the memo to commentAllowed characters', async () => {
     const app = await tillApp({
       posStore: new InMemoryPosStore(),
-      freePayments: true,
+      sparkInvoices: new InMemorySparkInvoiceStore(),
       randomBytes: ONES,
       commentAllowed: 3,
     });
@@ -950,7 +997,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
   it('cuts the memo to 120 UTF-8 bytes without splitting a character', async () => {
     const app = await tillApp({
       posStore: new InMemoryPosStore(),
-      freePayments: true,
+      sparkInvoices: new InMemorySparkInvoiceStore(),
       randomBytes: ONES,
       commentAllowed: 500,
     });
@@ -972,7 +1019,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
     for (const { commentAllowed, comment } of cases) {
       const app = await tillApp({
         posStore: new InMemoryPosStore(),
-        freePayments: true,
+        sparkInvoices: new InMemorySparkInvoiceStore(),
         randomBytes: ONES,
         ...(commentAllowed === undefined ? {} : { commentAllowed }),
       });
@@ -991,7 +1038,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
     await posStore.create(pendingCharge());
     const app = await tillApp({
       posStore,
-      freePayments: true,
+      sparkInvoices: new InMemorySparkInvoiceStore(),
       randomBytes: ONES,
       commentAllowed: 100,
     });
@@ -1023,7 +1070,7 @@ describe('till payments on POST /pay/:username/invoice', () => {
         posStore: new InMemoryPosStore(),
         now: () => NOW_MS,
         lnurlServer: LNURL_SERVER,
-        freePayments: true,
+        sparkInvoices: new InMemorySparkInvoiceStore(),
       }),
     );
     const res = await mint(app);
@@ -1033,7 +1080,12 @@ describe('till payments on POST /pay/:username/invoice', () => {
 
   it('draws the member Spark invoice id from crypto randomness by default', async () => {
     const body = (await (
-      await mint(await tillApp({ posStore: new InMemoryPosStore(), freePayments: true }))
+      await mint(
+        await tillApp({
+          posStore: new InMemoryPosStore(),
+          sparkInvoices: new InMemorySparkInvoiceStore(),
+        }),
+      )
     ).json()) as { sparkInvoice: string };
     expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
   });
@@ -1041,7 +1093,9 @@ describe('till payments on POST /pay/:username/invoice', () => {
   it('draws the Spark invoice id from crypto randomness by default', async () => {
     const posStore = new InMemoryPosStore();
     await posStore.create(pendingCharge());
-    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+    const body = (await (
+      await mint(await tillApp({ posStore, sparkInvoices: new InMemorySparkInvoiceStore() }))
+    ).json()) as {
       sparkInvoice: string;
     };
     expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
@@ -1060,7 +1114,9 @@ describe('till payments on POST /pay/:username/invoice', () => {
     await posStore.create(pendingCharge());
     posStore.paymentHashClaims.claimShop(PAYMENT_HASH, 'sp-other', null);
     const issue = vi.spyOn(posStore, 'issueSparkInvoice');
-    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    const res = await mint(
+      await tillApp({ posStore, sparkInvoices: new InMemorySparkInvoiceStore() }),
+    );
     expect(res.status).toBe(502);
     expect(await res.json()).toEqual({ error: 'Lightning Address could not be resolved' });
     expect(alertFields()).toEqual([
@@ -1104,7 +1160,9 @@ describe('till payments on POST /pay/:username/invoice', () => {
     posStore.recordInvoice = async () => {
       throw new Error('db');
     };
-    const body = (await (await mint(await tillApp({ posStore, freePayments: true }))).json()) as {
+    const body = (await (
+      await mint(await tillApp({ posStore, sparkInvoices: new InMemorySparkInvoiceStore() }))
+    ).json()) as {
       sparkInvoice: string | null;
     };
     expect(body.sparkInvoice).not.toBeNull();
@@ -1117,7 +1175,9 @@ describe('till payments on POST /pay/:username/invoice', () => {
     posStore.issueSparkInvoice = async () => {
       throw new Error('db');
     };
-    const res = await mint(await tillApp({ posStore, freePayments: true }));
+    const res = await mint(
+      await tillApp({ posStore, sparkInvoices: new InMemorySparkInvoiceStore() }),
+    );
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ pr: PR, amountSats: PR_SATS, sparkInvoice: null });
     expect(events()).toContain('pos.spark_invoice.issue_failed');

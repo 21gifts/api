@@ -111,9 +111,9 @@ api/
 │   │   ├── receiving-address.ts # receivingAddress (verified wallet only) + accountByReceivingAddress + lnurlServerFetch (wallet host stays internal)
 │   │   ├── protobuf.ts       # Minimal protobuf wire codec (varint, length-delimited)
 │   │   ├── spark-invoice.ts  # encodeSparkInvoice (bech32m `spark1…`), uuidV7, issueSparkInvoice
-│   │   ├── spark-invoice-store.ts # SparkInvoiceStore port, InMemory/Postgres adapters, SPARK_INVOICE_SCHEMA_SQL
+│   │   ├── spark-invoice-store.ts # SparkInvoiceStore port (zap and member Spark invoices), InMemory/Postgres adapters, SPARK_INVOICE_SCHEMA_SQL
 │   │   ├── spark-operator.ts # gRPC-web query_spark_invoices client (request encode, response parse)
-│   │   ├── spark-worker.ts   # Spark invoice worker: FINALIZED → zap receipt → ingest + publish
+│   │   ├── spark-worker.ts   # Spark invoice worker: FINALIZED → zap receipt → ingest + publish; FINALIZED member invoice → receive push
 │   │   ├── name.ts           # Display-name trim/validate (C0/DEL)
 │   │   ├── username.ts       # LUD-16 / NIP-05 username trim/validate (no trailing/double dot) + boot backfill
 │   │   ├── location.ts       # Profile location trim/validate (C0/DEL; empty clears)

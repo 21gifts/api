@@ -4,6 +4,10 @@
  * One row per zap invoice payment hash. The Spark invoice worker reads the
  * open rows, and marks a row settled once the operators report the transfer
  * finalized and the zap receipt was ingested.
+ *
+ * Member Spark invoices from `POST /pay/:username/invoice` live in
+ * `member_spark_invoice`: they have no zap invoice, so the worker turns a
+ * finalized one into a payment push instead of a receipt.
  */
 
 import type { SqlClient } from '@/lib/auth/sql';
@@ -34,6 +38,32 @@ export interface SparkInvoiceRow {
 
 /** Fields the caller sets when issuing; the store sets status `open` and nulls. */
 export type SparkInvoiceIssue = Omit<SparkInvoiceRow, 'status' | 'transferId' | 'receiptEventId'>;
+
+/** Open member Spark invoices kept per receiving account; older ones are dropped. */
+export const MEMBER_SPARK_INVOICE_CAP = 20;
+
+/** One member Spark invoice handed out by `POST /pay/:username/invoice`. */
+export interface MemberSparkInvoiceRow {
+  /** The `spark1…` invoice string; primary key. */
+  invoice: string;
+  /** What the invoice pays; `pay` for a member payment. */
+  kind: 'pay';
+  /** Receiving account id. */
+  accountId: string;
+  /** Receiver's verified wallet identity public key (66 lower-case hex). */
+  receiverPubkey: string;
+  /** Amount in whole sats. */
+  amountSats: number;
+  /** When the invoice was handed out. */
+  createdAt: Date;
+  /** End of the watch window; the worker never pushes for the row after it. */
+  expiresAt: Date;
+  /** `open` until the worker handled the finalized transfer, then `notified`. */
+  status: 'open' | 'notified';
+}
+
+/** Fields the caller sets when storing a member invoice; the store sets status `open`. */
+export type MemberSparkInvoiceIssue = Omit<MemberSparkInvoiceRow, 'status'>;
 
 /** Persistence port for issued Spark invoices. */
 export interface SparkInvoiceStore {
@@ -67,6 +97,35 @@ export interface SparkInvoiceStore {
     transferId: string | null,
     receiptEventId: string,
   ): Promise<boolean>;
+  /**
+   * Store a member Spark invoice, then drop that account's open member
+   * invoices beyond the newest {@link MEMBER_SPARK_INVOICE_CAP}.
+   *
+   * @param row - New member invoice.
+   * @returns Resolves when stored.
+   */
+  issueMember(row: MemberSparkInvoiceIssue): Promise<void>;
+  /**
+   * Open member invoices that expire after `now`, oldest first.
+   *
+   * @param now - Current time.
+   * @returns Open rows, oldest first.
+   */
+  listOpenMember(now: Date): Promise<MemberSparkInvoiceRow[]>;
+  /**
+   * Mark an open member invoice notified.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `open`.
+   */
+  markMemberNotified(invoice: string): Promise<boolean>;
+  /**
+   * Delete member invoices that expired at or before `now`.
+   *
+   * @param now - Current time.
+   * @returns How many rows were deleted.
+   */
+  pruneMember(now: Date): Promise<number>;
 }
 
 /** Idempotent DDL for `spark_invoice` (matches `docs/schema/spark_invoice.sql`). */
@@ -85,6 +144,20 @@ export const SPARK_INVOICE_SCHEMA_SQL: readonly string[] = [
 )`,
   `CREATE INDEX IF NOT EXISTS spark_invoice_open_created_idx
   ON spark_invoice (created_at) WHERE status = 'open'`,
+  `CREATE TABLE IF NOT EXISTS member_spark_invoice (
+  invoice text PRIMARY KEY,
+  kind text NOT NULL CHECK (kind IN ('pay')),
+  account_id uuid NOT NULL,
+  receiver_pubkey text NOT NULL,
+  amount_sats bigint NOT NULL CHECK (amount_sats > 0),
+  created_at timestamptz NOT NULL,
+  expires_at timestamptz NOT NULL,
+  status text NOT NULL CHECK (status IN ('open', 'notified'))
+)`,
+  `CREATE INDEX IF NOT EXISTS member_spark_invoice_account_open_idx
+  ON member_spark_invoice (account_id, created_at) WHERE status = 'open'`,
+  `CREATE INDEX IF NOT EXISTS member_spark_invoice_expires_idx
+  ON member_spark_invoice (expires_at)`,
 ];
 
 /**
@@ -105,9 +178,24 @@ function copyRow(row: SparkInvoiceRow): SparkInvoiceRow {
   return { ...row, createdAt: new Date(row.createdAt.getTime()) };
 }
 
+/** Caller-owned copy of a member row. */
+function copyMemberRow(row: MemberSparkInvoiceRow): MemberSparkInvoiceRow {
+  return {
+    ...row,
+    createdAt: new Date(row.createdAt.getTime()),
+    expiresAt: new Date(row.expiresAt.getTime()),
+  };
+}
+
+/** Oldest first, ties by invoice string. */
+function byCreatedAt(a: MemberSparkInvoiceRow, b: MemberSparkInvoiceRow): number {
+  return a.createdAt.getTime() - b.createdAt.getTime() || a.invoice.localeCompare(b.invoice);
+}
+
 /** Process-local {@link SparkInvoiceStore}; starts empty. */
 export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
   readonly #rows = new Map<string, SparkInvoiceRow>();
+  readonly #members = new Map<string, MemberSparkInvoiceRow>();
 
   /**
    * Store a new invoice, or return the existing one for that payment hash and
@@ -164,6 +252,71 @@ export class InMemorySparkInvoiceStore implements SparkInvoiceStore {
     this.#rows.set(paymentHash, { ...row, status: 'settled', transferId, receiptEventId });
     return true;
   }
+
+  /**
+   * Store a member invoice (an existing invoice string is kept), then drop
+   * that account's open member invoices beyond the newest
+   * {@link MEMBER_SPARK_INVOICE_CAP}.
+   *
+   * @param row - New member invoice.
+   * @returns Resolves when stored.
+   */
+  async issueMember(row: MemberSparkInvoiceIssue): Promise<void> {
+    if (!this.#members.has(row.invoice)) {
+      this.#members.set(row.invoice, copyMemberRow({ ...row, status: 'open' }));
+    }
+    const open = [...this.#members.values()]
+      .filter((member) => member.accountId === row.accountId && member.status === 'open')
+      .sort(byCreatedAt);
+    for (const dropped of open.slice(0, Math.max(0, open.length - MEMBER_SPARK_INVOICE_CAP))) {
+      this.#members.delete(dropped.invoice);
+    }
+  }
+
+  /**
+   * Open member invoices that expire after `now`, oldest first.
+   *
+   * @param now - Current time.
+   * @returns Copies of the matching rows.
+   */
+  async listOpenMember(now: Date): Promise<MemberSparkInvoiceRow[]> {
+    return [...this.#members.values()]
+      .filter((row) => row.status === 'open' && row.expiresAt.getTime() > now.getTime())
+      .sort(byCreatedAt)
+      .map(copyMemberRow);
+  }
+
+  /**
+   * Mark an open member invoice notified.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `open`.
+   */
+  async markMemberNotified(invoice: string): Promise<boolean> {
+    const row = this.#members.get(invoice);
+    if (row === undefined || row.status !== 'open') {
+      return false;
+    }
+    this.#members.set(invoice, { ...row, status: 'notified' });
+    return true;
+  }
+
+  /**
+   * Delete member invoices that expired at or before `now`.
+   *
+   * @param now - Current time.
+   * @returns How many rows were deleted.
+   */
+  async pruneMember(now: Date): Promise<number> {
+    let deleted = 0;
+    for (const row of [...this.#members.values()]) {
+      if (row.expiresAt.getTime() <= now.getTime()) {
+        this.#members.delete(row.invoice);
+        deleted += 1;
+      }
+    }
+    return deleted;
+  }
 }
 
 /** Raw `spark_invoice` row as returned by the driver. */
@@ -196,7 +349,38 @@ function mapRow(row: SparkInvoiceSqlRow): SparkInvoiceRow {
   };
 }
 
-/** {@link SparkInvoiceStore} against the `spark_invoice` table. */
+/** Raw `member_spark_invoice` row as returned by the driver. */
+interface MemberSparkInvoiceSqlRow {
+  invoice: string;
+  kind: 'pay';
+  account_id: string;
+  receiver_pubkey: string;
+  amount_sats: number | string | bigint;
+  created_at: Date | string;
+  expires_at: Date | string;
+  status: 'open' | 'notified';
+}
+
+/** Driver timestamp as a `Date`. */
+function toDate(value: Date | string): Date {
+  return value instanceof Date ? value : new Date(value);
+}
+
+/** Map a driver row to {@link MemberSparkInvoiceRow}. */
+function mapMemberRow(row: MemberSparkInvoiceSqlRow): MemberSparkInvoiceRow {
+  return {
+    invoice: row.invoice,
+    kind: row.kind,
+    accountId: row.account_id,
+    receiverPubkey: row.receiver_pubkey,
+    amountSats: Number(row.amount_sats),
+    createdAt: toDate(row.created_at),
+    expiresAt: toDate(row.expires_at),
+    status: row.status,
+  };
+}
+
+/** {@link SparkInvoiceStore} against the `spark_invoice` and `member_spark_invoice` tables. */
 export class PostgresSparkInvoiceStore implements SparkInvoiceStore {
   readonly #sql: SqlClient;
 
@@ -283,5 +467,93 @@ RETURNING payment_hash`,
       [paymentHash, transferId, receiptEventId],
     );
     return rows.length > 0;
+  }
+
+  /**
+   * Insert a member invoice (`ON CONFLICT (invoice) DO NOTHING`), then delete
+   * that account's open member invoices outside the newest
+   * {@link MEMBER_SPARK_INVOICE_CAP}.
+   *
+   * @param row - New member invoice.
+   * @returns Resolves when stored.
+   * @throws Propagates SQL failures.
+   */
+  async issueMember(row: MemberSparkInvoiceIssue): Promise<void> {
+    await this.#sql.execute(
+      `INSERT INTO member_spark_invoice
+  (invoice, kind, account_id, receiver_pubkey, amount_sats, created_at, expires_at, status)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'open')
+ON CONFLICT (invoice) DO NOTHING`,
+      [
+        row.invoice,
+        row.kind,
+        row.accountId,
+        row.receiverPubkey,
+        row.amountSats,
+        row.createdAt.toISOString(),
+        row.expiresAt.toISOString(),
+      ],
+    );
+    await this.#sql.execute(
+      `DELETE FROM member_spark_invoice
+WHERE account_id = $1 AND status = 'open' AND invoice NOT IN (
+  SELECT invoice FROM member_spark_invoice
+  WHERE account_id = $1 AND status = 'open'
+  ORDER BY created_at DESC, invoice DESC
+  LIMIT $2
+)`,
+      [row.accountId, MEMBER_SPARK_INVOICE_CAP],
+    );
+  }
+
+  /**
+   * Open member invoices with `expires_at` after `now`, ordered by `created_at`.
+   *
+   * @param now - Current time.
+   * @returns The matching rows.
+   * @throws Propagates SQL failures.
+   */
+  async listOpenMember(now: Date): Promise<MemberSparkInvoiceRow[]> {
+    const rows = await this.#sql.query<MemberSparkInvoiceSqlRow>(
+      `SELECT invoice, kind, account_id, receiver_pubkey, amount_sats, created_at, expires_at, status
+FROM member_spark_invoice
+WHERE status = 'open' AND expires_at > $1
+ORDER BY created_at ASC, invoice ASC`,
+      [now.toISOString()],
+    );
+    return rows.map(mapMemberRow);
+  }
+
+  /**
+   * One conditional `UPDATE … WHERE status = 'open'`.
+   *
+   * @param invoice - The `spark1…` invoice string.
+   * @returns `true` only when this call changed the row from `open`.
+   * @throws Propagates SQL failures.
+   */
+  async markMemberNotified(invoice: string): Promise<boolean> {
+    const rows = await this.#sql.query<{ invoice: string }>(
+      `UPDATE member_spark_invoice
+SET status = 'notified'
+WHERE invoice = $1 AND status = 'open'
+RETURNING invoice`,
+      [invoice],
+    );
+    return rows.length > 0;
+  }
+
+  /**
+   * Delete member invoices with `expires_at` at or before `now`.
+   *
+   * @param now - Current time.
+   * @returns How many rows were deleted.
+   * @throws Propagates SQL failures.
+   */
+  async pruneMember(now: Date): Promise<number> {
+    const rows = await this.#sql.query<{ invoice: string }>(
+      `DELETE FROM member_spark_invoice WHERE expires_at <= $1 RETURNING invoice`,
+      [now.toISOString()],
+    );
+    return rows.length;
   }
 }

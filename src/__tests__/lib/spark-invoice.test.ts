@@ -170,6 +170,10 @@ describe('issueSparkInvoice', () => {
       issue: () => Promise.reject(new Error('down')),
       listOpen: () => Promise.resolve([]),
       markSettled: () => Promise.resolve(false),
+      issueMember: () => Promise.resolve(),
+      listOpenMember: () => Promise.resolve([]),
+      markMemberNotified: () => Promise.resolve(false),
+      pruneMember: () => Promise.resolve(0),
     };
     expect(await issueSparkInvoice({ now: () => 1, sparkInvoices: store }, wallet, zap)).toBeNull();
     expect(parsedEvents(warn).map((e) => e['event'])).toContain('spark.invoice.issue_failed');
