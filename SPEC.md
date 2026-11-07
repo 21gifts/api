@@ -8840,7 +8840,9 @@ invoices), and `status` (`open` / `notified`). Covered by `trg_db_change`.
 The route has no session, so each account keeps at most 20 open member
 invoices: the one just stored plus its 19 newest other open ones. Storing one
 more deletes the oldest of the others in the same statement, and a payment of
-that deleted invoice gets no push. The same worker tick first deletes every member invoice
+that deleted invoice gets no push. Concurrent requests for one account can
+each miss the others' rows and briefly leave more open rows; the account's
+next store trims back. The same worker tick first deletes every member invoice
 whose `expires_at` has passed, then asks the coordinator about the open ones.
 For one reported `FINALIZED` it runs the receive push of
 `POST /webhooks/lnurl` (`notifyPaymentReceived`) with the stored wallet key and
