@@ -1,6 +1,14 @@
 import { createHash } from 'node:crypto';
 import { describe, it, expect } from 'vitest';
-import { decodeBolt11, inspectBolt11, isNip57Invoice } from '@/lib/bolt11';
+import {
+  DEFAULT_INVOICE_EXPIRY_MS,
+  bolt11Descriptions,
+  bolt11ExpiresAtMs,
+  decodeBolt11,
+  inspectBolt11,
+  invoiceStillOpen,
+  isNip57Invoice,
+} from '@/lib/bolt11';
 
 const HASH = 'aa'.repeat(32);
 const DESC_HASH = 'bb'.repeat(32);
@@ -165,6 +173,30 @@ describe('inspectBolt11', () => {
   });
 });
 
+describe('bolt11Descriptions', () => {
+  it('returns every string description tag of any decodable invoice, in order', () => {
+    expect(
+      bolt11Descriptions('lnbc1', () => ({
+        sections: [
+          { name: 'description', value: 'coffee' },
+          { name: 'payment_hash', value: HASH },
+          { name: 'description', value: 'tea' },
+          { name: 'description', value: 1 },
+        ],
+      })),
+    ).toEqual(['coffee', 'tea']);
+  });
+
+  it('returns an empty list without a description or when decoding fails', () => {
+    expect(
+      bolt11Descriptions('lnbc1', () => ({
+        sections: [{ name: 'description_hash', value: 'ab' }],
+      })),
+    ).toEqual([]);
+    expect(bolt11Descriptions('not an invoice')).toEqual([]);
+  });
+});
+
 describe('isNip57Invoice', () => {
   it('is true only when sha256(zap json) matches the description hash', () => {
     const zapJson = JSON.stringify({ kind: 9734, content: 'pay' });
@@ -173,5 +205,29 @@ describe('isNip57Invoice', () => {
     expect(isNip57Invoice(hash, JSON.stringify({ kind: 9734, content: 'other' }))).toBe(false);
     expect(isNip57Invoice(null, zapJson)).toBe(false);
     expect(isNip57Invoice(hash, null)).toBe(false);
+  });
+});
+
+/** BOLT11 spec example for 250 000 sats with an `expiry` tag of 60 s. */
+const EXPIRY_60_PR =
+  'lnbc2500u1pvjluezpp5qqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqqqsyqcyq5rqwzqfqypqdq5xysxxatsyp3k7enxv4jsxqzpuaztrnwngzn3kdzw5hydlzf03qdgm2hdq27cqv3agm2awhz5se903vruatfhq77w3ls4evs3ch9zw97j25emudupq63nyw24cg27h2rspfj9srp';
+
+describe('bolt11ExpiresAtMs', () => {
+  it('adds the expiry tag to the issue time', () => {
+    expect(bolt11ExpiresAtMs(EXPIRY_60_PR, 1_000)).toBe(61_000);
+  });
+
+  it('uses the one-hour default for an invoice that does not decode', () => {
+    expect(DEFAULT_INVOICE_EXPIRY_MS).toBe(3_600_000);
+    expect(bolt11ExpiresAtMs('not-an-invoice', 1_000)).toBe(3_601_000);
+  });
+});
+
+describe('invoiceStillOpen', () => {
+  it('is open strictly before the expiry instant', () => {
+    expect(invoiceStillOpen(EXPIRY_60_PR, 1_000, 60_999)).toBe(true);
+    expect(invoiceStillOpen(EXPIRY_60_PR, 1_000, 61_000)).toBe(false);
+    expect(invoiceStillOpen('not-an-invoice', 0, 3_599_999)).toBe(true);
+    expect(invoiceStillOpen('not-an-invoice', 0, 3_600_000)).toBe(false);
   });
 });

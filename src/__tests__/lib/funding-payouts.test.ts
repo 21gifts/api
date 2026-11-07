@@ -26,7 +26,7 @@ function account(
   return {
     name: 'Ada',
     role: 'verified',
-    lightningAddress: 'ada@walletofsatoshi.com',
+    lightningAddress: 'ada@example.com',
     ...partial,
   };
 }
@@ -192,7 +192,7 @@ describe('buildFundingPayoutMatrix', () => {
   it('paints a daily gift paid, flags a welcome gift, and ignores moderator, blank, and out-of-window gifts', () => {
     const matrix = buildFundingPayoutMatrix({
       nowMs: NOW,
-      accounts: [account({ id: 'a', lightningAddress: 'Ada@walletofsatoshi.com' })],
+      accounts: [account({ id: 'a', lightningAddress: 'Ada@example.com' })],
       grants: [grant({ accountId: 'a', status: 'admitted', admittedAt: null })],
       gifts: [
         gift({
@@ -252,14 +252,14 @@ describe('buildFundingPayoutMatrix', () => {
           id: 'b',
           role: 'basis',
           name: '   ',
-          lightningAddress: 'basis@walletofsatoshi.com',
+          lightningAddress: 'basis@example.com',
         }),
       ],
       grants: [grant({ accountId: 'b', status: 'admitted', admittedAt: null })],
       gifts: [
         gift({
           kind: 'daily',
-          recipientWosUser: 'basis@walletofsatoshi.com',
+          recipientWosUser: 'basis@example.com',
           paidAt: new Date('2026-09-26T01:00:00.000Z'),
         }),
       ],
@@ -278,8 +278,8 @@ describe('buildFundingPayoutMatrix', () => {
     const matrix = buildFundingPayoutMatrix({
       nowMs: NOW,
       accounts: [
-        account({ id: 'b', name: 'Bee', lightningAddress: 'shared@walletofsatoshi.com' }),
-        account({ id: 'a', name: 'Aye', lightningAddress: 'Shared@walletofsatoshi.com' }),
+        account({ id: 'b', name: 'Bee', lightningAddress: 'shared@example.com' }),
+        account({ id: 'a', name: 'Aye', lightningAddress: 'Shared@example.com' }),
         account({ id: 'same', name: 'Same' }),
         account({ id: 'same', name: 'Same' }),
       ],

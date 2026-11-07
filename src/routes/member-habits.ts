@@ -3,12 +3,18 @@ import { z } from 'zod';
 import { bearerToken } from '@/routes/me';
 import { resolveSession } from '@/lib/auth/service';
 import { roleAtLeast } from '@/lib/auth/roles';
-import type { AccountRole } from '@/lib/auth/store';
+import type { AccountRole, AuthStore } from '@/lib/auth/store';
 import { InvoiceRateLimiter } from '@/lib/nostr/rate-limit';
-import { GIFT_INVOICE_MAX_MSAT } from '@/lib/config';
+import { GIFT_INVOICE_MAX_MSAT, type LnurlServerConfig } from '@/lib/config';
 import { decodeBolt11 } from '@/lib/bolt11';
 import { requestGiftInvoice } from '@/lib/gift-invoice';
 import type { FetchFn } from '@/lib/lnurlp';
+import {
+  CANNOT_RECEIVE,
+  lnurlServerFetch,
+  receivingAddress,
+  type ReceivingAccount,
+} from '@/lib/receiving-address';
 import {
   comparePeriod,
   dayKey,
@@ -157,6 +163,7 @@ function publicComments(
     createdAt: number;
     deletedAt: number | null;
   }>,
+  receivers: ReadonlyMap<string, boolean>,
 ): Array<{
   id: string;
   habitId: string;
@@ -165,6 +172,7 @@ function publicComments(
   text: string;
   week: string;
   createdAt: number;
+  canReceive: boolean;
 }> {
   return comments.map((comment) => ({
     id: comment.id,
@@ -174,30 +182,54 @@ function publicComments(
     text: comment.text,
     week: comment.week,
     createdAt: comment.createdAt,
+    canReceive: receivers.get(comment.accountId) === true,
   }));
+}
+
+/**
+ * Whether each comment author can receive ({@link receivingAddress} non-null),
+ * from one bulk account lookup for all distinct authors. An author the lookup
+ * does not return cannot receive.
+ */
+async function commentReceivers(
+  habits: ReadonlyArray<{ comments: ReadonlyArray<{ accountId: string }> }>,
+  getAccounts: (ids: readonly string[]) => Promise<Array<{ id: string } & ReceivingAccount>>,
+  lnurlServer: LnurlServerConfig | undefined,
+): Promise<Map<string, boolean>> {
+  const ids = [
+    ...new Set(habits.flatMap((habit) => habit.comments.map((comment) => comment.accountId))),
+  ];
+  const receivers = new Map<string, boolean>();
+  for (const author of await getAccounts(ids)) {
+    receivers.set(author.id, receivingAddress(author, lnurlServer) !== null);
+  }
+  return receivers;
 }
 
 /**
  * Hono routes `GET /` and `POST /` mounted at `/habits`.
  *
- * @param deps - Habit store, auth store, clock, and fetch.
+ * @param deps - Habit store, auth store, clock, fetch, and optional LNURL server
+ *   (a comment author receives on the verified wallet only through it).
  * @returns The Hono app mounted at `/habits`.
  */
 export function memberHabitRoutes(deps: {
   store: MemberHabitStore;
   authStore: {
     getAccount(id: string): Promise<
-      | {
+      | ({
           id: string;
           role: string;
           name: string | null;
-          lightningAddress: string | null;
-        }
+        } & ReceivingAccount)
       | undefined
     >;
+    getAccounts(ids: readonly string[]): Promise<Array<{ id: string } & ReceivingAccount>>;
+    getAccountByUsername: AuthStore['getAccountByUsername'];
   };
   now: () => number;
   fetchImpl: FetchFn;
+  lnurlServer?: LnurlServerConfig;
   resolve?: (header: string | undefined) => Promise<Viewer | null>;
 }): Hono {
   const invoiceLimiter = new InvoiceRateLimiter();
@@ -241,8 +273,13 @@ export function memberHabitRoutes(deps: {
         }
         return 0;
       });
+      const receivers = await commentReceivers(
+        listed,
+        (ids) => deps.authStore.getAccounts(ids),
+        deps.lnurlServer,
+      );
       const habits = listed.map((habit) => {
-        const comments = publicComments(habit.comments);
+        const comments = publicComments(habit.comments, receivers);
         const body = {
           id: habit.id,
           accountId: habit.accountId,
@@ -478,24 +515,27 @@ export function memberHabitRoutes(deps: {
         return c.json({ error: 'Cannot donate to yourself' }, 400);
       }
       const author = await deps.authStore.getAccount(comment.accountId);
-      if (
-        author === undefined ||
-        author.lightningAddress === null ||
-        author.lightningAddress === ''
-      ) {
-        return c.json({ error: "The author's wallet cannot receive this Bitcoin payment" }, 409);
+      const receiving = author === undefined ? null : receivingAddress(author, deps.lnurlServer);
+      if (receiving === null) {
+        return c.json(
+          {
+            error: "The author's wallet cannot receive this Bitcoin payment",
+            code: CANNOT_RECEIVE,
+          },
+          409,
+        );
       }
       if (!invoiceLimiter.allow(account.id, nowMs)) {
         return c.json({ error: 'Too many payments' }, 429);
       }
-      const address = author.lightningAddress;
+      const address = receiving.address;
       const amountMsat = amountSats * 1000;
       let invoice: { ok: true; pr: string } | { ok: false };
       try {
         invoice = await requestGiftInvoice({
           address,
           amountMsat,
-          fetchImpl: deps.fetchImpl,
+          fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
         });
         /* v8 ignore next 3 -- requestGiftInvoice returns ok:false instead of throwing */
       } catch {

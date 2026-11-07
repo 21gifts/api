@@ -4,6 +4,8 @@ import {
   buildModeratorAppointedPushPayload,
   buildReplyPushPayload,
   buildConversationPushPayload,
+  buildHeartPushPayload,
+  buildPaymentReceivedPushPayload,
   buildZapPushPayload,
   parsePushSubscription,
   pushTagForNotification,
@@ -16,6 +18,7 @@ describe('pushTagForNotification', () => {
     expect(pushTagForNotification({ type: 'forum_reply', ...ids })).toBe('forum_reply:reply');
     expect(pushTagForNotification({ type: 'forum_mention', ...ids })).toBe('forum_mention:reply');
     expect(pushTagForNotification({ type: 'zap', ...ids })).toBe('zap:reply');
+    expect(pushTagForNotification({ type: 'heart', ...ids })).toBe('heart:reply');
     expect(pushTagForNotification({ type: 'moderator_appointed', ...ids })).toBe(
       'moderator_appointed:parent',
     );
@@ -247,6 +250,35 @@ describe('buildReplyPushPayload', () => {
         hasVideo: true,
       }).body,
     ).toBe('child');
+  });
+});
+
+describe('buildHeartPushPayload', () => {
+  it('names the payer and uses the heart body and tag', () => {
+    expect(buildHeartPushPayload({ replyId: 'reply-1', name: 'Ada', noteId: 'note-9' })).toEqual({
+      type: 'zap',
+      title: 'Ada',
+      body: 'Sent you a heart.',
+      url: '/messages/note-9',
+      tag: 'heart:reply-1',
+    });
+  });
+});
+
+describe('buildPaymentReceivedPushPayload', () => {
+  it('states the amount, opens the wallet, and tags the payment hash', () => {
+    expect(
+      buildPaymentReceivedPushPayload({ paymentHash: 'hash', amountSats: 21, name: '  Ada \n' }),
+    ).toEqual({
+      type: 'zap',
+      title: 'Ada',
+      body: 'You received 21 sats.',
+      url: '/wallet',
+      tag: 'payment:hash',
+    });
+    expect(
+      buildPaymentReceivedPushPayload({ paymentHash: 'hash', amountSats: 1, name: null }).title,
+    ).toBe('21.gifts');
   });
 });
 

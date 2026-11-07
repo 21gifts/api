@@ -7,12 +7,19 @@
 # The product Deploy job stays in progress so a develop→main PR shows the
 # live deploy result on the same commit, not only the image push.
 #
-# Required env: GH_TOKEN, DISPATCH_REPO, GITHUB_SHA, IMAGE, TAG, DISPATCHED_AT
+# Required env: GH_TOKEN, DISPATCH_REPO, IMAGE, TAG, DISPATCHED_AT
+# Commit: PUBLISHED_SHA if set, otherwise GITHUB_SHA.
+# A workflow env entry named GITHUB_SHA is ignored, so a different commit
+# has to arrive as PUBLISHED_SHA.
 # Optional: WAIT_TIMEOUT_SEC (default 1200), WAIT_POLL_SEC (default 10)
 set -euo pipefail
 
 repo="${DISPATCH_REPO:?DISPATCH_REPO is required}"
-sha="${GITHUB_SHA:?GITHUB_SHA is required}"
+sha="${PUBLISHED_SHA:-${GITHUB_SHA:-}}"
+if [ -z "$sha" ]; then
+  echo "::error::PUBLISHED_SHA or GITHUB_SHA is required"
+  exit 1
+fi
 image="${IMAGE:?IMAGE is required}"
 tag="${TAG:?TAG is required}"
 dispatched_at="${DISPATCHED_AT:?DISPATCHED_AT is required}"
@@ -20,7 +27,7 @@ timeout_sec="${WAIT_TIMEOUT_SEC:-1200}"
 poll_sec="${WAIT_POLL_SEC:-10}"
 
 if [ "${#sha}" -ne 40 ]; then
-  echo "::error::GITHUB_SHA must be a 40-character commit SHA"
+  echo "::error::published SHA must be a 40-character commit SHA"
   exit 1
 fi
 

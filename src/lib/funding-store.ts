@@ -5,12 +5,15 @@
  * `DATABASE_URL` is set. Column layout matches `docs/schema/funding_grant.sql`.
  */
 
+import type { MergeDb } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  countRoundAdmissions,
   effectiveStatus,
   expiredTrialAsPending,
   type FundingGrant,
   type FundingStatus,
+  type GrantRound,
 } from '@/lib/funding';
 import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 
@@ -63,7 +66,28 @@ export interface FundingStore {
    * @returns The pending row when the CAS matched, else the current grant.
    */
   expireTrialIfUnchanged(grant: FundingGrant): Promise<FundingGrant | undefined>;
+
+  /**
+   * Write the admitted `grant` only when the stored status is in `from` and
+   * the round still has a free place ({@link countRoundAdmissions} below
+   * `round.places`). Count and write are one atomic step, so concurrent
+   * admissions never exceed the round.
+   *
+   * @param grant - Fully formed admitted grant (`admittedAt` inside the round).
+   * @param from - Allowed current statuses.
+   * @param round - Admission round whose places are checked.
+   * @returns The stored grant, `'full'` when no place is left, or `undefined`
+   *   when the status CAS missed.
+   */
+  admitWithinPlaces(
+    grant: FundingGrant,
+    from: readonly FundingStatus[],
+    round: GrantRound,
+  ): Promise<FundingGrant | 'full' | undefined>;
 }
+
+/** Advisory lock key that serialises admissions across API processes. */
+const ADMIT_PLACES_LOCK_KEY = 2_102_610_160;
 
 /** Idempotent DDL for the funding_grant table (matches `docs/schema/funding_grant.sql`). */
 export const FUNDING_SCHEMA_SQL: readonly string[] = [
@@ -211,6 +235,31 @@ export class InMemoryFundingStore implements FundingStore {
   }
 
   /**
+   * Count the round and write in one synchronous step (no await between).
+   *
+   * @param grant - Fully formed admitted grant.
+   * @param from - Allowed current statuses.
+   * @param round - Admission round whose places are checked.
+   * @returns The stored grant, `'full'`, or `undefined` when the CAS missed.
+   */
+  admitWithinPlaces(
+    grant: FundingGrant,
+    from: readonly FundingStatus[],
+    round: GrantRound,
+  ): Promise<FundingGrant | 'full' | undefined> {
+    const current = this.#grants.get(grant.accountId);
+    if (current === undefined || !from.includes(current.status)) {
+      return Promise.resolve(undefined);
+    }
+    if (countRoundAdmissions([...this.#grants.values()], round) >= round.places) {
+      return Promise.resolve('full');
+    }
+    const stored = copyGrant(grant);
+    this.#grants.set(stored.accountId, stored);
+    return Promise.resolve(copyGrant(stored));
+  }
+
+  /**
    * Write pending only when the in-memory row is still that expired trial.
    *
    * @param grant - Expired trial from the first read.
@@ -263,12 +312,17 @@ function mapFundingRow(row: FundingSqlRow): FundingGrant {
  */
 export class PostgresFundingStore implements FundingStore {
   readonly #sql: SqlClient;
+  readonly #transactions: MergeDb | undefined;
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
+   * @param transactions - Transaction port for {@link admitWithinPlaces}.
+   *   Boot passes it; without it an admission throws instead of risking an
+   *   unlocked count.
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, transactions?: MergeDb) {
     this.#sql = sql;
+    this.#transactions = transactions;
   }
 
   /**
@@ -387,6 +441,64 @@ export class PostgresFundingStore implements FundingStore {
         );
     const row = rows[0];
     return row === undefined ? undefined : mapFundingRow(row);
+  }
+
+  /**
+   * One transaction: take the admission advisory lock, count the round's
+   * admissions, then CAS-update the row only while a place is free. The
+   * lock is released at commit, so the next admission counts this one.
+   *
+   * @param grant - Fully formed admitted grant.
+   * @param from - Allowed current statuses.
+   * @param round - Admission round whose places are checked.
+   * @returns The stored grant, `'full'`, or `undefined` when the CAS missed.
+   * @throws Error('funding transactions are not configured') without a transaction port.
+   */
+  async admitWithinPlaces(
+    grant: FundingGrant,
+    from: readonly FundingStatus[],
+    round: GrantRound,
+  ): Promise<FundingGrant | 'full' | undefined> {
+    const transactions = this.#transactions;
+    if (transactions === undefined) {
+      throw new Error('funding transactions are not configured');
+    }
+    return transactions.begin(async (tx) => {
+      await tx.query('SELECT pg_advisory_xact_lock($1)', [ADMIT_PLACES_LOCK_KEY]);
+      const counted = await tx.query<{ admitted: string | number }>(
+        `SELECT count(*) AS admitted FROM funding_grant
+         WHERE status = 'admitted' AND admitted_at >= $1`,
+        [new Date(round.startsAtMs)],
+      );
+      if (Number(counted[0]?.admitted ?? 0) >= round.places) {
+        return 'full';
+      }
+      const rows = await tx.query<FundingSqlRow>(
+        `UPDATE funding_grant SET
+           status = $2,
+           applied_at = $3,
+           decided_at = $4,
+           decided_by = $5,
+           trial_utc_date = $6,
+           admitted_at = $7,
+           note = $8
+         WHERE account_id = $1 AND status = ANY($9::text[])
+         RETURNING ${FUNDING_SELECT}`,
+        [
+          grant.accountId,
+          grant.status,
+          new Date(grant.appliedAt),
+          grant.decidedAt === null ? null : new Date(grant.decidedAt),
+          grant.decidedBy,
+          grant.trialUtcDate,
+          grant.admittedAt === null ? null : new Date(grant.admittedAt),
+          grant.note,
+          postgresTextArrayLiteral(from),
+        ],
+      );
+      const row = rows[0];
+      return row === undefined ? undefined : mapFundingRow(row);
+    });
   }
 
   /**

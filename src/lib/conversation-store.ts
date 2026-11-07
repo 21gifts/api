@@ -7,7 +7,6 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
-import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { FetchFn } from '@/lib/btc-usd-candles';
 import {
   CONVERSATION_LIST_LIMIT,
@@ -17,55 +16,37 @@ import {
   type ConversationThread,
 } from '@/lib/conversation';
 import type { ForumPhoto, ForumPhotoContentType, NostrPublishState } from '@/lib/message';
-import {
-  fiatFromSats,
-  satsToUsdCents,
-  usdCentsToFiatCents,
-  usdCentsToString,
-  type FiatAmounts,
-} from '@/lib/money';
+import type { FiatAmounts } from '@/lib/money';
 import { normalizeSignedEvent } from '@/lib/nostr/publish';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
 
-/** Spot + daily crosses used when a conversation payment omits an explicit snapshot. */
+/** Fetch and rate-book options accepted by the store. An omitted snapshot does not read them. */
 interface PaymentFiatStoreOptions {
   fetchImpl?: FetchFn;
   fiatRates?: FiatRateBook;
   now?: () => number;
 }
 
-interface ConversationFiatBackfillRow {
-  id: string;
-  created_at: Date | string;
-  amount_sats: number | string | bigint;
-}
-
-interface ConversationFiatBackfillRateRow {
-  day: Date | string;
-  usd_per_btc: string | number;
-  quote: string | null;
-  rate: string | number | null;
-}
-
 /**
  * Resolve the optional payment snapshot.
  *
- * An explicit `null` stays null (caller already tried). Omitted fiat on a
- * positive-sat row fetches one spot; a null spot or a Frankfurter failure
- * does not throw.
+ * A snapshot the caller passed, including `null`, is returned unchanged.
+ * Omitted fiat on an unpaid row (`sats <= 0`) stays `undefined`, so the row
+ * is left as it is. Omitted fiat on a positive-sat row is null for USD, CHF,
+ * EUR, and PHP. It is not priced from a spot or from the daily rate book.
  *
  * @param sats - Whole sats on the row.
- * @param createdAt - Row creation instant (UTC day for crosses).
+ * @param _createdAt - Row creation instant. Unused.
  * @param supplied - Caller snapshot, `null`, or omitted.
- * @param options - Spot fetch, rate book, and clock.
- * @returns Snapshot, `null` when pricing failed, or `undefined` when the row is unpaid
+ * @param _options - Spot fetch, rate book, and clock. Unused.
+ * @returns Snapshot, `null` when a paid row omitted fiat, or `undefined` when the row is unpaid
  *   and the caller omitted fiat.
  */
 async function resolveConversationFiat(
   sats: number,
-  createdAt: Date,
+  _createdAt: Date,
   supplied: FiatAmounts | null | undefined,
-  options: Required<PaymentFiatStoreOptions>,
+  _options: Required<PaymentFiatStoreOptions>,
 ): Promise<FiatAmounts | null | undefined> {
   if (supplied !== undefined) {
     return supplied;
@@ -73,21 +54,7 @@ async function resolveConversationFiat(
   if (sats <= 0) {
     return undefined;
   }
-  const spot = await fetchBtcUsdSpot(options.fetchImpl);
-  if (spot === null) {
-    return null;
-  }
-  const day = createdAt.toISOString().slice(0, 10);
-  try {
-    const crosses = (await options.fiatRates.ensureDays([day], options.now())).get(day) ?? {};
-    return fiatFromSats(sats, spot, crosses);
-  } catch {
-    try {
-      return fiatFromSats(sats, spot, {});
-    } catch {
-      return null;
-    }
-  }
+  return null;
 }
 
 /**
@@ -135,82 +102,6 @@ function textOrNull(value: string | number | null | undefined): string | null {
     return null;
   }
   return String(value);
-}
-
-/** UTC day, or `null` when `created_at` is not a real timestamp. */
-function utcDayOrNull(value: Date | string): string | null {
-  const date = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return null;
-  }
-  return date.toISOString().slice(0, 10);
-}
-
-/**
- * Network-free backfill of conversation payments from daily rate tables.
- *
- * Rows that already have `fiat_usd`, or whose UTC day has no BTC close, stay
- * untouched. A `created_at` that is not a real timestamp is skipped. Idempotent.
- *
- * @param sql - Parameter-bound SQL client.
- */
-async function backfillConversationFiat(sql: SqlClient): Promise<void> {
-  const candidates = await sql.query<ConversationFiatBackfillRow>(
-    `SELECT id, created_at, sats AS amount_sats
-     FROM conversation_message
-     WHERE sats > 0 AND fiat_usd IS NULL`,
-  );
-  const days = [
-    ...new Set(
-      candidates.flatMap((row) => {
-        const day = utcDayOrNull(row.created_at);
-        return day === null ? [] : [day];
-      }),
-    ),
-  ];
-  if (days.length === 0) {
-    return;
-  }
-  const placeholders = days.map((_, index) => `$${index + 1}::date`).join(', ');
-  const rateRows = await sql.query<ConversationFiatBackfillRateRow>(
-    `SELECT b.day::text AS day, b.usd_per_btc::text AS usd_per_btc,
-            f.quote, f.rate::text AS rate
-     FROM btc_usd_daily b
-     LEFT JOIN usd_fiat_daily f ON f.day = b.day AND f.quote IN ('CHF', 'EUR', 'PHP')
-     WHERE b.day IN (${placeholders})`,
-    days,
-  );
-  const rates = new Map<string, { usdPerBtc: string; crosses: Record<string, string> }>();
-  for (const row of rateRows) {
-    const day = String(row.day).slice(0, 10);
-    const value = rates.get(day) ?? { usdPerBtc: String(row.usd_per_btc), crosses: {} };
-    if (row.quote !== null && row.rate !== null) {
-      value.crosses[row.quote] = String(row.rate);
-    }
-    rates.set(day, value);
-  }
-  for (const row of candidates) {
-    const day = utcDayOrNull(row.created_at);
-    if (day === null) {
-      continue;
-    }
-    const rate = rates.get(day);
-    if (rate === undefined) {
-      continue;
-    }
-    const usdCents = satsToUsdCents(Number(row.amount_sats), rate.usdPerBtc);
-    const quote = (code: 'CHF' | 'EUR' | 'PHP'): string | null => {
-      const cross = rate.crosses[code];
-      return cross === undefined ? null : usdCentsToString(usdCentsToFiatCents(usdCents, cross));
-    };
-    await sql.execute(
-      `UPDATE conversation_message
-       SET fiat_usd = $2::numeric, fiat_chf = $3::numeric,
-           fiat_eur = $4::numeric, fiat_php = $5::numeric
-       WHERE id = $1 AND fiat_usd IS NULL`,
-      [row.id, usdCentsToString(usdCents), quote('CHF'), quote('EUR'), quote('PHP')],
-    );
-  }
 }
 
 /** Keyset query for one messenger-style conversation page. */
@@ -442,7 +333,7 @@ export interface ConversationStore {
    * @param photo - Optional decoded photo (copied into storage; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
    * @param fiat - Payment-time snapshot. `null` stores null amounts. Omit on
-   *   a positive-sat row to freeze one spot (null spot still stores the row).
+   *   a positive-sat row to store null for USD, CHF, EUR, and PHP.
    * @returns The stored row (a copy) with `hasPhoto` / `photoCount` from
    *   stored stills. On duplicate id / eventId, the existing row.
    * @throws When extras are present without photo 0, when extras exceed 9,
@@ -774,7 +665,6 @@ export async function migrateConversationSchema(sql: SqlClient): Promise<void> {
   for (const statement of CONVERSATION_SCHEMA_SQL) {
     await sql.execute(statement);
   }
-  await backfillConversationFiat(sql);
 }
 
 /**
@@ -794,7 +684,7 @@ export class InMemoryConversationStore implements ConversationStore {
    * @param seedThreads - Optional seed threads; copied into private storage.
    * @param seedMessages - Optional seed messages; copied into private storage.
    * @param seedLastRead - Optional last-read stamps; Dates copied into a private map.
-   * @param options - Spot fetch and fiat book used when `appendMessage` omits fiat.
+   * @param options - Fetch and rate book. An omitted snapshot does not read them.
    */
   constructor(
     seedThreads: readonly ConversationThread[] = [],
@@ -1127,7 +1017,7 @@ export class InMemoryConversationStore implements ConversationStore {
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
-   * @param fiat - Payment-time snapshot, or `null`. Omit to freeze a spot when `sats > 0`.
+   * @param fiat - Payment-time snapshot, or `null`. Omit on a positive-sat row to store null amounts.
    * @returns A copy of the stored row with `hasPhoto` / `photoCount` from
    *   stored stills. Duplicate `id` / `eventId` returns the existing row
    *   without inserting extras.
@@ -1419,7 +1309,7 @@ export class PostgresConversationStore implements ConversationStore {
 
   /**
    * @param sql - Parameter-bound SQL client (already migrated).
-   * @param options - Spot fetch and fiat book used when `appendMessage` omits fiat.
+   * @param options - Fetch and rate book. An omitted snapshot does not read them.
    */
   constructor(sql: SqlClient, options: PaymentFiatStoreOptions = {}) {
     this.#sql = sql;
@@ -1828,7 +1718,7 @@ export class PostgresConversationStore implements ConversationStore {
    * @param row - Message to store.
    * @param photo - Optional photo (bytes copied; index 0).
    * @param extraPhotos - Optional extra stills (indices 1..n, max 9).
-   * @param fiat - Payment-time snapshot, or `null`. Omit to freeze a spot when `sats > 0`.
+   * @param fiat - Payment-time snapshot, or `null`. Omit on a positive-sat row to store null amounts.
    * @returns The stored row with `hasPhoto` / `photoCount` from stored
    *   stills. Duplicate `id` / `eventId` returns the existing row without
    *   inserting extras.

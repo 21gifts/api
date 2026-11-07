@@ -2,15 +2,107 @@
  * Persistence for member point-of-sale charges.
  *
  * v1 default is in-memory. Production boot injects Postgres when
- * `DATABASE_URL` is set. Table name is `pos_charge`.
+ * `DATABASE_URL` is set. Tables are `pos_charge` and `pos_charge_invoice`
+ * (the BOLT11 payment hashes handed out for a pending charge).
  */
 
+import type { MergeDb } from '@/lib/account-merge';
 import type { SqlClient } from '@/lib/auth/sql';
-import { logEvent } from '@/lib/log';
-import type { PosCharge, PosChargeStatus } from '@/lib/pos-charge';
+import { logEvent, type LogFields } from '@/lib/log';
+import {
+  PAYMENT_HASH_CLAIM_SQL,
+  PAYMENT_HASH_LOCK_NAMESPACE,
+  PaymentHashClaims,
+  paymentHashLockKey,
+} from '@/lib/payment-hash-claim';
+import type { PosCharge, PosChargeStatus, PosFiatCode } from '@/lib/pos-charge';
+import { UUID_PATTERN } from '@/lib/uuid';
 
 /** POS charge used to mark an account as active on a UTC day. */
 export type PosChargeRef = { accountId: string; createdAtMs: number };
+
+/** A charge the paid watcher still polls, with the BOLT11 payment hashes recorded for it. */
+export interface PosWatch {
+  /** The pending or expired charge (its `sparkInvoice` is polled too). */
+  charge: PosCharge;
+  /** Payment hashes (64 lower-case hex) recorded for this charge, oldest first. */
+  paymentHashes: string[];
+}
+
+/**
+ * Outcome of {@link PosStore.recordInvoice}, decided inside its payment hash
+ * claim (`docs/shop-stablecoin-payment.md`, Payment hash claim).
+ *
+ * - `recorded`: this call inserted the `pos_charge_invoice` row.
+ * - `this_charge`: the hash is already recorded against this charge or held
+ *   by this charge's shop payment.
+ * - `other_payment`: another charge's `pos_charge_invoice` row or another
+ *   payment's `shop_payment` holds the hash.
+ * - `not_open`: the charge was not open at the issue time.
+ */
+export type RecordInvoiceOutcome = 'recorded' | 'this_charge' | 'other_payment' | 'not_open';
+
+/**
+ * Result of {@link PosStore.recordInvoice}: the outcome, and for
+ * `other_payment` who holds the hash (for `shop.alert.duplicate_invoice`).
+ */
+export type RecordInvoiceResult =
+  | { outcome: Exclude<RecordInvoiceOutcome, 'other_payment'> }
+  | {
+      outcome: 'other_payment';
+      /** The other charge that holds the hash (its invoice row or its shop payment), or `null`. */
+      holderChargeId: string | null;
+      /** The shop payment that holds the hash, or `null` when only an invoice row holds it. */
+      holderPaymentId: string | null;
+    };
+
+/**
+ * `shop.alert.duplicate_invoice` fields of an invoice route
+ * (`POST /pay/:username/invoice`, `GET /lnurlp/:username/invoice`) after
+ * `recordInvoice` returned `other_payment`: the pending charge, the charge
+ * that holds the hash, and `paymentId` only when a shop payment holds it.
+ *
+ * @param chargeId - The pending charge the route recorded against.
+ * @param recorded - The `other_payment` result.
+ * @returns The log fields.
+ */
+export function duplicateInvoiceLogFields(
+  chargeId: string,
+  recorded: Extract<RecordInvoiceResult, { outcome: 'other_payment' }>,
+): LogFields {
+  return {
+    chargeId,
+    ...(recorded.holderChargeId === null ? {} : { holderChargeId: recorded.holderChargeId }),
+    ...(recorded.holderPaymentId === null ? {} : { paymentId: recorded.holderPaymentId }),
+  };
+}
+
+/**
+ * The outcome a hash that is already held gives `recordInvoice` for
+ * `chargeId`: `other_payment` when another charge's invoice row or another
+ * payment holds it (this wins over a row of the same charge), `this_charge`
+ * when only this charge or its shop payment holds it.
+ *
+ * @param chargeId - The charge `recordInvoice` was called for.
+ * @param invoiceChargeId - The charge whose `pos_charge_invoice` row holds the hash, or `null`.
+ * @param payment - The shop payment that holds the hash with its `pos_charge_id`, or `null`.
+ * @returns The outcome, or `null` when nobody holds the hash.
+ */
+function heldOutcome(
+  chargeId: string,
+  invoiceChargeId: string | null,
+  payment: { id: string; chargeId: string | null } | null,
+): RecordInvoiceResult | null {
+  const otherInvoice = invoiceChargeId !== null && invoiceChargeId !== chargeId;
+  if (otherInvoice || (payment !== null && payment.chargeId !== chargeId)) {
+    return {
+      outcome: 'other_payment',
+      holderChargeId: otherInvoice ? invoiceChargeId : (payment?.chargeId ?? null),
+      holderPaymentId: payment?.id ?? null,
+    };
+  }
+  return invoiceChargeId === null && payment === null ? null : { outcome: 'this_charge' };
+}
 
 /**
  * Persistence port for point-of-sale charges.
@@ -68,22 +160,127 @@ export interface PosStore {
    * @returns Account id and created-at epoch ms.
    */
   listCreatedBetween(startMs: number, endMs: number): Promise<PosChargeRef[]>;
+
+  /**
+   * Store `invoice` as the charge's Spark invoice unless it already has one.
+   * Only a charge that was open at `issuedAtMs` gets one: status `pending`
+   * or `expired` (never `paid` or `cancelled`) and `expiresAt` after
+   * `issuedAtMs`.
+   *
+   * @param chargeId - Charge id.
+   * @param invoice - New `spark1…` string.
+   * @param issuedAtMs - When the caller found the charge open (epoch ms).
+   * @returns The stored Spark invoice (the existing one when present), or
+   *   `null` when the charge was not open at `issuedAtMs`.
+   */
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null>;
+
+  /**
+   * Record a BOLT11 payment hash handed out for a charge, as one payment hash
+   * claim: take the claim, read who already holds the hash
+   * (`pos_charge_invoice` and `shop_payment`), and insert only when nobody
+   * does. Only a charge that was open at `issuedAtMs` records (status
+   * `pending` or `expired`, `expiresAt` after `issuedAtMs`), so the issue
+   * time decides, not the write time; a charge open then and expired since
+   * still records. A hash already held is left unchanged.
+   *
+   * @param chargeId - Charge id.
+   * @param paymentHash - Payment hash of the BOLT11 (64 lower-case hex).
+   * @param issuedAtMs - When the caller found the charge open (epoch ms); stored as the issue time.
+   * @returns The {@link RecordInvoiceOutcome}, with the holder on `other_payment`.
+   * @throws Whatever the store throws (for example a foreign-key error when
+   *   the charge was deleted meanwhile); an error is never an outcome.
+   */
+  recordInvoice(
+    chargeId: string,
+    paymentHash: string,
+    issuedAtMs: number,
+  ): Promise<RecordInvoiceResult>;
+
+  /**
+   * Find the charge a payment belongs to by recorded BOLT11 hash or charge id.
+   *
+   * @param ref - Payment hash or POS charge id.
+   * @returns The matching charge, or `undefined`.
+   */
+  findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined>;
+
+  /**
+   * Charges still watched for a payment: `pending` or `expired` with
+   * `expiresAt` after `sinceMs`, oldest first, each with its recorded
+   * payment hashes. Paid and cancelled charges are never listed.
+   *
+   * @param sinceMs - Watch window start (epoch ms).
+   * @returns Watched charges.
+   */
+  listWatched(sinceMs: number): Promise<PosWatch[]>;
+
+  /**
+   * Mark a pending or expired charge paid. Atomic and once only: a charge
+   * that is already paid or cancelled is left unchanged. Logs `pos.paid`.
+   *
+   * @param chargeId - Charge id.
+   * @param paidAtMs - Confirmation instant (epoch ms).
+   * @returns The paid row, or `null` when this call did not change it.
+   */
+  markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null>;
+
+  /**
+   * Delete the `pos_charge_invoice` row of a payment hash. A hash that is not
+   * recorded is left as is.
+   *
+   * @param paymentHash - Payment hash of the BOLT11 (64 lower-case hex).
+   * @returns Resolves when the row is gone.
+   */
+  deleteInvoice(paymentHash: string): Promise<void>;
 }
 
-/** Idempotent DDL for the pos_charge table (matches `docs/schema/pos_charge.sql`). */
+/**
+ * Idempotent DDL for the `pos_charge` and `pos_charge_invoice` tables
+ * (matches `docs/schema/pos_charge.sql`). Existing tables gain `paid_at`,
+ * `spark_invoice`, the `paid` status, and the typed-fiat columns. Those
+ * columns are written only on insert.
+ */
 export const POS_SCHEMA_SQL: readonly string[] = [
   `CREATE TABLE IF NOT EXISTS pos_charge (
   id uuid PRIMARY KEY,
   account_id uuid NOT NULL REFERENCES account (id),
   amount_sats bigint NOT NULL CHECK (amount_sats > 0),
-  status text NOT NULL CHECK (status IN ('pending', 'cancelled', 'expired')),
+  status text NOT NULL CHECK (status IN ('pending', 'paid', 'cancelled', 'expired')),
   created_at timestamptz NOT NULL,
-  expires_at timestamptz NOT NULL
+  expires_at timestamptz NOT NULL,
+  paid_at timestamptz,
+  spark_invoice text
 )`,
   `CREATE INDEX IF NOT EXISTS pos_charge_account_created_idx
   ON pos_charge (account_id, created_at DESC, id DESC)`,
   `CREATE UNIQUE INDEX IF NOT EXISTS pos_charge_account_pending_idx
   ON pos_charge (account_id) WHERE status = 'pending'`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS paid_at timestamptz`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS spark_invoice text`,
+  `ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_status_check`,
+  `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_status_check
+  CHECK (status IN ('pending', 'paid', 'cancelled', 'expired'))`,
+  `CREATE INDEX IF NOT EXISTS pos_charge_watch_idx
+  ON pos_charge (expires_at) WHERE status IN ('pending', 'expired')`,
+  `CREATE TABLE IF NOT EXISTS pos_charge_invoice (
+  payment_hash text PRIMARY KEY,
+  charge_id uuid NOT NULL REFERENCES pos_charge (id),
+  created_at timestamptz NOT NULL
+)`,
+  `CREATE INDEX IF NOT EXISTS pos_charge_invoice_charge_idx
+  ON pos_charge_invoice (charge_id, created_at)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_currency text`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS amount_text text`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_usd numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_chf numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_eur numeric(20, 2)`,
+  `ALTER TABLE pos_charge ADD COLUMN IF NOT EXISTS fiat_php numeric(20, 2)`,
+  `ALTER TABLE pos_charge DROP CONSTRAINT IF EXISTS pos_charge_amount_currency_check`,
+  `ALTER TABLE pos_charge ADD CONSTRAINT pos_charge_amount_currency_check
+  CHECK (amount_currency IN ('USD', 'CHF', 'EUR', 'PHP'))`,
 ];
 
 /**
@@ -104,7 +301,13 @@ function copyCharge(row: PosCharge): PosCharge {
     ...row,
     createdAt: new Date(row.createdAt.getTime()),
     expiresAt: new Date(row.expiresAt.getTime()),
+    paidAt: row.paidAt === null ? null : new Date(row.paidAt.getTime()),
   };
+}
+
+/** Oldest `createdAt` first, then `id` ascending. */
+function oldestFirst(rows: readonly PosCharge[]): PosCharge[] {
+  return newestFirst(rows).reverse();
 }
 
 /** Newest `createdAt` first, then `id` descending. */
@@ -120,10 +323,35 @@ function newestFirst(rows: readonly PosCharge[]): PosCharge[] {
 
 /**
  * Process-local {@link PosStore}. Used in tests and when no database URL
- * is configured — the process still boots. Always starts empty.
+ * is configured — the process still boots. Always starts empty. Its
+ * {@link InMemoryPosStore.paymentHashClaims} map is the payment hash claim
+ * of a memory boot, shared with `InMemoryShopPaymentStore`.
  */
 export class InMemoryPosStore implements PosStore {
   readonly #rows: PosCharge[] = [];
+  readonly #invoices: { paymentHash: string; chargeId: string; createdAtMs: number }[] = [];
+  /**
+   * The in-process payment hash claim: which charge invoice row and which
+   * shop payment hold each hash. `InMemoryShopPaymentStore` built on this
+   * store uses the same map.
+   */
+  readonly paymentHashClaims = new PaymentHashClaims();
+
+  /**
+   * The stored row with `id` when it was open at `issuedAtMs`: `pending` or
+   * `expired`, with `expiresAt` after `issuedAtMs`.
+   *
+   * @param id - Charge id.
+   * @param issuedAtMs - Issue time (epoch ms).
+   */
+  #openRow(id: string, issuedAtMs: number): PosCharge | undefined {
+    return this.#rows.find(
+      (row) =>
+        row.id === id &&
+        (row.status === 'pending' || row.status === 'expired') &&
+        row.expiresAt.getTime() > issuedAtMs,
+    );
+  }
 
   /**
    * Mark due pending rows expired (log `pos.expired` once when any flip).
@@ -268,6 +496,143 @@ export class InMemoryPosStore implements PosStore {
     }
     return Promise.resolve(listed);
   }
+
+  /**
+   * Store the charge's Spark invoice unless it has one.
+   *
+   * @param chargeId - Charge id.
+   * @param invoice - New `spark1…` string.
+   * @param issuedAtMs - Issue time (epoch ms).
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
+   */
+  issueSparkInvoice(chargeId: string, invoice: string, issuedAtMs: number): Promise<string | null> {
+    const row = this.#openRow(chargeId, issuedAtMs);
+    if (row === undefined) {
+      return Promise.resolve(null);
+    }
+    row.sparkInvoice ??= invoice;
+    return Promise.resolve(row.sparkInvoice);
+  }
+
+  /**
+   * Record a payment hash once for a charge that was open at `issuedAtMs`.
+   * Reads {@link InMemoryPosStore.paymentHashClaims} and adds the entry in
+   * one synchronous step, without an `await` in between, so the claim holds
+   * against `InMemoryShopPaymentStore` writers of the same map.
+   *
+   * @param chargeId - Charge id.
+   * @param paymentHash - BOLT11 payment hash.
+   * @param issuedAtMs - Issue time (epoch ms).
+   * @returns The outcome, with the holder on `other_payment`.
+   */
+  recordInvoice(
+    chargeId: string,
+    paymentHash: string,
+    issuedAtMs: number,
+  ): Promise<RecordInvoiceResult> {
+    const holder = this.paymentHashClaims.holder(paymentHash);
+    const held =
+      holder === null
+        ? null
+        : heldOutcome(
+            chargeId,
+            holder.chargeId,
+            holder.paymentId === null
+              ? null
+              : { id: holder.paymentId, chargeId: holder.paymentChargeId },
+          );
+    if (held !== null) {
+      return Promise.resolve(held);
+    }
+    if (this.#openRow(chargeId, issuedAtMs) === undefined) {
+      return Promise.resolve({ outcome: 'not_open' });
+    }
+    this.#invoices.push({ paymentHash, chargeId, createdAtMs: issuedAtMs });
+    this.paymentHashClaims.claimCharge(paymentHash, chargeId);
+    return Promise.resolve({ outcome: 'recorded' });
+  }
+
+  /**
+   * Find a charge from its recorded payment hash or its id.
+   *
+   * @param ref - Payment hash or charge id.
+   * @returns A caller-owned charge copy, or `undefined`.
+   */
+  findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined> {
+    const chargeId =
+      'paymentHash' in ref
+        ? this.#invoices.find((invoice) => invoice.paymentHash === ref.paymentHash)?.chargeId
+        : ref.chargeId;
+    const row =
+      chargeId === undefined
+        ? undefined
+        : this.#rows.find((candidate) => candidate.id === chargeId);
+    return Promise.resolve(row === undefined ? undefined : copyCharge(row));
+  }
+
+  /**
+   * Pending or expired charges with `expiresAt` after `sinceMs`, oldest first.
+   *
+   * @param sinceMs - Watch window start (epoch ms).
+   * @returns Copies of the watched charges with their payment hashes.
+   */
+  listWatched(sinceMs: number): Promise<PosWatch[]> {
+    const watched = oldestFirst(
+      this.#rows.filter(
+        (row) =>
+          (row.status === 'pending' || row.status === 'expired') &&
+          row.expiresAt.getTime() > sinceMs,
+      ),
+    );
+    return Promise.resolve(
+      watched.map((row) => ({
+        charge: copyCharge(row),
+        paymentHashes: this.#invoices
+          .filter((invoice) => invoice.chargeId === row.id)
+          .map((invoice) => invoice.paymentHash),
+      })),
+    );
+  }
+
+  /**
+   * Mark a pending or expired charge paid once. Logs `pos.paid`.
+   *
+   * @param chargeId - Charge id.
+   * @param paidAtMs - Confirmation instant (epoch ms).
+   * @returns A copy of the paid row, or `null` when nothing changed.
+   */
+  markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
+    const row = this.#rows.find(
+      (candidate) =>
+        candidate.id === chargeId &&
+        (candidate.status === 'pending' || candidate.status === 'expired'),
+    );
+    if (row === undefined) {
+      return Promise.resolve(null);
+    }
+    row.status = 'paid';
+    row.paidAt = new Date(paidAtMs);
+    logEvent('pos.paid', { accountId: row.accountId });
+    return Promise.resolve(copyCharge(row));
+  }
+
+  /**
+   * Remove the recorded payment hash, if any, and release its charge side in
+   * {@link InMemoryPosStore.paymentHashClaims}.
+   *
+   * @param paymentHash - BOLT11 payment hash.
+   * @returns Resolves when the entry is gone.
+   */
+  deleteInvoice(paymentHash: string): Promise<void> {
+    const index = this.#invoices.findIndex((invoice) => invoice.paymentHash === paymentHash);
+    if (index !== -1) {
+      this.#invoices.splice(index, 1);
+      this.paymentHashClaims.release(paymentHash, 'charge');
+    }
+    return Promise.resolve();
+  }
 }
 
 /** Row shape selected from `pos_charge`. */
@@ -278,6 +643,29 @@ interface PosSqlRow {
   status: string;
   created_at: Date | string;
   expires_at: Date | string;
+  paid_at: Date | string | null;
+  spark_invoice: string | null;
+  amount_currency?: string | null;
+  amount_text?: string | null;
+  fiat_usd?: string | null;
+  fiat_chf?: string | null;
+  fiat_eur?: string | null;
+  fiat_php?: string | null;
+}
+
+/** Columns written on insert. Numeric casts stay out of this list. */
+const POS_INSERT_COLUMNS =
+  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice, amount_currency, amount_text, fiat_usd, fiat_chf, fiat_eur, fiat_php';
+
+/** Columns selected into {@link PosSqlRow}. Numerics come back as text. */
+const POS_SELECT_COLUMNS =
+  'id, account_id, amount_sats, status, created_at, expires_at, paid_at, spark_invoice, amount_currency, amount_text, fiat_usd::text AS fiat_usd, fiat_chf::text AS fiat_chf, fiat_eur::text AS fiat_eur, fiat_php::text AS fiat_php';
+
+/** Select list with a table alias, so `::text` stays on that table's column. */
+function prefixedPosSelect(alias: string): string {
+  return POS_SELECT_COLUMNS.split(', ')
+    .map((column) => `${alias}.${column}`)
+    .join(', ');
 }
 
 /** Coerce Postgres timestamps; copy so callers cannot mutate driver dates. */
@@ -290,6 +678,22 @@ function asAmountSats(value: number | string | bigint): number {
   return typeof value === 'number' ? value : Number(value);
 }
 
+/** Currency code, or `null` when the column is missing or not one of the four. */
+function asFiatCode(value: string | null | undefined): PosFiatCode | null {
+  if (value === 'USD' || value === 'CHF' || value === 'EUR' || value === 'PHP') {
+    return value;
+  }
+  return null;
+}
+
+/** Numeric or text column as stored text, or `null` when it was not selected. */
+function asFiatText(value: string | null | undefined): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  return value;
+}
+
 /** Map a SQL row onto {@link PosCharge}. Unexported. */
 function mapPosRow(row: PosSqlRow): PosCharge {
   return {
@@ -299,6 +703,14 @@ function mapPosRow(row: PosSqlRow): PosCharge {
     status: row.status as PosChargeStatus,
     createdAt: asDate(row.created_at),
     expiresAt: asDate(row.expires_at),
+    paidAt: row.paid_at === null ? null : asDate(row.paid_at),
+    sparkInvoice: row.spark_invoice,
+    amountCurrency: asFiatCode(row.amount_currency),
+    amountText: asFiatText(row.amount_text),
+    fiatUsd: asFiatText(row.fiat_usd),
+    fiatChf: asFiatText(row.fiat_chf),
+    fiatEur: asFiatText(row.fiat_eur),
+    fiatPhp: asFiatText(row.fiat_php),
   };
 }
 
@@ -307,12 +719,17 @@ function mapPosRow(row: PosSqlRow): PosCharge {
  */
 export class PostgresPosStore implements PosStore {
   readonly #sql: SqlClient;
+  readonly #transactions: MergeDb | undefined;
 
   /**
-   * @param sql - Parameter-bound SQL client (already migrated).
+   * @param sql - Parameter-bound SQL client (already migrated, `shop_payment`
+   *   included: `migrateShopPaymentSchema` runs on every SQL boot).
+   * @param transactions - Transaction port for `recordInvoice`'s payment hash
+   *   claim; omitted → `recordInvoice` throws.
    */
-  constructor(sql: SqlClient) {
+  constructor(sql: SqlClient, transactions?: MergeDb) {
     this.#sql = sql;
+    this.#transactions = transactions;
   }
 
   /**
@@ -345,7 +762,7 @@ RETURNING id`,
   async currentPending(accountId: string, nowMs: number): Promise<PosCharge | null> {
     await this.#expireDue(accountId, nowMs);
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1 AND status = 'pending'
 ORDER BY created_at DESC, id DESC
@@ -368,8 +785,8 @@ LIMIT 1`,
       await this.#expireDue(row.accountId, row.createdAt.getTime());
     }
     await this.#sql.execute(
-      `INSERT INTO pos_charge (id, account_id, amount_sats, status, created_at, expires_at)
-VALUES ($1,$2,$3,$4,$5,$6)`,
+      `INSERT INTO pos_charge (${POS_INSERT_COLUMNS})
+VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
       [
         row.id,
         row.accountId,
@@ -377,6 +794,14 @@ VALUES ($1,$2,$3,$4,$5,$6)`,
         row.status,
         row.createdAt.toISOString(),
         row.expiresAt.toISOString(),
+        row.paidAt === null ? null : row.paidAt.toISOString(),
+        row.sparkInvoice,
+        row.amountCurrency,
+        row.amountText,
+        row.fiatUsd,
+        row.fiatChf,
+        row.fiatEur,
+        row.fiatPhp,
       ],
     );
     logEvent('pos.create', { accountId: row.accountId });
@@ -396,7 +821,7 @@ VALUES ($1,$2,$3,$4,$5,$6)`,
       `UPDATE pos_charge
 SET status = 'cancelled'
 WHERE account_id = $1 AND status = 'pending'
-RETURNING id, account_id, amount_sats, status, created_at, expires_at`,
+RETURNING ${POS_SELECT_COLUMNS}`,
       [accountId],
     );
     const cancelled = newestFirst(rows.map((row) => mapPosRow(row)));
@@ -417,7 +842,7 @@ RETURNING id, account_id, amount_sats, status, created_at, expires_at`,
    */
   async listForAccount(accountId: string, limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 WHERE account_id = $1
 ORDER BY created_at DESC, id DESC
@@ -435,7 +860,7 @@ LIMIT $2`,
    */
   async listLatest(limit: number): Promise<PosCharge[]> {
     const rows = await this.#sql.query<PosSqlRow>(
-      `SELECT id, account_id, amount_sats, status, created_at, expires_at
+      `SELECT ${POS_SELECT_COLUMNS}
 FROM pos_charge
 ORDER BY created_at DESC, id DESC
 LIMIT $1`,
@@ -465,5 +890,187 @@ WHERE created_at >= $1 AND created_at < $2`,
       accountId: row.account_id,
       createdAtMs: asDate(row.created_at).getTime(),
     }));
+  }
+
+  /**
+   * One conditional `UPDATE` that keeps an existing `spark_invoice`.
+   *
+   * @param chargeId - Charge id (`$1`).
+   * @param invoice - New `spark1…` string (`$2`).
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
+   * @returns The stored Spark invoice, or `null` when the charge was not open at `issuedAtMs`.
+   */
+  async issueSparkInvoice(
+    chargeId: string,
+    invoice: string,
+    issuedAtMs: number,
+  ): Promise<string | null> {
+    const rows = await this.#sql.query<{ spark_invoice: string }>(
+      `UPDATE pos_charge
+SET spark_invoice = COALESCE(spark_invoice, $2)
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3
+RETURNING spark_invoice`,
+      [chargeId, invoice, new Date(issuedAtMs).toISOString()],
+    );
+    return rows[0]?.spark_invoice ?? null;
+  }
+
+  /**
+   * One transaction (`MergeDb.begin`, a `sql.begin`): first the payment hash
+   * claim (`SELECT pg_advisory_xact_lock($1, $2)`), then the
+   * `pos_charge_invoice` and `shop_payment` rows of the hash, then, when
+   * nobody holds it, the insert for a charge that was open at `issuedAtMs`.
+   * It takes no other lock before the insert.
+   *
+   * @param chargeId - Charge id (`$1` of the insert).
+   * @param paymentHash - BOLT11 payment hash (`$2` of the insert).
+   * @param issuedAtMs - Issue time (epoch ms); bound as ISO `$3`.
+   * @returns The outcome, with the holder on `other_payment`.
+   * @throws Error('pos transactions are not configured') without a transaction
+   *   port; any statement error propagates (the transaction rolls back).
+   */
+  async recordInvoice(
+    chargeId: string,
+    paymentHash: string,
+    issuedAtMs: number,
+  ): Promise<RecordInvoiceResult> {
+    const transactions = this.#transactions;
+    if (transactions === undefined) {
+      throw new Error('pos transactions are not configured');
+    }
+    return transactions.begin(async (tx): Promise<RecordInvoiceResult> => {
+      await tx.query(PAYMENT_HASH_CLAIM_SQL, [
+        PAYMENT_HASH_LOCK_NAMESPACE,
+        paymentHashLockKey(paymentHash),
+      ]);
+      const invoices = await tx.query<{ charge_id: string }>(
+        `SELECT charge_id FROM pos_charge_invoice WHERE payment_hash = $1`,
+        [paymentHash],
+      );
+      const payments = await tx.query<{ id: string; pos_charge_id: string | null }>(
+        `SELECT id, pos_charge_id FROM shop_payment WHERE payment_hash = $1`,
+        [paymentHash],
+      );
+      const payment = payments[0];
+      const held = heldOutcome(
+        chargeId,
+        invoices[0]?.charge_id ?? null,
+        payment === undefined ? null : { id: payment.id, chargeId: payment.pos_charge_id },
+      );
+      if (held !== null) {
+        return held;
+      }
+      const rows = await tx.query<{ payment_hash: string }>(
+        `INSERT INTO pos_charge_invoice (payment_hash, charge_id, created_at)
+SELECT $2::text, id, $3::timestamptz
+FROM pos_charge
+WHERE id = $1 AND status IN ('pending', 'expired') AND expires_at > $3::timestamptz
+ON CONFLICT (payment_hash) DO NOTHING
+RETURNING payment_hash`,
+        [chargeId, paymentHash, new Date(issuedAtMs).toISOString()],
+      );
+      return { outcome: rows.length > 0 ? 'recorded' : 'not_open' };
+    });
+  }
+
+  /**
+   * Select the charge owning a recorded payment hash, or select it directly by id.
+   *
+   * A malformed charge id returns without a query so Postgres never attempts
+   * to cast it to `uuid`.
+   *
+   * @param ref - Payment hash or charge id (`$1`).
+   * @returns The mapped charge, or `undefined`.
+   */
+  async findChargeForPayment(
+    ref: { paymentHash: string } | { chargeId: string },
+  ): Promise<PosCharge | undefined> {
+    if ('chargeId' in ref && !UUID_PATTERN.test(ref.chargeId)) {
+      return undefined;
+    }
+    const rows =
+      'paymentHash' in ref
+        ? await this.#sql.query<PosSqlRow>(
+            `SELECT ${prefixedPosSelect('c')}
+FROM pos_charge_invoice i
+JOIN pos_charge c ON c.id = i.charge_id
+WHERE i.payment_hash = $1`,
+            [ref.paymentHash],
+          )
+        : await this.#sql.query<PosSqlRow>(
+            `SELECT ${POS_SELECT_COLUMNS}
+FROM pos_charge
+WHERE id = $1`,
+            [ref.chargeId],
+          );
+    const row = rows[0];
+    return row === undefined ? undefined : mapPosRow(row);
+  }
+
+  /**
+   * Pending or expired charges with `expires_at` after `sinceMs`, joined to
+   * their recorded payment hashes, oldest first.
+   *
+   * @param sinceMs - Watch window start (epoch ms); bound as ISO `$1`.
+   * @returns Watched charges with their payment hashes.
+   */
+  async listWatched(sinceMs: number): Promise<PosWatch[]> {
+    const rows = await this.#sql.query<PosSqlRow & { payment_hash: string | null }>(
+      `SELECT ${prefixedPosSelect('c')}, i.payment_hash
+FROM pos_charge c
+LEFT JOIN pos_charge_invoice i ON i.charge_id = c.id
+WHERE c.status IN ('pending', 'expired') AND c.expires_at > $1
+ORDER BY c.created_at ASC, c.id ASC, i.created_at ASC, i.payment_hash ASC`,
+      [new Date(sinceMs).toISOString()],
+    );
+    const watched = new Map<string, PosWatch>();
+    for (const row of rows) {
+      let entry = watched.get(row.id);
+      if (entry === undefined) {
+        entry = { charge: mapPosRow(row), paymentHashes: [] };
+        watched.set(row.id, entry);
+      }
+      if (row.payment_hash !== null) {
+        entry.paymentHashes.push(row.payment_hash);
+      }
+    }
+    return [...watched.values()];
+  }
+
+  /**
+   * One conditional `UPDATE … WHERE status IN ('pending', 'expired')`. Logs
+   * `pos.paid` when a row is returned.
+   *
+   * @param chargeId - Charge id (`$1`).
+   * @param paidAtMs - Confirmation instant (epoch ms); bound as ISO `$2`.
+   * @returns The mapped paid row, or `null` when nothing changed.
+   */
+  async markPaid(chargeId: string, paidAtMs: number): Promise<PosCharge | null> {
+    const rows = await this.#sql.query<PosSqlRow>(
+      `UPDATE pos_charge
+SET status = 'paid', paid_at = $2
+WHERE id = $1 AND status IN ('pending', 'expired')
+RETURNING ${POS_SELECT_COLUMNS}`,
+      [chargeId, new Date(paidAtMs).toISOString()],
+    );
+    const row = rows[0];
+    if (row === undefined) {
+      return null;
+    }
+    const paid = mapPosRow(row);
+    logEvent('pos.paid', { accountId: paid.accountId });
+    return paid;
+  }
+
+  /**
+   * One `DELETE FROM pos_charge_invoice WHERE payment_hash = $1`.
+   *
+   * @param paymentHash - BOLT11 payment hash (`$1`).
+   * @returns Resolves when the statement has run.
+   */
+  async deleteInvoice(paymentHash: string): Promise<void> {
+    await this.#sql.execute(`DELETE FROM pos_charge_invoice WHERE payment_hash = $1`, [
+      paymentHash,
+    ]);
   }
 }
