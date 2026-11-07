@@ -923,7 +923,7 @@
 - **Purpose:** Whether one account has a push subscription the push worker would send to: a subscription whose session token still authenticates that account (same rule as `runPushWorkerTick`, `sweepPushStore`, and `listAccountIdsWithLiveSubscriptions`).
 - **Inputs:** `PushStore`, `AuthStore`, `nowMs` (session expiry clock), `accountId`.
 - **Returns / side effects:** `true` at the first live subscription of the account, otherwise `false`. Read-only: stale subscriptions stay until the worker or `sweepPushStore` removes them.
-- **Used by:** `createApp` as the `hasLiveDevice` check of `webhookRoutes` / `notifyPaymentReceived`.
+- **Used by:** `createApp` as the `hasLiveDevice` check of `webhookRoutes` / `notifyPaymentReceived`, and the entry point as the same check of the Spark invoice worker's `notifyPayment`.
 
 ## Function: listAccountIdsWithLiveSubscriptions
 
@@ -1015,7 +1015,7 @@
 - **Inputs:** `PaymentReceivedDeps` (`auth` with `getAccountByVerifiedSparkPubkey`, `getAccountByPubkey`, `getNostrPublicKey`; `pushStore` with `enqueuePaymentReceived`; `hasLiveDevice`; `notifications`, `inboxUnreadCount`, `now`) and a parsed payment.
 - **Rules:** The receiver is `getAccountByVerifiedSparkPubkey(userPubkey)`. A zap request counts only when it is a kind 9734 event with a valid signature, a `p` tag equal to the receiver's Nostr pubkey, and at least one `amount` tag, every one equal to the received amount in millisats (an unbound request could be replayed from a public receipt); otherwise the payment is pushed without a sender. A counted zap request from the receiver's own key returns `self`. A zap on a forum note is pushed too: `notifyZap` / `notifyHeart` send a separate notification about the note under their own rules (fan-out level, `notifyHearts`, platform payer), so this wallet push does not depend on them. Level `none` (`wantsNotification`) returns `off`; an account without a push subscription whose session is still live (`hasLiveDevice`) returns `no_device`, and nothing is claimed.
 - **Returns / side effects:** `queued` after `PushStore.enqueuePaymentReceived` wrote the claim and the outbox row (`unreadCount` is in-app plus listed inbox unread), `duplicate` when the hash was already claimed, or the skip reason above. Throws when a store call rejects.
-- **Used by:** `webhookRoutes`.
+- **Used by:** `webhookRoutes`, and the Spark invoice worker's `notifyPayment` (wired by the entry point) for a finalized member Spark invoice.
 
 ## Function: webhookRoutes
 
@@ -2153,7 +2153,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Purpose:** Build the fan-out `inboxUnreadCount` callback: listed GET `/conversations` unread for one account. Staff comes from `getAccount` + `roleAtLeast(role, 'moderator')`, the `moderator` flag from `isModeratorGroupMember` (at least moderator and not the platform account). GET `/conversations` never lists `moderator_group` (fifth argument always false); this helper still pins that thread in the badge unread count for every group member. Platform id from `listAccounts` / `isPlatform`. Lookup failure yields staff false, moderator false, and `platformId` null.
 - **Inputs:** `ConversationStore`, `Pick<AuthStore, 'getAccount' | 'listAccounts'>`.
 - **Returns / side effects:** `(accountId) => Promise<number>` calling `conversations.unreadCount`.
-- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`); `createApp` for `webhookRoutes` (badge count of the payment push).
+- **Used by:** `notifyConversationMessage`; `notifyForumPost` / `notifyForumReply` / `notifyZap` / `notifyModeratorAppointed` / `notifyModeratorProposed` callers that have a conversation store (`messagesRoutes`, `meRoutes`, `indexOpenZapReceipts`, `runNostrWorkerTick`, `trustRoutes`); `createApp` for `webhookRoutes` (badge count of the payment push); the entry point for the Spark invoice worker's `notifyPayment` (the same badge count).
 
 ## Function: notifyConversationMessage
 
@@ -2585,14 +2585,14 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: InMemorySparkInvoiceStore
 
-- **Purpose:** Process-local `SparkInvoiceStore` for tests and memory boots. `issue` keeps the first invoice per payment hash and moves an open row's `createdAt` forward when it is handed out again; `listOpen` returns open rows issued at or after a time, oldest first; `markSettled` flips an open row once. Member invoices: `issueMember` keeps the first row per invoice string and then drops that account's open member invoices beyond the newest `MEMBER_SPARK_INVOICE_CAP` (20); `listOpenMember` returns open rows whose `expiresAt` is after a time, oldest first; `markMemberNotified` flips an open row once; `pruneMember` deletes rows whose `expiresAt` is at or before a time and returns how many.
+- **Purpose:** Process-local `SparkInvoiceStore` for tests and memory boots. `issue` keeps the first invoice per payment hash and moves an open row's `createdAt` forward when it is handed out again; `listOpen` returns open rows issued at or after a time, oldest first; `markSettled` flips an open row once. Member invoices: `issueMember` keeps the first row per invoice string and then keeps that row plus the account's newest other open member invoices, `MEMBER_SPARK_INVOICE_CAP` (20) open rows in all; `listOpenMember` returns open rows whose `expiresAt` is after a time, oldest first; `markMemberNotified` flips an open row once (whatever the push outcome); `pruneMember` deletes rows whose `expiresAt` is at or before a time and returns how many.
 - **Inputs:** None.
-- **Returns / side effects:** The store port; mutates a private map and returns copies.
+- **Returns / side effects:** The store port; mutates two private maps (zap and member invoices) and returns copies.
 - **Used by:** `createApp` default when free in-app payments are on, the entry point on memory boots, and unit tests.
 
 ## Function: PostgresSparkInvoiceStore
 
-- **Purpose:** `SparkInvoiceStore` against `spark_invoice`. `issue` inserts with `ON CONFLICT (payment_hash)` that only moves an open row's `created_at` forward and then reads the stored invoice string back; `listOpen` selects open rows in the window ordered by `created_at`; `markSettled` is one conditional `UPDATE … WHERE status = 'open'`, so two ticks cannot settle the same row twice. Member invoices live in `member_spark_invoice`: `issueMember` inserts with `ON CONFLICT (invoice) DO NOTHING` and then deletes that account's open rows outside the newest `MEMBER_SPARK_INVOICE_CAP` by `created_at`; `listOpenMember` selects open rows with `expires_at` after a time; `markMemberNotified` is one conditional `UPDATE … WHERE status = 'open'`; `pruneMember` deletes rows with `expires_at` at or before a time.
+- **Purpose:** `SparkInvoiceStore` against `spark_invoice` and `member_spark_invoice`. `issue` inserts with `ON CONFLICT (payment_hash)` that only moves an open row's `created_at` forward and then reads the stored invoice string back; `listOpen` selects open rows in the window ordered by `created_at`; `markSettled` is one conditional `UPDATE … WHERE status = 'open'`, so two ticks cannot settle the same row twice. Member invoices live in `member_spark_invoice`: `issueMember` is one statement: a data-modifying CTE inserts with `ON CONFLICT (invoice) DO NOTHING`, and the same statement deletes that account's other open rows outside the newest `MEMBER_SPARK_INVOICE_CAP` − 1 by `created_at`, so the insert and the trim commit together (two concurrent inserts for one account can leave one extra open row until its next insert); `listOpenMember` selects open rows with `expires_at` after a time; `markMemberNotified` is one conditional `UPDATE … WHERE status = 'open'`; `pruneMember` deletes rows with `expires_at` at or before a time.
 - **Inputs:** A migrated `SqlClient`.
 - **Returns / side effects:** Same port as the in-memory store, persisted in Postgres. Every write is logged in `db_change` by the table trigger.
 - **Used by:** `openBootStores` when `DATABASE_URL` is set.
