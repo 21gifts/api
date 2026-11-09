@@ -1304,10 +1304,10 @@
 
 ## Function: resolveSpendPing
 
-- **Purpose:** Resolve a spend ping collaborator from env. Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` → `undefined` (caller skips). Trims both values and strips trailing slashes from the URL. The process still boots. When both env values are set, `opts.rosterStore` is required and a missing store throws `Daily roster store is required`. An optional third argument also forwards a gift ledger, a clock, an account lookup, and the LNURL server config.
-- **Inputs:** `env` (`Record<string, string | undefined>`), `fetchImpl` (`FetchFn`), and optional `{ rosterStore?, gifts?, now?, accounts?, lnurlServer? }`.
-- **Returns / side effects:** `HttpSpendPing` when both env values are set; otherwise `undefined`. No HTTP.
-- **Used by:** `createApp`, and the process entry `src/index.ts`, which forwards the boot gift store, the auth store as `accounts`, and the LNURL server config. A zap-composed daily ping then uses the same welcome-paid skip. Welcome kind does not read the ledger.
+- **Purpose:** Resolve a spend ping collaborator from env through `PAYOUT_SIGNER`. `spend` (unset, blank, or explicit) keeps the legacy HTTP ping: unset or blank `SPEND_URL` or `SPEND_API_TOKEN` → `undefined` (caller skips), both values are trimmed and the URL loses trailing slashes. `fond` builds an `HttpSpendPing` with a `FondQueueSink` and needs no spend URL or token. Either mode requires `opts.rosterStore` (`Daily roster store is required`); fond mode also requires `opts.fondPayoutStore` (`Fond payout store is required`). Any other `PAYOUT_SIGNER` throws `Invalid PAYOUT_SIGNER` before a store is read.
+- **Inputs:** `env` (`Record<string, string | undefined>`), `fetchImpl` (`FetchFn`), and optional `{ rosterStore?, fondPayoutStore?, gifts?, now?, accounts?, lnurlServer? }`.
+- **Returns / side effects:** `HttpSpendPing` when configured; otherwise `undefined` in spend mode with missing env. No HTTP at resolve time.
+- **Used by:** `createApp`, and the process entry `src/index.ts`, which forwards the boot gift store, the auth store as `accounts`, the LNURL server config, the physical roster store, and the fond payout store. A zap-composed daily ping then uses the same welcome-paid skip. Welcome kind does not read the ledger.
 
 ## Function: decideSpendInstruction
 
@@ -1333,7 +1333,7 @@
 ## Function: HttpSpendPing
 
 - **Purpose:** Read the daily roster from `DailyRosterStore`, then POST `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`. For a daily ping, a configured gift ledger is read after that store read and before the decision; `welcomeGiftPaidOnUtcDay` sets the same-UTC-day flag. A list throw logs `spend.ping.failed` and does not POST. Omitted gifts leave the flag unset. A decided daily body is `{ address, messageId, amountUsd, comment }` (no `kind` key); welcome is `{ address, messageId, kind: "welcome", amountUsd, comment }`; moderator is `{ address, kind: "moderator", groupMessageId, amountUsd, comment }` (no `messageId` key). Skipped reasons `payments_disabled`, `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped` and do not POST. For `ping`, 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`. Network, abort, non-2xx, a store read throw, a live GET failure, an account lookup throw, and a gift-ledger throw log `spend.ping.failed` and resolve. Never throws. Never logs the token. When `rosterStore.hasBeenWritten()` is false, GET `{spendUrl}/daily-roster` with the Bearer token, decide from that JSON object, and do not import it. A non-2xx response, a throw, null, an array, or any other non-object logs `spend.ping.failed` and does not POST. When the store has been written, read only the store and do not GET; its rows name accounts, so the pinged address is resolved with `accountByReceivingAddress` (configured `accounts` and `lnurlServer`) and the row of that account counts. Without `accounts`, or for an address no verified wallet receives on, no stored row matches. A throw of that lookup logs `spend.ping.failed` and does not POST (`pingOnDay`: `{ status: 'failed' }`). `pingOnDay` books a daily ping (default) or, with kind `'moderator'`, a moderator stipend on the caller-supplied UTC day `YYYY-MM-DD` instead of the clock day. The daily POST body is `{ address, messageId, amountUsd, comment, day }` and its welcome-paid check uses that day. The moderator POST body is `{ address, kind: "moderator", groupMessageId, amountUsd, comment, day }`, decided from the roster's moderator rows, without the welcome-paid check. A decided skip logs `spend.ping.skipped` and returns `{ status: 'skipped', reason }` without posting. HTTP 202, and HTTP 200 whose JSON `status` is `accepted`, log `spend.ping.ok` and return `{ status: 'accepted' }`. HTTP 200 whose JSON `status` is `skipped` with a non-empty string `reason` logs `spend.ping.skipped` and returns `{ status: 'skipped', reason }`. Any other HTTP status, a non-object JSON body, a JSON parse failure, a roster read failure, a gift-ledger failure, and a throw log `spend.ping.failed` and return `{ status: 'failed' }`. `pingOnDay` never throws and never returns a Lightning address.
-- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, rosterStore, timeoutMs?, gifts?, now?, accounts?, lnurlServer? }` (already-trimmed base URL, no trailing slash; default timeout 5000 ms; `now` defaults to `Date.now`). `ping(address, messageId, kind?: 'daily' | 'moderator' | 'welcome', grantStatus?: SpendGrantStatus)`. The optional fourth argument `grantStatus` is passed into `decideSpendInstruction` only when the resolved kind is daily (kind omitted or `'daily'`). Welcome and moderator do not pass it. The welcome flag is passed only when the ledger read returned a boolean. `pingOnDay(address, messageId, day, grantStatus?: SpendGrantStatus, kind?: 'daily' | 'moderator')` posts that `day` and forwards `grantStatus` into the daily decision; `messageId` is the group message id for a moderator stipend.
+- **Inputs:** Constructor `{ spendUrl?, token?, fetchImpl, rosterStore, sink?, timeoutMs?, gifts?, now?, accounts?, lnurlServer? }` (an omitted sink builds an `HttpPayoutSink` from `spendUrl` and `token`; default timeout 5000 ms; `now` defaults to `Date.now`). `ping(address, messageId, kind?: 'daily' | 'moderator' | 'welcome', grantStatus?: SpendGrantStatus)`. The optional fourth argument `grantStatus` is passed into `decideSpendInstruction` only when the resolved kind is daily (kind omitted or `'daily'`). Welcome and moderator do not pass it. The welcome flag is passed only when the ledger read returned a boolean. `pingOnDay(address, messageId, day, grantStatus?: SpendGrantStatus, kind?: 'daily' | 'moderator')` delivers that `day` and forwards `grantStatus` into the daily decision; `messageId` is the group message id for a moderator stipend. The final step is always `PayoutSink.deliver`; `HttpPayoutSink` is exactly the old POST, `FondQueueSink` writes `fond_payout` instead.
 - **Returns / side effects:** `ping` returns `Promise<void>`. Unwritten store: GET `{spendUrl}/daily-roster`, then maybe POST. Written store: store read, then maybe POST. Logs `spend.ping.ok`, `spend.ping.skipped`, or `spend.ping.failed`. Each passes `address` to `logEvent`; the console line carries `addressRef` instead, the diagnostic row keeps `address`. `pingOnDay` returns `Promise<SpendPingOutcome>`: `{ status: 'accepted' }`, `{ status: 'skipped', reason }`, or `{ status: 'failed' }`.
 - **Used by:** `resolveSpendPing`.
 
@@ -5277,4 +5277,81 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **List:** `GET /` is the public directory of keyed public shops, newest note first. 200 `{ shops, nextCursor? }` and each shop is `{ npub, name, place }`. `place` is null without coordinates, and `address` is null unless every structured part is non-blank. `limit` defaults to 20 and is at most 100. A bad limit or cursor is 400 `Invalid limit` or `Invalid cursor` and does not read the store. A store throw is 503 `{ error: 'Shops are unavailable' }` and logs `shops.list.failed` with `Cache-Control: no-store`. A bearer is ignored. The ciphertext is not selected. `GET /:npub` uses `publicShop`.
 - **Inputs:** `{ authStore, messages, identities, env?, now?, lnurlServer? }` (`env` default `process.env`, `now` default `Date.now`, the clock of the directory cache; without `lnurlServer` no till account can receive, so `payUsername` is `null`).
 - **Returns / side effects:** `Shop` = `{ npub, messageId, name, description, place: { lat, lng, label, address } | null, photos: [{ url, width, height }], payUsername, nip05, createdAt }`. `address` is null unless every structured part is non-blank. Photo URLs are absolute from `resolvePublicApiBase` (path only when empty); dimensions from `imageHeaderSize`. `payUsername` is the till account's username when it has a username and a receiving address (`receivingAddress`: a verified wallet with the LNURL server configured), otherwise `null`; `nip05` is `null` without `nip05Domain`. `Cache-Control: public, max-age=60` on 200, 301, 404 and 410; `no-store` on 503. No session; a bearer changes nothing.
+- **Used by:** `createApp`.
+
+## Function: isFondRole
+
+- **Purpose:** Identity check for the dedicated payer role. `fond` has no rank, so this is not a permission check and never grants a rank minimum.
+- **Inputs:** `role` (`AccountRole`).
+- **Returns / side effects:** `true` only for `fond`. No I/O.
+- **Used by:** `fondRoutes`.
+
+## Function: resolvePayoutSigner
+
+- **Purpose:** Read `PAYOUT_SIGNER`. Unset, blank, or `spend` is today's HTTP spend ping; `fond` queues the decided instruction for the Fond member. The value is trimmed and lower-cased. Any other value is a boot error `Invalid PAYOUT_SIGNER`.
+- **Inputs:** `env` (`Record<string, string | undefined>`).
+- **Returns / side effects:** `'spend'` or `'fond'`. No I/O. Throws `Error('Invalid PAYOUT_SIGNER')` for an unknown value.
+- **Used by:** `resolveSpendPing`, `createApp`, and the process entry `src/index.ts`.
+
+## Function: resolveFondUsername
+
+- **Purpose:** Read `FOND_USERNAME`, the one account allowed on `/fond/*`. Unset or blank uses `tondo-fond`. The value is trimmed and lower-cased.
+- **Inputs:** `env` (`Record<string, string | undefined>`).
+- **Returns / side effects:** The username string. No I/O.
+- **Used by:** `createApp` and `fondRoutes`.
+
+## Function: migrateFondPayoutSchema
+
+- **Purpose:** Apply `FOND_PAYOUT_SCHEMA_SQL` in order: `CREATE TABLE IF NOT EXISTS fond_payout` with `text` + CHECK `kind` and `status` columns (no ENUM types), the partial unique index on `(utc_day, kind, address)` for `daily`/`moderator`, and the partial unique index on `(kind, address)` for `welcome`.
+- **Inputs:** `sql` (`SqlClient`).
+- **Returns / side effects:** Resolves after every statement executed. Idempotent. Propagates SQL failures.
+- **Used by:** `openBootStores`, after `migrateDailyRosterSchema` and before `migrateApiLogSchema`.
+
+## Function: InMemoryFondPayoutStore
+
+- **Purpose:** Process-local `FondPayoutStore`. `enqueue` inserts an `owed` row unless a dedupe key exists; a conflict returns `'paid'` when the existing row is `paid`, else `'accepted'`. `listOpen` returns one UTC day's `owed`/`invoiced` rows oldest first. `setInvoiced`, `setFailed`, and `setPaid` are guarded transitions that return `undefined` when the row is missing or not in a permitted source status.
+- **Inputs:** Constructor optional `now` clock (default `Date.now`). `enqueue(FondPayoutEnqueue)`, `listOpen(utcDay)`, `get(id)`, `setInvoiced(id, invoice)`, `setFailed(id, failure)`, `setPaid(id)`.
+- **Returns / side effects:** Caller-owned copies. No I/O.
+- **Used by:** Tests, `createApp` memory boots, `openBootStores`.
+
+## Function: PostgresFondPayoutStore
+
+- **Purpose:** `FondPayoutStore` against `fond_payout`. `enqueue` is `INSERT … ON CONFLICT DO NOTHING`; on a conflict it reads the existing row (by `utc_day, kind, address` for daily/moderator, by `kind, address` for welcome) and returns `'paid'` only when that status is `paid`. The transition methods are conditional `UPDATE … WHERE id = $1 AND status …` statements with `updated_at = now()`.
+- **Inputs:** `sql` (`SqlClient`).
+- **Returns / side effects:** Rows mapped from driver values (`date` → `YYYY-MM-DD`, timestamps → `Date`). Propagates SQL failures.
+- **Used by:** `openBootStores` when `DATABASE_URL` is set.
+
+## Function: HttpPayoutSink
+
+- **Purpose:** The legacy `POST {spendUrl}/ping` delivery with Bearer `SPEND_API_TOKEN`. A body without `day` maps any 2xx to accepted and everything else to failed. A body with `day` keeps the strict mapping: 202 accepted; 200 whose JSON `status` is `accepted` accepted; 200 whose JSON `status` is `skipped` with a non-empty string `reason` skipped; any other status, unparsable JSON, or throw failed.
+- **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (default 5000 ms). `deliver(address, body)`.
+- **Returns / side effects:** `'accepted' | 'skipped' | 'failed'`. Never throws and never logs the token. `lastSkipReason()` returns the most recent skip reason.
+- **Used by:** `HttpSpendPing` and `resolveSpendPing`.
+
+## Function: FondQueueSink
+
+- **Purpose:** Write one `fond_payout` row from a decided instruction. The body `kind` (default daily) selects the row kind; the body `day` is the UTC day, otherwise the clock UTC day. `amountUsd` becomes a two-decimal string (`2` → `2.00`), the comment is copied, and `messageId`/`groupMessageId` are stored only for their kind. The queue dedupe is spend's: daily/moderator per day, welcome once ever per address.
+- **Inputs:** Constructor `{ store, now? }`. `deliver(address, body)`.
+- **Returns / side effects:** `'accepted'` for a new or already-queued row; `'skipped'` with reason `paid` when the existing row is paid; `'failed'` when the store throws. Never throws.
+- **Used by:** `resolveSpendPing` when `PAYOUT_SIGNER=fond`.
+
+## Function: issueGiftInvoice
+
+- **Purpose:** Reusable issue logic extracted from `POST /invoices`, unchanged in order: normalize `amountUsd`, validate ids and address and amount bounds, require a verified-wallet member with a passkey, apply `loadPayoutEligibility`, run the welcome and forum-post gates, optionally list the gift ledger for the same-day welcome veto, fetch the LNURL-pay invoice, verify the BOLT11 amount, and store the invoice.
+- **Inputs:** `GiftActionDeps` and `IssueGiftInvoiceInput` (`address`, `amountMsat`, `comment?`, `messageId?`, `groupMessageId?`, `amountUsd?`).
+- **Returns / side effects:** `{ ok: true, invoice }`, or `{ ok: false, status, error }` with the exact route texts (`Passkey required`, `Funding grant required`, `Forum post required`, `Wallet required`, `Lightning Address did not issue an invoice`, …). Logs the same `invoice.*` events as before.
+- **Used by:** `POST /invoices` and `POST /fond/payouts/:id/invoice`.
+
+## Function: proveGiftInvoice
+
+- **Purpose:** Reusable proof logic extracted from `POST /invoices/proof`, unchanged: unknown invoice 404, idempotent repeat with the same preimage runs the paid side effects again, a matching preimage marks the invoice paid and runs the paid side effects, a non-matching preimage is 400, and an expired unpaid invoice is 409. The paid side effects record the gift row with the caller's `sourceWallet`, attach the platform forum reply, and attach the moderator-group stipend.
+- **Inputs:** `GiftActionDeps` and `{ id, preimage, sourceWallet }`.
+- **Returns / side effects:** `{ ok: true, body: { status: 'paid', id, paymentHash } }`, or `{ ok: false, status, error }`. Logs the same `invoice.paid` and gift-side events as before.
+- **Used by:** `POST /invoices/proof` (`lightning.space`) and `POST /fond/payouts/:id/proof` (the fond username).
+
+## Function: fondRoutes
+
+- **Purpose:** Member-session routes for the single Fond payer. Mounted always at `/fond`; every route first answers 404 unless `PAYOUT_SIGNER=fond`, then 401 without a session, then 403 `Fond only` unless the account has role `fond`, the configured `FOND_USERNAME`, and is not the platform account. `GET /payouts` lists today's `owed`/`invoiced` rows as `{ id, kind, status, utcDay }`. `POST /payouts/:id/invoice` prices the stored USD at the BTC/USD spot (`round(usd / spot * 1e8)` sats, at least one sat) and calls `issueGiftInvoice`; an issue refusal stores `failed` and answers 409, a transport failure leaves the row owed. `POST /payouts/:id/proof` calls `proveGiftInvoice` with `sourceWallet` = `FOND_USERNAME` and marks the row paid.
+- **Inputs:** `FondRouteDeps` (`authStore`, `fondPayoutStore`, `payoutSigner`, `fondUsername`, `now`, `fetchImpl`, optional `lnurlServer`, and `actions: GiftActionDeps`).
+- **Returns / side effects:** A Hono app. Never logs addresses, preimages, or invoices. Spot missing or `< 1 sat` → 503 `Price unavailable` with the row unchanged. Unknown id → 404; another day, `paid`, or `failed` → 409 `Not payable`; not `invoiced` → 409 `Not invoiced`; a paid row's proof repeats 200.
 - **Used by:** `createApp`.

@@ -25,7 +25,7 @@ import { encodeSparkAddress } from '@/lib/spark-address';
  * `verified` is a moderator confirming this person in real
  * life (forum badge), not a verified wallet.
  */
-export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder';
+export type AccountRole = 'basis' | 'verified' | 'moderator' | 'initiator' | 'founder' | 'fond';
 
 /**
  * Owner fan-out filter. Omitted / unknown → `all`.

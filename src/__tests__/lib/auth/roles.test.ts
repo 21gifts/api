@@ -2,18 +2,21 @@ import { describe, expect, it } from 'vitest';
 import {
   ROLE_ORDER,
   canEditDailyPayoutRoster,
+  isFondRole,
   isModeratorGroupMember,
   roleAtLeast,
   roleRank,
   sameRoleRank,
 } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
+import type { RankRole } from '@/lib/auth/roles';
 
-const roles: readonly AccountRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
+const rankRoles: readonly RankRole[] = ['basis', 'verified', 'moderator', 'initiator', 'founder'];
+const roles: readonly AccountRole[] = [...rankRoles, 'fond'];
 
 describe('ROLE_ORDER', () => {
-  it('lists roles as the five-value identity list', () => {
-    expect(ROLE_ORDER).toEqual(['basis', 'verified', 'moderator', 'initiator', 'founder']);
+  it('lists the five rank roles plus fond last', () => {
+    expect(ROLE_ORDER).toEqual(['basis', 'verified', 'moderator', 'initiator', 'founder', 'fond']);
   });
 });
 
@@ -29,7 +32,7 @@ describe('roleRank', () => {
 
 describe('roleAtLeast', () => {
   it('is the 5×5 truth table of rank comparison', () => {
-    const table: ReadonlyArray<readonly [AccountRole, AccountRole, boolean]> = [
+    const table: ReadonlyArray<readonly [RankRole, RankRole, boolean]> = [
       ['basis', 'basis', true],
       ['basis', 'verified', false],
       ['basis', 'moderator', false],
@@ -56,10 +59,16 @@ describe('roleAtLeast', () => {
       ['founder', 'initiator', true],
       ['founder', 'founder', true],
     ];
-    expect(table).toHaveLength(roles.length * roles.length);
+    expect(table).toHaveLength(rankRoles.length * rankRoles.length);
     for (const [role, min, want] of table) {
       expect(roleAtLeast(role, min)).toBe(want);
       expect(roleAtLeast(role, min)).toBe(roleRank(role) >= roleRank(min));
+    }
+  });
+
+  it('never lets fond meet any minimum', () => {
+    for (const min of rankRoles) {
+      expect(roleAtLeast('fond', min)).toBe(false);
     }
   });
 });
@@ -71,6 +80,13 @@ describe('sameRoleRank', () => {
     expect(sameRoleRank('founder', 'moderator')).toBe(false);
     expect(sameRoleRank('verified', 'moderator')).toBe(false);
   });
+
+  it('is false when either side is fond', () => {
+    for (const other of roles) {
+      expect(sameRoleRank('fond', other)).toBe(false);
+      expect(sameRoleRank(other, 'fond')).toBe(false);
+    }
+  });
 });
 
 describe('isModeratorGroupMember', () => {
@@ -81,9 +97,10 @@ describe('isModeratorGroupMember', () => {
     expect(isModeratorGroupMember({ role: 'founder', isPlatform: false })).toBe(true);
   });
 
-  it('keeps verified and basis members out', () => {
+  it('keeps verified, basis, and fond members out', () => {
     expect(isModeratorGroupMember({ role: 'verified' })).toBe(false);
     expect(isModeratorGroupMember({ role: 'basis' })).toBe(false);
+    expect(isModeratorGroupMember({ role: 'fond' })).toBe(false);
   });
 
   it('keeps the platform account out whatever role it carries', () => {
@@ -100,5 +117,14 @@ describe('canEditDailyPayoutRoster', () => {
     expect(canEditDailyPayoutRoster('moderator')).toBe(false);
     expect(canEditDailyPayoutRoster('verified')).toBe(false);
     expect(canEditDailyPayoutRoster('basis')).toBe(false);
+    expect(canEditDailyPayoutRoster('fond')).toBe(false);
+  });
+});
+
+describe('isFondRole', () => {
+  it('is true only for fond', () => {
+    for (const role of roles) {
+      expect(isFondRole(role)).toBe(role === 'fond');
+    }
   });
 });

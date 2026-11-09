@@ -998,6 +998,13 @@ describe('PostgresAuthStore', () => {
     expect((await store.getAccount('acc'))?.role).toBe('initiator');
   });
 
+  it('maps the fond account role from ROLE_ORDER', async () => {
+    const sql = new MockSql();
+    const store = new PostgresAuthStore(sql);
+    sql.nextRows = [{ ...ACCOUNT_ROW, role: 'fond' }];
+    expect((await store.getAccount('acc'))?.role).toBe('fond');
+  });
+
   it('rejects an unknown account role', async () => {
     const sql = new MockSql();
     sql.nextRows = [{ ...ACCOUNT_ROW, role: 'admin' }];

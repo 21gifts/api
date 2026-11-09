@@ -1,0 +1,29 @@
+-- Decided payout instructions the `fond` member pays from its own wallet
+-- when PAYOUT_SIGNER=fond. The ping path writes the amount and comment the
+-- API already decided; the /fond routes request the invoice and post proof.
+-- Dedupe matches spend: one daily/moderator row per (utc_day, kind, address),
+-- one welcome row ever per address. No ENUM types: text + CHECK constraints.
+
+CREATE TABLE IF NOT EXISTS fond_payout (
+  id uuid PRIMARY KEY,
+  utc_day date NOT NULL,
+  kind text NOT NULL CHECK (kind IN ('daily', 'moderator', 'welcome')),
+  address text NOT NULL,
+  amount_usd text NOT NULL,
+  comment text NOT NULL,
+  message_id text,
+  group_message_id text,
+  status text NOT NULL CHECK (status IN ('owed', 'invoiced', 'paid', 'failed')),
+  failure text,
+  invoice_id text,
+  payment_hash text,
+  bolt11 text,
+  created_at timestamptz NOT NULL DEFAULT now(),
+  updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
+  ON fond_payout (utc_day, kind, address)
+  WHERE kind IN ('daily', 'moderator');
+CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_welcome_uidx
+  ON fond_payout (kind, address)
+  WHERE kind = 'welcome';

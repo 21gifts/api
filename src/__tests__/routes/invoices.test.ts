@@ -4040,6 +4040,44 @@ describe('POST /invoices/proof', () => {
     ]);
   });
 });
+
+describe('invoiceRoutes funding store fallback', () => {
+  function directApp(fundingStore?: InMemoryFundingStore): Hono {
+    return new Hono().route(
+      '/invoices',
+      invoiceRoutes({
+        spendApiToken: TOKEN,
+        store: new InMemoryInvoiceStore(),
+        authStore: new InMemoryAuthStore(),
+        messageStore: new InMemoryMessageStore(),
+        now: () => 1,
+        fetchImpl: happyFetch(),
+        ...(fundingStore === undefined ? {} : { fundingStore }),
+      }),
+    );
+  }
+
+  async function callBothRoutes(app: Hono): Promise<{ issued: number; proved: number }> {
+    const issued = await app.request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    const proved = await app.request(
+      '/invoices/proof',
+      auth({ method: 'POST', body: JSON.stringify({ id: 'missing', preimage: PREIMAGE }) }),
+    );
+    return { issued: issued.status, proved: proved.status };
+  }
+
+  it('uses the route default for both POST routes when none is injected', async () => {
+    expect(await callBothRoutes(directApp())).toEqual({ issued: 403, proved: 404 });
+  });
+
+  it('uses the injected funding store for both POST routes', async () => {
+    expect(await callBothRoutes(directApp(admittedStore()))).toEqual({ issued: 403, proved: 404 });
+  });
+});
+
 describe('GET /invoices/eligible', () => {
   it('returns 503 when the spend token is not configured', async () => {
     const res = await spendApp({ spendApiToken: '' }).request(

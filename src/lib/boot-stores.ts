@@ -82,6 +82,12 @@ import {
   linkDailyRosterAccounts,
   type DailyRosterStore,
 } from '@/lib/daily-roster-store';
+import {
+  InMemoryFondPayoutStore,
+  PostgresFondPayoutStore,
+  migrateFondPayoutSchema,
+  type FondPayoutStore,
+} from '@/lib/fond-payout-store';
 import { resolveLnurlServerConfig, type LnurlServerConfig } from '@/lib/config';
 import { PostgresDebugDbStore, type DebugDbStore } from '@/lib/debug-db';
 import {
@@ -202,6 +208,11 @@ export interface BootStores {
    * opened, Postgres otherwise.
    */
   rosterStore: DailyRosterStore;
+  /**
+   * Durable `fond_payout` queue. Always present: in-memory when no SQL client
+   * was opened, Postgres otherwise.
+   */
+  fondPayoutStore: FondPayoutStore;
   /** Operator dump of `db_change`, or `undefined` on memory boots. */
   listDbChange: ((limit: number) => Promise<unknown[]>) | undefined;
   /**
@@ -286,7 +297,8 @@ export interface BootFxOptions {
  * `conversationStore: undefined`,
  * `notificationStore: undefined`, `pushStore: undefined`,
  * `trustStore: undefined`, `fundingStore: undefined`, a fresh
- * {@link InMemoryDailyRosterStore} as `rosterStore`, `bannerStore: undefined`,
+ * {@link InMemoryDailyRosterStore} as `rosterStore`, a fresh
+ * {@link InMemoryFondPayoutStore} as `fondPayoutStore`, `bannerStore: undefined`,
  * `sparkInvoiceStore: undefined`,
  * `walletStore: undefined`,
  * `memberEventStore: undefined`,
@@ -302,7 +314,7 @@ export interface BootFxOptions {
  * `message`, `shop_identity` (via `migrateShopIdentitySchema`), `contact`,
  * `member_habit` (via `migrateMemberHabitSchema`),
  * `pos_charge` and `pos_charge_invoice` (via `migratePosSchema`), `conversation`, `push`, `notification`, `trust_edge`,
- * `funding_grant`, `daily_roster`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
+ * `funding_grant`, `daily_roster`, `fond_payout`, `api_log`, `account_image`, `diagnostic_event`, `spark_invoice`, wallet (`wallet_balance_snapshot` / `wallet_payment`), `member_event`, `app_setting` / `login_allowlist`, and `db_change` schemas (notification after push, trust
  * after notification, funding after trust, `api_log` then `account_image` via
  * `migrateBannerSchema`, then `diagnostic_event`, `spark_invoice`, wallet, `member_event`, `app_setting`, and `login_allowlist` between `account_image` and `db_change` so `trg_db_change` attaches), builds a {@link QueryGiftStore},
  * {@link SqlGiftRecorder}, {@link PostgresMessageStore},
@@ -312,7 +324,8 @@ export interface BootFxOptions {
  * {@link PostgresPosStore}, {@link PostgresConversationStore},
  * {@link PostgresNotificationStore}, {@link PostgresPushStore},
  * {@link PostgresTrustStore}, {@link PostgresFundingStore},
- * {@link PostgresDailyRosterStore}, {@link PostgresBannerStore},
+ * {@link PostgresDailyRosterStore}, {@link PostgresFondPayoutStore},
+ * {@link PostgresBannerStore},
  * {@link PostgresSparkInvoiceStore}, {@link PostgresWalletStore},
  * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}, parses
  * `NOSTR_NSEC_KEK` into `nostrKek` and `RECOVERY_SHARE_KEK` into
@@ -333,10 +346,10 @@ export interface BootFxOptions {
  * {@link PostgresDebugDbStore}, {@link PostgresWalletStore},
  * {@link PostgresMemberEventStore}, and {@link PostgresLoginGateStore}.
  * `migrateTrustSchema` then `migrateFundingSchema` then
- * `migrateDailyRosterSchema` run after auth/`account`
- * exists and before `migrateApiLogSchema` / `migrateDbChangeSchema` so
- * `trg_db_change` attaches to `trust_edge`, `funding_grant`, `daily_roster`,
- * and `daily_roster_entry`. `migrateShopIdentitySchema` runs right after
+ * `migrateDailyRosterSchema` then `migrateFondPayoutSchema` run after
+ * auth/`account` exists and before `migrateApiLogSchema` /
+ * `migrateDbChangeSchema` so `trg_db_change` attaches to `trust_edge`,
+ * `funding_grant`, `daily_roster`, `daily_roster_entry`, and `fond_payout`. `migrateShopIdentitySchema` runs right after
  * `migrateMessageSchema` and before `migrateDbChangeSchema`, so
  * `trg_db_change` attaches to `shop_identity`.
  * After `migrateDbChangeSchema`,
@@ -409,6 +422,7 @@ export async function openBootStores(
       trustStore: undefined,
       fundingStore: undefined,
       rosterStore: new InMemoryDailyRosterStore(),
+      fondPayoutStore: new InMemoryFondPayoutStore(),
       listDbChange: undefined,
       debugDbStore: undefined,
       bannerStore: undefined,
@@ -444,6 +458,7 @@ export async function openBootStores(
   await migrateTrustSchema(sqlClient);
   await migrateFundingSchema(sqlClient);
   await migrateDailyRosterSchema(sqlClient);
+  await migrateFondPayoutSchema(sqlClient);
   await migrateApiLogSchema(sqlClient);
   await migrateBannerSchema(sqlClient);
   await migrateDiagnosticSchema(sqlClient);
@@ -635,6 +650,7 @@ export async function openBootStores(
   const trustStore = new PostgresTrustStore(sqlClient);
   const fundingStore = new PostgresFundingStore(sqlClient, transactions);
   const rosterStore = new PostgresDailyRosterStore(sqlClient, rosterLnurlServer?.host ?? null);
+  const fondPayoutStore = new PostgresFondPayoutStore(sqlClient);
   return {
     authStore,
     giftStore,
@@ -659,6 +675,7 @@ export async function openBootStores(
     trustStore,
     fundingStore,
     rosterStore,
+    fondPayoutStore,
     listDbChange: (limit) => listDbChanges(sql, limit),
     debugDbStore: new PostgresDebugDbStore(sqlClient),
     bannerStore: new PostgresBannerStore(sqlClient),

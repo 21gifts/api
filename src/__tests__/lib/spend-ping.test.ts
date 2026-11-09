@@ -9,7 +9,14 @@ import type { GiftRow } from '@/lib/gift';
 import { InMemoryGiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { setAddressRefKey, setDiagnosticSink } from '@/lib/log';
-import { HttpSpendPing, NoopSpendPing, resolveSpendPing } from '@/lib/spend-ping';
+import {
+  FondQueueSink,
+  HttpPayoutSink,
+  HttpSpendPing,
+  NoopSpendPing,
+  resolveSpendPing,
+} from '@/lib/spend-ping';
+import { InMemoryFondPayoutStore } from '@/lib/fond-payout-store';
 import { expectedAddressRef } from '@/__tests__/helpers/address-ref';
 import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
@@ -1581,5 +1588,415 @@ describe('HttpSpendPing stored rows by account', () => {
     expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-10-01')).toEqual({ status: 'failed' });
     expect(fetchImpl).not.toHaveBeenCalled();
     expect(parsedEvents(warn).filter((e) => e['event'] === 'spend.ping.failed')).toHaveLength(2);
+  });
+});
+
+describe('HttpPayoutSink', () => {
+  const sinkOpts = { spendUrl: SPEND_URL, token: TOKEN };
+
+  it('maps ping bodies by ok status and never throws', async () => {
+    const accepted = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () => new Response(null, { status: 200 }),
+    });
+    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toBe('accepted');
+    const failed = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () => new Response(null, { status: 500 }),
+    });
+    expect(await failed.deliver(ADDRESS, { address: ADDRESS })).toBe('failed');
+    const threw = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () => {
+        throw new Error('down');
+      },
+    });
+    expect(await threw.deliver(ADDRESS, { address: ADDRESS })).toBe('failed');
+  });
+
+  it('maps pingOnDay bodies: 202 and 200 accepted, 200 skipped, else failed', async () => {
+    let seenInit: RequestInit | undefined;
+    const accepted = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async (_input, init) => {
+        seenInit = init;
+        return new Response(null, { status: 202 });
+      },
+    });
+    expect(await accepted.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' })).toBe(
+      'accepted',
+    );
+    expect(seenInit?.method).toBe('POST');
+    expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.parse(String(seenInit?.body))).toEqual({
+      address: ADDRESS,
+      day: '2026-11-09',
+    });
+
+    const jsonAccepted = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () => new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }),
+    });
+    expect(await jsonAccepted.deliver(ADDRESS, { day: '2026-11-09' })).toBe('accepted');
+    expect(jsonAccepted.lastSkipReason()).toBe('');
+
+    const skipped = new HttpPayoutSink({
+      ...sinkOpts,
+      fetchImpl: async () =>
+        new Response(JSON.stringify({ status: 'skipped', reason: 'paid' }), { status: 200 }),
+    });
+    expect(await skipped.deliver(ADDRESS, { day: '2026-11-09' })).toBe('skipped');
+    expect(skipped.lastSkipReason()).toBe('paid');
+  });
+
+  it.each([
+    ['status 201', async (): Promise<Response> => new Response(null, { status: 201 })],
+    ['status 500', async (): Promise<Response> => new Response(null, { status: 500 })],
+    ['null JSON', async (): Promise<Response> => new Response('null', { status: 200 })],
+    ['array JSON', async (): Promise<Response> => new Response('[]', { status: 200 })],
+    ['unparsable JSON', async (): Promise<Response> => new Response('{', { status: 200 })],
+    [
+      'skipped without reason',
+      async (): Promise<Response> =>
+        new Response(JSON.stringify({ status: 'skipped' }), { status: 200 }),
+    ],
+    [
+      'other status',
+      async (): Promise<Response> =>
+        new Response(JSON.stringify({ status: 'other' }), { status: 200 }),
+    ],
+    [
+      'a throw',
+      async (): Promise<Response> => {
+        throw new Error('down');
+      },
+    ],
+  ])('maps %s for a day body to failed', async (_name, fetchImpl) => {
+    const sink = new HttpPayoutSink({ ...sinkOpts, fetchImpl });
+    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toBe('failed');
+  });
+});
+
+describe('FondQueueSink', () => {
+  it('writes one owed row and coalesces the amount to a two-decimal string', async () => {
+    const store = new InMemoryFondPayoutStore(() => Date.parse('2026-11-09T12:00:00.000Z'));
+    const sink = new FondQueueSink({ store });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        messageId: MESSAGE_ID,
+        amountUsd: 2,
+        comment: 'thanks',
+        day: '2026-11-09',
+      }),
+    ).toBe('accepted');
+    const rows = await store.listOpen('2026-11-09');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      kind: 'daily',
+      address: ADDRESS,
+      amountUsd: '2.00',
+      comment: 'thanks',
+      messageId: MESSAGE_ID,
+      groupMessageId: null,
+      status: 'owed',
+    });
+  });
+
+  it('uses the clock UTC day when the body has no day and maps kinds', async () => {
+    const store = new InMemoryFondPayoutStore(() => Date.parse('2026-11-09T23:30:00.000Z'));
+    const sink = new FondQueueSink({ store });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      kind: 'moderator',
+      groupMessageId: MESSAGE_ID,
+      amountUsd: 3,
+      comment: '21gifts moderator',
+    });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      kind: 'welcome',
+      messageId: MESSAGE_ID,
+      amountUsd: 1,
+      comment: 'Welcome',
+    });
+    const rows = await store.listOpen('2026-11-09');
+    expect(rows.map((row) => row.kind).sort()).toEqual(['moderator', 'welcome']);
+    expect(rows.find((row) => row.kind === 'moderator')).toMatchObject({
+      messageId: null,
+      groupMessageId: MESSAGE_ID,
+      amountUsd: '3.00',
+    });
+    expect(rows.find((row) => row.kind === 'welcome')).toMatchObject({
+      messageId: MESSAGE_ID,
+      groupMessageId: null,
+      amountUsd: '1.00',
+    });
+  });
+
+  it('falls back to 0.00 and an empty comment for a non-string body', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    await sink.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({
+      amountUsd: '0.00',
+      comment: '',
+      messageId: null,
+    });
+  });
+
+  it('rounds a positive amount below half a cent to 0.00 and keeps a normal amount', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      amountUsd: 0.004,
+      day: '2026-11-09',
+    });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      amountUsd: 1.23,
+      day: '2026-11-10',
+    });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '0.00' });
+    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1.23' });
+  });
+
+  it('returns skipped with reason paid when the existing row is paid', async () => {
+    const store = new InMemoryFondPayoutStore();
+    await store.enqueue({
+      id: 'existing',
+      utcDay: '2026-11-09',
+      kind: 'daily',
+      address: ADDRESS,
+      amountUsd: '2.00',
+      comment: 'thanks',
+      messageId: MESSAGE_ID,
+      groupMessageId: null,
+    });
+    await store.setInvoiced('existing', {
+      invoiceId: 'i',
+      paymentHash: 'h',
+      bolt11: 'b',
+    });
+    await store.setPaid('existing');
+    const sink = new FondQueueSink({ store });
+    expect(
+      await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 2, comment: 'thanks' }),
+    ).toBe('skipped');
+    expect(sink.lastSkipReason()).toBe('paid');
+  });
+
+  it('returns failed when the store throws', async () => {
+    const sink = new FondQueueSink({
+      store: {
+        enqueue: async () => {
+          throw new Error('down');
+        },
+        listOpen: async () => [],
+        get: async () => undefined,
+        setInvoiced: async () => undefined,
+        setFailed: async () => undefined,
+        setPaid: async () => undefined,
+      },
+    });
+    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toBe('failed');
+    expect(sink.lastSkipReason()).toBe('');
+  });
+});
+
+describe('resolveSpendPing with PAYOUT_SIGNER', () => {
+  it('uses the fond queue without a spend URL or token', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const ping = resolveSpendPing(
+      { PAYOUT_SIGNER: 'fond' },
+      async () => new Response(null, { status: 500 }),
+      {
+        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+        fondPayoutStore: store,
+        now: () => Date.parse('2026-11-09T12:00:00.000Z'),
+      },
+    );
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+    await ping?.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    const rows = await store.listOpen('2026-11-09');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.address).toBe(ADDRESS);
+  });
+
+  it('passes gifts, accounts, and lnurlServer through in fond mode', () => {
+    const ping = resolveSpendPing(
+      { PAYOUT_SIGNER: 'fond' },
+      async () => new Response(null, { status: 500 }),
+      {
+        rosterStore: writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] }),
+        fondPayoutStore: new InMemoryFondPayoutStore(),
+        gifts: new InMemoryGiftStore([]),
+        accounts: LOOKUP.accounts,
+        lnurlServer: LOOKUP.lnurlServer,
+      },
+    );
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+  });
+
+  it('omits gifts, accounts, and lnurlServer in fond mode', () => {
+    const ping = resolveSpendPing(
+      { PAYOUT_SIGNER: 'fond' },
+      async () => new Response(null, { status: 500 }),
+      {
+        rosterStore: writtenStore(),
+        fondPayoutStore: new InMemoryFondPayoutStore(),
+      },
+    );
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+  });
+
+  it('throws Invalid PAYOUT_SIGNER before resolving stores', () => {
+    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'other' }, async () => new Response())).toThrow(
+      'Invalid PAYOUT_SIGNER',
+    );
+  });
+
+  it('requires the roster and fond payout stores in fond mode', () => {
+    expect(() => resolveSpendPing({ PAYOUT_SIGNER: 'fond' }, async () => new Response())).toThrow(
+      'Daily roster store is required',
+    );
+    expect(() =>
+      resolveSpendPing({ PAYOUT_SIGNER: 'fond' }, async () => new Response(), {
+        rosterStore: writtenStore(),
+      }),
+    ).toThrow('Fond payout store is required');
+  });
+
+  it('keeps spend mode when PAYOUT_SIGNER is unset', () => {
+    const ping = resolveSpendPing(
+      { SPEND_URL, SPEND_API_TOKEN: TOKEN },
+      async () => new Response(),
+      {
+        rosterStore: writtenStore(),
+      },
+    );
+    expect(ping).toBeInstanceOf(HttpSpendPing);
+  });
+});
+
+describe('HttpSpendPing with an injected sink', () => {
+  it('logs accepted, skipped, and failed from the sink outcome', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const deliver = vi
+      .fn<
+        (
+          address: string,
+          body: Record<string, string | number>,
+        ) => Promise<'accepted' | 'skipped' | 'failed'>
+      >()
+      .mockResolvedValueOnce('accepted')
+      .mockResolvedValueOnce('skipped')
+      .mockResolvedValueOnce('failed');
+    const sink = { deliver };
+    const ping = new HttpSpendPing({
+      fetchImpl: async () => new Response(null, { status: 200 }),
+      ...LOOKUP,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      sink,
+    });
+    await ping.ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.ok')).toBe(true);
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({
+      status: 'skipped',
+      reason: 'paid',
+    });
+    expect(await ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09')).toEqual({ status: 'failed' });
+    expect(deliver).toHaveBeenCalledTimes(3);
+    expect(deliver.mock.calls[0]?.[1]).toEqual({
+      address: ADDRESS,
+      messageId: MESSAGE_ID,
+      amountUsd: 2,
+      comment: 'thanks',
+    });
+    warn.mockRestore();
+    setAddressRefKey(null);
+  });
+
+  it('falls back to reason paid for an injected sink that records none', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const sink = { deliver: async (): Promise<'skipped'> => 'skipped' };
+    const outcome = await new HttpSpendPing({
+      fetchImpl: async () => new Response(null, { status: 200 }),
+      ...LOOKUP,
+      rosterStore: writtenStore({
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      sink,
+    }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09');
+    expect(outcome).toEqual({ status: 'skipped', reason: 'paid' });
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'paid',
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+    setAddressRefKey(null);
+  });
+
+  it('logs spend.ping.skipped when the injected sink skips during ping', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const deliver = vi.fn(async () => 'skipped' as const);
+    await new HttpSpendPing({
+      fetchImpl: async () => new Response(null, { status: 200 }),
+      ...LOOKUP,
+      rosterStore: writtenStore({
+        comment: 'thanks',
+        recipients: [{ address: ADDRESS, amountUsd: 2 }],
+      }),
+      sink: { deliver },
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(deliver).toHaveBeenCalledTimes(1);
+    expect(
+      parsedEvents(warn).some(
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'paid',
+      ),
+    ).toBe(true);
+    warn.mockRestore();
+    setAddressRefKey(null);
+  });
+
+  it('reads only the written roster store when the sink is injected without spend env', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const deliver = vi.fn(async () => 'accepted' as const);
+    const rosterStore = writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] });
+    const hasBeenWritten = vi.spyOn(rosterStore, 'hasBeenWritten');
+    await new HttpSpendPing({
+      fetchImpl: async () => new Response(null, { status: 500 }),
+      rosterStore,
+      sink: { deliver },
+    }).ping(ADDRESS, MESSAGE_ID, 'daily', 'admitted');
+    expect(hasBeenWritten).not.toHaveBeenCalled();
+    warn.mockRestore();
+    setAddressRefKey(null);
+  });
+
+  it('logs spend.ping.failed when the injected store read throws', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    setAddressRefKey(TOKEN);
+    const rosterStore = writtenStore();
+    vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('down'));
+    const deliver = vi.fn(async () => 'accepted' as const);
+    await new HttpSpendPing({
+      fetchImpl: async () => new Response(null, { status: 500 }),
+      rosterStore,
+      sink: { deliver },
+    }).ping(ADDRESS, MESSAGE_ID);
+    expect(deliver).not.toHaveBeenCalled();
+    expect(parsedEvents(warn).some((event) => event['event'] === 'spend.ping.failed')).toBe(true);
+    warn.mockRestore();
+    setAddressRefKey(null);
   });
 });

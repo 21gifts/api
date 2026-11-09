@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
 import {
+  DEFAULT_FOND_USERNAME,
   DEFAULT_SPARK_OPERATOR_URL,
   expectedOriginsForRpId,
   normalizeWebAuthnRpId,
   resolveAllowedOrigins,
+  resolveFondUsername,
   resolveFreePaymentsConfig,
   resolveLnurlServerConfig,
+  resolvePayoutSigner,
   resolveShopPaymentConfig,
   resolveWebAuthnConfig,
 } from '@/lib/config';
@@ -343,5 +346,35 @@ describe('resolveShopPaymentConfig', () => {
     ]) {
       expect(withEnv({ SHOP_REFUND_ADDRESS: value })).toBeNull();
     }
+  });
+});
+
+describe('resolvePayoutSigner', () => {
+  it('defaults to spend when unset or blank', () => {
+    expect(resolvePayoutSigner({})).toBe('spend');
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: '   ' })).toBe('spend');
+  });
+
+  it('accepts spend and fond case- and space-insensitively', () => {
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: 'spend' })).toBe('spend');
+    expect(resolvePayoutSigner({ PAYOUT_SIGNER: ' FOND ' })).toBe('fond');
+  });
+
+  it('throws Invalid PAYOUT_SIGNER for any other value', () => {
+    expect(() => resolvePayoutSigner({ PAYOUT_SIGNER: 'lightning.space' })).toThrow(
+      'Invalid PAYOUT_SIGNER',
+    );
+  });
+});
+
+describe('resolveFondUsername', () => {
+  it('defaults to tondo-fond when unset or blank', () => {
+    expect(resolveFondUsername({})).toBe(DEFAULT_FOND_USERNAME);
+    expect(resolveFondUsername({ FOND_USERNAME: '  ' })).toBe(DEFAULT_FOND_USERNAME);
+    expect(DEFAULT_FOND_USERNAME).toBe('tondo-fond');
+  });
+
+  it('trims and lower-cases FOND_USERNAME', () => {
+    expect(resolveFondUsername({ FOND_USERNAME: '  Tondo-Fond ' })).toBe('tondo-fond');
   });
 });

@@ -134,7 +134,11 @@ export interface InvoiceRouteDeps {
   fiatRates?: FiatRateBook;
 }
 
+/** 502 text when the recipient Lightning Address did not issue an invoice. */
 const ISSUE_ERROR = 'Lightning Address did not issue an invoice';
+
+/** Paying wallet label the legacy Spend bearer routes write. */
+const LIGHTNING_SPACE_SOURCE_WALLET = 'lightning.space';
 
 const issueBodySchema = z.object({
   address: z.string(),
@@ -339,129 +343,166 @@ async function accountHasPosted(
   return messageStore.accountHasLiveTopLevelPost(account.id, account.profileMessageId ?? null);
 }
 
-/**
- * Build the `/invoices` route group.
- *
- * @param deps - Token, invoice store, auth store, message store, clock, fetch,
- *   optional LNURL server config, optional gift recorder, optional
- *   conversation store, optional funding store.
- * @returns Hono app mounted at `/invoices`.
- */
-export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
-  const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
-  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
-
+/** Collaborators of the extracted issue and proof actions. */
+export interface GiftActionDeps {
+  /** Issued-invoice store. */
+  store: InvoiceStore;
+  /** Auth store for receiving address, passkey, platform, and recovery lookups. */
+  authStore: InvoiceRouteDeps['authStore'];
+  /** Forum store for post, media, gift-reply, and group lookups. */
+  messageStore: InvoiceRouteDeps['messageStore'];
+  /** Clock, epoch milliseconds. */
+  now: () => number;
+  /** Injected fetch for LNURL-pay. */
+  fetchImpl: FetchFn;
+  /** LNURL server config; omitted → no wallet member is found. */
+  lnurlServer?: LnurlServerConfig;
+  /** Proven-gift persistence; omitted → {@link NoopGiftRecorder}. */
+  giftRecorder?: GiftRecorder;
+  /** Moderator-group stipend lookup and insert. */
+  conversationStore?: Pick<ConversationStore, 'getById' | 'getMessageById' | 'appendMessage'>;
+  /** Funding grants for the payout gate. */
+  fundingStore: FundingStore;
+  /** Outbound gifts for the same-UTC-day welcome veto. */
+  gifts?: Pick<GiftStore, 'listOutbound'>;
   /**
-   * One payment-time snapshot for the gift, the forum credit, and the group row.
-   *
-   * An omitted `amountUsd` is null for USD, CHF, EUR, and PHP. A supplied `amountUsd` is stored as
-   * that USD string. CHF, EUR, and PHP stay null. The daily rate book is not read. A string that is
-   * not normalized stores null.
-   *
-   * @param invoice - Proven invoice.
-   * @returns Snapshot, or `null` when `amountUsd` was omitted or the string is not normalized.
+   * House gifts for the once-per-account welcome check. Omitted → only the
+   * platform `Welcome` reply counts.
    */
-  async function paymentFiat(invoice: GiftInvoice): Promise<FiatAmounts | null> {
-    if (invoice.amountUsd === undefined) {
-      return null;
-    }
-    try {
-      return fiatFromUsd(invoice.amountUsd, {});
-    } catch {
-      return null;
-    }
-  }
+  giftStore?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
+  /** First UTC day the 21.gifts recovery share is required for a payout. */
+  recoveryShareRequiredFrom?: string | null;
+}
 
-  async function persistProvenGift(
-    invoice: GiftInvoice,
-    paidAtMs: number,
-    fiat: FiatAmounts | null,
-  ): Promise<void> {
-    try {
-      await giftRecorder.recordOutbound({
-        paidAt: new Date(paidAtMs),
-        amountSats: Math.floor(invoice.amountMsat / 1000),
-        feeSats: 0,
-        recipientWosUser: recipientHandleFromAddress(invoice.address),
-        lightningInvoice: invoice.pr,
-        description:
-          invoice.groupMessageId !== undefined
-            ? '21gifts moderator'
-            : invoice.comment === 'Welcome'
-              ? WELCOME_GIFT_DESCRIPTION
-              : '21gifts daily',
-        kind:
-          invoice.groupMessageId !== undefined
-            ? 'moderator'
-            : invoice.comment === 'Welcome'
-              ? 'welcome'
-              : 'daily',
-        sourceWallet: 'lightning.space',
-        fiat,
-      });
-    } catch {
-      logEvent('gifts.record_failed', { id: invoice.id });
-    }
-  }
+/** Body fields the issue action reads. */
+export interface IssueGiftInvoiceInput {
+  /** Raw recipient Lightning Address. */
+  address: string;
+  /** Amount in millisatoshis. */
+  amountMsat: number;
+  /** Optional LUD-12 comment. */
+  comment?: string;
+  /** Daily/welcome trigger post id. */
+  messageId?: string;
+  /** Moderator trigger message id. */
+  groupMessageId?: string;
+  /** Raw USD amount string. */
+  amountUsd?: string;
+}
 
-  async function attachSpendGiftReply(
-    invoice: GiftInvoice,
-    paidAtMs: number,
-    fiat: FiatAmounts | null,
-  ): Promise<void> {
-    if (invoice.messageId === undefined) {
+/** Issue action result: an invoice, or the HTTP error the spend route returned. */
+export type IssueGiftInvoiceResult =
+  | { ok: true; invoice: GiftInvoice }
+  | { ok: false; status: 400 | 403 | 409 | 502 | 503; error: string };
+
+/** Proof action result: a paid body, or the HTTP error the spend route returned. */
+export type ProveGiftInvoiceResult =
+  | { ok: true; body: { status: 'paid'; id: string; paymentHash: string } }
+  | { ok: false; status: 400 | 404 | 409; error: string };
+
+/**
+ * One payment-time snapshot for the gift, the forum credit, and the group row.
+ *
+ * An omitted `amountUsd` is null for USD, CHF, EUR, and PHP. A supplied `amountUsd` is stored as
+ * that USD string. CHF, EUR, and PHP stay null. The daily rate book is not read. A string that is
+ * not normalized stores null.
+ *
+ * @param invoice - Proven invoice.
+ * @returns Snapshot, or `null` when `amountUsd` was omitted or the string is not normalized.
+ */
+async function paymentFiat(invoice: GiftInvoice): Promise<FiatAmounts | null> {
+  if (invoice.amountUsd === undefined) {
+    return null;
+  }
+  try {
+    return fiatFromUsd(invoice.amountUsd, {});
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Persist a proven gift with the paying wallet label.
+ *
+ * @param deps - Action collaborators.
+ * @param invoice - Proven invoice.
+ * @param paidAtMs - Proof clock.
+ * @param fiat - Snapshot for the gift row.
+ * @param sourceWallet - Paying wallet label (`lightning.space` or the fond username).
+ */
+async function persistProvenGift(
+  deps: GiftActionDeps,
+  invoice: GiftInvoice,
+  paidAtMs: number,
+  fiat: FiatAmounts | null,
+  sourceWallet: string,
+): Promise<void> {
+  const giftRecorder = deps.giftRecorder ?? new NoopGiftRecorder();
+  try {
+    await giftRecorder.recordOutbound({
+      paidAt: new Date(paidAtMs),
+      amountSats: Math.floor(invoice.amountMsat / 1000),
+      feeSats: 0,
+      recipientWosUser: recipientHandleFromAddress(invoice.address),
+      lightningInvoice: invoice.pr,
+      description:
+        invoice.groupMessageId !== undefined
+          ? '21gifts moderator'
+          : invoice.comment === 'Welcome'
+            ? WELCOME_GIFT_DESCRIPTION
+            : '21gifts daily',
+      kind:
+        invoice.groupMessageId !== undefined
+          ? 'moderator'
+          : invoice.comment === 'Welcome'
+            ? 'welcome'
+            : 'daily',
+      sourceWallet,
+      fiat,
+    });
+  } catch {
+    logEvent('gifts.record_failed', { id: invoice.id });
+  }
+}
+
+/**
+ * Attach the platform gift reply under the triggering post.
+ *
+ * @param deps - Action collaborators.
+ * @param invoice - Proven invoice.
+ * @param paidAtMs - Proof clock.
+ * @param fiat - Same snapshot as the gift row and forum credit.
+ */
+async function attachSpendGiftReply(
+  deps: GiftActionDeps,
+  invoice: GiftInvoice,
+  paidAtMs: number,
+  fiat: FiatAmounts | null,
+): Promise<void> {
+  if (invoice.messageId === undefined) {
+    return;
+  }
+  try {
+    const replyId = spendGiftReplyId(invoice.id);
+    const existing = await deps.messageStore.getById(replyId);
+    if (existing !== undefined && existing.deletedAt !== null) {
       return;
     }
-    try {
-      const replyId = spendGiftReplyId(invoice.id);
-      const existing = await deps.messageStore.getById(replyId);
-      if (existing !== undefined && existing.deletedAt !== null) {
-        return;
-      }
-      const parent = await deps.messageStore.getById(invoice.messageId);
-      const accounts = await deps.authStore.listAccounts();
-      const platform = accounts.find((item) => item.isPlatform === true);
-      if (parent === undefined || parent.deletedAt !== null || platform === undefined) {
-        logEvent('invoice.gift_reply.failed');
-        return;
-      }
-      const sats = Math.floor(invoice.amountMsat / 1000);
-      const nameTrim = platform.name?.trim() ?? '';
-      const name = nameTrim !== '' ? nameTrim : '21.gifts';
-      const text = invoice.comment ?? '';
-      const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
-      if (parent.parentId !== null) {
-        if (existing !== undefined) {
-          await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
-          return;
-        }
-        await deps.messageStore.create(
-          {
-            id: replyId,
-            accountId: platform.id,
-            name,
-            text,
-            createdAt: new Date(paidAtMs),
-            hasPhoto: false,
-            hasVideo: false,
-            videoContentType: null,
-            contentFp: null,
-            ...unsignedNostrDefaults(),
-            parentId: invoice.messageId,
-            sats,
-            nostrPublishState: 'skipped',
-            authorPubkey,
-          },
-          undefined,
-          undefined,
-          undefined,
-          fiat,
-        );
-        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
-        await deps.messageStore.addReceivedSats(invoice.messageId, sats, fiat);
-        return;
-      }
+    const parent = await deps.messageStore.getById(invoice.messageId);
+    const accounts = await deps.authStore.listAccounts();
+    const platform = accounts.find((item) => item.isPlatform === true);
+    if (parent === undefined || parent.deletedAt !== null || platform === undefined) {
+      logEvent('invoice.gift_reply.failed');
+      return;
+    }
+    const sats = Math.floor(invoice.amountMsat / 1000);
+    const nameTrim = platform.name?.trim() ?? '';
+    const name = nameTrim !== '' ? nameTrim : '21.gifts';
+    const text = invoice.comment ?? '';
+    const authorPubkey = (await deps.authStore.getNostrPublicKey(platform.id)) ?? null;
+    if (parent.parentId !== null) {
       if (existing !== undefined) {
+        await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
         return;
       }
       await deps.messageStore.create(
@@ -478,7 +519,7 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
           ...unsignedNostrDefaults(),
           parentId: invoice.messageId,
           sats,
-          nostrPublishState: text === '' ? 'skipped' : 'pending',
+          nostrPublishState: 'skipped',
           authorPubkey,
         },
         undefined,
@@ -486,94 +527,424 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
         undefined,
         fiat,
       );
-      await deps.messageStore.addSats(invoice.messageId, sats, fiat);
-    } catch {
-      logEvent('invoice.gift_reply.failed');
-    }
-  }
-
-  /**
-   * Insert a platform stipend message in the closed Moderators group after
-   * the triggering group message. No-op without `groupMessageId` or a
-   * conversation store. Idempotent on the deterministic message id.
-   *
-   * @param invoice - Proven gift invoice.
-   * @param paidAtMs - Proof clock, epoch milliseconds.
-   * @param fiat - Same snapshot as the gift row and forum credit.
-   */
-  async function attachSpendGroupGift(
-    invoice: GiftInvoice,
-    paidAtMs: number,
-    fiat: FiatAmounts | null,
-  ): Promise<void> {
-    if (invoice.groupMessageId === undefined || deps.conversationStore === undefined) {
+      await deps.messageStore.markDeleted(replyId, new Date(paidAtMs), platform.id);
+      await deps.messageStore.addReceivedSats(invoice.messageId, sats, fiat);
       return;
     }
-    const conversationStore = deps.conversationStore;
-    try {
-      const id = spendGroupGiftId(invoice.id);
-      const existing = await conversationStore.getMessageById(id);
-      if (existing !== undefined) {
-        return;
-      }
-      const row = await conversationStore.getMessageById(invoice.groupMessageId);
-      const thread =
-        row === undefined ? undefined : await conversationStore.getById(row.conversationId);
-      const accounts = await deps.authStore.listAccounts();
-      const platform = accounts.find((item) => item.isPlatform === true);
-      if (
-        row === undefined ||
-        thread === undefined ||
-        thread.kind !== 'moderator_group' ||
-        platform === undefined
-      ) {
-        logEvent('invoice.group_gift.failed');
-        return;
-      }
-      const recipient = await receiverOf(deps, invoice.address);
-      const recipientName = recipient?.name?.trim() ?? '';
-      const comment = invoice.comment ?? '';
-      const text =
-        comment !== '' && recipientName !== ''
-          ? `${comment} · ${recipientName}`
-          : comment !== ''
-            ? comment
-            : recipientName;
-      const platformNameTrim = platform.name?.trim() ?? '';
-      const platformName = platformNameTrim !== '' ? platformNameTrim : '21.gifts';
-      await conversationStore.appendMessage(
-        {
-          id,
-          conversationId: thread.id,
-          text,
-          createdAt: new Date(paidAtMs),
-          senderAccountId: platform.id,
-          senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
-          name: platformName,
-          sats: Math.floor(invoice.amountMsat / 1000),
-          eventId: null,
-          nostrPublishState: 'skipped',
-          nostrEvent: null,
-          claimedUntil: null,
-          giftForMessageId: invoice.groupMessageId,
-        },
-        undefined,
-        undefined,
-        fiat,
-      );
-      logEvent('invoice.group_gift.attached', { id: invoice.id });
-    } catch {
+    if (existing !== undefined) {
+      return;
+    }
+    await deps.messageStore.create(
+      {
+        id: replyId,
+        accountId: platform.id,
+        name,
+        text,
+        createdAt: new Date(paidAtMs),
+        hasPhoto: false,
+        hasVideo: false,
+        videoContentType: null,
+        contentFp: null,
+        ...unsignedNostrDefaults(),
+        parentId: invoice.messageId,
+        sats,
+        nostrPublishState: text === '' ? 'skipped' : 'pending',
+        authorPubkey,
+      },
+      undefined,
+      undefined,
+      undefined,
+      fiat,
+    );
+    await deps.messageStore.addSats(invoice.messageId, sats, fiat);
+  } catch {
+    logEvent('invoice.gift_reply.failed');
+  }
+}
+
+/**
+ * Insert a platform stipend message in the closed Moderators group after
+ * the triggering group message. No-op without `groupMessageId` or a
+ * conversation store. Idempotent on the deterministic message id.
+ *
+ * @param deps - Action collaborators.
+ * @param invoice - Proven gift invoice.
+ * @param paidAtMs - Proof clock, epoch milliseconds.
+ * @param fiat - Same snapshot as the gift row and forum credit.
+ */
+async function attachSpendGroupGift(
+  deps: GiftActionDeps,
+  invoice: GiftInvoice,
+  paidAtMs: number,
+  fiat: FiatAmounts | null,
+): Promise<void> {
+  if (invoice.groupMessageId === undefined || deps.conversationStore === undefined) {
+    return;
+  }
+  const conversationStore = deps.conversationStore;
+  try {
+    const id = spendGroupGiftId(invoice.id);
+    const existing = await conversationStore.getMessageById(id);
+    if (existing !== undefined) {
+      return;
+    }
+    const row = await conversationStore.getMessageById(invoice.groupMessageId);
+    const thread =
+      row === undefined ? undefined : await conversationStore.getById(row.conversationId);
+    const accounts = await deps.authStore.listAccounts();
+    const platform = accounts.find((item) => item.isPlatform === true);
+    if (
+      row === undefined ||
+      thread === undefined ||
+      thread.kind !== 'moderator_group' ||
+      platform === undefined
+    ) {
       logEvent('invoice.group_gift.failed');
+      return;
+    }
+    const recipient = await receiverOf(deps, invoice.address);
+    const recipientName = recipient?.name?.trim() ?? '';
+    const comment = invoice.comment ?? '';
+    const text =
+      comment !== '' && recipientName !== ''
+        ? `${comment} · ${recipientName}`
+        : comment !== ''
+          ? comment
+          : recipientName;
+    const platformNameTrim = platform.name?.trim() ?? '';
+    const platformName = platformNameTrim !== '' ? platformNameTrim : '21.gifts';
+    await conversationStore.appendMessage(
+      {
+        id,
+        conversationId: thread.id,
+        text,
+        createdAt: new Date(paidAtMs),
+        senderAccountId: platform.id,
+        senderPubkey: (await deps.authStore.getNostrPublicKey(platform.id)) ?? null,
+        name: platformName,
+        sats: Math.floor(invoice.amountMsat / 1000),
+        eventId: null,
+        nostrPublishState: 'skipped',
+        nostrEvent: null,
+        claimedUntil: null,
+        giftForMessageId: invoice.groupMessageId,
+      },
+      undefined,
+      undefined,
+      fiat,
+    );
+    logEvent('invoice.group_gift.attached', { id: invoice.id });
+  } catch {
+    logEvent('invoice.group_gift.failed');
+  }
+}
+
+/**
+ * Persist every side effect of a proven invoice (gift row, forum credit,
+ * moderator-group stipend).
+ *
+ * @param deps - Action collaborators.
+ * @param invoice - Proven invoice.
+ * @param paidAtMs - Proof clock.
+ * @param sourceWallet - Paying wallet label.
+ */
+async function finishPaid(
+  deps: GiftActionDeps,
+  invoice: GiftInvoice,
+  paidAtMs: number,
+  sourceWallet: string,
+): Promise<void> {
+  const fiat = await paymentFiat(invoice);
+  await persistProvenGift(deps, invoice, paidAtMs, fiat, sourceWallet);
+  await attachSpendGiftReply(deps, invoice, paidAtMs, fiat);
+  await attachSpendGroupGift(deps, invoice, paidAtMs, fiat);
+}
+
+/**
+ * Issue one gift invoice from a request body, exactly as `POST /invoices`
+ * did before the extraction. Validation, passkey/funding/post/welcome gates,
+ * LNURL-pay fetch, BOLT11 check, and invoice persistence stay in this order.
+ *
+ * @param deps - Action collaborators.
+ * @param input - Request fields.
+ * @returns The issued invoice, or the HTTP error to return.
+ */
+export async function issueGiftInvoice(
+  deps: GiftActionDeps,
+  input: IssueGiftInvoiceInput,
+): Promise<IssueGiftInvoiceResult> {
+  const fundingStore = deps.fundingStore;
+  let amountUsd: string | undefined;
+  if (input.amountUsd !== undefined) {
+    const normalized = normalizeAmountUsd(input.amountUsd);
+    if (normalized === null) {
+      return { ok: false, status: 400, error: 'Expected a JSON body with address and amountMsat' };
+    }
+    amountUsd = normalized;
+  }
+  if (
+    (input.messageId !== undefined && !MESSAGE_ID_RE.test(input.messageId)) ||
+    (input.messageId !== undefined && input.groupMessageId !== undefined) ||
+    (input.groupMessageId !== undefined && !MESSAGE_ID_RE.test(input.groupMessageId))
+  ) {
+    return { ok: false, status: 400, error: 'Expected a JSON body with address and amountMsat' };
+  }
+
+  const address = spendLookupAddress(input.address, deps.lnurlServer);
+  if (address === null) {
+    return {
+      ok: false,
+      status: 400,
+      error: 'Not a valid Lightning Address (expected name@domain)',
+    };
+  }
+  const amountMsat = input.amountMsat;
+  if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
+    return { ok: false, status: 400, error: 'Expected a JSON body with address and amountMsat' };
+  }
+
+  const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
+  if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
+    logEvent('invoice.wallet_required', { address });
+    return { ok: false, status: 403, error: 'Wallet required' };
+  }
+  if (receiver === undefined || !(await deps.authStore.accountHasPasskey(receiver.account.id))) {
+    logEvent('invoice.passkey_required', { address });
+    return { ok: false, status: 403, error: 'Passkey required' };
+  }
+  const account = receiver.account;
+
+  const { eligible } = await loadPayoutEligibility(
+    fundingStore,
+    deps.authStore,
+    account,
+    deps.now(),
+    deps.recoveryShareRequiredFrom ?? null,
+  );
+  if (!eligible) {
+    logEvent('invoice.funding_required', { address });
+    return { ok: false, status: 403, error: 'Funding grant required' };
+  }
+
+  const welcomeRefused = async (): Promise<boolean> =>
+    input.comment === 'Welcome' &&
+    (await accountWelcomed({
+      auth: deps.authStore,
+      messages: deps.messageStore,
+      gifts: deps.giftStore,
+      account,
+    }));
+  // With a groupMessageId the check waits until it is resolved: a resolved
+  // moderator payout is recorded as `moderator`, not as a welcome.
+  if (input.groupMessageId === undefined && (await welcomeRefused())) {
+    logEvent('invoice.welcome_already_paid', { address });
+    return { ok: false, status: 409, error: 'Welcome gift already paid' };
+  }
+
+  let resolvedGroupMessageId: string | undefined;
+  if (input.messageId !== undefined) {
+    const message = await deps.messageStore.getById(input.messageId);
+    if (
+      message === undefined ||
+      message.deletedAt !== null ||
+      message.parentId !== null ||
+      message.accountId === null ||
+      message.accountId !== account.id
+    ) {
+      logEvent('invoice.forum_post_required', { address });
+      return { ok: false, status: 403, error: 'Forum post required' };
+    }
+    if (
+      message.hasPhoto !== true &&
+      message.hasVideo !== true &&
+      !(Number(message.photoCount) > 0)
+    ) {
+      logEvent('invoice.forum_post_required', { address });
+      return { ok: false, status: 403, error: 'Forum post required' };
+    }
+    const accounts = await deps.authStore.listAccounts();
+    const platform = accounts.find((item) => item.isPlatform === true);
+    if (platform === undefined) {
+      return { ok: false, status: 503, error: 'Platform account is not configured' };
+    }
+  } else {
+    const hasPosted = await accountHasPosted(deps.messageStore, account);
+    if (!hasPosted) {
+      logEvent('invoice.forum_post_required', { address });
+      return { ok: false, status: 403, error: 'Forum post required' };
+    }
+    if (input.groupMessageId !== undefined) {
+      // Display only: a failing lookup must never block the payout.
+      try {
+        const conversationStore = deps.conversationStore;
+        const row =
+          conversationStore === undefined
+            ? undefined
+            : await conversationStore.getMessageById(input.groupMessageId);
+        const thread =
+          conversationStore === undefined || row === undefined
+            ? undefined
+            : await conversationStore.getById(row.conversationId);
+        const accounts = await deps.authStore.listAccounts();
+        const platform = accounts.find((item) => item.isPlatform === true);
+        if (
+          conversationStore !== undefined &&
+          row !== undefined &&
+          thread !== undefined &&
+          thread.kind === 'moderator_group' &&
+          row.senderAccountId === account.id &&
+          platform !== undefined
+        ) {
+          resolvedGroupMessageId = input.groupMessageId;
+        }
+      } catch {
+        resolvedGroupMessageId = undefined;
+      }
+      if (resolvedGroupMessageId === undefined) {
+        logEvent('invoice.group_message_ignored', { address });
+      }
     }
   }
 
-  async function finishPaid(invoice: GiftInvoice, paidAtMs: number): Promise<void> {
-    const fiat = await paymentFiat(invoice);
-    await persistProvenGift(invoice, paidAtMs, fiat);
-    await attachSpendGiftReply(invoice, paidAtMs, fiat);
-    await attachSpendGroupGift(invoice, paidAtMs, fiat);
+  if (
+    input.groupMessageId !== undefined &&
+    resolvedGroupMessageId === undefined &&
+    (await welcomeRefused())
+  ) {
+    logEvent('invoice.welcome_already_paid', { address });
+    return { ok: false, status: 409, error: 'Welcome gift already paid' };
   }
 
+  if (
+    input.comment !== 'Welcome' &&
+    resolvedGroupMessageId === undefined &&
+    deps.gifts !== undefined
+  ) {
+    let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
+    try {
+      outbound = await deps.gifts.listOutbound();
+    } catch {
+      return { ok: false, status: 503, error: 'Gift ledger unreadable' };
+    }
+    if (
+      welcomeGiftPaidOnUtcDay(outbound, address, new Date(deps.now()).toISOString().slice(0, 10))
+    ) {
+      logEvent('invoice.welcome_paid', { address });
+      return { ok: false, status: 403, error: 'Welcome gift already paid' };
+    }
+  }
+
+  const fetchArgs: {
+    address: string;
+    amountMsat: number;
+    comment?: string;
+    fetchImpl: FetchFn;
+  } = {
+    address: receiver.receiving.address,
+    amountMsat,
+    fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
+  };
+  if (input.comment !== undefined) {
+    fetchArgs.comment = input.comment;
+  }
+  const fetched = await requestGiftInvoice(fetchArgs);
+  if (!fetched.ok) {
+    logEvent('invoice.issue_failed', { address });
+    return { ok: false, status: 502, error: ISSUE_ERROR };
+  }
+
+  const decoded = decodeBolt11(fetched.pr);
+  if (decoded === null || decoded.amountMsat !== amountMsat) {
+    logEvent('invoice.issue_failed', { address });
+    return { ok: false, status: 502, error: ISSUE_ERROR };
+  }
+
+  const now = deps.now();
+  const id = newInvoiceId();
+  const invoice: GiftInvoice = {
+    id,
+    address: receiver.receiving.address,
+    pr: fetched.pr,
+    paymentHash: decoded.paymentHash,
+    amountMsat,
+    createdAt: now,
+    expiresAt: now + GIFT_INVOICE_TTL_MS,
+    ...(input.comment === undefined ? {} : { comment: input.comment }),
+    ...(input.messageId === undefined
+      ? {}
+      : { messageId: input.messageId, comment: input.comment ?? '' }),
+    ...(resolvedGroupMessageId === undefined
+      ? {}
+      : { groupMessageId: resolvedGroupMessageId, comment: input.comment ?? '' }),
+    ...(input.comment === 'Welcome' &&
+    input.messageId === undefined &&
+    resolvedGroupMessageId === undefined
+      ? { comment: 'Welcome' }
+      : {}),
+    ...(amountUsd === undefined ? {} : { amountUsd }),
+  };
+  deps.store.put(invoice);
+  logEvent('invoice.issued', { id, address, amountMsat });
+  return { ok: true, invoice };
+}
+
+/**
+ * Prove one issued invoice with its preimage, including idempotent repeats,
+ * and run the paid side effects with the given paying wallet label.
+ *
+ * @param deps - Action collaborators.
+ * @param input - Invoice id, preimage, and paying wallet label.
+ * @returns A paid body, or the HTTP error to return.
+ */
+export async function proveGiftInvoice(
+  deps: GiftActionDeps,
+  input: { id: string; preimage: string; sourceWallet: string },
+): Promise<ProveGiftInvoiceResult> {
+  const invoice = deps.store.get(input.id);
+  if (invoice === undefined) {
+    return { ok: false, status: 404, error: 'Invoice not found' };
+  }
+  const now = deps.now();
+  if (invoice.paidAt !== undefined) {
+    if (
+      invoice.preimage !== undefined &&
+      invoice.preimage === input.preimage.trim().toLowerCase() &&
+      preimageMatchesHash(input.preimage, invoice.paymentHash)
+    ) {
+      await finishPaid(deps, invoice, invoice.paidAt, input.sourceWallet);
+      return {
+        ok: true,
+        body: { status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash },
+      };
+    }
+    return { ok: false, status: 409, error: 'Invoice already paid' };
+  }
+  if (preimageMatchesHash(input.preimage, invoice.paymentHash)) {
+    const preimage = input.preimage.trim().toLowerCase();
+    deps.store.markPaid(invoice.id, preimage, now);
+    logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
+    await finishPaid(deps, invoice, now, input.sourceWallet);
+    return {
+      ok: true,
+      body: { status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash },
+    };
+  }
+  if (now >= invoice.expiresAt) {
+    return { ok: false, status: 409, error: 'Invoice expired' };
+  }
+  return { ok: false, status: 400, error: 'Proof does not match invoice' };
+}
+
+/**
+ * Build the `/invoices` route group.
+ *
+ * @param deps - Token, invoice store, auth store, message store, clock, fetch,
+ *   optional LNURL server config, optional gift recorder, optional
+ *   conversation store, optional funding store.
+ * @returns Hono app mounted at `/invoices`.
+ */
+export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
+  const fundingStore = deps.fundingStore ?? new InMemoryFundingStore();
   return new Hono()
     .get('/passkey', async (c) => {
       const denied = authGate(
@@ -701,229 +1072,28 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
       }
-      let amountUsd: string | undefined;
-      if (parsed.data.amountUsd !== undefined) {
-        const normalized = normalizeAmountUsd(parsed.data.amountUsd);
-        if (normalized === null) {
-          return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
-        }
-        amountUsd = normalized;
-      }
-      if (
-        (parsed.data.messageId !== undefined && !MESSAGE_ID_RE.test(parsed.data.messageId)) ||
-        (parsed.data.messageId !== undefined && parsed.data.groupMessageId !== undefined) ||
-        (parsed.data.groupMessageId !== undefined &&
-          !MESSAGE_ID_RE.test(parsed.data.groupMessageId))
-      ) {
-        return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
-      }
-
-      const address = spendLookupAddress(parsed.data.address, deps.lnurlServer);
-      if (address === null) {
-        return c.json({ error: 'Not a valid Lightning Address (expected name@domain)' }, 400);
-      }
-      const amountMsat = parsed.data.amountMsat;
-      if (amountMsat < GIFT_INVOICE_MIN_MSAT || amountMsat > GIFT_INVOICE_MAX_MSAT) {
-        return c.json({ error: 'Expected a JSON body with address and amountMsat' }, 400);
-      }
-
-      const receiver = await accountByReceivingAddress(deps.authStore, address, deps.lnurlServer);
-      if (receiver === undefined && (await passkeyWithoutWallet(deps, address))) {
-        logEvent('invoice.wallet_required', { address });
-        return c.json({ error: 'Wallet required' }, 403);
-      }
-      if (
-        receiver === undefined ||
-        !(await deps.authStore.accountHasPasskey(receiver.account.id))
-      ) {
-        logEvent('invoice.passkey_required', { address });
-        return c.json({ error: 'Passkey required' }, 403);
-      }
-      const account = receiver.account;
-
-      const { eligible } = await loadPayoutEligibility(
-        fundingStore,
-        deps.authStore,
-        account,
-        deps.now(),
-        deps.recoveryShareRequiredFrom ?? null,
+      const result = await issueGiftInvoice(
+        { ...deps, fundingStore: deps.fundingStore ?? fundingStore },
+        {
+          address: parsed.data.address,
+          amountMsat: parsed.data.amountMsat,
+          ...(parsed.data.comment === undefined ? {} : { comment: parsed.data.comment }),
+          ...(parsed.data.messageId === undefined ? {} : { messageId: parsed.data.messageId }),
+          ...(parsed.data.groupMessageId === undefined
+            ? {}
+            : { groupMessageId: parsed.data.groupMessageId }),
+          ...(parsed.data.amountUsd === undefined ? {} : { amountUsd: parsed.data.amountUsd }),
+        },
       );
-      if (!eligible) {
-        logEvent('invoice.funding_required', { address });
-        return c.json({ error: 'Funding grant required' }, 403);
+      if (!result.ok) {
+        return c.json({ error: result.error }, result.status);
       }
-
-      const welcomeRefused = async (): Promise<boolean> =>
-        parsed.data.comment === 'Welcome' &&
-        (await accountWelcomed({
-          auth: deps.authStore,
-          messages: deps.messageStore,
-          gifts: deps.giftStore,
-          account,
-        }));
-      // With a groupMessageId the check waits until it is resolved: a resolved
-      // moderator payout is recorded as `moderator`, not as a welcome.
-      if (parsed.data.groupMessageId === undefined && (await welcomeRefused())) {
-        logEvent('invoice.welcome_already_paid', { address });
-        return c.json({ error: 'Welcome gift already paid' }, 409);
-      }
-
-      let resolvedGroupMessageId: string | undefined;
-      if (parsed.data.messageId !== undefined) {
-        const message = await deps.messageStore.getById(parsed.data.messageId);
-        if (
-          message === undefined ||
-          message.deletedAt !== null ||
-          message.parentId !== null ||
-          message.accountId === null ||
-          message.accountId !== account.id
-        ) {
-          logEvent('invoice.forum_post_required', { address });
-          return c.json({ error: 'Forum post required' }, 403);
-        }
-        if (
-          message.hasPhoto !== true &&
-          message.hasVideo !== true &&
-          !(Number(message.photoCount) > 0)
-        ) {
-          logEvent('invoice.forum_post_required', { address });
-          return c.json({ error: 'Forum post required' }, 403);
-        }
-        const accounts = await deps.authStore.listAccounts();
-        const platform = accounts.find((item) => item.isPlatform === true);
-        if (platform === undefined) {
-          return c.json({ error: 'Platform account is not configured' }, 503);
-        }
-      } else {
-        const hasPosted = await accountHasPosted(deps.messageStore, account);
-        if (!hasPosted) {
-          logEvent('invoice.forum_post_required', { address });
-          return c.json({ error: 'Forum post required' }, 403);
-        }
-        if (parsed.data.groupMessageId !== undefined) {
-          // Display only: a failing lookup must never block the payout.
-          try {
-            const conversationStore = deps.conversationStore;
-            const row =
-              conversationStore === undefined
-                ? undefined
-                : await conversationStore.getMessageById(parsed.data.groupMessageId);
-            const thread =
-              conversationStore === undefined || row === undefined
-                ? undefined
-                : await conversationStore.getById(row.conversationId);
-            const accounts = await deps.authStore.listAccounts();
-            const platform = accounts.find((item) => item.isPlatform === true);
-            if (
-              conversationStore !== undefined &&
-              row !== undefined &&
-              thread !== undefined &&
-              thread.kind === 'moderator_group' &&
-              row.senderAccountId === account.id &&
-              platform !== undefined
-            ) {
-              resolvedGroupMessageId = parsed.data.groupMessageId;
-            }
-          } catch {
-            resolvedGroupMessageId = undefined;
-          }
-          if (resolvedGroupMessageId === undefined) {
-            logEvent('invoice.group_message_ignored', { address });
-          }
-        }
-      }
-
-      if (
-        parsed.data.groupMessageId !== undefined &&
-        resolvedGroupMessageId === undefined &&
-        (await welcomeRefused())
-      ) {
-        logEvent('invoice.welcome_already_paid', { address });
-        return c.json({ error: 'Welcome gift already paid' }, 409);
-      }
-
-      if (
-        parsed.data.comment !== 'Welcome' &&
-        resolvedGroupMessageId === undefined &&
-        deps.gifts !== undefined
-      ) {
-        let outbound: Awaited<ReturnType<GiftStore['listOutbound']>>;
-        try {
-          outbound = await deps.gifts.listOutbound();
-        } catch {
-          return c.json({ error: 'Gift ledger unreadable' }, 503);
-        }
-        if (
-          welcomeGiftPaidOnUtcDay(
-            outbound,
-            address,
-            new Date(deps.now()).toISOString().slice(0, 10),
-          )
-        ) {
-          logEvent('invoice.welcome_paid', { address });
-          return c.json({ error: 'Welcome gift already paid' }, 403);
-        }
-      }
-
-      const fetchArgs: {
-        address: string;
-        amountMsat: number;
-        comment?: string;
-        fetchImpl: FetchFn;
-      } = {
-        address: receiver.receiving.address,
-        amountMsat,
-        fetchImpl: lnurlServerFetch(deps.lnurlServer, deps.fetchImpl, deps.authStore),
-      };
-      if (parsed.data.comment !== undefined) {
-        fetchArgs.comment = parsed.data.comment;
-      }
-      const fetched = await requestGiftInvoice(fetchArgs);
-      if (!fetched.ok) {
-        logEvent('invoice.issue_failed', { address });
-        return c.json({ error: ISSUE_ERROR }, 502);
-      }
-
-      const decoded = decodeBolt11(fetched.pr);
-      if (decoded === null || decoded.amountMsat !== amountMsat) {
-        logEvent('invoice.issue_failed', { address });
-        return c.json({ error: ISSUE_ERROR }, 502);
-      }
-
-      const now = deps.now();
-      const id = newInvoiceId();
-      deps.store.put({
-        id,
-        address: receiver.receiving.address,
-        pr: fetched.pr,
-        paymentHash: decoded.paymentHash,
-        amountMsat,
-        createdAt: now,
-        expiresAt: now + GIFT_INVOICE_TTL_MS,
-        ...(parsed.data.comment === undefined ? {} : { comment: parsed.data.comment }),
-        ...(parsed.data.messageId === undefined
-          ? {}
-          : {
-              messageId: parsed.data.messageId,
-              comment: parsed.data.comment ?? '',
-            }),
-        ...(resolvedGroupMessageId === undefined
-          ? {}
-          : { groupMessageId: resolvedGroupMessageId, comment: parsed.data.comment ?? '' }),
-        ...(parsed.data.comment === 'Welcome' &&
-        parsed.data.messageId === undefined &&
-        resolvedGroupMessageId === undefined
-          ? { comment: 'Welcome' }
-          : {}),
-        ...(amountUsd === undefined ? {} : { amountUsd }),
-      });
-      logEvent('invoice.issued', { id, address, amountMsat });
       return c.json(
         {
-          id,
-          pr: fetched.pr,
-          paymentHash: decoded.paymentHash,
-          amountMsat,
+          id: result.invoice.id,
+          pr: result.invoice.pr,
+          paymentHash: result.invoice.paymentHash,
+          amountMsat: result.invoice.amountMsat,
         },
         200,
       );
@@ -947,33 +1117,17 @@ export function invoiceRoutes(deps: InvoiceRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with id and preimage' }, 400);
       }
-
-      const invoice = deps.store.get(parsed.data.id);
-      if (invoice === undefined) {
-        return c.json({ error: 'Invoice not found' }, 404);
+      const result = await proveGiftInvoice(
+        { ...deps, fundingStore: deps.fundingStore ?? fundingStore },
+        {
+          id: parsed.data.id,
+          preimage: parsed.data.preimage,
+          sourceWallet: LIGHTNING_SPACE_SOURCE_WALLET,
+        },
+      );
+      if (!result.ok) {
+        return c.json({ error: result.error }, result.status);
       }
-      const now = deps.now();
-      if (invoice.paidAt !== undefined) {
-        if (
-          invoice.preimage !== undefined &&
-          invoice.preimage === parsed.data.preimage.trim().toLowerCase() &&
-          preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)
-        ) {
-          await finishPaid(invoice, invoice.paidAt);
-          return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
-        }
-        return c.json({ error: 'Invoice already paid' }, 409);
-      }
-      if (preimageMatchesHash(parsed.data.preimage, invoice.paymentHash)) {
-        const preimage = parsed.data.preimage.trim().toLowerCase();
-        deps.store.markPaid(invoice.id, preimage, now);
-        logEvent('invoice.paid', { id: invoice.id, paymentHash: invoice.paymentHash });
-        await finishPaid(invoice, now);
-        return c.json({ status: 'paid', id: invoice.id, paymentHash: invoice.paymentHash }, 200);
-      }
-      if (now >= invoice.expiresAt) {
-        return c.json({ error: 'Invoice expired' }, 409);
-      }
-      return c.json({ error: 'Proof does not match invoice' }, 400);
+      return c.json(result.body, 200);
     });
 }

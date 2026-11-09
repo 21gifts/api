@@ -108,7 +108,7 @@ function provisionUsername(name: string, id: string, taken: Set<string>): string
 /** Body schema for operator role, platform flag, and session refusal. */
 const patchBody = z
   .object({
-    role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder']).optional(),
+    role: z.enum(['basis', 'verified', 'moderator', 'initiator', 'founder', 'fond']).optional(),
     platform: z.boolean().optional(),
     sessionRefused: z.boolean().optional(),
   })
@@ -358,6 +358,19 @@ export function debugRoutes(deps: DebugRouteDeps): Hono {
       const existing = await deps.store.getAccount(c.req.param('id'));
       if (existing === undefined) {
         return c.json({ error: 'Not found' }, 404);
+      }
+      const roleAfter = parsed.data.role ?? existing.role;
+      const platformAfter = parsed.data.platform ?? existing.isPlatform === true;
+      if (roleAfter === 'fond' && platformAfter) {
+        return c.json(
+          {
+            error:
+              parsed.data.role === 'fond' && existing.isPlatform === true
+                ? 'The platform account cannot be fond'
+                : 'The fond role cannot be the platform account',
+          },
+          parsed.data.role === 'fond' && existing.isPlatform === true ? 409 : 400,
+        );
       }
       const updated = { ...existing };
       if (parsed.data.role !== undefined) {

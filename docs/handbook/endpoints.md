@@ -1672,3 +1672,24 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Auth:** Public; bearer presence or validity does not change the response.
 - **Success:** Returns a currently public shop, or redirects a known lowercase hex key to its npub URL.
 - **Errors:** Unknown/invalid is 404, a known key whose note is not public is 410, and store failure, a NIP-05 entry that still does not carry the note's name after one re-read, or a note that still changes during the last photo read is 503 with no-store caching.
+
+## Endpoint: GET /fond/payouts
+
+- **Purpose:** Member-session list for the Fond payer. Routed only when `PAYOUT_SIGNER=fond` (404 otherwise). Returns `{ payouts: [{ id, kind, status, utcDay }] }` for the current UTC day's `owed` and `invoiced` rows, oldest first. No addresses, amounts, comments, or invoices in the body.
+- **Errors:** 404 when the switch is not `fond`; 401 without a session; 403 `{ error: 'Fond only' }` unless the account has role `fond`, username `FOND_USERNAME`, and is not the platform account; 503 `{ error: 'Payouts are unavailable' }` when the store throws.
+- **Used by:** the Fond member's in-app payout screen.
+- **Auth:** member session Bearer of the Fond account.
+
+## Endpoint: POST /fond/payouts/:id/invoice
+
+- **Purpose:** Request the recipient BOLT11 for one queued payout. Routed only when `PAYOUT_SIGNER=fond`. Reads the BTC/USD spot with `fetchBtcUsdSpot`, computes `amountMsat = round(usd / spot * 1e8) * 1000`, and calls `issueGiftInvoice` with the stored address, comment, message ids, and USD string. Success stores `invoice_id`, `payment_hash`, `bolt11`, status `invoiced`, and returns `{ id, bolt11, paymentHash }`. An `invoiced` row whose stored invoice the issue logic no longer knows is reissued; a live one returns the same BOLT11.
+- **Errors:** 404 switch off or unknown id; 401 without a session; 403 `Fond only`; 503 `Price unavailable` when the spot is missing or under one sat (row unchanged); 409 `Not payable` for another day, `paid`, or `failed`; an issue refusal (`Passkey required`, `Funding grant required`, `Forum post required`, `Wallet required`, …) stores status `failed` with that text and answers 409 `{ error }`; an issue transport error keeps its status and leaves the row owed.
+- **Used by:** the Fond member's in-app payout screen.
+- **Auth:** member session Bearer of the Fond account.
+
+## Endpoint: POST /fond/payouts/:id/proof
+
+- **Purpose:** Post the preimage for one invoiced payout. Routed only when `PAYOUT_SIGNER=fond`. Body `{ preimage: '<64 hex>' }`. Calls `proveGiftInvoice` for the row's `invoice_id` with `sourceWallet` = `FOND_USERNAME`, then marks the row `paid`. Success returns `{ status: 'paid', id }`; a repeat on a paid row runs the idempotent proof path and returns the same body.
+- **Errors:** 404 switch off or unknown id; 401 without a session; 403 `Fond only`; 400 for a missing/invalid body; 409 `Not invoiced` when the row is neither invoiced nor paid; the proof function's existing 400/409 texts for a wrong preimage, an already-paid invoice with a different preimage, or an expired invoice.
+- **Used by:** the Fond member's in-app payout screen.
+- **Auth:** member session Bearer of the Fond account.

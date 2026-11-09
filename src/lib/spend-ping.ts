@@ -1,12 +1,15 @@
 /**
- * Outbound ping so the spend worker can pay a listed recipient after a
- * new top-level forum post or a moderator-group conversation message.
- * Missing env skips the ping; the process still boots. Failures never throw.
+ * Outbound ping so a payout signer can pay a listed recipient after a new
+ * top-level forum post or a moderator-group conversation message. Whether the
+ * decided instruction is POSTed to spend or queued for the Fond member is
+ * chosen by `PAYOUT_SIGNER`. Missing env skips the ping; the process still
+ * boots. Failures never throw.
  */
 
 import type { AuthStore } from '@/lib/auth/store';
-import type { LnurlServerConfig } from '@/lib/config';
+import { resolvePayoutSigner, type LnurlServerConfig } from '@/lib/config';
 import type { DailyRosterStore } from '@/lib/daily-roster-store';
+import type { FondPayoutStore } from '@/lib/fond-payout-store';
 import type { GiftStore } from '@/lib/gift-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
@@ -17,7 +20,7 @@ import {
   type SpendGrantStatus,
 } from '@/lib/spend-instruction';
 
-/** Default HTTP timeout for {@link HttpSpendPing}. */
+/** Default HTTP timeout for {@link HttpPayoutSink}. */
 const DEFAULT_TIMEOUT_MS = 5_000;
 
 /** Result of {@link SpendPing.pingOnDay}; never includes the Lightning address. */
@@ -25,11 +28,220 @@ export type SpendPingOutcome =
   { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' };
 
 /**
- * Outbound ping so the spend worker can pay a listed recipient.
+ * Final delivery step for one decided payout instruction.
+ */
+export interface PayoutSink {
+  /**
+   * Deliver `body` for `address`.
+   *
+   * @param address - Recipient Lightning Address (used for logging only here).
+   * @param body - Decided instruction body.
+   * @returns `'accepted'`, `'skipped'`, or `'failed'`. Never throws.
+   */
+  deliver(
+    address: string,
+    body: Record<string, string | number>,
+  ): Promise<'accepted' | 'skipped' | 'failed'>;
+}
+
+/**
+ * POST `{spendUrl}/ping` with Bearer `SPEND_API_TOKEN`, exactly as the legacy
+ * ping did.
+ *
+ * A `ping` body (no `day`) maps any 2xx to `'accepted'` and everything else
+ * to `'failed'`. A `pingOnDay` body (with `day`) uses the strict mapping: 202
+ * accepted, 200 whose JSON `status` is `accepted` accepted, 200 whose JSON
+ * `status` is `skipped` with a non-empty reason skipped, else failed. Never
+ * throws and never logs the token.
+ */
+export class HttpPayoutSink implements PayoutSink {
+  readonly #spendUrl: string;
+  readonly #token: string;
+  readonly #fetchImpl: FetchFn;
+  readonly #timeoutMs: number;
+  #skipReason = '';
+
+  /**
+   * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
+   *   fetch, and optional timeout (default 5000 ms).
+   */
+  constructor(opts: { spendUrl: string; token: string; fetchImpl: FetchFn; timeoutMs?: number }) {
+    this.#spendUrl = opts.spendUrl;
+    this.#token = opts.token;
+    this.#fetchImpl = opts.fetchImpl;
+    this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  }
+
+  /**
+   * Deliver one instruction. Never throws.
+   *
+   * @param _address - Unused; the caller logs with the address.
+   * @param body - Decided instruction body.
+   * @returns Delivery outcome.
+   */
+  async deliver(
+    _address: string,
+    body: Record<string, string | number>,
+  ): Promise<'accepted' | 'skipped' | 'failed'> {
+    this.#skipReason = '';
+    try {
+      const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.#token}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(this.#timeoutMs),
+      });
+      if (typeof body['day'] !== 'string') {
+        return response.ok ? 'accepted' : 'failed';
+      }
+      if (response.status === 202) {
+        return 'accepted';
+      }
+      if (response.status !== 200) {
+        return 'failed';
+      }
+      let parsed: unknown;
+      try {
+        parsed = await response.json();
+      } catch {
+        return 'failed';
+      }
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+        return 'failed';
+      }
+      const record = parsed as Record<string, unknown>;
+      const status = record['status'];
+      if (status === 'accepted') {
+        return 'accepted';
+      }
+      const reason = record['reason'];
+      if (status === 'skipped' && typeof reason === 'string' && reason !== '') {
+        this.#skipReason = reason;
+        return 'skipped';
+      }
+      return 'failed';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  /**
+   * Reason of the most recent skipped delivery.
+   *
+   * @returns The reason, or `''` when the last delivery was not skipped.
+   */
+  lastSkipReason(): string {
+    return this.#skipReason;
+  }
+}
+
+/**
+ * Queue one decided instruction into `fond_payout` for the Fond member.
+ *
+ * A new row and an already-queued row return `'accepted'`; a conflicting row
+ * that is already `paid` returns `'skipped'` with reason `paid`. Store
+ * failures return `'failed'` and never throw.
+ */
+export class FondQueueSink implements PayoutSink {
+  readonly #store: FondPayoutStore;
+  readonly #now: () => number;
+  #skipReason = '';
+
+  /**
+   * @param opts - Queue store and optional clock (default `Date.now`).
+   */
+  constructor(opts: { store: FondPayoutStore; now?: () => number }) {
+    this.#store = opts.store;
+    this.#now = opts.now ?? (() => Date.now());
+  }
+
+  /**
+   * Write one row, deduped by spend's keys.
+   *
+   * @param address - Recipient Lightning Address.
+   * @param body - Decided instruction body.
+   * @returns `'accepted'`, `'skipped'` (already paid), or `'failed'` (store error).
+   */
+  async deliver(
+    address: string,
+    body: Record<string, string | number>,
+  ): Promise<'accepted' | 'skipped' | 'failed'> {
+    this.#skipReason = '';
+    const kind =
+      body['kind'] === 'moderator' ? 'moderator' : body['kind'] === 'welcome' ? 'welcome' : 'daily';
+    const day = typeof body['day'] === 'string' ? body['day'] : utcDay(this.#now());
+    const amountUsd = twoDecimalUsd(body['amountUsd']);
+    const messageId = kind === 'moderator' ? null : textOrNull(body['messageId']);
+    const groupMessageId = kind === 'moderator' ? textOrNull(body['groupMessageId']) : null;
+    try {
+      const result = await this.#store.enqueue({
+        id: crypto.randomUUID(),
+        utcDay: day,
+        kind,
+        address,
+        amountUsd,
+        comment: typeof body['comment'] === 'string' ? body['comment'] : '',
+        messageId,
+        groupMessageId,
+      });
+      if (result === 'paid') {
+        this.#skipReason = 'paid';
+        return 'skipped';
+      }
+      return 'accepted';
+    } catch {
+      return 'failed';
+    }
+  }
+
+  /**
+   * Reason of the most recent skipped delivery.
+   *
+   * @returns `paid`, or `''` when the last delivery was not skipped.
+   */
+  lastSkipReason(): string {
+    return this.#skipReason;
+  }
+}
+
+/** UTC day key `YYYY-MM-DD`. */
+function utcDay(nowMs: number): string {
+  return new Date(nowMs).toISOString().slice(0, 10);
+}
+
+/** The decided USD amount as a two-decimal string (`2` → `2.00`); `0.00` when unusable. */
+function twoDecimalUsd(raw: string | number | undefined): string {
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw <= 0) {
+    return '0.00';
+  }
+  const cents = Math.round(raw * 100);
+  return cents < 1 ? '0.00' : `${Math.floor(cents / 100)}.${String(cents % 100).padStart(2, '0')}`;
+}
+
+/** A string body value, or `null`. */
+function textOrNull(value: string | number | undefined): string | null {
+  return typeof value === 'string' ? value : null;
+}
+
+/**
+ * Reason of a skipped delivery. Only {@link HttpPayoutSink} and
+ * {@link FondQueueSink} record one; any other sink falls back to `paid`.
+ */
+function skipReasonOf(sink: PayoutSink): string {
+  const read = (sink as { lastSkipReason?: () => string }).lastSkipReason;
+  const reason = read === undefined ? '' : read.call(sink);
+  return reason === '' ? 'paid' : reason;
+}
+
+/**
+ * Outbound ping so a payout signer can pay a listed recipient.
  */
 export interface SpendPing {
   /**
-   * Notify spend that `address` just created a top-level forum post
+   * Notify the signer that `address` just created a top-level forum post
    * (`kind` omitted or `'daily'`), a moderator-group message
    * (`kind === 'moderator'`), or a verified welcome media post
    * (`kind === 'welcome'`). Daily JSON uses `messageId`; welcome JSON is
@@ -97,18 +309,19 @@ export class NoopSpendPing implements SpendPing {
  * and decide from that JSON without importing it. After a roster has been
  * stored, read only the store (no GET); its rows are matched by the account
  * that receives on the pinged address (`accountByReceivingAddress`), so an
- * address no verified wallet receives on matches no stored row. Then POST `{spendUrl}/ping` with
- * Bearer `SPEND_API_TOKEN`. A decided amount adds `amountUsd` and
- * `comment` to the ping JSON. Skipped reasons `payments_disabled`,
- * `not_listed`, `undecided`, and `welcome_paid` log `spend.ping.skipped`
- * and do not POST.
+ * address no verified wallet receives on matches no stored row. Then deliver
+ * the decided instruction through the injected {@link PayoutSink}. A decided
+ * amount adds `amountUsd` and `comment` to the instruction body. Skipped
+ * reasons `payments_disabled`, `not_listed`, `undecided`, and `welcome_paid`
+ * log `spend.ping.skipped` and do not deliver.
  *
- * 2xx (including 200 skipped and 202 accepted) logs `spend.ping.ok`.
+ * With the default {@link HttpPayoutSink}, 2xx logs `spend.ping.ok`.
  * Network, abort, non-2xx, a store read throw, a live GET failure, an
  * account lookup throw, and a gift-ledger throw log `spend.ping.failed` and
- * resolve. Never throws.
- * Never logs the token. Optional `grantStatus` is passed to
- * {@link decideSpendInstruction} only when the resolved kind is daily.
+ * resolve. A `FondQueueSink` logs the same three events from its delivery
+ * outcome. Never throws. Never logs the token. Optional `grantStatus` is
+ * passed to {@link decideSpendInstruction} only when the resolved kind is
+ * daily.
  */
 export class HttpSpendPing implements SpendPing {
   readonly #spendUrl: string;
@@ -120,26 +333,29 @@ export class HttpSpendPing implements SpendPing {
   readonly #now: () => number;
   readonly #accounts: Pick<AuthStore, 'getAccountByUsername'> | undefined;
   readonly #lnurlServer: LnurlServerConfig | undefined;
+  readonly #sink: PayoutSink;
 
   /**
    * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
    *   fetch, roster store, optional timeout (default 5000 ms), optional gift
    *   ledger, optional clock, optional account lookup and LNURL server config
-   *   (both omitted → no stored row matches).
+   *   (both omitted → no stored row matches), and an optional sink. When the
+   *   sink is omitted, an {@link HttpPayoutSink} posts to `spendUrl`.
    */
   constructor(opts: {
-    spendUrl: string;
-    token: string;
+    spendUrl?: string;
+    token?: string;
     fetchImpl: FetchFn;
     rosterStore: DailyRosterStore;
+    sink?: PayoutSink;
     timeoutMs?: number;
     gifts?: Pick<GiftStore, 'listOutbound'>;
     now?: () => number;
     accounts?: Pick<AuthStore, 'getAccountByUsername'>;
     lnurlServer?: LnurlServerConfig;
   }) {
-    this.#spendUrl = opts.spendUrl;
-    this.#token = opts.token;
+    this.#spendUrl = opts.spendUrl ?? '';
+    this.#token = opts.token ?? '';
     this.#fetchImpl = opts.fetchImpl;
     this.#timeoutMs = opts.timeoutMs ?? DEFAULT_TIMEOUT_MS;
     this.#rosterStore = opts.rosterStore;
@@ -147,15 +363,23 @@ export class HttpSpendPing implements SpendPing {
     this.#now = opts.now ?? (() => Date.now());
     this.#accounts = opts.accounts;
     this.#lnurlServer = opts.lnurlServer;
+    this.#sink =
+      opts.sink ??
+      new HttpPayoutSink({
+        spendUrl: this.#spendUrl,
+        token: this.#token,
+        fetchImpl: this.#fetchImpl,
+        timeoutMs: this.#timeoutMs,
+      });
   }
 
   /**
    * A never-written store reads `GET {spendUrl}/daily-roster` (body never
-   * imported). A written store reads the store. Then POST the decided ping
-   * JSON to `{spendUrl}/ping`. A skip, including welcome already paid today,
-   * logs `spend.ping.skipped` and does not POST. A store read throw or live
-   * GET failure logs `spend.ping.failed` and does not POST. Resolves on
-   * success and failure. Never throws. Never logs the token.
+   * imported). A written store reads the store. Then deliver the decided
+   * instruction through the sink. A skip, including welcome already paid
+   * today, logs `spend.ping.skipped` and does not deliver. A store read throw
+   * or live GET failure logs `spend.ping.failed` and does not deliver.
+   * Resolves on success and failure. Never throws. Never logs the token.
    *
    * @param address - Recipient Lightning Address (JSON body).
    * @param messageId - Forum post id for daily/welcome pings (JSON
@@ -181,10 +405,7 @@ export class HttpSpendPing implements SpendPing {
     }
     let welcomePaidOnUtcDay: boolean | undefined;
     if (resolvedKind === 'daily') {
-      const welcomePaid = await this.#welcomePaid(
-        address,
-        new Date(this.#now()).toISOString().slice(0, 10),
-      );
+      const welcomePaid = await this.#welcomePaid(address, utcDay(this.#now()));
       if (welcomePaid === 'failed') {
         return;
       }
@@ -225,12 +446,21 @@ export class HttpSpendPing implements SpendPing {
               amountUsd: decision.amountUsd,
               comment: decision.comment,
             };
-    await this.#postPing(address, body);
+    const outcome = await this.#sink.deliver(address, body);
+    if (outcome === 'accepted') {
+      logEvent('spend.ping.ok', { address });
+      return;
+    }
+    if (outcome === 'skipped') {
+      logEvent('spend.ping.skipped', { address, reason: skipReasonOf(this.#sink) });
+      return;
+    }
+    logEvent('spend.ping.failed', { address });
   }
 
   /**
    * Daily or moderator ping booked on `day` (`YYYY-MM-DD`) instead of the
-   * clock UTC day. The daily POST body is
+   * clock UTC day. The daily body is
    * `{ address, messageId, amountUsd, comment, day }`; the moderator body is
    * `{ address, kind: "moderator", groupMessageId, amountUsd, comment, day }`
    * and skips the welcome-paid check. Never throws.
@@ -278,72 +508,47 @@ export class HttpSpendPing implements SpendPing {
       logEvent('spend.ping.skipped', { address, reason: decision.skip });
       return { status: 'skipped', reason: decision.skip };
     }
-    try {
-      const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.#token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(
-          resolvedKind === 'moderator'
-            ? {
-                address,
-                kind: 'moderator',
-                groupMessageId: messageId,
-                amountUsd: decision.amountUsd,
-                comment: decision.comment,
-                day,
-              }
-            : {
-                address,
-                messageId,
-                amountUsd: decision.amountUsd,
-                comment: decision.comment,
-                day,
-              },
-        ),
-        signal: AbortSignal.timeout(this.#timeoutMs),
-      });
-      if (response.status === 202) {
-        logEvent('spend.ping.ok', { address });
-        return { status: 'accepted' };
-      }
-      if (response.status !== 200) {
-        logEvent('spend.ping.failed', { address });
-        return { status: 'failed' };
-      }
-      let parsed: unknown;
-      try {
-        parsed = await response.json();
-      } catch {
-        logEvent('spend.ping.failed', { address });
-        return { status: 'failed' };
-      }
-      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        logEvent('spend.ping.failed', { address });
-        return { status: 'failed' };
-      }
-      const rec = parsed as Record<string, unknown>;
-      const status = rec['status'];
-      if (status === 'accepted') {
-        logEvent('spend.ping.ok', { address });
-        return { status: 'accepted' };
-      }
-      const reason = rec['reason'];
-      if (status === 'skipped' && typeof reason === 'string' && reason !== '') {
-        logEvent('spend.ping.skipped', { address, reason });
-        return { status: 'skipped', reason };
-      }
-      logEvent('spend.ping.failed', { address });
-      return { status: 'failed' };
-    } catch {
-      logEvent('spend.ping.failed', { address });
-      return { status: 'failed' };
+    const outcome = await this.#sink.deliver(
+      address,
+      resolvedKind === 'moderator'
+        ? {
+            address,
+            kind: 'moderator',
+            groupMessageId: messageId,
+            amountUsd: decision.amountUsd,
+            comment: decision.comment,
+            day,
+          }
+        : {
+            address,
+            messageId,
+            amountUsd: decision.amountUsd,
+            comment: decision.comment,
+            day,
+          },
+    );
+    if (outcome === 'accepted') {
+      logEvent('spend.ping.ok', { address });
+      return { status: 'accepted' };
     }
+    if (outcome === 'skipped') {
+      const reason = skipReasonOf(this.#sink);
+      logEvent('spend.ping.skipped', { address, reason });
+      return { status: 'skipped', reason };
+    }
+    logEvent('spend.ping.failed', { address });
+    return { status: 'failed' };
   }
 
   async #loadRoster(address: string): Promise<unknown> {
+    if (this.#spendUrl === '' || this.#token === '') {
+      try {
+        return await this.#rosterStore.get();
+      } catch {
+        logEvent('spend.ping.failed', { address });
+        return undefined;
+      }
+    }
     let written: boolean;
     try {
       written = await this.#rosterStore.hasBeenWritten();
@@ -383,12 +588,12 @@ export class HttpSpendPing implements SpendPing {
     }
   }
 
-  async #welcomePaid(address: string, utcDay: string): Promise<boolean | undefined | 'failed'> {
+  async #welcomePaid(address: string, utcDayKey: string): Promise<boolean | undefined | 'failed'> {
     if (this.#gifts === undefined) {
       return undefined;
     }
     try {
-      return welcomeGiftPaidOnUtcDay(await this.#gifts.listOutbound(), address, utcDay);
+      return welcomeGiftPaidOnUtcDay(await this.#gifts.listOutbound(), address, utcDayKey);
     } catch {
       logEvent('spend.ping.failed', { address });
       return 'failed';
@@ -425,53 +630,57 @@ export class HttpSpendPing implements SpendPing {
       ...(welcomePaidOnUtcDay === undefined ? {} : { welcomePaidOnUtcDay }),
     });
   }
-
-  async #postPing(address: string, body: Record<string, string | number>): Promise<void> {
-    try {
-      const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${this.#token}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(body),
-        signal: AbortSignal.timeout(this.#timeoutMs),
-      });
-      if (response.ok) {
-        logEvent('spend.ping.ok', { address });
-        return;
-      }
-      logEvent('spend.ping.failed', { address });
-    } catch {
-      logEvent('spend.ping.failed', { address });
-    }
-  }
 }
 
 /**
  * Resolve a spend ping collaborator from the environment.
  *
- * Unset or blank `SPEND_URL` or `SPEND_API_TOKEN` → `undefined` (caller
- * skips). Trims both values and strips trailing slashes from the URL.
+ * `PAYOUT_SIGNER` unset, blank, or `spend` keeps the legacy HTTP ping: unset
+ * or blank `SPEND_URL` or `SPEND_API_TOKEN` → `undefined` (caller skips).
+ * `PAYOUT_SIGNER=fond` uses a {@link FondQueueSink} and needs no spend URL or
+ * token. Any other value throws `Invalid PAYOUT_SIGNER`.
  *
  * @param env - Process environment slice (injected so tests need not mutate it).
- * @param fetchImpl - HTTP fetch used by {@link HttpSpendPing}.
- * @param opts - Roster store (required when both env values are set), optional
- *   gift ledger, clock, account lookup, and LNURL server config forwarded to
- *   {@link HttpSpendPing}.
- * @returns {@link HttpSpendPing} when both env values are set; otherwise `undefined`.
+ * @param fetchImpl - HTTP fetch used by {@link HttpPayoutSink}.
+ * @param opts - Roster store (required), optional gift ledger, clock, account
+ *   lookup, LNURL server config, and the fond payout store (required for
+ *   `PAYOUT_SIGNER=fond`).
+ * @returns A ping when configured; otherwise `undefined`.
+ * @throws Error `Invalid PAYOUT_SIGNER` or a missing required store.
  */
 export function resolveSpendPing(
   env: Record<string, string | undefined>,
   fetchImpl: FetchFn,
   opts?: {
     rosterStore?: DailyRosterStore;
+    fondPayoutStore?: FondPayoutStore;
     gifts?: Pick<GiftStore, 'listOutbound'>;
     now?: () => number;
     accounts?: Pick<AuthStore, 'getAccountByUsername'>;
     lnurlServer?: LnurlServerConfig;
   },
 ): SpendPing | undefined {
+  const signer = resolvePayoutSigner(env);
+  const now = opts?.now ?? (() => Date.now());
+  if (signer === 'fond') {
+    const rosterStore = opts?.rosterStore;
+    if (rosterStore === undefined) {
+      throw new Error('Daily roster store is required');
+    }
+    const fondPayoutStore = opts?.fondPayoutStore;
+    if (fondPayoutStore === undefined) {
+      throw new Error('Fond payout store is required');
+    }
+    return new HttpSpendPing({
+      fetchImpl,
+      rosterStore,
+      ...(opts?.gifts === undefined ? {} : { gifts: opts.gifts }),
+      now,
+      ...(opts?.accounts === undefined ? {} : { accounts: opts.accounts }),
+      ...(opts?.lnurlServer === undefined ? {} : { lnurlServer: opts.lnurlServer }),
+      sink: new FondQueueSink({ store: fondPayoutStore, now }),
+    });
+  }
   const rawUrl = env['SPEND_URL'];
   const rawToken = env['SPEND_API_TOKEN'];
   if (
@@ -487,14 +696,16 @@ export function resolveSpendPing(
     throw new Error('Daily roster store is required');
   }
   const spendUrl = rawUrl.trim().replace(/\/+$/u, '');
+  const token = rawToken.trim();
   return new HttpSpendPing({
-    spendUrl,
-    token: rawToken.trim(),
     fetchImpl,
     rosterStore,
     ...(opts?.gifts === undefined ? {} : { gifts: opts.gifts }),
-    ...(opts?.now === undefined ? {} : { now: opts.now }),
+    now,
     ...(opts?.accounts === undefined ? {} : { accounts: opts.accounts }),
     ...(opts?.lnurlServer === undefined ? {} : { lnurlServer: opts.lnurlServer }),
+    spendUrl,
+    token,
+    sink: new HttpPayoutSink({ spendUrl, token, fetchImpl }),
   });
 }
