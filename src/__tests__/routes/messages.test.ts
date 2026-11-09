@@ -8220,10 +8220,24 @@ describe('GET /messages/:id/replies', () => {
     const olderHash = 'aa'.repeat(32);
     const newerHash = 'bb'.repeat(32);
     const missingHash = 'cc'.repeat(32);
-    for (const [id, payerAccountId, paymentHash, sats, createdAt] of [
-      ['inv-older', 'acc', olderHash, 21, now()],
-      ['inv-newer', 'payer-two', newerHash, 1, now() + 1],
-      ['inv-missing', 'gone', missingHash, 5, now() + 2],
+    for (const [id, payerAccountId, paymentHash, sats, createdAt, fiat] of [
+      [
+        'inv-older',
+        'acc',
+        olderHash,
+        21,
+        now(),
+        { amountUsd: '0.02', amountChf: '0.02', amountEur: '0.02', amountPhp: '1.25' },
+      ],
+      [
+        'inv-newer',
+        'payer-two',
+        newerHash,
+        1,
+        now() + 1,
+        { amountUsd: '0.00', amountChf: '0.00', amountEur: '0.00', amountPhp: '0.00' },
+      ],
+      ['inv-missing', 'gone', missingHash, 5, now() + 2, {}],
     ] as const) {
       await store.recordInvoiceAttempt({
         id,
@@ -8242,6 +8256,7 @@ describe('GET /messages/:id/replies', () => {
         descriptionHash: null,
         isNip57Invoice: false,
         lnurlResponse: null,
+        ...fiat,
         heart: true,
       });
       await store.claimZapPayment(paymentHash, `receipt-${id}`, new Date(createdAt));
@@ -8258,6 +8273,10 @@ describe('GET /messages/:id/replies', () => {
         accountId: 'gone',
         name: '',
         sats: 5,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
         createdAt: new Date(now() + 2).toISOString(),
       },
       {
@@ -8266,6 +8285,10 @@ describe('GET /messages/:id/replies', () => {
         username: 'bob',
         role: 'verified',
         sats: 1,
+        amountUsd: '0.00',
+        amountChf: '0.00',
+        amountEur: '0.00',
+        amountPhp: '0.00',
         createdAt: new Date(now() + 1).toISOString(),
       },
       {
@@ -8274,6 +8297,10 @@ describe('GET /messages/:id/replies', () => {
         username: 'ada',
         role: 'verified',
         sats: 21,
+        amountUsd: '0.02',
+        amountChf: '0.02',
+        amountEur: '0.02',
+        amountPhp: '1.25',
         createdAt: new Date(now()).toISOString(),
       },
     ]);
@@ -8452,6 +8479,10 @@ describe('GET /messages/:id/replies', () => {
       descriptionHash: null,
       isNip57Invoice: false,
       lnurlResponse: null,
+      amountUsd: null,
+      amountChf: null,
+      amountEur: null,
+      amountPhp: null,
       heart: true,
     });
     await store.claimZapPayment(paymentHash, 'receipt-nameless', new Date(now()));
@@ -8464,6 +8495,10 @@ describe('GET /messages/:id/replies', () => {
         name: '',
         role: 'basis',
         sats: 21,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
         createdAt: new Date(now()).toISOString(),
       },
     ]);

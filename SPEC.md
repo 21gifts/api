@@ -7620,9 +7620,12 @@ Photo and video bytes are never included. `:id` is a UUID
 (`MESSAGE_ID_RE`). The response also carries `hearts`: one entry per claimed
 paid heart on the parent, ordered newest first (`createdAt` desc, then invoice
 id desc), capped at 200. Each entry is
-`{ accountId, name, username?, role?, sats, createdAt }`, where `sats` is the
-exact `amount_sats` of that heart invoice and `createdAt` is its ISO creation
-time. `name` is the current display name; `username` is present only when set;
+`{ accountId, name, username?, role?, sats, amountUsd, amountChf, amountEur, amountPhp, createdAt }`,
+where `sats` is the exact `amount_sats` of that heart invoice and the four
+`amount*` fields are its frozen `fiat_usd` / `fiat_chf` / `fiat_eur` / `fiat_php`
+strings, never recalculated; each is JSON `null` when its column is null.
+`createdAt` is its ISO creation time. `name` is the current display name;
+`username` is present only when set;
 `role` is present only while the account exists. A deleted account keeps the
 entry with `name: ""` and no `username` or `role`. The same heart condition as
 `heartStats` applies (`heart = true`, `result = 'ok'`, a non-null payment hash
@@ -7677,6 +7680,10 @@ Success → **Response** `200`:
       "username": "ada",
       "role": "basis",
       "sats": 21,
+      "amountUsd": "0.02",
+      "amountChf": "0.02",
+      "amountEur": "0.02",
+      "amountPhp": "1.25",
       "createdAt": "2026-11-09T15:22:00.000Z"
     }
   ]

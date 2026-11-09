@@ -1828,6 +1828,14 @@ export interface HeartSender {
   role?: AccountRole;
   /** Exact whole-sat amount of this heart invoice. */
   sats: number;
+  /** Frozen invoice fiat amount in USD, or `null` when the column is null. */
+  amountUsd: string | null;
+  /** Frozen invoice fiat amount in CHF, or `null` when the column is null. */
+  amountChf: string | null;
+  /** Frozen invoice fiat amount in EUR, or `null` when the column is null. */
+  amountEur: string | null;
+  /** Frozen invoice fiat amount in PHP, or `null` when the column is null. */
+  amountPhp: string | null;
   /** Invoice creation time. */
   createdAt: Date;
 }
@@ -4418,6 +4426,10 @@ export class InMemoryMessageStore implements MessageStore {
           accountId: row.payerAccountId,
           name: null,
           sats: row.amountSats,
+          amountUsd: row.amountUsd ?? null,
+          amountChf: row.amountChf ?? null,
+          amountEur: row.amountEur ?? null,
+          amountPhp: row.amountPhp ?? null,
           createdAt: new Date(row.createdAt.getTime()),
         })),
     );
@@ -8099,6 +8111,10 @@ export class PostgresMessageStore implements MessageStore {
       username: string | null;
       role: AccountRole | null;
       amount_sats: string | number;
+      fiat_usd: string | number | null;
+      fiat_chf: string | number | null;
+      fiat_eur: string | number | null;
+      fiat_php: string | number | null;
       created_at: Date | string;
     }>(
       `SELECT i.payer_account_id AS account_id,
@@ -8106,6 +8122,10 @@ export class PostgresMessageStore implements MessageStore {
               a.username,
               a.role,
               i.amount_sats,
+              i.fiat_usd::text AS fiat_usd,
+              i.fiat_chf::text AS fiat_chf,
+              i.fiat_eur::text AS fiat_eur,
+              i.fiat_php::text AS fiat_php,
               i.created_at
        FROM message_invoice i
        INNER JOIN nostr_zap_payment p
@@ -8126,6 +8146,10 @@ export class PostgresMessageStore implements MessageStore {
       ...(row.username === null ? {} : { username: row.username }),
       ...(row.role === null ? {} : { role: row.role }),
       sats: Number(row.amount_sats),
+      amountUsd: row.fiat_usd === null ? null : String(row.fiat_usd),
+      amountChf: row.fiat_chf === null ? null : String(row.fiat_chf),
+      amountEur: row.fiat_eur === null ? null : String(row.fiat_eur),
+      amountPhp: row.fiat_php === null ? null : String(row.fiat_php),
       createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
     }));
   }

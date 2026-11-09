@@ -5802,10 +5802,24 @@ describe('InMemoryMessageStore', () => {
 
   it('heartSenders keeps paid hearts on one message newest first with exact amounts', async () => {
     const store = new InMemoryMessageStore();
-    for (const [id, messageId, amountSats, paymentHash, createdAt] of [
-      ['old', 'note-a', 21, 'aa'.repeat(32), new Date('2026-08-28T12:00:00.000Z')],
-      ['new', 'note-a', 1, 'bb'.repeat(32), new Date('2026-08-28T12:00:01.000Z')],
-      ['other-note', 'note-b', 2, 'cc'.repeat(32), new Date('2026-08-28T12:00:02.000Z')],
+    for (const [id, messageId, amountSats, paymentHash, createdAt, fiat] of [
+      [
+        'old',
+        'note-a',
+        21,
+        'aa'.repeat(32),
+        new Date('2026-08-28T12:00:00.000Z'),
+        { amountUsd: '0.02', amountChf: '0.02', amountEur: '0.02', amountPhp: '1.25' },
+      ],
+      [
+        'new',
+        'note-a',
+        1,
+        'bb'.repeat(32),
+        new Date('2026-08-28T12:00:01.000Z'),
+        { amountUsd: null, amountChf: null, amountEur: null, amountPhp: null },
+      ],
+      ['other-note', 'note-b', 2, 'cc'.repeat(32), new Date('2026-08-28T12:00:02.000Z'), {}],
     ] as const) {
       await store.recordInvoiceAttempt({
         id,
@@ -5824,13 +5838,32 @@ describe('InMemoryMessageStore', () => {
         descriptionHash: null,
         isNip57Invoice: false,
         lnurlResponse: null,
+        ...fiat,
         heart: true,
       });
       await store.claimZapPayment(paymentHash, `receipt-${id}`, createdAt);
     }
     expect(await store.heartSenders('note-a')).toEqual([
-      { accountId: 'payer', name: null, sats: 1, createdAt: new Date('2026-08-28T12:00:01.000Z') },
-      { accountId: 'payer', name: null, sats: 21, createdAt: new Date('2026-08-28T12:00:00.000Z') },
+      {
+        accountId: 'payer',
+        name: null,
+        sats: 1,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        createdAt: new Date('2026-08-28T12:00:01.000Z'),
+      },
+      {
+        accountId: 'payer',
+        name: null,
+        sats: 21,
+        amountUsd: '0.02',
+        amountChf: '0.02',
+        amountEur: '0.02',
+        amountPhp: '1.25',
+        createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      },
     ]);
     expect(await store.heartSenders('note-empty')).toEqual([]);
   });
@@ -5889,8 +5922,26 @@ describe('InMemoryMessageStore', () => {
     });
     await store.claimZapPayment(paidHash, 'receipt-paid', at);
     expect(await store.heartSenders('note-a')).toEqual([
-      { accountId: 'payer', name: null, sats: 22, createdAt: at },
-      { accountId: 'payer', name: null, sats: 21, createdAt: at },
+      {
+        accountId: 'payer',
+        name: null,
+        sats: 22,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        createdAt: at,
+      },
+      {
+        accountId: 'payer',
+        name: null,
+        sats: 21,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
+        createdAt: at,
+      },
     ]);
   });
 
@@ -11770,6 +11821,10 @@ describe('PostgresMessageStore', () => {
         username: 'ada',
         role: 'verified',
         amount_sats: '21',
+        fiat_usd: '0.02',
+        fiat_chf: '0.02',
+        fiat_eur: '0.02',
+        fiat_php: '1.25',
         created_at: new Date('2026-08-28T12:00:00.000Z'),
       },
       {
@@ -11778,6 +11833,10 @@ describe('PostgresMessageStore', () => {
         username: null,
         role: null,
         amount_sats: 1,
+        fiat_usd: null,
+        fiat_chf: null,
+        fiat_eur: null,
+        fiat_php: null,
         created_at: new Date('2026-08-28T11:00:00.000Z'),
       },
       {
@@ -11786,6 +11845,10 @@ describe('PostgresMessageStore', () => {
         username: null,
         role: 'basis',
         amount_sats: 5,
+        fiat_usd: '0.01',
+        fiat_chf: '0.01',
+        fiat_eur: '0.01',
+        fiat_php: '0.56',
         created_at: '2026-08-28T10:00:00.000Z',
       },
     ];
@@ -11796,12 +11859,20 @@ describe('PostgresMessageStore', () => {
         username: 'ada',
         role: 'verified',
         sats: 21,
+        amountUsd: '0.02',
+        amountChf: '0.02',
+        amountEur: '0.02',
+        amountPhp: '1.25',
         createdAt: new Date('2026-08-28T12:00:00.000Z'),
       },
       {
         accountId: 'gone',
         name: null,
         sats: 1,
+        amountUsd: null,
+        amountChf: null,
+        amountEur: null,
+        amountPhp: null,
         createdAt: new Date('2026-08-28T11:00:00.000Z'),
       },
       {
@@ -11809,10 +11880,16 @@ describe('PostgresMessageStore', () => {
         name: 'Cy',
         role: 'basis',
         sats: 5,
+        amountUsd: '0.01',
+        amountChf: '0.01',
+        amountEur: '0.01',
+        amountPhp: '0.56',
         createdAt: new Date('2026-08-28T10:00:00.000Z'),
       },
     ]);
     expect(sql.queries[0]?.text).toContain('LEFT JOIN account a');
+    expect(sql.queries[0]?.text).toContain('i.fiat_usd::text AS fiat_usd');
+    expect(sql.queries[0]?.text).toContain('i.fiat_php::text AS fiat_php');
     expect(sql.queries[0]?.text).toContain('ORDER BY i.created_at DESC, i.id DESC');
     expect(sql.queries[0]?.params).toEqual([messageId]);
   });

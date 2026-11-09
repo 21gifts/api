@@ -2452,6 +2452,10 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
                   : { username: heartAccount.username }),
                 ...(heartAccount === undefined ? {} : { role: heartAccount.role }),
                 sats: heart.sats,
+                amountUsd: heart.amountUsd,
+                amountChf: heart.amountChf,
+                amountEur: heart.amountEur,
+                amountPhp: heart.amountPhp,
                 createdAt: heart.createdAt.toISOString(),
               };
             }),
