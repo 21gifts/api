@@ -5,6 +5,7 @@
  */
 
 import { Hono } from 'hono';
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import { DailyRosterRequestError, DAILY_ROSTER_UNAVAILABLE } from '@/lib/daily-roster';
@@ -152,7 +153,7 @@ export function spendInstructionRoutes(deps: SpendInstructionRouteDeps): Hono {
         const newestMedia = posts.find((row) => row.id !== excludeId && listedPostHasMedia(row));
         messageId = newestMedia === undefined ? null : newestMedia.id;
       }
-      if (account.role !== 'basis') {
+      if (roleAtLeast(account.role, 'verified')) {
         const payout = await loadPayoutEligibility(
           deps.fundingStore,
           deps.authStore,

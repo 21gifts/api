@@ -5,7 +5,7 @@
  * event's own UTC day; at most one per member, payout kind, and day.
  */
 
-import { isModeratorGroupMember } from '@/lib/auth/roles';
+import { isModeratorGroupMember, roleAtLeast } from '@/lib/auth/roles';
 import type { Account, AuthStore } from '@/lib/auth/store';
 import type { LnurlServerConfig } from '@/lib/config';
 import type { ConversationStore } from '@/lib/conversation-store';
@@ -271,7 +271,7 @@ function notEligibleDetail(
     return null;
   }
   if (
-    account.role !== 'basis' &&
+    roleAtLeast(account.role, 'verified') &&
     grant !== undefined &&
     (isExpiredTrial(grant) ||
       (grant.status === 'trial' &&
@@ -291,8 +291,8 @@ function notEligibleDetail(
  * Each event is paid only when the account has a verified wallet now, is
  * eligible now through `loadPayoutEligibility` (a `trial` grant of an earlier
  * UTC day, also once it was stored as `pending`, is reported as `not_eligible`
- * / `trial_day_passed`, except for a `basis` account, which is never eligible
- * and is reported as `grant`; an account eligible but for the 21.gifts
+ * / `trial_day_passed`, except for a `basis` or `fond` account, which is never
+ * eligible and is reported as `grant`; an account eligible but for the 21.gifts
  * recovery share of its current wallet, on a run from the share's start day
  * on, is reported as `no_recovery_share`),
  * and has no payout of that kind on the event's UTC day: neither in the gift

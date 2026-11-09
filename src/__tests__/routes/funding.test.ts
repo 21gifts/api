@@ -1121,6 +1121,18 @@ describe('POST /funding/admit', () => {
     );
   });
 
+  it('returns 409 for a fond subject with a pending grant, like basis', async () => {
+    const fond = account({ id: FOND, role: 'fond', name: 'Fond' });
+    const { authStore, fundingStore } = await staffed([fond]);
+    await fundingStore.upsert(grant({ accountId: FOND, status: 'pending' }));
+    const res = await post(mount(authStore, fundingStore), '/funding/admit', 'founder', {
+      accountId: FOND,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Conflict' });
+    expect((await fundingStore.getByAccountId(FOND))?.status).toBe('pending');
+  });
+
   it('returns 409 when the CAS transition misses after the status check', async () => {
     const { authStore } = await staffed();
     const pending = grant({ accountId: VERIFIED, status: 'pending' });

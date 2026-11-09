@@ -274,6 +274,36 @@ describe('buildFundingPayoutMatrix', () => {
     ]);
   });
 
+  it('includes a fond account only on days a daily gift was paid, like basis', () => {
+    const matrix = buildFundingPayoutMatrix({
+      nowMs: NOW,
+      accounts: [
+        account({
+          id: 'f',
+          role: 'fond',
+          name: '   ',
+          lightningAddress: 'fond@example.com',
+        }),
+      ],
+      grants: [grant({ accountId: 'f', status: 'admitted', admittedAt: null })],
+      gifts: [
+        gift({
+          kind: 'daily',
+          recipientWosUser: 'fond@example.com',
+          paidAt: new Date('2026-09-26T01:00:00.000Z'),
+        }),
+      ],
+    });
+    expect(matrix.rows).toEqual([
+      {
+        accountId: 'f',
+        name: null,
+        days: ['blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'blocked', 'paid'],
+        welcome: noneWelcome(),
+      },
+    ]);
+  });
+
   it('gives a shared handle to the smaller account id and keeps an unmatched handle', () => {
     const matrix = buildFundingPayoutMatrix({
       nowMs: NOW,

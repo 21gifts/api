@@ -37,7 +37,7 @@ export interface FundingGrant {
   note: string | null;
 }
 
-/** Owner-facing funding JSON on `GET /me` / passkey finish (`role !== 'basis'`). */
+/** Owner-facing funding JSON on `GET /me` / passkey finish (at least `verified`). */
 export interface OwnerFundingJson {
   /** Effective status; never omit. `'none'` when there is no row. */
   status: EffectiveFundingStatus;
@@ -316,15 +316,15 @@ export function dailyPayoutStoppedNotice(
 }
 
 /**
- * Owner `funding` field: `null` for `basis` (do not leak grants), else
- * always an object (`none` when there is no row).
+ * Owner `funding` field: `null` for `basis` and `fond` (do not leak grants),
+ * else always an object (`none` when there is no row).
  *
  * @param role - Live account role.
  * @param grant - Observed grant (lazy-persisted), or `undefined`.
  * @param nowMs - Epoch milliseconds.
  * @param reviewerName - Live `decidedBy` name; used only when admitted.
  * @param accountId - Subject account id for {@link dailyPayoutStoppedNotice}.
- * @returns Owner funding JSON, or `null` for `basis`.
+ * @returns Owner funding JSON, or `null` for `basis` and `fond`.
  */
 export function serializeOwnerFunding(
   role: AccountRole,
@@ -333,7 +333,7 @@ export function serializeOwnerFunding(
   reviewerName: string | null,
   accountId: string,
 ): OwnerFundingJson | null {
-  if (role === 'basis') {
+  if (!roleAtLeast(role, 'verified')) {
     return null;
   }
   const status = effectiveStatus(grant, nowMs);

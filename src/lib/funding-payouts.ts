@@ -1,3 +1,4 @@
+import { roleAtLeast } from '@/lib/auth/roles';
 import type { AccountRole } from '@/lib/auth/store';
 import type { FundingGrant } from '@/lib/funding';
 import type { GiftRow } from '@/lib/gift';
@@ -19,7 +20,7 @@ export interface PayoutMatrixAccount {
   id: string;
   /** Display name, possibly blank. */
   name: string | null;
-  /** Live role. `basis` is never entitled. */
+  /** Live role. Only a role at least `verified` is entitled; `basis` and `fond` never. */
   role: AccountRole;
   /** Receiving address (verified wallet) used to match `gift.recipient_wos_user`, or null. */
   lightningAddress: string | null;
@@ -93,9 +94,10 @@ function weekDays(nowMs: number): PayoutMatrix['days'] {
 /**
  * Whether the stored grant entitles this role on `day`.
  *
- * `basis` is never entitled. Admitted is entitled from `admittedAt`'s UTC
- * day (or every day when `admittedAt` is null). A stored `trialUtcDate`
- * entitles that one day even when the status is no longer `trial`.
+ * Only a role at least `verified` is entitled; `basis` and `fond` never.
+ * Admitted is entitled from `admittedAt`'s UTC day (or every day when
+ * `admittedAt` is null). A stored `trialUtcDate` entitles that one day even
+ * when the status is no longer `trial`.
  *
  * @param role - Live role.
  * @param grant - Stored grant, if any.
@@ -103,7 +105,7 @@ function weekDays(nowMs: number): PayoutMatrix['days'] {
  * @returns `true` when the day is entitled.
  */
 function entitled(role: AccountRole, grant: FundingGrant | undefined, day: string): boolean {
-  if (role === 'basis' || grant === undefined) {
+  if (!roleAtLeast(role, 'verified') || grant === undefined) {
     return false;
   }
   const admitted =

@@ -285,6 +285,12 @@ describe('serializeOwnerFunding', () => {
     ).toBeNull();
   });
 
+  it('is null for fond, like basis', () => {
+    expect(
+      serializeOwnerFunding('fond', grant({ status: 'admitted' }), NOW_MS, 'Mod', NOTICE_IDS[0]),
+    ).toBeNull();
+  });
+
   it('emits none when the grant is missing', () => {
     expect(serializeOwnerFunding(NON_BASIS, undefined, NOW_MS, null, 'acc')).toEqual({
       status: 'none',

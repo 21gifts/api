@@ -21,6 +21,7 @@ import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import type { FiatAmounts } from '@/lib/money';
 import { preimageMatchesHash } from '@/lib/proof';
+import { normalizeUuid } from '@/lib/uuid';
 import { bearerToken } from '@/routes/me';
 import {
   GIFT_PROOF_MISMATCH,
@@ -72,6 +73,9 @@ export const FOND_INVOICE_IN_PROGRESS = 'Invoice in progress';
 
 /** `403` body for a session that is not the Fond account. */
 export const FOND_ONLY = 'Fond only';
+
+/** `503` body when a payout store read or transition throws. */
+const PAYOUTS_UNAVAILABLE = 'Payouts are unavailable';
 
 /**
  * Resolve the session account for a `/fond` request.
@@ -129,6 +133,22 @@ function displayAmountUsd(amountUsd: string): string | null {
 }
 
 /**
+ * Release an `issuing` claim, reporting a store failure to the caller.
+ *
+ * @param deps - Route collaborators.
+ * @param id - Payout row id.
+ * @returns `true` when the release succeeded, `false` when the store threw.
+ */
+async function releaseClaim(deps: FondRouteDeps, id: string): Promise<boolean> {
+  try {
+    await deps.fondPayoutStore.releaseClaim(id);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * Map an issue result refusal to the queue: an issue-side 4xx text is stored
  * as `failed` and returned as 409; transport/configuration failures release
  * the claim back to `owed` and keep their status.
@@ -144,10 +164,18 @@ async function refusedInvoice(
   result: Extract<IssueGiftInvoiceResult, { ok: false }>,
 ): Promise<{ status: 400 | 403 | 409 | 502 | 503; error: string }> {
   if (result.status < 500) {
-    await deps.fondPayoutStore.markFailed(id, result.error);
+    try {
+      await deps.fondPayoutStore.markFailed(id, result.error);
+    } catch {
+      logEvent('fond.invoice.failed');
+      return { status: 503, error: PAYOUTS_UNAVAILABLE };
+    }
     return { status: 409, error: result.error };
   }
-  await deps.fondPayoutStore.releaseClaim(id);
+  if (!(await releaseClaim(deps, id))) {
+    logEvent('fond.invoice.failed');
+    return { status: 503, error: PAYOUTS_UNAVAILABLE };
+  }
   return { status: result.status, error: result.error };
 }
 
@@ -198,13 +226,16 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (denied !== null) {
         return c.json({ error: denied.error }, denied.status);
       }
-      const id = c.req.param('id');
+      const id = normalizeUuid(c.req.param('id'));
+      if (id === null) {
+        return c.json({ error: 'Not found' }, 404);
+      }
       let row: Awaited<ReturnType<FondPayoutStore['get']>>;
       try {
         row = await deps.fondPayoutStore.get(id);
       } catch {
         logEvent('fond.invoice.failed');
-        return c.json({ error: 'Payouts are unavailable' }, 503);
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       if (row === undefined) {
         return c.json({ error: 'Not found' }, 404);
@@ -230,7 +261,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         claimed = await deps.fondPayoutStore.claimForInvoice(row.id, utcDay(deps.now()));
       } catch {
         logEvent('fond.invoice.failed');
-        return c.json({ error: 'Payouts are unavailable' }, 503);
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       if (claimed === null) {
         let current: FondPayoutRow | undefined;
@@ -238,7 +269,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           current = await deps.fondPayoutStore.get(row.id);
         } catch {
           logEvent('fond.invoice.failed');
-          return c.json({ error: 'Payouts are unavailable' }, 503);
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
         }
         if (
           current?.status === 'invoiced' &&
@@ -265,11 +296,17 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       const amountMsat = spot === null ? null : usdToMsat(row.amountUsd, spot);
       if (amountMsat === null) {
-        await deps.fondPayoutStore.releaseClaim(row.id);
+        if (!(await releaseClaim(deps, row.id))) {
+          logEvent('fond.invoice.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
         return c.json({ error: FOND_PRICE_UNAVAILABLE }, 503);
       }
       if (amountMsat < 1000) {
-        await deps.fondPayoutStore.releaseClaim(row.id);
+        if (!(await releaseClaim(deps, row.id))) {
+          logEvent('fond.invoice.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
         return c.json({ error: FOND_AMOUNT_BELOW_ONE_SAT }, 409);
       }
 
@@ -285,23 +322,28 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           ...(displayUsd === null ? {} : { amountUsd: displayUsd }),
         });
       } catch {
-        await deps.fondPayoutStore.releaseClaim(row.id);
+        await releaseClaim(deps, row.id);
         logEvent('fond.invoice.failed');
-        return c.json({ error: 'Payouts are unavailable' }, 503);
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       if (!result.ok) {
         const refusal = await refusedInvoice(deps, row.id, result);
         return c.json({ error: refusal.error }, refusal.status);
       }
-      const stored = await deps.fondPayoutStore.setInvoiced(row.id, {
-        invoiceId: result.invoice.id,
-        paymentHash: result.invoice.paymentHash,
-        bolt11: result.invoice.pr,
-        amountMsat,
-      });
-      if (stored === undefined) {
+      try {
+        const stored = await deps.fondPayoutStore.setInvoiced(row.id, {
+          invoiceId: result.invoice.id,
+          paymentHash: result.invoice.paymentHash,
+          bolt11: result.invoice.pr,
+          amountMsat,
+        });
+        if (stored === undefined) {
+          logEvent('fond.invoice.failed');
+          return c.json({ error: 'Not payable' }, 409);
+        }
+      } catch {
         logEvent('fond.invoice.failed');
-        return c.json({ error: 'Not payable' }, 409);
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       return c.json(
         {
@@ -320,6 +362,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (denied !== null) {
         return c.json({ error: denied.error }, denied.status);
       }
+      const id = normalizeUuid(c.req.param('id'));
+      if (id === null) {
+        return c.json({ error: 'Not found' }, 404);
+      }
       let raw: unknown;
       try {
         raw = await c.req.json();
@@ -330,13 +376,12 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (!parsed.success) {
         return c.json({ error: 'Expected a JSON body with preimage' }, 400);
       }
-      const id = c.req.param('id');
       let row: Awaited<ReturnType<FondPayoutStore['get']>>;
       try {
         row = await deps.fondPayoutStore.get(id);
       } catch {
         logEvent('fond.proof.failed');
-        return c.json({ error: 'Payouts are unavailable' }, 503);
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       if (row === undefined) {
         return c.json({ error: 'Not found' }, 404);
@@ -376,9 +421,14 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         row.kind,
       );
       if (row.status !== 'paid') {
-        const stored = await deps.fondPayoutStore.markPaid(row.id);
-        if (stored === undefined) {
-          return c.json({ error: 'Not invoiced' }, 409);
+        try {
+          const stored = await deps.fondPayoutStore.markPaid(row.id);
+          if (stored === undefined) {
+            return c.json({ error: 'Not invoiced' }, 409);
+          }
+        } catch {
+          logEvent('fond.proof.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
         }
       }
       logEvent('fond.payout.paid', { id: row.id });

@@ -850,7 +850,7 @@ export function fundingRoutes(deps: FundingRouteDeps): Hono {
       if (subject.id === staff.caller.id) {
         return c.json({ error: 'Conflict' }, 409);
       }
-      if (subject.role === 'basis') {
+      if (!roleAtLeast(subject.role, 'verified')) {
         return c.json({ error: 'Conflict' }, 409);
       }
       const nowMs = deps.now();
