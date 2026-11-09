@@ -25,6 +25,7 @@ const MOD = '22222222-2222-4222-8222-222222222222';
 const SUBJECT = '33333333-3333-4333-8333-333333333333';
 const OTHER = '44444444-4444-4444-8444-444444444444';
 const VERIFIED = '55555555-5555-4555-8555-555555555555';
+const FOND = '88888888-8888-4888-8888-888888888888';
 const JOEY = '77777777-7777-4777-8777-777777777777';
 const VINCENT_OTHER = '12121212-1212-4121-8121-121212121212';
 const APPLY_JPEG = new Uint8Array([0xff, 0xd8, 0xff, 0xd9]);
@@ -960,6 +961,18 @@ describe('POST /funding/trial', () => {
     expect((await post(app, '/funding/trial', 'founder', { accountId: VERIFIED })).status).toBe(
       409,
     );
+  });
+
+  it('returns 409 for a fond subject with a pending grant, like basis', async () => {
+    const fond = account({ id: FOND, role: 'fond', name: 'Fond' });
+    const { authStore, fundingStore } = await staffed([fond]);
+    await fundingStore.upsert(grant({ accountId: FOND, status: 'pending' }));
+    const res = await post(mount(authStore, fundingStore), '/funding/trial', 'founder', {
+      accountId: FOND,
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Conflict' });
+    expect((await fundingStore.getByAccountId(FOND))?.status).toBe('pending');
   });
 
   it('returns 200 and sets trialUtcDate to today UTC', async () => {

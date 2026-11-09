@@ -1164,6 +1164,48 @@ describe('POST /invoices', () => {
     expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
   });
 
+  it('returns 403 for a fond account with an admitted grant, like basis', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'fond',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    await authStore.createPasskeyCredential({
+      credentialId: 'cred-alice',
+      publicKey: new Uint8Array([1]),
+      signCount: 0,
+      accountId: 'acc-alice',
+      createdAt: 1,
+    });
+    const fetchImpl: FetchFn = async () => {
+      throw new Error('LNURL must not be called');
+    };
+    const res = await spendApp({
+      spendApiToken: TOKEN,
+      authStore,
+      messageStore: livePostStore(),
+      fetchImpl,
+      fundingStore: admittedStore(),
+      now: () => GATE_MS,
+    }).request(
+      '/invoices',
+      auth({ method: 'POST', body: JSON.stringify({ address: ADDRESS, amountMsat: 1000 }) }),
+    );
+    expect(res.status).toBe(403);
+    expect(await res.json()).toEqual({ error: 'Funding grant required' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'invoice.funding_required')).toBe(true);
+  });
+
   it('returns 403 when the account has a passkey but no live forum post', async () => {
     const authStore = new InMemoryAuthStore();
     await seedPasskeyAccount(authStore);
@@ -4207,6 +4249,31 @@ describe('GET /invoices/eligible', () => {
       walletRequired: true,
       linkingKey: null,
       role: 'basis',
+      name: 'Ada',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'a'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+    });
+    await verifyWallet(authStore);
+    const fundingStore = admittedStore();
+    const res = await spendApp({ spendApiToken: TOKEN, authStore, fundingStore }).request(
+      `/invoices/eligible?address=${encodeURIComponent(ADDRESS)}`,
+      auth(),
+    );
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ eligible: false, status: 'none' });
+  });
+
+  it('returns eligible false and status none for a fond account', async () => {
+    const authStore = new InMemoryAuthStore();
+    await authStore.createAccount({
+      id: 'acc-alice',
+      username: 'alice',
+      walletRequired: true,
+      linkingKey: null,
+      role: 'fond',
       name: 'Ada',
       forumLawsDismissed: false,
       location: null,

@@ -1,4 +1,5 @@
 import type { AccountRole } from '@/lib/auth/store';
+import { roleAtLeast } from '@/lib/auth/roles';
 import { isUtcDay } from '@/lib/gift';
 
 /**
@@ -243,8 +244,9 @@ export function recoveryShareRequired(nowMs: number, requiredFrom: string | null
 /**
  * Whether the account may receive a spend ping / spend invoice today.
  *
- * `basis` is always false. Before {@link FUNDING_REQUIRED_FROM_UTC}, every
- * other role is true (passkey and living-room post still gate issue). From
+ * `basis` and `fond` are always false. Before
+ * {@link FUNDING_REQUIRED_FROM_UTC}, every role at least `verified` is true
+ * (passkey and living-room post still gate issue). From
  * that UTC day, true iff {@link inGrantProgramToday} and, once
  * {@link recoveryShareRequired}, `recoveryShareStored`. Expired trial, pending,
  * rejected, and missing grants are then false, and so is a grant without a
@@ -266,7 +268,7 @@ export function eligibleToday(
   recoveryShareStored: boolean,
   recoveryShareRequiredFrom: string | null,
 ): boolean {
-  if (role === 'basis') {
+  if (!roleAtLeast(role, 'verified')) {
     return false;
   }
   if (!fundingGrantRequired(nowMs)) {
