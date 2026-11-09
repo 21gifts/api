@@ -6956,7 +6956,7 @@ posting unpaid **text-only** → **403**
 `{ "error": "A post needs a Bitcoin payment" }` or `{ "error": "A reply needs a Bitcoin payment" }`
 for `inReplyTo`, except the free first post below and a reply whose parent
 note the caller wrote: that reply is free for every role, because a wallet
-cannot pay itself. It still passes the post limiter and the Sunday rule. A photo or video body from `basis` is **200**. Pay 1 sat to
+cannot pay itself. It still passes the reply limiter and the Sunday rule. A photo or video body from `basis` is **200**. Pay 1 sat to
 21.gifts first (`GET /messages/compose-target`
 then `POST /messages/:id/invoice` on that platform profile note). Optional
 `goalSats` omitted, JSON `null`, or a missing/empty multipart field means
