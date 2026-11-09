@@ -1888,16 +1888,22 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 - **Inputs:** Invoice description, or null.
 - **Returns / side effects:** `{ dayIndex, recipientAccountId }`, or null. No I/O.
 
+## Function: REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS
+
+- **Purpose:** The operator-approved credits that do not use the 2026-11-16 repayment minimum. These three credits start on the UTC day after they filled, however early that is.
+- **Value:** A `ReadonlySet<string>` of the lowercase message ids `bcc5b230-f446-4724-8e50-df0339657bf9`, `11e05676-aa85-4b27-8a0b-855239328c9b`, and `399feee2-e84a-4f2f-94e2-21c04928298c`.
+- **Used by:** `repaymentStartMs`, which matches the credit id case-insensitively. Every other credit keeps the 2026-11-16 minimum.
+
 ## Function: repaymentStartMs
 
-- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-16. A credit that filled on or before 2026-11-15 starts on 2026-11-16. A credit that filled later starts the next UTC day. Every due date and due-day count uses this start.
-- **Inputs:** Epoch milliseconds when the credit filled.
+- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled. For a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS`, it is never before 2026-11-16, so a non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16, and a non-exempt credit that filled later starts the next UTC day. The three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. Every due date and due-day count uses this start.
+- **Inputs:** Epoch milliseconds when the credit filled, and the credit message id (matched case-insensitively).
 - **Returns / side effects:** That midnight in epoch milliseconds. No I/O.
 
 ## Function: dueDayCount
 
-- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-16.
-- **Inputs:** Funded time, now, term days.
+- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` nothing is due before 2026-11-16. The three credits in that set may be due earlier.
+- **Inputs:** Funded time, now, term days, and the credit message id.
 - **Returns / side effects:** A count from 0 through the term. No I/O.
 
 ## Function: dayUnits
@@ -1921,8 +1927,8 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: repaymentDueDate
 
-- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-16.
-- **Inputs:** Funded time in epoch milliseconds, and the zero-based day.
+- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, and for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` never before 2026-11-16. The three credits in that set start the day after they filled.
+- **Inputs:** Funded time in epoch milliseconds, the zero-based day, and the credit message id.
 - **Returns / side effects:** `YYYY-MM-DD`. No I/O.
 
 ## Function: formatCents
@@ -1933,8 +1939,8 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: repaymentLedger
 
-- **Purpose:** List every repayment share in day order. Each row is one bitcoin payment. A date is set only after the credit has filled. Status is paid, due, or scheduled.
-- **Inputs:** Term, giver units, shares already paid, funded time or null, and the clock.
+- **Purpose:** List every repayment share in day order. Each row is one bitcoin payment. A date is set only after the credit has filled. Status is paid, due, or scheduled. Dates and due counts follow `repaymentStartMs`, including the three-credit minimum exception.
+- **Inputs:** Term, giver units, shares already paid, funded time or null, the clock, and the credit message id.
 - **Returns / side effects:** The rows. No I/O.
 - **Used by:** `repaymentStatus`.
 
