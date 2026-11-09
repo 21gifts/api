@@ -105,6 +105,7 @@ import { InMemoryFundingStore, type FundingStore } from '@/lib/funding-store';
 import {
   InvoiceRateLimiter,
   PostRateLimiter,
+  REPLY_POST_CAPS,
   resolveTestInvoiceRateCaps,
   type InvoiceRateCaps,
 } from '@/lib/nostr/rate-limit';
@@ -259,16 +260,22 @@ export interface AppDeps {
    */
   rosterStore?: DailyRosterStore;
   /**
-   * Forum post limiter shared with zap compose ingest (default: a new
-   * {@link PostRateLimiter}). Boot injects one instance into both
+   * Forum top-level note limiter shared with zap compose ingest (default: a
+   * new {@link PostRateLimiter}). Boot injects one instance into both
    * `messagesRoutes` and the Nostr worker.
    */
   postLimiter?: PostRateLimiter;
   /**
+   * Forum reply limiter shared with zap compose ingest (default: a new
+   * {@link PostRateLimiter} with {@link REPLY_POST_CAPS}). Boot injects one
+   * instance into both `messagesRoutes` and the Nostr worker.
+   */
+  replyLimiter?: PostRateLimiter;
+  /**
    * Test-only invoice caps for gift and repayment minting (default:
    * {@link resolveTestInvoiceRateCaps} on the same `env` `createApp`
    * already resolves). `null` or a resolver miss leaves the process-wide
-   * default limiters (1/10s, 20/h).
+   * default limiters (1/s, 20/h).
    */
   invoiceRateCaps?: InvoiceRateCaps | null;
   /** Gift invoices issued for the spend worker (default: in-memory). */
@@ -475,7 +482,8 @@ function debugList(store: object, limit: number): Promise<unknown[]> {
  *   {@link InMemoryDailyRosterStore}, shared by funding routes,
  *   `POST /spend/daily-instruction`, and the default spend ping), postLimiter
  *   (optional; default `new PostRateLimiter()`, shared with `messagesRoutes`
- *   and the Nostr worker), invoiceRateCaps (optional; default
+ *   and the Nostr worker), replyLimiter (optional; default
+ *   `new PostRateLimiter(REPLY_POST_CAPS)`, shared the same way), invoiceRateCaps (optional; default
  *   {@link resolveTestInvoiceRateCaps} on env; non-null injects gift and
  *   repayment invoice limiters), gift invoice store, listDbChange,
  *   diagnosticStore (optional; default {@link InMemoryDiagnosticStore};
@@ -523,7 +531,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     deps.invoiceRateCaps === undefined ? resolveTestInvoiceRateCaps(env) : deps.invoiceRateCaps;
   if (invoiceRateCaps !== null) {
     console.warn(
-      `test invoice rate caps burst=${invoiceRateCaps.burstCap}/10s hour=${invoiceRateCaps.hourCap}/h`,
+      `test invoice rate caps burst=${invoiceRateCaps.burstCap}/1s hour=${invoiceRateCaps.hourCap}/h`,
     );
   }
   const lnurlServer = resolveLnurlServerConfig(env);
@@ -633,6 +641,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(lnurlServer === null ? {} : { lnurlServer }),
     });
   const postLimiter = deps.postLimiter ?? new PostRateLimiter();
+  const replyLimiter = deps.replyLimiter ?? new PostRateLimiter(REPLY_POST_CAPS);
   const invoiceStore = deps.invoiceStore ?? new InMemoryInvoiceStore();
   const giftRecorder = deps.giftRecorder;
 
@@ -1059,6 +1068,7 @@ export function createApp(deps: AppDeps = {}): Hono {
       ...(deps.nostrRelayUrls === undefined ? {} : { nostrRelayUrls: deps.nostrRelayUrls }),
       ...(spendPing === undefined ? {} : { spendPing }),
       postLimiter,
+      replyLimiter,
       ...(invoiceRateCaps === null
         ? {}
         : {

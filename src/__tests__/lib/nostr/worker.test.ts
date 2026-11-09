@@ -35,7 +35,7 @@ import { RecordingPublisher } from '@/lib/nostr/publish';
 import { RecordingQuerier, type NostrEventFrame } from '@/lib/nostr/query';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { createWalletAccount, LNURL_SERVER, WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
-import { PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import {
   HOT_ZAP_SINCE_SLACK_S,
   HOT_ZAP_WINDOW_MS,
@@ -215,7 +215,7 @@ describe('runNostrWorkerTick', () => {
     ]);
   });
 
-  it('accepts spendPing and postLimiter when zap ingest has no receipts', async () => {
+  it('accepts spendPing, postLimiter and replyLimiter when zap ingest has no receipts', async () => {
     const { auth, messages } = await seed();
     const spendPing = { ping: vi.fn(async () => undefined) };
     await runNostrWorkerTick(
@@ -228,6 +228,7 @@ describe('runNostrWorkerTick', () => {
         env: {},
         spendPing,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
       }),
     );
     expect(spendPing.ping).not.toHaveBeenCalled();
@@ -7894,6 +7895,7 @@ describe('zapReceiptIngest', () => {
         lnurlServer: LNURL_SERVER,
         spendPing: { ping },
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         fundingStore: new InMemoryFundingStore([
           {
             accountId: 'payer',

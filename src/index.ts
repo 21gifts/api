@@ -18,7 +18,7 @@ import type { SqlClient } from './lib/auth/sql';
 import { logPoolOptions } from './lib/sql-pool';
 import { WebsocketNostrPublisher } from './lib/nostr/publish';
 import { WebsocketNostrQuerier } from './lib/nostr/query';
-import { PostRateLimiter } from './lib/nostr/rate-limit';
+import { PostRateLimiter, REPLY_POST_CAPS } from './lib/nostr/rate-limit';
 import { InMemoryBannerStore } from './lib/banner-store';
 import {
   RELAY_TIMEOUT_MS,
@@ -220,6 +220,7 @@ if (import.meta.main) {
     ...(lnurlServer === undefined ? {} : { lnurlServer }),
   });
   const postLimiter = new PostRateLimiter();
+  const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
   const forumMessages = messageStore ?? new InMemoryMessageStore();
   const shopIdentities = shopIdentityStore ?? new InMemoryShopIdentityStore(forumMessages);
   const banners = boot.bannerStore ?? new InMemoryBannerStore();
@@ -298,6 +299,7 @@ if (import.meta.main) {
     ...(bun === undefined ? {} : { mergeDb: bun.mergeDb }),
     vapidPublicKey: vapidPublicKey ?? '',
     postLimiter,
+    replyLimiter,
     bannerStore: banners,
     ...(sparkInvoiceStore === undefined ? {} : { sparkInvoiceStore }),
   });
@@ -343,6 +345,7 @@ if (import.meta.main) {
     env: process.env,
     pushStore,
     postLimiter,
+    replyLimiter,
     ...(conversationStore === undefined ? {} : { conversations: conversationStore }),
     ...(notificationStore === undefined ? {} : { notificationStore }),
     ...(spendPing === undefined ? {} : { spendPing }),

@@ -1,12 +1,22 @@
 import { describe, expect, it } from 'vitest';
+import type { AccountRole } from '@/lib/auth/store';
 import {
+  forumRateLimitExempt,
   HEART_HOUR_CAP,
   HEART_NOTE_COOLDOWN_MS,
   HeartRateLimiter,
   INVOICE_BURST_CAP,
+  INVOICE_BURST_WINDOW_MS,
   INVOICE_HOUR_CAP,
   InvoiceRateLimiter,
+  POST_BURST_WINDOW_MS,
+  POST_DAY_CAP,
+  POST_HOUR_CAP,
   PostRateLimiter,
+  REPLY_DAY_CAP,
+  REPLY_HOUR_CAP,
+  REPLY_POST_CAPS,
+  TOP_LEVEL_POST_CAPS,
   resolveTestInvoiceRateCaps,
   utcDayKey,
 } from '@/lib/nostr/rate-limit';
@@ -26,10 +36,35 @@ describe('PostRateLimiter', () => {
     expect(limiter.allow('b', t0 + 100)).toBe(true);
   });
 
-  it('allows again after the 10s window', () => {
+  it('allows again after the 1s window', () => {
     const limiter = new PostRateLimiter();
+    expect(POST_BURST_WINDOW_MS).toBe(1_000);
     expect(limiter.allow('a', 0)).toBe(true);
-    expect(limiter.allow('a', 10_000)).toBe(true);
+    expect(limiter.allow('a', 999)).toBe(false);
+    expect(limiter.allow('a', 1_000)).toBe(true);
+  });
+
+  it('defaults to the top-level caps: 1/s, 6/h, 20/UTC-day', () => {
+    expect(TOP_LEVEL_POST_CAPS).toEqual({ burstCap: 1, hourCap: 6, dayCap: 20 });
+    const limiter = new PostRateLimiter();
+    for (let i = 0; i < POST_HOUR_CAP; i += 1) {
+      expect(limiter.check('a', i * 1_000)).toBeNull();
+    }
+    expect(limiter.check('a', POST_HOUR_CAP * 1_000)).toBe('hour');
+    const day = Date.parse('2026-11-09T00:00:00.000Z');
+    const daily = new PostRateLimiter();
+    for (let i = 0; i < POST_DAY_CAP; i += 1) {
+      expect(daily.check('a', day + i * 60 * 60 * 1000)).toBeNull();
+    }
+    expect(daily.check('a', day + POST_DAY_CAP * 60 * 60 * 1000 - 1)).toBe('day');
+  });
+
+  it('names the burst window first, and does not record a refusal', () => {
+    const limiter = new PostRateLimiter();
+    expect(limiter.check('a', 0)).toBeNull();
+    expect(limiter.check('a', 500)).toBe('burst');
+    expect(limiter.check('a', 999)).toBe('burst');
+    expect(limiter.check('a', 1_000)).toBeNull();
   });
 
   it('evicts idle keys after 48h', () => {
@@ -39,12 +74,92 @@ describe('PostRateLimiter', () => {
   });
 });
 
+describe('reply limiter (PostRateLimiter with REPLY_POST_CAPS)', () => {
+  it('caps replies at 1/s, 30/h, 100/UTC-day', () => {
+    expect(REPLY_POST_CAPS).toEqual({ burstCap: 1, hourCap: 30, dayCap: 100 });
+    const burst = new PostRateLimiter(REPLY_POST_CAPS);
+    expect(burst.check('a', 0)).toBeNull();
+    expect(burst.check('a', 999)).toBe('burst');
+    expect(burst.check('a', 1_000)).toBeNull();
+
+    const hour = new PostRateLimiter(REPLY_POST_CAPS);
+    for (let i = 0; i < REPLY_HOUR_CAP; i += 1) {
+      expect(hour.check('a', i * 1_000)).toBeNull();
+    }
+    expect(hour.check('a', REPLY_HOUR_CAP * 1_000)).toBe('hour');
+    expect(hour.check('a', 60 * 60 * 1000)).toBeNull();
+
+    const day = Date.parse('2026-11-09T00:00:00.000Z');
+    const daily = new PostRateLimiter(REPLY_POST_CAPS);
+    // 25 replies in each of four hours fill the day without reaching the hour cap.
+    for (let i = 0; i < REPLY_DAY_CAP; i += 1) {
+      const at = day + Math.floor(i / 25) * 60 * 60 * 1000 + (i % 25) * 1_000;
+      expect(daily.check('a', at)).toBeNull();
+    }
+    expect(daily.check('a', day + 5 * 60 * 60 * 1000)).toBe('day');
+    expect(daily.check('a', Date.parse('2026-11-10T00:00:00.000Z'))).toBeNull();
+  });
+
+  it('keeps reply and top-level budgets apart', () => {
+    const topLevel = new PostRateLimiter();
+    const replies = new PostRateLimiter(REPLY_POST_CAPS);
+    // Six top-level notes exhaust the hour; replies still go through.
+    for (let i = 0; i < POST_HOUR_CAP; i += 1) {
+      expect(topLevel.allow('a', i * 1_000)).toBe(true);
+    }
+    expect(topLevel.allow('a', 10_000)).toBe(false);
+    for (let i = 0; i < REPLY_HOUR_CAP; i += 1) {
+      expect(replies.allow('a', 10_000 + i * 1_000)).toBe(true);
+    }
+    expect(replies.allow('a', 10_000 + REPLY_HOUR_CAP * 1_000)).toBe(false);
+    // Thirty replies did not touch the top-level budget of a second account.
+    expect(topLevel.allow('b', 100_000)).toBe(true);
+  });
+
+  it('lets a reply-exhausted account still post top-level notes', () => {
+    const topLevel = new PostRateLimiter();
+    const replies = new PostRateLimiter(REPLY_POST_CAPS);
+    for (let i = 0; i < REPLY_HOUR_CAP; i += 1) {
+      expect(replies.allow('a', i * 1_000)).toBe(true);
+    }
+    expect(replies.allow('a', REPLY_HOUR_CAP * 1_000)).toBe(false);
+    expect(topLevel.allow('a', REPLY_HOUR_CAP * 1_000)).toBe(true);
+  });
+});
+
+describe('forumRateLimitExempt', () => {
+  it('exempts a founder and the software_developer staff tag', () => {
+    expect(forumRateLimitExempt({ role: 'founder' })).toBe(true);
+    expect(forumRateLimitExempt({ role: 'founder', staffTag: null })).toBe(true);
+    for (const role of ['basis', 'verified', 'moderator', 'initiator'] as AccountRole[]) {
+      expect(forumRateLimitExempt({ role, staffTag: 'software_developer' })).toBe(true);
+    }
+  });
+
+  it('limits every other member', () => {
+    for (const role of ['basis', 'verified', 'moderator', 'initiator'] as AccountRole[]) {
+      expect(forumRateLimitExempt({ role })).toBe(false);
+      expect(forumRateLimitExempt({ role, staffTag: null })).toBe(false);
+    }
+  });
+});
+
 describe('InvoiceRateLimiter', () => {
-  it('allows then rejects in the burst window', () => {
+  it('allows then rejects in the 1s burst window', () => {
     const limiter = new InvoiceRateLimiter();
+    expect(INVOICE_BURST_WINDOW_MS).toBe(1_000);
     expect(limiter.allow('a', 0)).toBe(true);
     expect(limiter.allow('a', 1)).toBe(false);
-    expect(limiter.allow('a', 10_000)).toBe(true);
+    expect(limiter.check('a', 999)).toBe('burst');
+    expect(limiter.allow('a', 1_000)).toBe(true);
+  });
+
+  it('names the hour window when the hour cap refuses', () => {
+    const limiter = new InvoiceRateLimiter();
+    for (let i = 0; i < INVOICE_HOUR_CAP; i += 1) {
+      expect(limiter.check('a', i * 1_000)).toBeNull();
+    }
+    expect(limiter.check('a', INVOICE_HOUR_CAP * 1_000)).toBe('hour');
   });
 
   it('rejects a 21st invoice in the hour window', () => {
@@ -60,8 +175,8 @@ describe('InvoiceRateLimiter', () => {
     expect(limiter.allow('a', 0)).toBe(true);
     expect(limiter.allow('a', 1)).toBe(true);
     expect(limiter.allow('a', 2)).toBe(false);
-    expect(limiter.allow('a', 10_000)).toBe(true);
-    expect(limiter.allow('a', 20_000)).toBe(false);
+    expect(limiter.allow('a', 1_000)).toBe(true);
+    expect(limiter.allow('a', 2_000)).toBe(false);
   });
 
   it('evicts idle invoice keys after 48h', () => {
@@ -235,6 +350,14 @@ describe('HeartRateLimiter', () => {
     expect(limiter.allow('a', 'n1', t0 + HEART_NOTE_COOLDOWN_MS)).toBe(true);
   });
 
+  it('uses a 1s per-note cooldown, named as the burst window', () => {
+    const limiter = new HeartRateLimiter();
+    expect(HEART_NOTE_COOLDOWN_MS).toBe(1_000);
+    expect(limiter.check('a', 'n1', 0)).toBeNull();
+    expect(limiter.check('a', 'n1', 999)).toBe('burst');
+    expect(limiter.check('a', 'n1', 1_000)).toBeNull();
+  });
+
   it('caps hearts per account per hour across notes', () => {
     const limiter = new HeartRateLimiter();
     const t0 = 1_000_000;
@@ -242,6 +365,7 @@ describe('HeartRateLimiter', () => {
       expect(limiter.allow('a', `n${i}`, t0 + i)).toBe(true);
     }
     expect(limiter.allow('a', 'fresh', t0 + HEART_HOUR_CAP)).toBe(false);
+    expect(limiter.check('a', 'fresh', t0 + HEART_HOUR_CAP)).toBe('hour');
     expect(limiter.allow('b', 'fresh', t0 + HEART_HOUR_CAP)).toBe(true);
     expect(limiter.allow('a', 'fresh', t0 + 60 * 60 * 1000)).toBe(true);
   });

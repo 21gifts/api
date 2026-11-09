@@ -5163,9 +5163,12 @@ the note (plus `preimage` only when it was supplied and verified). On a member
 note it then fans out `notifyZap` and inserts the payer gift-reply from the
 original zap request. On the official platform profile note it skips
 `notifyZap` and treats the zap comment as a compose post/reply (`sats` 0)
-gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`;
-limiter denial applies to worker ingest that shares the `POST /messages`
-limiter). Missing `forum.post` fields dequeue the receipt without creating a row.
+gated by `forum.post` only (`DEBUG_TOKEN` settle does not pass `postLimiter`
+or `replyLimiter`; limiter denial applies to worker ingest that shares the
+`POST /messages` limiters: the top-level budget when the created note is
+top-level, including an `inReplyTo:` target reset to top-level, and the reply
+budget when it is a reply; a `founder` or `software_developer` payer is
+exempt). Missing `forum.post` fields dequeue the receipt without creating a row.
 A created top-level post fans out `notifyForumPost` and `spendPing` only
 when `eligibleToday` (same gate as `POST /messages`; ineligible logs
 `spend.ping.skipped` / `not_eligible`), a reply fans out `notifyForumReply`. If credit succeeded but the ingest write failed, that
@@ -7025,9 +7028,17 @@ same `notificationLevel` filter to stored rows.
 The booted process always has notification and push stores (in-memory without
 `DATABASE_URL`, Postgres when it is set). Photo-only empty text still
 notifies. Missing `pushStore` still writes in-app rows. Notification or
-push failure does not fail the **200**. Over-limit posters
-get **429** `{ "error": "Too many messages" }`
-with `Retry-After: 10` (1/10s, 6/h, 20/UTC-day). A second **live** photo/video
+push failure does not fail the **200**. Top-level notes and replies are
+counted in two separate per-account budgets: a top-level note (no
+`inReplyTo`) allows 1 per second, 6 per sliding hour, and 20 per UTC calendar
+day; a reply allows 1 per second, 30 per sliding hour, and 100 per UTC
+calendar day. A reply never spends top-level budget and a top-level note
+never spends reply budget. Over-limit posters get **429**
+`{ "error": "Too many messages" }` (log event `messages.rate_limited`) with
+`Retry-After: 1` when the 1-second window refused and `Retry-After: 10` when
+the hourly or daily cap refused. An account with role `founder` or staff tag
+`software_developer` is exempt from both budgets, and its posts are not
+counted. A second **live** photo/video
 POST with the same account, parent, normalised text, media bytes, and pin returns
 **200** with the existing row (no extra burst slot, no second top-level push).
 The same media with a different pin is **409**
@@ -7277,7 +7288,11 @@ A note without a member author (Damus-only) → **400**
 Unsigned note (null or empty `eventId`) or missing recipient pubkey →
 **400** `{ "error": "This message cannot be paid yet" }` (no `code`). Missing KEK →
 **503** `{ "error": "Messages are unavailable" }` (before the limiter).
-Over-limit → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`) —
+Over-limit (gifts: 1 per second, 20 per sliding hour per account) → **429**
+`{ "error": "Too many payments" }` (`Retry-After: 1` when the 1-second window
+refused, `Retry-After: 10` for the hourly cap) — an account with role
+`founder` or staff tag `software_developer` is exempt and its attempts are not
+counted —
 checked only after auth, amount, payable, and KEK checks succeed, so early
 400/404/401/503 do not consume quota. LNURL/zap or sign failure after the
 limiter still counts. Author-wallet zap failure (`noZap` or `not_zap`) →
@@ -7310,12 +7325,14 @@ never over Lightning.
   hash. A gift keeps `sparkInvoice: null` and its `pr` in that case.
 - Success is the same **200** `{ pr, amountSats: 1, sparkInvoice }` with a
   non-null `sparkInvoice`. The attempt is `ok` with `heart: true`.
-- Hearts have their own budget, separate from the gift limiter (1 per 10 s,
+- Hearts have their own budget, separate from the gift limiter (1 per second,
   20 per hour per account). A heart neither checks nor consumes it, and a gift
   does not consume the heart budget. Per account: one heart per note per
-  10 seconds, and at most 60 hearts per sliding hour across all notes. Over
-  either cap → **429** `{ "error": "Too many payments" }` (`Retry-After: 10`,
-  attempt `rate_limited` with `heart: true`).
+  second, and at most 60 hearts per sliding hour across all notes. Over
+  either cap → **429** `{ "error": "Too many payments" }` (`Retry-After: 1`
+  for the per-note cooldown, `Retry-After: 10` for the hourly cap; attempt
+  `rate_limited` with `heart: true`). An account with role `founder` or staff
+  tag `software_developer` is exempt and its hearts are not counted.
 - When the heart is indexed, sats are credited, only the note author is
   notified (`notifyHeart`), and no gift-reply or living-room zap notice is
   written. If the invoice lookup for a receipt fails twice, the receipt is
