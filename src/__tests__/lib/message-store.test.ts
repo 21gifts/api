@@ -5800,6 +5800,100 @@ describe('InMemoryMessageStore', () => {
     expect(await store.heartStats(['note-b'], null)).toEqual(new Map());
   });
 
+  it('heartSenders keeps paid hearts on one message newest first with exact amounts', async () => {
+    const store = new InMemoryMessageStore();
+    for (const [id, messageId, amountSats, paymentHash, createdAt] of [
+      ['old', 'note-a', 21, 'aa'.repeat(32), new Date('2026-08-28T12:00:00.000Z')],
+      ['new', 'note-a', 1, 'bb'.repeat(32), new Date('2026-08-28T12:00:01.000Z')],
+      ['other-note', 'note-b', 2, 'cc'.repeat(32), new Date('2026-08-28T12:00:02.000Z')],
+    ] as const) {
+      await store.recordInvoiceAttempt({
+        id,
+        createdAt,
+        messageId,
+        payerAccountId: 'payer',
+        authorAccountId: 'a',
+        amountSats,
+        lightningAddress: null,
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: null,
+        paymentHash,
+        description: null,
+        descriptionHash: null,
+        isNip57Invoice: false,
+        lnurlResponse: null,
+        heart: true,
+      });
+      await store.claimZapPayment(paymentHash, `receipt-${id}`, createdAt);
+    }
+    expect(await store.heartSenders('note-a')).toEqual([
+      { accountId: 'payer', name: null, sats: 1, createdAt: new Date('2026-08-28T12:00:01.000Z') },
+      { accountId: 'payer', name: null, sats: 21, createdAt: new Date('2026-08-28T12:00:00.000Z') },
+    ]);
+    expect(await store.heartSenders('note-empty')).toEqual([]);
+  });
+
+  it('heartSenders filters unpaid, non-heart, and foreign rows and breaks ties by id desc', async () => {
+    const store = new InMemoryMessageStore();
+    const paidHash = 'aa'.repeat(32);
+    const unpaidHash = 'bb'.repeat(32);
+    const at = new Date('2026-08-28T12:00:00.000Z');
+    const base = {
+      createdAt: at,
+      messageId: 'note-a',
+      payerAccountId: 'payer',
+      authorAccountId: 'a',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok' as const,
+      httpStatus: 200,
+      pr: null,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: false,
+      lnurlResponse: null,
+      heart: true,
+    };
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-a',
+      paymentHash: paidHash,
+      amountSats: 21,
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-b',
+      paymentHash: paidHash,
+      amountSats: 22,
+    });
+    await store.recordInvoiceAttempt({ ...base, id: 'inv-unpaid', paymentHash: unpaidHash });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-gift',
+      paymentHash: paidHash,
+      heart: false,
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-failed',
+      paymentHash: paidHash,
+      result: 'bad_body',
+    });
+    await store.recordInvoiceAttempt({
+      ...base,
+      id: 'inv-null-hash',
+      paymentHash: null,
+    });
+    await store.claimZapPayment(paidHash, 'receipt-paid', at);
+    expect(await store.heartSenders('note-a')).toEqual([
+      { accountId: 'payer', name: null, sats: 22, createdAt: at },
+      { accountId: 'payer', name: null, sats: 21, createdAt: at },
+    ]);
+  });
+
   describe('shop pair on setPlace and updateText', () => {
     const COMPLETE = {
       lat: 47.3,
@@ -11661,6 +11755,66 @@ describe('PostgresMessageStore', () => {
     expect(sql.queries[0]?.text).toMatch(/nostr_zap_payment/);
     expect(sql.queries[0]?.params[0]).not.toBeUndefined();
     expect(sql.queries[0]?.params[1]).toBe('acc');
+  });
+
+  it('heartSenders joins claimed hearts to accounts and returns an empty list for a non-UUID', async () => {
+    const sql = new MockSql();
+    const store = new PostgresMessageStore(sql);
+    expect(await store.heartSenders('not-a-uuid')).toEqual([]);
+    expect(sql.queries).toEqual([]);
+    const messageId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    sql.nextRows = [
+      {
+        account_id: 'payer',
+        name: 'Ada',
+        username: 'ada',
+        role: 'verified',
+        amount_sats: '21',
+        created_at: new Date('2026-08-28T12:00:00.000Z'),
+      },
+      {
+        account_id: 'gone',
+        name: null,
+        username: null,
+        role: null,
+        amount_sats: 1,
+        created_at: new Date('2026-08-28T11:00:00.000Z'),
+      },
+      {
+        account_id: 'string-date',
+        name: 'Cy',
+        username: null,
+        role: 'basis',
+        amount_sats: 5,
+        created_at: '2026-08-28T10:00:00.000Z',
+      },
+    ];
+    expect(await store.heartSenders(messageId)).toEqual([
+      {
+        accountId: 'payer',
+        name: 'Ada',
+        username: 'ada',
+        role: 'verified',
+        sats: 21,
+        createdAt: new Date('2026-08-28T12:00:00.000Z'),
+      },
+      {
+        accountId: 'gone',
+        name: null,
+        sats: 1,
+        createdAt: new Date('2026-08-28T11:00:00.000Z'),
+      },
+      {
+        accountId: 'string-date',
+        name: 'Cy',
+        role: 'basis',
+        sats: 5,
+        createdAt: new Date('2026-08-28T10:00:00.000Z'),
+      },
+    ]);
+    expect(sql.queries[0]?.text).toContain('LEFT JOIN account a');
+    expect(sql.queries[0]?.text).toContain('ORDER BY i.created_at DESC, i.id DESC');
+    expect(sql.queries[0]?.params).toEqual([messageId]);
   });
 
   describe('shop pair when transaction is set', () => {

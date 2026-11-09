@@ -11,6 +11,7 @@
  */
 
 import { isUniqueViolation, type SqlClient } from '@/lib/auth/sql';
+import type { AccountRole } from '@/lib/auth/store';
 import { nip19 } from 'nostr-tools';
 import { fiatAmountToCents } from '@/lib/credit-repayment';
 import { TRANSLATION_SCHEMA_SQL } from '@/lib/translation-store';
@@ -1358,8 +1359,8 @@ export interface MessageStore {
   recordInvoiceAttempt(row: MessageInvoiceAttempt): Promise<void>;
 
   /**
-   * Claimed 1-sat hearts per message, plus whether `viewerAccountId` sent at
-   * least one of them.
+   * Claimed hearts per message, plus whether `viewerAccountId` sent at
+   * least one of them. Each paid heart counts once, whatever its amount.
    *
    * A heart counts only when the invoice is a heart, `result` is `ok`, the
    * payment hash is set, and that lowercase hash is claimed in
@@ -1374,6 +1375,20 @@ export interface MessageStore {
     messageIds: readonly string[],
     viewerAccountId: string | null,
   ): Promise<Map<string, { heartCount: number; hearted: boolean }>>;
+
+  /**
+   * Claimed hearts on one message, newest first, with the payer's current
+   * display identity and the exact sat amount of each heart invoice.
+   *
+   * A heart counts only when the invoice is a heart, `result` is `ok`, the
+   * payment hash is set, and that lowercase hash is claimed in
+   * `nostr_zap_payment`. An account that no longer exists keeps an entry with
+   * `name: null` and no `username` or `role`. Capped at 200.
+   *
+   * @param messageId - Forum message id.
+   * @returns Heart senders, newest `createdAt` then id first.
+   */
+  heartSenders(messageId: string): Promise<HeartSender[]>;
 
   /** Newest invoice attempts first, capped at `limit`. */
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]>;
@@ -1797,8 +1812,24 @@ export interface MessageInvoiceAttempt {
   amountChf?: string | null;
   amountEur?: string | null;
   amountPhp?: string | null;
-  /** True when this invoice is a 1-sat heart tip, not a living-room zap. */
+  /** True when this invoice is a heart tip, not a living-room zap. */
   heart?: boolean;
+}
+
+/** One paid heart shown in the reactions view of a forum note. */
+export interface HeartSender {
+  /** Payer account id. */
+  accountId: string;
+  /** Current display name, or `null` when the account no longer exists. */
+  name: string | null;
+  /** Current username when set. */
+  username?: string | null;
+  /** Current role when the account exists. */
+  role?: AccountRole;
+  /** Exact whole-sat amount of this heart invoice. */
+  sats: number;
+  /** Invoice creation time. */
+  createdAt: Date;
 }
 
 /** One persisted kind:9735 ingest decision for operator debug. */
@@ -4358,6 +4389,38 @@ export class InMemoryMessageStore implements MessageStore {
       stats.set(row.messageId, { heartCount, hearted });
     }
     return Promise.resolve(stats);
+  }
+
+  /**
+   * Claimed hearts on one message, newest first. Account identity is filled
+   * by the route from the auth store because this store has no account rows.
+   *
+   * @param messageId - Forum message id.
+   * @returns One entry per claimed heart invoice, capped at 200.
+   */
+  heartSenders(messageId: string): Promise<HeartSender[]> {
+    return Promise.resolve(
+      this.#invoiceAttempts
+        .filter(
+          (row) =>
+            row.heart === true &&
+            row.result === 'ok' &&
+            row.paymentHash !== null &&
+            row.messageId === messageId &&
+            this.#zapPayments.has(row.paymentHash.toLowerCase()),
+        )
+        .sort((a, b) => {
+          const byTime = b.createdAt.getTime() - a.createdAt.getTime();
+          return byTime !== 0 ? byTime : b.id.localeCompare(a.id);
+        })
+        .slice(0, 200)
+        .map((row) => ({
+          accountId: row.payerAccountId,
+          name: null,
+          sats: row.amountSats,
+          createdAt: new Date(row.createdAt.getTime()),
+        })),
+    );
   }
 
   listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {
@@ -8018,6 +8081,53 @@ export class PostgresMessageStore implements MessageStore {
       });
     }
     return stats;
+  }
+
+  /**
+   * Claimed hearts on one message with one join to `account`, newest first.
+   *
+   * @param messageId - Forum message id to read.
+   * @returns One entry per claimed heart invoice, capped at 200.
+   */
+  async heartSenders(messageId: string): Promise<HeartSender[]> {
+    if (!UUID_RE.test(messageId)) {
+      return [];
+    }
+    const rows = await this.#sql.query<{
+      account_id: string;
+      name: string | null;
+      username: string | null;
+      role: AccountRole | null;
+      amount_sats: string | number;
+      created_at: Date | string;
+    }>(
+      `SELECT i.payer_account_id AS account_id,
+              a.name,
+              a.username,
+              a.role,
+              i.amount_sats,
+              i.created_at
+       FROM message_invoice i
+       INNER JOIN nostr_zap_payment p
+         ON p.payment_hash = lower(i.payment_hash)
+       LEFT JOIN account a
+         ON a.id = i.payer_account_id
+       WHERE i.heart = true
+         AND i.result = 'ok'
+         AND i.payment_hash IS NOT NULL
+         AND i.message_id = $1
+       ORDER BY i.created_at DESC, i.id DESC
+       LIMIT 200`,
+      [messageId],
+    );
+    return rows.map((row) => ({
+      accountId: row.account_id,
+      name: row.name,
+      ...(row.username === null ? {} : { username: row.username }),
+      ...(row.role === null ? {} : { role: row.role }),
+      sats: Number(row.amount_sats),
+      createdAt: row.created_at instanceof Date ? row.created_at : new Date(row.created_at),
+    }));
   }
 
   async listInvoiceAttempts(limit: number): Promise<MessageInvoiceAttempt[]> {

@@ -300,6 +300,7 @@ function throwingStore(overrides: Partial<MessageStore> = {}): MessageStore {
     recordZapReceipt: boom,
     recordInvoiceAttempt: boom,
     heartStats: boom,
+    heartSenders: boom,
     listInvoiceAttempts: boom,
     listRecentOkInvoiceAttempts: boom,
     recordZapIngest: boom,
@@ -4475,6 +4476,7 @@ describe('POST /messages', () => {
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
+      heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -4625,6 +4627,7 @@ describe('POST /messages', () => {
         base.recordZapReceipt(receiptId, messageId, sats, delta),
       recordInvoiceAttempt: (row) => base.recordInvoiceAttempt(row),
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
+      heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -6195,57 +6198,92 @@ describe('POST /messages/:id/invoice', () => {
     expect(fetchImpl).not.toHaveBeenCalled();
   });
 
-  it('rejects a heart that is not 1 sat before LNURL', async () => {
+  it('accepts a heart with 21 sats and uses the Spark invoice path', async () => {
     const { parseNostrKek } = await import('@/lib/nostr/kek');
     const { ensureAccountNostrKey } = await import('@/lib/nostr/keys');
     const kek = parseNostrKek('11'.repeat(32));
     const authStore = await namedStore('Ada');
+    await createWalletAccount(authStore, 'author', 'bob');
     const account = await authStore.getAccount('acc');
     expect(account).toBeDefined();
     if (account === undefined) {
       throw new Error('expected account');
     }
     await ensureAccountNostrKey(authStore, 'acc', kek);
+    await ensureAccountNostrKey(authStore, 'author', kek);
     const messageStore = new InMemoryMessageStore();
     await messageStore.create({
       id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      accountId: 'acc',
-      name: 'Ada',
+      accountId: 'author',
+      name: 'Bob',
       text: 'hi',
       createdAt: new Date(now()),
       hasPhoto: false,
       ...unsignedNostrDefaults(),
       eventId: 'ee'.repeat(32),
     });
-    const fetchImpl = async (): Promise<Response> => {
-      throw new Error('LNURL must not run for a non-1-sat heart');
+    const fetchImpl = async (input: string | URL | Request): Promise<Response> => {
+      const url = String(input);
+      if (url.includes('/.well-known/lnurlp/')) {
+        return new Response(
+          JSON.stringify({
+            callback: 'https://example.test/lnurlp/callback',
+            minSendable: 1000,
+            maxSendable: 10_000_000_000,
+            allowsNostr: true,
+            nostrPubkey: 'aa'.repeat(32),
+          }),
+          { headers: { 'content-type': 'application/json' } },
+        );
+      }
+      return new Response(JSON.stringify({ pr: 'lnbc21n1test' }), {
+        headers: { 'content-type': 'application/json' },
+      });
     };
-    const app = new Hono().route(
-      '/messages',
-      messagesRoutes({
-        store: messageStore,
-        authStore,
-        now,
-        nostrKek: kek,
-        lnurlServer: LNURL_SERVER,
-        fetchImpl,
-        postLimiter: new PostRateLimiter(),
-        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
-        invoiceLimiter: new InvoiceRateLimiter(),
-      }),
-    );
-    const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
-      method: 'POST',
-      headers: { ...AUTH, 'content-type': 'application/json' },
-      body: JSON.stringify({ sats: 21, heart: true }),
+    const bolt11 = await import('@/lib/bolt11');
+    const inspectSpy = vi.spyOn(bolt11, 'inspectBolt11').mockReturnValue({
+      paymentHash: 'aa'.repeat(32),
+      amountMsat: 21_000,
+      description: null,
+      descriptionHash: 'bb'.repeat(32),
+      expirySeconds: 86400,
     });
-    expect(res.status).toBe(400);
-    expect(await res.json()).toEqual({ error: 'A heart sends 1 sat' });
-    const attempts = await messageStore.listInvoiceAttempts(10);
-    expect(attempts).toHaveLength(1);
-    expect(attempts[0]?.result).toBe('bad_body');
-    expect(attempts[0]?.heart).toBe(true);
-    expect(attempts[0]?.amountSats).toBe(0);
+    const nip57Spy = vi.spyOn(bolt11, 'isNip57Invoice').mockReturnValue(true);
+    try {
+      const app = new Hono().route(
+        '/messages',
+        messagesRoutes({
+          store: messageStore,
+          authStore,
+          now,
+          nostrKek: kek,
+          lnurlServer: LNURL_SERVER,
+          fetchImpl,
+          postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
+          invoiceLimiter: new InvoiceRateLimiter(),
+          heartLimiter: new HeartRateLimiter(),
+          sparkInvoices: new InMemorySparkInvoiceStore(),
+        }),
+      );
+      const res = await app.request('/messages/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/invoice', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify({ sats: 21, heart: true }),
+      });
+      expect(res.status).toBe(200);
+      const body = (await res.json()) as { amountSats: number; sparkInvoice: string };
+      expect(body.amountSats).toBe(21);
+      expect(body.sparkInvoice.startsWith('spark1')).toBe(true);
+      const attempts = await messageStore.listInvoiceAttempts(10);
+      expect(attempts).toHaveLength(1);
+      expect(attempts[0]?.result).toBe('ok');
+      expect(attempts[0]?.heart).toBe(true);
+      expect(attempts[0]?.amountSats).toBe(21);
+    } finally {
+      inspectSpy.mockRestore();
+      nip57Spy.mockRestore();
+    }
   });
 
   it('persists not_zap when LNURL returns a non-NIP-57 invoice', async () => {
@@ -6718,6 +6756,7 @@ describe('POST /messages/:id/invoice', () => {
         throw new Error('persist boom');
       },
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
+      heartSenders: (id) => base.heartSenders(id),
       listInvoiceAttempts: (limit) => base.listInvoiceAttempts(limit),
       listRecentOkInvoiceAttempts: (since, limit) => base.listRecentOkInvoiceAttempts(since, limit),
       recordZapIngest: (row) => base.recordZapIngest(row),
@@ -8104,7 +8143,7 @@ describe('GET /messages/:id/replies', () => {
       headers: AUTH,
     });
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ messages: [] });
+    expect(await res.json()).toEqual({ messages: [], hearts: [] });
     expect(await store.getById('15151515-1515-4151-8151-151515151515')).toBeUndefined();
     expect(await store.getById('16161616-1616-4161-8161-161616161616')).toBeUndefined();
   });
@@ -8148,6 +8187,96 @@ describe('GET /messages/:id/replies', () => {
     expect(body.messages[0]?.text).toBe('member reply');
     expect(body.messages[0]?.payable).toBe(false);
     expect(body.messages[0]?.accountId).toBe('acc');
+  });
+
+  it('returns paid hearts newest first with exact amounts and omits a missing account identity', async () => {
+    const parentId = '2c2c2c2c-2c2c-42c2-82c2-2c2c2c2c2c2c';
+    const auth = await namedStore('Ada');
+    const author = await auth.getAccount('acc');
+    expect(author).toBeDefined();
+    if (author === undefined) {
+      throw new Error('expected account');
+    }
+    await auth.createAccount({
+      ...author,
+      id: 'payer-two',
+      linkingKey: null,
+      name: 'Bob',
+      username: 'bob',
+      viewKey: 'b'.repeat(64),
+    });
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      ...unsignedNostrDefaults(),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+    });
+    const olderHash = 'aa'.repeat(32);
+    const newerHash = 'bb'.repeat(32);
+    const missingHash = 'cc'.repeat(32);
+    for (const [id, payerAccountId, paymentHash, sats, createdAt] of [
+      ['inv-older', 'acc', olderHash, 21, now()],
+      ['inv-newer', 'payer-two', newerHash, 1, now() + 1],
+      ['inv-missing', 'gone', missingHash, 5, now() + 2],
+    ] as const) {
+      await store.recordInvoiceAttempt({
+        id,
+        createdAt: new Date(createdAt),
+        messageId: parentId,
+        payerAccountId,
+        authorAccountId: 'acc',
+        amountSats: sats,
+        lightningAddress: null,
+        zapRequest: null,
+        result: 'ok',
+        httpStatus: 200,
+        pr: null,
+        paymentHash,
+        description: null,
+        descriptionHash: null,
+        isNip57Invoice: false,
+        lnurlResponse: null,
+        heart: true,
+      });
+      await store.claimZapPayment(paymentHash, `receipt-${id}`, new Date(createdAt));
+    }
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      messages: unknown[];
+      hearts: Array<Record<string, unknown>>;
+    };
+    expect(body.messages).toEqual([]);
+    expect(body.hearts).toEqual([
+      {
+        accountId: 'gone',
+        name: '',
+        sats: 5,
+        createdAt: new Date(now() + 2).toISOString(),
+      },
+      {
+        accountId: 'payer-two',
+        name: 'Bob',
+        username: 'bob',
+        role: 'verified',
+        sats: 1,
+        createdAt: new Date(now() + 1).toISOString(),
+      },
+      {
+        accountId: 'acc',
+        name: 'Ada',
+        username: 'ada',
+        role: 'verified',
+        sats: 21,
+        createdAt: new Date(now()).toISOString(),
+      },
+    ]);
   });
 
   it('marks a signed reply with a verified wallet as payable in the thread', async () => {
@@ -8259,6 +8388,85 @@ describe('GET /messages/:id/replies', () => {
     expect(res.status).toBe(503);
     expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
     expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
+  });
+
+  it('returns 503 when the heart-sender lookup throws', async () => {
+    const parentId = '14141414-1414-4141-8141-141414141414';
+    const auth = await namedStore('Ada');
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    store.heartSenders = async () => {
+      throw new Error('boom');
+    };
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
+      headers: AUTH,
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Messages are unavailable' });
+    expect(parsedEvents(warn).some((e) => e['event'] === 'messages.replies.failed')).toBe(true);
+  });
+
+  it('returns a heart sender with an empty name when the account has no display name', async () => {
+    const parentId = '2d2d2d2d-2d2d-42d2-82d2-2d2d2d2d2d2d';
+    const auth = await seededStore();
+    const account = await auth.getAccount('acc');
+    expect(account).toBeDefined();
+    await auth.updateAccount({ ...account!, username: null });
+    const store = new InMemoryMessageStore();
+    await store.create({
+      id: parentId,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'parent',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      hasVideo: false,
+      videoContentType: null,
+      ...unsignedNostrDefaults(),
+    });
+    const paymentHash = 'dd'.repeat(32);
+    await store.recordInvoiceAttempt({
+      id: 'inv-nameless',
+      createdAt: new Date(now()),
+      messageId: parentId,
+      payerAccountId: 'acc',
+      authorAccountId: 'acc',
+      amountSats: 21,
+      lightningAddress: null,
+      zapRequest: null,
+      result: 'ok',
+      httpStatus: 200,
+      pr: null,
+      paymentHash,
+      description: null,
+      descriptionHash: null,
+      isNip57Invoice: false,
+      lnurlResponse: null,
+      heart: true,
+    });
+    await store.claimZapPayment(paymentHash, 'receipt-nameless', new Date(now()));
+    const res = await mount(auth, store).request(`/messages/${parentId}/replies`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as { hearts: Array<Record<string, unknown>> };
+    expect(body.hearts).toEqual([
+      {
+        accountId: 'acc',
+        name: '',
+        role: 'basis',
+        sats: 21,
+        createdAt: new Date(now()).toISOString(),
+      },
+    ]);
   });
 
   it('includes external replies with via nostr and roles only for member replies', async () => {
@@ -8592,6 +8800,7 @@ describe('GET /messages/:id/replies', () => {
       listRecentReplies: async () => [],
       deleteById: (id) => base.deleteById(id),
       heartStats: (ids, viewer) => base.heartStats(ids, viewer),
+      heartSenders: (id) => base.heartSenders(id),
     });
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
       headers: AUTH,
@@ -8642,6 +8851,7 @@ describe('GET /messages/:id/replies', () => {
       getById: (id) => base.getById(id),
       listReplies: async () => [missingVideo],
       listRecentReplies: async () => [],
+      heartSenders: (id) => base.heartSenders(id),
     });
     const res = await mount(auth, store).request(`/messages/${parentId}/replies`, {
       headers: AUTH,
@@ -8833,6 +9043,7 @@ describe('GET /messages/:id/replies', () => {
       },
       listRecentReplies: (limit) => store.listRecentReplies(limit),
       heartStats: (ids, viewer) => store.heartStats(ids, viewer),
+      heartSenders: (id) => store.heartSenders(id),
     });
     const res = await mount(auth, wrapped).request(`/messages/${parentId}/replies`, {
       headers: AUTH,

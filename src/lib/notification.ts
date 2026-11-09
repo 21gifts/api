@@ -822,7 +822,8 @@ export async function notifyZap(args: {
 
 /**
  * Notify only the author of a newly indexed heart tip. Persist one `heart`
- * row when `notifications` is set (`text` is `"1"`, `replyId` matches
+ * row when `notifications` is set (`text` is the heart's exact sat amount,
+ * `replyId` matches
  * {@link notifyZap}) and enqueue a `/messages/<noteId>` Web Push
  * (`tag` `heart:<replyId>`, body `Sent you a heart.`) when `pushStore` is
  * set. No-op when the note has no `accountId`, when the payer is the author,
@@ -850,6 +851,8 @@ export async function notifyHeart(args: {
   nowMs: number;
   /** Payer account id (actor; skipped when equal to the author). */
   payerAccountId: string;
+  /** Exact whole-sat amount of the heart invoice. Default `1` for older callers. */
+  amountSats?: number;
   /** Actor display-name snapshot; default `'Someone'`. */
   payerName?: string;
   /** Optional listed inbox unread; forwarded to the author push. */
@@ -883,7 +886,7 @@ export async function notifyHeart(args: {
         parentId: args.note.id,
         replyId,
         name,
-        text: '1',
+        text: String(args.amountSats ?? 1),
         createdAt,
         readAt: null,
       });

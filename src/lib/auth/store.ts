@@ -3,7 +3,7 @@ import {
   sanitizePasskeyRenewDebug,
 } from '@/lib/auth/passkey-renew-report';
 import { roleAtLeast } from '@/lib/auth/roles';
-import { CHALLENGE_TTL_MS, SESSION_TTL_MS } from '@/lib/config';
+import { CHALLENGE_TTL_MS, HEART_SATS_MAX, SESSION_TTL_MS } from '@/lib/config';
 import { mentionAccountMatches } from '@/lib/mention-query';
 import type { InMemoryPushStore } from '@/lib/push-store';
 import { encodeSparkAddress } from '@/lib/spark-address';
@@ -68,6 +68,19 @@ export function parseAmountUnit(raw: unknown): AmountUnit {
     return raw;
   }
   return 'btc';
+}
+
+/**
+ * Parse a stored or requested heart amount into a positive Postgres integer.
+ *
+ * @param raw - Unknown input (DB number, JSON, omitted).
+ * @returns A whole number from 1 to {@link HEART_SATS_MAX}; anything else → 1.
+ */
+export function parseHeartSats(raw: unknown): number {
+  if (typeof raw === 'number' && Number.isInteger(raw) && raw >= 1 && raw <= HEART_SATS_MAX) {
+    return raw;
+  }
+  return 1;
 }
 
 /**
@@ -190,6 +203,11 @@ export interface Account {
    * Not public on member cards or view profiles.
    */
   notifyHearts?: boolean;
+  /**
+   * Whole-sat amount one heart payment sends. Omitted / invalid → 1.
+   * Not public on member cards or view profiles.
+   */
+  heartSats?: number;
   /**
    * Owner amount-entry unit. Omitted / unknown → `btc`. Not public on member
    * cards or view profiles.
@@ -1114,6 +1132,7 @@ export class InMemoryAuthStore implements AuthStore {
       ...account,
       sessionRefused: account.sessionRefused === true,
       notifyHearts: account.notifyHearts !== false,
+      heartSats: parseHeartSats(account.heartSats),
       locale: null,
       fiat: null,
       sparkPubkey: null,
@@ -1389,6 +1408,7 @@ export class InMemoryAuthStore implements AuthStore {
       ...rest,
       ...(username === undefined ? {} : { username }),
       sessionRefused: previous?.sessionRefused === true,
+      heartSats: parseHeartSats(account.heartSats),
       walletRequired: previous?.walletRequired === true,
       walletBackupSeenAt: previous?.walletBackupSeenAt ?? null,
       walletIntroSeen: previous?.walletIntroSeen === true || account.walletIntroSeen === true,

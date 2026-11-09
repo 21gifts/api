@@ -376,7 +376,7 @@ interface HeartHits {
 }
 
 /**
- * In-process rate limiter for 1-sat hearts (one per note per 1 s, 60/h per
+ * In-process rate limiter for hearts (one per note per 1 s, 60/h per
  * account). Separate from {@link InvoiceRateLimiter}: a heart neither checks
  * nor consumes the gift budget.
  */

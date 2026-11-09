@@ -10,7 +10,7 @@ import { MISSING_REQUIREMENTS_ERROR } from '@/lib/auth/requirements';
 import { resolveSession } from '@/lib/auth/service';
 import type { Account, AuthStore, HeldShareBoxPutResult, PreviousWallet } from '@/lib/auth/store';
 import { isWrongAccount, WRONG_ACCOUNT_ERROR } from '@/lib/auth/wrong-account';
-import { SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
+import { HEART_SATS_MAX, SESSION_TTL_MS, type LnurlServerConfig } from '@/lib/config';
 import { InMemoryBtcUsdStore, type BtcUsdRateBook } from '@/lib/btc-usd-store';
 import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryFiatStore, type FiatRateBook } from '@/lib/usd-fiat-store';
@@ -291,6 +291,14 @@ const heartNotificationsBody = z.object({
 const amountUnitBody = z.object({
   unit: z.enum(['btc', 'fiat']),
 });
+
+/** Body schema for setting the whole-sat amount one heart payment sends. */
+const heartSatsBody = z.object({
+  sats: z.number().int().min(1).max(HEART_SATS_MAX),
+});
+
+/** 400 copy for a missing or invalid heart-amount body. */
+const HEART_SATS_ERROR = `Expected a JSON body with a whole "sats" number from 1 to ${HEART_SATS_MAX}`;
 
 /** Body schema for setting the owner UI language. */
 const localeBody = z.object({
@@ -1046,6 +1054,28 @@ export function meRoutes(deps: MeRouteDeps): Hono {
       logEvent('account.amount_unit.set', {
         accountId: current.id,
         unit: parsed.data.unit,
+      });
+      return c.json(await ownerJson(deps, updated), 200);
+    })
+    .post('/heart-sats', async (c) => {
+      const account = await authedAccount(deps, c.req.header('authorization'));
+      if (account === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const parsed = heartSatsBody.safeParse(await c.req.json().catch(() => null));
+      if (!parsed.success) {
+        return c.json({ error: HEART_SATS_ERROR }, 400);
+      }
+      const current = await storedAccount(deps, account.id);
+      /* v8 ignore next 3 -- the account row cannot vanish mid-request after auth */
+      if (current === null) {
+        return c.json({ error: 'Unauthorized' }, 401);
+      }
+      const updated: Account = { ...current, heartSats: parsed.data.sats };
+      await deps.store.updateAccount(updated);
+      logEvent('account.heart_sats.set', {
+        accountId: current.id,
+        sats: parsed.data.sats,
       });
       return c.json(await ownerJson(deps, updated), 200);
     })

@@ -503,6 +503,24 @@ test('GET /messages/:id/replies without bearer is 404', async ({ request }) => {
   expect(res.status()).toBe(404);
 });
 
+test('GET /messages/:id/replies returns an empty hearts list for a live note', async ({
+  request,
+}) => {
+  const member = await memberSession(request);
+  const saved = await request.put('/me/about', {
+    headers: { authorization: member.authorization },
+    data: { text: 'E2E hearts parent' },
+  });
+  expect(saved.status()).toBe(200);
+  const me = await request.get('/me', { headers: { authorization: member.authorization } });
+  expect(me.status()).toBe(200);
+  const noteId = ((await me.json()) as { aboutMessageId: string | null }).aboutMessageId;
+  expect(typeof noteId).toBe('string');
+  const res = await request.get(`/messages/${noteId}/replies`);
+  expect(res.status()).toBe(200);
+  expect(await res.json()).toEqual({ messages: [], hearts: [] });
+});
+
 test('POST /messages without bearer is 401', async ({ request }) => {
   const res = await request.post('/messages', {
     data: { text: 'hi' },
@@ -807,6 +825,34 @@ test('POST /me/heart-notifications without bearer is 401', async ({ request }) =
 test('POST /me/amount-unit without bearer is 401', async ({ request }) => {
   const res = await request.post('/me/amount-unit');
   expect(res.status()).toBe(401);
+});
+
+test('POST /me/heart-sats without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/heart-sats', { data: { sats: 21 } });
+  expect(res.status()).toBe(401);
+});
+
+test('POST /me/heart-sats stores a whole-sat heart amount on the owner', async ({ request }) => {
+  const auth = await memberSession(request);
+  const res = await request.post('/me/heart-sats', {
+    headers: { authorization: auth.authorization },
+    data: { sats: 21 },
+  });
+  expect(res.status()).toBe(200);
+  expect(((await res.json()) as { heartSats: number }).heartSats).toBe(21);
+  const me = await request.get('/me', { headers: { authorization: auth.authorization } });
+  expect(me.status()).toBe(200);
+  expect(((await me.json()) as { heartSats: number }).heartSats).toBe(21);
+  const invalid = await request.post('/me/heart-sats', {
+    headers: { authorization: auth.authorization },
+    data: { sats: 0 },
+  });
+  expect(invalid.status()).toBe(400);
+  const oversized = await request.post('/me/heart-sats', {
+    headers: { authorization: auth.authorization },
+    data: { sats: 10_000_001 },
+  });
+  expect(oversized.status()).toBe(400);
 });
 
 test('POST /me/locale without bearer is 401', async ({ request }) => {

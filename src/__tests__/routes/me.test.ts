@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Hono } from 'hono';
 import { InMemoryAuthStore, type Account, type PasskeyRenewAttemptInput } from '@/lib/auth/store';
-import { SESSION_TTL_MS } from '@/lib/config';
+import { HEART_SATS_MAX, SESSION_TTL_MS } from '@/lib/config';
 import { unsignedNostrDefaults } from '@/lib/message';
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
@@ -1313,6 +1313,98 @@ describe('POST /me/amount-unit', () => {
     expect(res.status).toBe(200);
     expect(((await res.json()) as { amountUnit: string }).amountUnit).toBe('fiat');
     expect((await store.getAccount('acc'))?.amountUnit).toBe('fiat');
+  });
+});
+
+describe('POST /me/heart-sats', () => {
+  const invalid = [0, -1, 1.5, '21', HEART_SATS_MAX + 1];
+  const error = `Expected a JSON body with a whole "sats" number from 1 to ${HEART_SATS_MAX}`;
+
+  it('returns 401 without a valid session', async () => {
+    const res = await mount(new InMemoryAuthStore()).request('/me/heart-sats', {
+      method: 'POST',
+    });
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: 'Unauthorized' });
+    const invalid = await mount(await seededStore()).request('/me/heart-sats', {
+      method: 'POST',
+      headers: { authorization: 'Bearer nope' },
+    });
+    expect(invalid.status).toBe(401);
+    expect(await invalid.json()).toEqual({ error: 'Unauthorized' });
+  });
+
+  it('rejects a missing body and every non-positive, fractional, string, or oversized amount', async () => {
+    const app = mount(await seededStore());
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const missing = await app.request('/me/heart-sats', { method: 'POST', headers: AUTH });
+    expect(missing.status).toBe(400);
+    expect(await missing.json()).toEqual({ error });
+    const malformed = await app.request('/me/heart-sats', {
+      method: 'POST',
+      headers,
+      body: '{',
+    });
+    expect(malformed.status).toBe(400);
+    for (const sats of invalid) {
+      const res = await app.request('/me/heart-sats', {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ sats }),
+      });
+      expect(res.status).toBe(400);
+      expect(await res.json()).toEqual({ error });
+    }
+  });
+
+  it('stores the amount, returns owner JSON, and logs the change', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const res = await app.request('/me/heart-sats', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(res.status).toBe(200);
+    expect(((await res.json()) as { heartSats: number }).heartSats).toBe(21);
+    expect((await store.getAccount('acc'))?.heartSats).toBe(21);
+    expect(
+      parsedEvents(warn).some(
+        (event) =>
+          event['event'] === 'account.heart_sats.set' &&
+          event['accountId'] === 'acc' &&
+          event['sats'] === 21,
+      ),
+    ).toBe(true);
+    const me = await app.request('/me', { headers: AUTH });
+    expect(((await me.json()) as { heartSats: number }).heartSats).toBe(21);
+  });
+
+  it('is idempotent on the same amount and accepts the gift-invoice ceiling', async () => {
+    const store = await seededStore();
+    const app = mount(store);
+    const headers = { ...AUTH, 'content-type': 'application/json' };
+    const first = await app.request('/me/heart-sats', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(first.status).toBe(200);
+    const same = await app.request('/me/heart-sats', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sats: 21 }),
+    });
+    expect(same.status).toBe(200);
+    expect(((await same.json()) as { heartSats: number }).heartSats).toBe(21);
+    const max = await app.request('/me/heart-sats', {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({ sats: HEART_SATS_MAX }),
+    });
+    expect(max.status).toBe(200);
+    expect(((await max.json()) as { heartSats: number }).heartSats).toBe(HEART_SATS_MAX);
   });
 });
 

@@ -26,6 +26,9 @@ export const GIFT_INVOICE_MIN_MSAT = 1_000;
 /** Maximum gift invoice amount, in millisatoshis (10 million sats). */
 export const GIFT_INVOICE_MAX_MSAT = 10_000_000_000;
 
+/** Maximum whole-sat heart amount, matching the gift invoice ceiling. */
+export const HEART_SATS_MAX = GIFT_INVOICE_MAX_MSAT / 1000;
+
 /** Lifetime of an unpaid gift invoice awaiting proof, in milliseconds. */
 export const GIFT_INVOICE_TTL_MS = 15 * 60 * 1000;
 
