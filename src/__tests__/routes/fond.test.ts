@@ -536,6 +536,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
       bolt11: 'b',
       amountMsat: 1000,
     });
+    await payouts.claimSettlement(PAID_ROW_ID);
     await payouts.markPaid(PAID_ROW_ID);
     await payouts.enqueue(rowInput({ id: FAILED_ROW_ID, address: 'fail@example.com' }));
     await payouts.claimForInvoice(FAILED_ROW_ID, TODAY);
@@ -624,6 +625,26 @@ describe('POST /fond/payouts/:id/invoice', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Invoice in progress' });
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 Not payable for a settling row', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement(ROW_ID);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Not payable' });
     expect(mockedIssue).not.toHaveBeenCalled();
   });
 
@@ -1385,10 +1406,31 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect((await payouts.get(ROW_ID))?.status).toBe('invoiced');
   });
 
-  it('returns 409 Not invoiced when the row stops being invoiced during proof', async () => {
+  it('returns 409 Proof in progress for a settling row', async () => {
     const { app, payouts } = await makeApp();
     await invoicedRow(payouts);
-    vi.spyOn(payouts, 'markPaid').mockResolvedValue(undefined);
+    await payouts.claimSettlement(ROW_ID);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Proof in progress' });
+    expect(mockedSettle).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 Not invoiced for a settling row with a missing durable field', async () => {
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    const invoiced = (await payouts.get(ROW_ID)) as NonNullable<
+      Awaited<ReturnType<typeof payouts.get>>
+    >;
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce({
+      ...invoiced,
+      status: 'settling',
+      bolt11: null,
+    });
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
@@ -1396,15 +1438,17 @@ describe('POST /fond/payouts/:id/proof', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Not invoiced' });
-    expect(mockedSettle).not.toHaveBeenCalled();
   });
 
-  it('returns paid when a concurrent proof wins the markPaid race', async () => {
+  it('returns paid when a concurrent proof wins the settlement race', async () => {
     const { app, payouts } = await makeApp();
     await invoicedRow(payouts);
-    const markPaid = payouts.markPaid.bind(payouts);
-    vi.spyOn(payouts, 'markPaid').mockImplementation(async (id) => {
-      await markPaid(id);
+    const claimSettlement = payouts.claimSettlement.bind(payouts);
+    vi.spyOn(payouts, 'claimSettlement').mockImplementation(async (id) => {
+      const claimed = await claimSettlement(id);
+      if (claimed !== undefined) {
+        await payouts.markPaid(id);
+      }
       return undefined;
     });
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
@@ -1418,39 +1462,27 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect(mockedSettle).not.toHaveBeenCalled();
   });
 
-  it('settles once when two concurrent proofs both read invoiced', async () => {
-    const triggerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const messages = new InMemoryMessageStore([post({ id: triggerId })]);
-    const { app, payouts } = await makeApp({
-      messageStore: messages,
-      seedPlatform: true,
-      seedRecipient: true,
+  it('settles once while another proof sees settling and then paid', async () => {
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    let releaseSettlement: () => void = () => {};
+    const settlementGate = new Promise<void>((resolve) => {
+      releaseSettlement = resolve;
     });
-    await payouts.enqueue(rowInput({ address: 'ada@gifts.test', messageId: triggerId }));
-    await payouts.claimForInvoice(ROW_ID, TODAY);
-    await payouts.setInvoiced(ROW_ID, {
-      invoiceId: INVOICE_ID,
-      paymentHash: PREIMAGE_HASH,
-      bolt11: BOLT11,
-      amountMsat: 1_000_000,
+    let winnerClaimed: () => void = () => {};
+    const claimed = new Promise<void>((resolve) => {
+      winnerClaimed = resolve;
     });
-    const invoiced = await payouts.get(ROW_ID);
-    const get = payouts.get.bind(payouts);
-    let releaseReads: () => void = () => {};
-    const bothRead = new Promise<void>((resolve) => {
-      releaseReads = resolve;
-    });
-    let initialReads = 0;
-    vi.spyOn(payouts, 'get').mockImplementation(async (id) => {
-      if (initialReads < 2) {
-        initialReads += 1;
-        if (initialReads === 2) {
-          releaseReads();
-        }
-        await bothRead;
-        return invoiced;
+    const claimSettlement = payouts.claimSettlement.bind(payouts);
+    vi.spyOn(payouts, 'claimSettlement').mockImplementation(async (id) => {
+      const claimedRow = await claimSettlement(id);
+      if (claimedRow !== undefined) {
+        winnerClaimed();
       }
-      return get(id);
+      return claimedRow;
+    });
+    mockedSettle.mockImplementationOnce(async () => {
+      await settlementGate;
     });
     const requestProof = (): Promise<Response> =>
       Promise.resolve(
@@ -1460,11 +1492,20 @@ describe('POST /fond/payouts/:id/proof', () => {
           body: JSON.stringify(preimage),
         }),
       );
-    const [first, second] = await Promise.all([requestProof(), requestProof()]);
-    expect(first.status).toBe(200);
-    expect(second.status).toBe(200);
+    const winner = requestProof();
+    await claimed;
+    const loser = await requestProof();
+    expect(loser.status).toBe(409);
+    expect(await loser.json()).toEqual({ error: 'Proof in progress' });
+    expect((await payouts.get(ROW_ID))?.status).toBe('settling');
+    releaseSettlement();
+    const won = await winner;
+    expect(won.status).toBe(200);
+    expect(await won.json()).toEqual({ status: 'paid', id: ROW_ID });
+    const later = await requestProof();
+    expect(later.status).toBe(200);
+    expect(await later.json()).toEqual({ status: 'paid', id: ROW_ID });
     expect(mockedSettle).toHaveBeenCalledTimes(1);
-    expect((await messages.getById(triggerId))?.sats).toBe(1000);
     expect((await payouts.get(ROW_ID))?.status).toBe('paid');
   });
 
@@ -1475,7 +1516,7 @@ describe('POST /fond/payouts/:id/proof', () => {
       const invoiced = await payouts.get(ROW_ID);
       const reRead = invoiced === undefined || outcome === 'missing' ? undefined : invoiced;
       vi.spyOn(payouts, 'get').mockResolvedValueOnce(invoiced).mockResolvedValueOnce(reRead);
-      vi.spyOn(payouts, 'markPaid').mockResolvedValue(undefined);
+      vi.spyOn(payouts, 'claimSettlement').mockResolvedValue(undefined);
       const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
         method: 'POST',
         headers: authHeader(),
@@ -1487,28 +1528,91 @@ describe('POST /fond/payouts/:id/proof', () => {
     }
   });
 
-  it('returns 503 when markPaid throws before settlement', async () => {
-    const events = captureEvents();
-    const records: GiftRecord[] = [];
-    const { app, payouts } = await makeApp({
-      giftRecorder: {
-        recordOutbound: async (record) => {
-          records.push(record);
-        },
-      },
-    });
+  it('returns 409 Proof in progress when a lost claim re-reads a settling row', async () => {
+    const { app, payouts } = await makeApp();
     await invoicedRow(payouts);
-    vi.spyOn(payouts, 'markPaid').mockRejectedValue(new Error('down'));
+    const invoiced = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'get')
+      .mockResolvedValueOnce(invoiced)
+      .mockResolvedValueOnce(
+        invoiced === undefined ? undefined : { ...invoiced, status: 'settling' },
+      );
+    vi.spyOn(payouts, 'claimSettlement').mockResolvedValue(undefined);
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
       body: JSON.stringify(preimage),
     });
-    expect(res.status).toBe(503);
-    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
-    expect(records).toHaveLength(0);
-    expect((await payouts.get(ROW_ID))?.status).toBe('invoiced');
-    expect(events).toContain('fond.proof.failed');
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Proof in progress' });
+    expect(mockedSettle).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when the settlement claim or its re-read throws', async () => {
+    for (const step of ['claim', 're-read'] as const) {
+      const events = captureEvents();
+      const { app, payouts } = await makeApp();
+      await invoicedRow(payouts);
+      if (step === 'claim') {
+        vi.spyOn(payouts, 'claimSettlement').mockRejectedValue(new Error('down'));
+      } else {
+        const invoiced = await payouts.get(ROW_ID);
+        vi.spyOn(payouts, 'claimSettlement').mockResolvedValue(undefined);
+        vi.spyOn(payouts, 'get')
+          .mockResolvedValueOnce(invoiced)
+          .mockRejectedValueOnce(new Error('down'));
+      }
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+      expect(events).toContain('fond.proof.failed');
+      expect(mockedSettle).not.toHaveBeenCalled();
+    }
+  });
+
+  it('returns 503 and logs stuck settling when markPaid throws or loses its claim', async () => {
+    for (const failure of ['throw', 'undefined'] as const) {
+      mockedSettle.mockClear();
+      const events = captureEvents();
+      const records: GiftRecord[] = [];
+      const { app, payouts } = await makeApp({
+        giftRecorder: {
+          recordOutbound: async (record) => {
+            records.push(record);
+          },
+        },
+      });
+      await invoicedRow(payouts);
+      if (failure === 'throw') {
+        vi.spyOn(payouts, 'markPaid').mockRejectedValue(new Error('down'));
+      } else {
+        vi.spyOn(payouts, 'markPaid').mockResolvedValue(undefined);
+      }
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+      expect(records).toHaveLength(1);
+      expect((await payouts.get(ROW_ID))?.status).toBe('settling');
+      expect(events).toContain('fond.proof.failed');
+      expect(events).toContain('fond.proof.stuck_settling');
+      expect(mockedSettle).toHaveBeenCalledTimes(1);
+      const repeat = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(repeat.status).toBe(409);
+      expect(await repeat.json()).toEqual({ error: 'Proof in progress' });
+      expect(mockedSettle).toHaveBeenCalledTimes(1);
+    }
   });
 
   it('reverts to invoiced and answers 503 when settlement fails, then settles later', async () => {
@@ -1557,7 +1661,7 @@ describe('POST /fond/payouts/:id/proof', () => {
     const { app, payouts } = await makeApp();
     await invoicedRow(payouts);
     mockedSettle.mockRejectedValueOnce(new Error('settle down'));
-    vi.spyOn(payouts, 'revertPaid').mockRejectedValueOnce(new Error('revert down'));
+    vi.spyOn(payouts, 'releaseSettlement').mockRejectedValueOnce(new Error('revert down'));
     const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
       method: 'POST',
       headers: authHeader(),
@@ -1567,28 +1671,7 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
     expect(events).toContain('fond.proof.revert_failed');
     expect(events).toContain('fond.proof.failed');
-    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
-  });
-
-  it('answers a repeat proof idempotently after a failed markPaid', async () => {
-    const { app, payouts } = await makeApp();
-    await invoicedRow(payouts);
-    vi.spyOn(payouts, 'markPaid').mockRejectedValueOnce(new Error('down'));
-    const first = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
-      method: 'POST',
-      headers: authHeader(),
-      body: JSON.stringify(preimage),
-    });
-    expect(first.status).toBe(503);
-    const second = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
-      method: 'POST',
-      headers: authHeader(),
-      body: JSON.stringify(preimage),
-    });
-    expect(second.status).toBe(200);
-    expect(await second.json()).toEqual({ status: 'paid', id: ROW_ID });
-    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
-    expect(mockedSettle).toHaveBeenCalledTimes(1);
+    expect((await payouts.get(ROW_ID))?.status).toBe('settling');
   });
 
   it('returns 409 Not invoiced for an invoiced row with a missing durable field', async () => {

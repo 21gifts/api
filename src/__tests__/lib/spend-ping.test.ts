@@ -1780,8 +1780,9 @@ describe('FondQueueSink', () => {
         setInvoiced: async () => undefined,
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
+        claimSettlement: async () => undefined,
         markPaid: async () => undefined,
-        revertPaid: () => Promise.resolve(undefined),
+        releaseSettlement: () => Promise.resolve(undefined),
       },
     });
     expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toBe(
@@ -1808,6 +1809,7 @@ describe('FondQueueSink', () => {
       bolt11: 'b',
       amountMsat: 2_000_000,
     });
+    await store.claimSettlement('existing');
     await store.markPaid('existing');
     const sink = new FondQueueSink({ store });
     expect(
@@ -1828,8 +1830,9 @@ describe('FondQueueSink', () => {
         setInvoiced: async () => undefined,
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
+        claimSettlement: async () => undefined,
         markPaid: async () => undefined,
-        revertPaid: () => Promise.resolve(undefined),
+        releaseSettlement: () => Promise.resolve(undefined),
       },
     });
     expect(

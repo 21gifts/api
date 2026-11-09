@@ -13,7 +13,7 @@ import type { SqlClient } from '@/lib/auth/sql';
 export type FondPayoutKind = 'daily' | 'moderator' | 'welcome';
 
 /** Row lifecycle. Matches the `status` CHECK constraint. */
-export type FondPayoutStatus = 'owed' | 'issuing' | 'invoiced' | 'paid' | 'failed';
+export type FondPayoutStatus = 'owed' | 'issuing' | 'invoiced' | 'settling' | 'paid' | 'failed';
 
 /** One queued payout. Never logged with its address. */
 export interface FondPayoutRow {
@@ -154,21 +154,31 @@ export interface FondPayoutStore {
   releaseClaim(id: string): Promise<FondPayoutRow | undefined>;
 
   /**
-   * Move an `invoiced` row to `paid`.
+   * Atomically claim one `invoiced` row for settlement by moving it to
+   * `settling`. The lock is distinct from the terminal `paid` status, so a
+   * concurrent proof can tell a running settlement from a finished one.
    *
    * @param id - Row id.
-   * @returns The updated row, or `undefined` when the row is missing or not invoiced.
+   * @returns The claimed row, or `undefined` when the row is missing or not invoiced.
+   */
+  claimSettlement(id: string): Promise<FondPayoutRow | undefined>;
+
+  /**
+   * Move a `settling` row to `paid` after its settlement succeeded.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when the row is missing or not settling.
    */
   markPaid(id: string): Promise<FondPayoutRow | undefined>;
 
   /**
-   * Move a `paid` row back to `invoiced` when settlement failed after
-   * `markPaid`, so a later proof can settle again.
+   * Move a `settling` row back to `invoiced` when settlement failed, so a
+   * later proof can settle again.
    *
    * @param id - Row id.
-   * @returns The updated row, or `undefined` when the row is missing or not paid.
+   * @returns The updated row, or `undefined` when the row is missing or not settling.
    */
-  revertPaid(id: string): Promise<FondPayoutRow | undefined>;
+  releaseSettlement(id: string): Promise<FondPayoutRow | undefined>;
 }
 
 /** Idempotent DDL (matches `docs/schema/fond_payout.sql`). */
@@ -182,7 +192,8 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   comment text NOT NULL,
   message_id text,
   group_message_id text,
-  status text NOT NULL CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed')),
+  status text NOT NULL CHECK
+    (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed')),
   failure text,
   invoice_id text,
   payment_hash text,
@@ -193,7 +204,7 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
 )`,
   `ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check`,
   `ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
-    CHECK (status IN ('owed', 'issuing', 'invoiced', 'paid', 'failed'))`,
+    CHECK (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed'))`,
   `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint`,
   `CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
     ON fond_payout (utc_day, kind, address)
@@ -368,13 +379,26 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
   }
 
   /**
-   * Move an `invoiced` row to `paid`.
+   * Atomically claim an `invoiced` row for settlement.
    *
    * @param id - Row id.
-   * @returns The updated copy, or `undefined` when not invoiced.
+   * @returns The claimed copy, or `undefined` when not invoiced.
+   */
+  async claimSettlement(id: string): Promise<FondPayoutRow | undefined> {
+    return this.#transition(id, ['invoiced'], (row) => ({
+      ...row,
+      status: 'settling',
+    }));
+  }
+
+  /**
+   * Move a `settling` row to `paid`.
+   *
+   * @param id - Row id.
+   * @returns The updated copy, or `undefined` when not settling.
    */
   async markPaid(id: string): Promise<FondPayoutRow | undefined> {
-    return this.#transition(id, ['invoiced'], (row) => ({
+    return this.#transition(id, ['settling'], (row) => ({
       ...row,
       status: 'paid',
       failure: null,
@@ -382,13 +406,13 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
   }
 
   /**
-   * Move a `paid` row back to `invoiced` after a settlement failure.
+   * Move a `settling` row back to `invoiced` after a settlement failure.
    *
    * @param id - Row id.
-   * @returns The updated copy, or `undefined` when not paid.
+   * @returns The updated copy, or `undefined` when not settling.
    */
-  async revertPaid(id: string): Promise<FondPayoutRow | undefined> {
-    return this.#transition(id, ['paid'], (row) => ({
+  async releaseSettlement(id: string): Promise<FondPayoutRow | undefined> {
+    return this.#transition(id, ['settling'], (row) => ({
       ...row,
       status: 'invoiced',
     }));
@@ -646,16 +670,16 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   }
 
   /**
-   * Move an `invoiced` row to `paid`.
+   * Atomically move an `invoiced` row to `settling`.
    *
    * @param id - Row id.
-   * @returns The updated row, or `undefined` when not invoiced.
+   * @returns The claimed row, or `undefined` when not invoiced.
    * @throws Propagates SQL failures.
    */
-  async markPaid(id: string): Promise<FondPayoutRow | undefined> {
+  async claimSettlement(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'paid', failure = NULL, updated_at = now()
+SET status = 'settling', updated_at = now()
 WHERE id = $1 AND status = 'invoiced'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
@@ -665,17 +689,36 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   }
 
   /**
-   * Move a `paid` row back to `invoiced` after a settlement failure.
+   * Move a `settling` row to `paid`.
    *
    * @param id - Row id.
-   * @returns The updated row, or `undefined` when not paid.
+   * @returns The updated row, or `undefined` when not settling.
    * @throws Propagates SQL failures.
    */
-  async revertPaid(id: string): Promise<FondPayoutRow | undefined> {
+  async markPaid(id: string): Promise<FondPayoutRow | undefined> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET status = 'paid', failure = NULL, updated_at = now()
+WHERE id = $1 AND status = 'settling'
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapRow(row);
+  }
+
+  /**
+   * Move a `settling` row back to `invoiced` after a settlement failure.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when not settling.
+   * @throws Propagates SQL failures.
+   */
+  async releaseSettlement(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
 SET status = 'invoiced', updated_at = now()
-WHERE id = $1 AND status = 'paid'
+WHERE id = $1 AND status = 'settling'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
     );

@@ -71,6 +71,9 @@ export const FOND_AMOUNT_BELOW_ONE_SAT = 'Amount below one sat';
 /** `409` body while another request owns the `issuing` claim. */
 export const FOND_INVOICE_IN_PROGRESS = 'Invoice in progress';
 
+/** `409` body while another proof owns the `settling` claim. */
+export const FOND_PROOF_IN_PROGRESS = 'Proof in progress';
+
 /** `403` body for a session that is not the Fond account. */
 export const FOND_ONLY = 'Fond only';
 
@@ -387,7 +390,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ error: 'Not found' }, 404);
       }
       if (
-        (row.status !== 'invoiced' && row.status !== 'paid') ||
+        (row.status !== 'invoiced' && row.status !== 'settling' && row.status !== 'paid') ||
         row.invoiceId === null ||
         row.paymentHash === null ||
         row.bolt11 === null ||
@@ -402,24 +405,32 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         logEvent('fond.payout.paid', { id: row.id });
         return c.json({ status: 'paid', id: row.id }, 200);
       }
-      let won = false;
+      if (row.status === 'settling') {
+        return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
+      }
+      let claimed: FondPayoutRow | undefined;
       try {
-        const stored = await deps.fondPayoutStore.markPaid(row.id);
-        if (stored === undefined) {
-          const current = await deps.fondPayoutStore.get(row.id);
-          if (current?.status !== 'paid') {
-            return c.json({ error: 'Not invoiced' }, 409);
-          }
-        } else {
-          won = true;
-        }
+        claimed = await deps.fondPayoutStore.claimSettlement(row.id);
       } catch {
         logEvent('fond.proof.failed');
         return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
-      if (!won) {
-        logEvent('fond.payout.paid', { id: row.id });
-        return c.json({ status: 'paid', id: row.id }, 200);
+      if (claimed === undefined) {
+        let current: FondPayoutRow | undefined;
+        try {
+          current = await deps.fondPayoutStore.get(row.id);
+        } catch {
+          logEvent('fond.proof.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
+        if (current?.status === 'paid') {
+          logEvent('fond.payout.paid', { id: row.id });
+          return c.json({ status: 'paid', id: row.id }, 200);
+        }
+        if (current?.status === 'settling') {
+          return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
+        }
+        return c.json({ error: 'Not invoiced' }, 409);
       }
       const paidAt = deps.now();
       const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
@@ -446,11 +457,22 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         );
       } catch {
         try {
-          await deps.fondPayoutStore.revertPaid(row.id);
+          await deps.fondPayoutStore.releaseSettlement(row.id);
         } catch {
           logEvent('fond.proof.revert_failed', { id: row.id });
         }
         logEvent('fond.proof.failed');
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+      }
+      let stored: FondPayoutRow | undefined;
+      try {
+        stored = await deps.fondPayoutStore.markPaid(row.id);
+      } catch {
+        stored = undefined;
+      }
+      if (stored === undefined) {
+        logEvent('fond.proof.failed');
+        logEvent('fond.proof.stuck_settling', { id: row.id });
         return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       logEvent('fond.payout.paid', { id: row.id });
