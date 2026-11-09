@@ -20,6 +20,7 @@ CREATE TABLE IF NOT EXISTS fond_payout (
   payment_hash text,
   bolt11 text,
   amount_msat bigint,
+  claimed_at timestamptz NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 );
@@ -27,6 +28,7 @@ ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check;
 ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
   CHECK (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed'));
 ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint;
+ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL;
 CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
   ON fond_payout (utc_day, kind, address)
   WHERE kind IN ('daily', 'moderator');

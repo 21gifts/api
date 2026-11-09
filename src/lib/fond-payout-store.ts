@@ -9,6 +9,9 @@
 
 import type { SqlClient } from '@/lib/auth/sql';
 
+/** How long an `issuing` or `settling` claim is trusted before restart recovery. */
+export const FOND_CLAIM_LEASE_MS = 120_000;
+
 /** Payout kinds the API decides. Matches the `kind` CHECK constraint. */
 export type FondPayoutKind = 'daily' | 'moderator' | 'welcome';
 
@@ -45,6 +48,8 @@ export interface FondPayoutRow {
   bolt11: string | null;
   /** Invoice amount in millisatoshis, or `null` before `setInvoiced`. */
   amountMsat: number | null;
+  /** Time the row entered `issuing` or `settling`, or `null` in a stable state. */
+  claimedAt: Date | null;
   /** Enqueue time. */
   createdAt: Date;
   /** Last status or invoice change. */
@@ -101,7 +106,8 @@ export interface FondPayoutStore {
   enqueue(row: FondPayoutEnqueue): Promise<'accepted' | 'paid' | 'failed'>;
 
   /**
-   * Rows of `utcDay` with status `owed` or `invoiced`, oldest first.
+   * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
+   * oldest first.
    *
    * @param utcDay - UTC day key `YYYY-MM-DD`.
    * @returns Caller-owned copies.
@@ -125,6 +131,17 @@ export interface FondPayoutStore {
    * @returns The claimed row, or `null` when another caller won or the row is not payable.
    */
   claimForInvoice(id: string, utcDay: string): Promise<FondPayoutRow | null>;
+
+  /**
+   * Re-claim an `issuing` row whose lease expired after a restart. A BOLT11 is
+   * only returned to a caller after `setInvoiced` stored it, so a stale
+   * `issuing` row never handed an invoice out.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The re-claimed row, or `undefined` when the row is fresh or not issuing.
+   */
+  claimStaleIssuing(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined>;
 
   /**
    * Store the issued invoice and move an `issuing` row to `invoiced`. A row
@@ -164,6 +181,24 @@ export interface FondPayoutStore {
   claimSettlement(id: string): Promise<FondPayoutRow | undefined>;
 
   /**
+   * Mark a stale `settling` row `paid` when its gift already exists.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated row, or `undefined` when the row is fresh or not settling.
+   */
+  markStaleSettlingPaid(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined>;
+
+  /**
+   * Return a stale `settling` row to `invoiced` when its gift does not exist.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated row, or `undefined` when the row is fresh or not settling.
+   */
+  restoreStaleSettling(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined>;
+
+  /**
    * Move a `settling` row to `paid` after its settlement succeeded.
    *
    * @param id - Row id.
@@ -199,6 +234,7 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   payment_hash text,
   bolt11 text,
   amount_msat bigint,
+  claimed_at timestamptz NULL,
   created_at timestamptz NOT NULL DEFAULT now(),
   updated_at timestamptz NOT NULL DEFAULT now()
 )`,
@@ -206,6 +242,7 @@ export const FOND_PAYOUT_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE fond_payout ADD CONSTRAINT fond_payout_status_check
     CHECK (status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed'))`,
   `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS amount_msat bigint`,
+  `ALTER TABLE fond_payout ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL`,
   `CREATE UNIQUE INDEX IF NOT EXISTS fond_payout_daily_moderator_uidx
     ON fond_payout (utc_day, kind, address)
     WHERE kind IN ('daily', 'moderator')`,
@@ -235,7 +272,12 @@ function dedupeKey(row: Pick<FondPayoutRow, 'utcDay' | 'kind' | 'address'>): str
 
 /** Caller-owned copy of a row. */
 function copyRow(row: FondPayoutRow): FondPayoutRow {
-  return { ...row, createdAt: new Date(row.createdAt), updatedAt: new Date(row.updatedAt) };
+  return {
+    ...row,
+    claimedAt: row.claimedAt === null ? null : new Date(row.claimedAt),
+    createdAt: new Date(row.createdAt),
+    updatedAt: new Date(row.updatedAt),
+  };
 }
 
 /** Process-local {@link FondPayoutStore}; starts empty. */
@@ -273,6 +315,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       paymentHash: null,
       bolt11: null,
       amountMsat: null,
+      claimedAt: null,
       createdAt: at,
       updatedAt: at,
     });
@@ -280,7 +323,8 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
   }
 
   /**
-   * Rows of `utcDay` with status `owed` or `invoiced`, oldest first.
+   * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
+   * oldest first.
    *
    * @param utcDay - UTC day key.
    * @returns Copies, oldest first.
@@ -288,7 +332,12 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
   async listOpen(utcDay: string): Promise<FondPayoutRow[]> {
     return [...this.#rows.values()]
       .filter(
-        (row) => row.utcDay === utcDay && (row.status === 'owed' || row.status === 'invoiced'),
+        (row) =>
+          row.utcDay === utcDay &&
+          (row.status === 'owed' ||
+            row.status === 'issuing' ||
+            row.status === 'invoiced' ||
+            row.status === 'settling'),
       )
       .sort(
         (left, right) =>
@@ -324,8 +373,30 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
     const next = {
       ...current,
       status: 'issuing' as const,
+      claimedAt: new Date(this.#now()),
       updatedAt: new Date(this.#now()),
     };
+    this.#rows.set(id, next);
+    return copyRow(next);
+  }
+
+  /**
+   * Re-claim an `issuing` row whose claim is older than `claimedBefore`.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The re-claimed copy, or `undefined` when fresh or not issuing.
+   */
+  async claimStaleIssuing(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    const current = this.#rows.get(id);
+    if (
+      current === undefined ||
+      current.status !== 'issuing' ||
+      (current.claimedAt !== null && current.claimedAt.getTime() >= claimedBefore.getTime())
+    ) {
+      return undefined;
+    }
+    const next = { ...current, claimedAt: new Date(this.#now()), updatedAt: new Date(this.#now()) };
     this.#rows.set(id, next);
     return copyRow(next);
   }
@@ -342,6 +413,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       ...row,
       status: 'invoiced',
       failure: null,
+      claimedAt: null,
       invoiceId: invoice.invoiceId,
       paymentHash: invoice.paymentHash,
       bolt11: invoice.bolt11,
@@ -361,6 +433,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       ...row,
       status: 'failed',
       failure,
+      claimedAt: null,
     }));
   }
 
@@ -375,6 +448,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       ...row,
       status: 'owed',
       failure: null,
+      claimedAt: null,
     }));
   }
 
@@ -388,7 +462,54 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
     return this.#transition(id, ['invoiced'], (row) => ({
       ...row,
       status: 'settling',
+      claimedAt: new Date(this.#now()),
     }));
+  }
+
+  /**
+   * Mark a stale `settling` row `paid`.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated copy, or `undefined` when fresh or not settling.
+   */
+  async markStaleSettlingPaid(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    return this.#staleSettlementTransition(id, claimedBefore, 'paid');
+  }
+
+  /**
+   * Return a stale `settling` row to `invoiced`.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated copy, or `undefined` when fresh or not settling.
+   */
+  async restoreStaleSettling(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    return this.#staleSettlementTransition(id, claimedBefore, 'invoiced');
+  }
+
+  #staleSettlementTransition(
+    id: string,
+    claimedBefore: Date,
+    status: 'paid' | 'invoiced',
+  ): FondPayoutRow | undefined {
+    const current = this.#rows.get(id);
+    if (
+      current === undefined ||
+      current.status !== 'settling' ||
+      (current.claimedAt !== null && current.claimedAt.getTime() >= claimedBefore.getTime())
+    ) {
+      return undefined;
+    }
+    const next = {
+      ...current,
+      status,
+      failure: status === 'paid' ? null : current.failure,
+      claimedAt: null,
+      updatedAt: new Date(this.#now()),
+    };
+    this.#rows.set(id, next);
+    return copyRow(next);
   }
 
   /**
@@ -402,6 +523,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       ...row,
       status: 'paid',
       failure: null,
+      claimedAt: null,
     }));
   }
 
@@ -415,6 +537,7 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
     return this.#transition(id, ['settling'], (row) => ({
       ...row,
       status: 'invoiced',
+      claimedAt: null,
     }));
   }
 
@@ -449,12 +572,13 @@ interface FondPayoutSqlRow {
   payment_hash: string | null;
   bolt11: string | null;
   amount_msat: number | string | bigint | null;
+  claimed_at: Date | string | null;
   created_at: Date | string;
   updated_at: Date | string;
 }
 
 const FOND_PAYOUT_SELECT = `id, utc_day, kind, address, amount_usd, comment, message_id,
-  group_message_id, status, failure, invoice_id, payment_hash, bolt11, amount_msat,
+  group_message_id, status, failure, invoice_id, payment_hash, bolt11, amount_msat, claimed_at,
   created_at, updated_at`;
 
 /** Date-only text for a driver `date` value. */
@@ -492,6 +616,7 @@ function mapRow(row: FondPayoutSqlRow): FondPayoutRow {
     paymentHash: row.payment_hash,
     bolt11: row.bolt11,
     amountMsat: millisatoshis(row.amount_msat),
+    claimedAt: row.claimed_at === null ? null : timestamp(row.claimed_at),
     createdAt: timestamp(row.created_at),
     updatedAt: timestamp(row.updated_at),
   };
@@ -556,7 +681,8 @@ RETURNING id`,
   }
 
   /**
-   * Rows of `utcDay` with status `owed` or `invoiced`, oldest first.
+   * Rows of `utcDay` with status `owed`, `issuing`, `invoiced`, or `settling`,
+   * oldest first.
    *
    * @param utcDay - UTC day key.
    * @returns The matching rows.
@@ -566,7 +692,7 @@ RETURNING id`,
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `SELECT ${FOND_PAYOUT_SELECT}
 FROM fond_payout
-WHERE utc_day = $1 AND status IN ('owed', 'invoiced')
+WHERE utc_day = $1 AND status IN ('owed', 'issuing', 'invoiced', 'settling')
 ORDER BY created_at ASC, id ASC`,
       [utcDay],
     );
@@ -600,13 +726,33 @@ ORDER BY created_at ASC, id ASC`,
   async claimForInvoice(id: string, utcDay: string): Promise<FondPayoutRow | null> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'issuing', updated_at = now()
+SET status = 'issuing', claimed_at = now(), updated_at = now()
 WHERE id = $1 AND utc_day = $2 AND status = 'owed'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id, utcDay],
     );
     const row = rows[0];
     return row === undefined ? null : mapRow(row);
+  }
+
+  /**
+   * Re-claim a stale `issuing` row.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The re-claimed row, or `undefined` when fresh or not issuing.
+   * @throws Propagates SQL failures.
+   */
+  async claimStaleIssuing(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET claimed_at = now(), updated_at = now()
+WHERE id = $1 AND status = 'issuing' AND claimed_at < $2
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id, claimedBefore],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapRow(row);
   }
 
   /**
@@ -620,7 +766,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async setInvoiced(id: string, invoice: FondPayoutInvoice): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'invoiced', failure = NULL,
+SET status = 'invoiced', failure = NULL, claimed_at = NULL,
     invoice_id = $2, payment_hash = $3, bolt11 = $4, amount_msat = $5, updated_at = now()
 WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
@@ -641,7 +787,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async markFailed(id: string, failure: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'failed', failure = $2, updated_at = now()
+SET status = 'failed', failure = $2, claimed_at = NULL, updated_at = now()
 WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id, failure],
@@ -660,7 +806,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async releaseClaim(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'owed', failure = NULL, updated_at = now()
+SET status = 'owed', failure = NULL, claimed_at = NULL, updated_at = now()
 WHERE id = $1 AND status = 'issuing'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
@@ -679,10 +825,50 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async claimSettlement(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'settling', updated_at = now()
+SET status = 'settling', claimed_at = now(), updated_at = now()
 WHERE id = $1 AND status = 'invoiced'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapRow(row);
+  }
+
+  /**
+   * Mark a stale `settling` row `paid`.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated row, or `undefined` when fresh or not settling.
+   * @throws Propagates SQL failures.
+   */
+  async markStaleSettlingPaid(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    return this.#staleSettlement(id, claimedBefore, 'paid');
+  }
+
+  /**
+   * Return a stale `settling` row to `invoiced`.
+   *
+   * @param id - Row id.
+   * @param claimedBefore - Exclusive claim-time cutoff.
+   * @returns The updated row, or `undefined` when fresh or not settling.
+   * @throws Propagates SQL failures.
+   */
+  async restoreStaleSettling(id: string, claimedBefore: Date): Promise<FondPayoutRow | undefined> {
+    return this.#staleSettlement(id, claimedBefore, 'invoiced');
+  }
+
+  async #staleSettlement(
+    id: string,
+    claimedBefore: Date,
+    status: 'paid' | 'invoiced',
+  ): Promise<FondPayoutRow | undefined> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET status = $3, claimed_at = NULL, updated_at = now()
+WHERE id = $1 AND status = 'settling' AND claimed_at < $2
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id, claimedBefore, status],
     );
     const row = rows[0];
     return row === undefined ? undefined : mapRow(row);
@@ -698,7 +884,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async markPaid(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'paid', failure = NULL, updated_at = now()
+SET status = 'paid', failure = NULL, claimed_at = NULL, updated_at = now()
 WHERE id = $1 AND status = 'settling'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
@@ -717,7 +903,7 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
   async releaseSettlement(id: string): Promise<FondPayoutRow | undefined> {
     const rows = await this.#sql.query<FondPayoutSqlRow>(
       `UPDATE fond_payout
-SET status = 'invoiced', updated_at = now()
+SET status = 'invoiced', claimed_at = NULL, updated_at = now()
 WHERE id = $1 AND status = 'settling'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],

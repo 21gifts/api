@@ -16,7 +16,11 @@ import { canSignFondPayouts } from '@/lib/auth/roles';
 import { resolveSession } from '@/lib/auth/service';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
 import type { LnurlServerConfig, PayoutSigner } from '@/lib/config';
-import type { FondPayoutRow, FondPayoutStore } from '@/lib/fond-payout-store';
+import {
+  FOND_CLAIM_LEASE_MS,
+  type FondPayoutRow,
+  type FondPayoutStore,
+} from '@/lib/fond-payout-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { logEvent } from '@/lib/log';
 import type { FiatAmounts } from '@/lib/money';
@@ -108,31 +112,43 @@ function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
-/** Convert a USD amount string at the spot to millisatoshis, or `null` when unusable. */
-function usdToMsat(amountUsd: string, spot: string): number | null {
-  const usd = Number(amountUsd);
-  const usdPerBtc = Number(spot);
-  if (!Number.isFinite(usd) || !Number.isFinite(usdPerBtc) || !(usd > 0) || !(usdPerBtc > 0)) {
+/** Positive decimal text accepted for the spot and committed USD strings. */
+const DECIMAL_RE = /^(?:0|[1-9]\d*)(?:\.\d+)?$/;
+
+/** Split decimal text into an integer numerator and a power-of-ten scale. */
+function decimalParts(text: string): { numerator: bigint; scale: number } | null {
+  const value = text.trim();
+  if (!DECIMAL_RE.test(value)) {
     return null;
   }
-  return Math.round((usd / usdPerBtc) * 1e8) * 1000;
+  const dot = value.indexOf('.');
+  const whole = dot < 0 ? value : value.slice(0, dot);
+  const fraction = dot < 0 ? '' : value.slice(dot + 1);
+  return { numerator: BigInt(`${whole}${fraction}`), scale: fraction.length };
 }
 
-/**
- * Two-decimal display amount for the issue body.
- *
- * The display amount is cosmetic. It is the exact decided USD rounded half-up
- * to cents and formatted with exactly two decimals so `issueGiftInvoice`'s
- * two-decimal validator accepts it. A value below one cent would display as
- * `"0.00"`, so the caller omits it instead. The paid sats always come from the
- * exact value in {@link usdToMsat}.
- *
- * @param amountUsd - Exact decided USD value.
- * @returns Two-decimal USD display string, or `null` when below one cent.
- */
-function displayAmountUsd(amountUsd: string): string | null {
-  const display = (Math.round(Number(amountUsd) * 100) / 100).toFixed(2);
-  return display === '0.00' ? null : display;
+/** Round a non-negative fraction half up, using integer division only. */
+function roundHalfUp(numerator: bigint, denominator: bigint): bigint {
+  const quotient = numerator / denominator;
+  return (numerator % denominator) * 2n >= denominator ? quotient + 1n : quotient;
+}
+
+/** Convert a USD amount string at the spot to millisatoshis, or `null` when unusable. */
+function usdToMsat(amountUsd: string, spot: string): number | null {
+  const usd = decimalParts(amountUsd);
+  const btc = decimalParts(spot);
+  if (usd === null || btc === null || usd.numerator <= 0n || btc.numerator <= 0n) {
+    return null;
+  }
+  const scale = Math.max(usd.scale, btc.scale);
+  const usdScaled = usd.numerator * 10n ** BigInt(scale - usd.scale);
+  const spotScaled = btc.numerator * 10n ** BigInt(scale - btc.scale);
+  const sats = roundHalfUp(usdScaled * 100_000_000n, spotScaled);
+  const amountMsat = sats * 1000n;
+  if (amountMsat > BigInt(Number.MAX_SAFE_INTEGER)) {
+    return null;
+  }
+  return Number(amountMsat);
 }
 
 /**
@@ -140,12 +156,12 @@ function displayAmountUsd(amountUsd: string): string | null {
  *
  * @param deps - Route collaborators.
  * @param id - Payout row id.
- * @returns `true` when the release succeeded, `false` when the store threw.
+ * @returns `true` when the guarded transition moved the row, `false` when it
+ *   threw or the row was no longer `issuing`.
  */
 async function releaseClaim(deps: FondRouteDeps, id: string): Promise<boolean> {
   try {
-    await deps.fondPayoutStore.releaseClaim(id);
-    return true;
+    return (await deps.fondPayoutStore.releaseClaim(id)) !== undefined;
   } catch {
     return false;
   }
@@ -168,7 +184,11 @@ async function refusedInvoice(
 ): Promise<{ status: 400 | 403 | 409 | 502 | 503; error: string }> {
   if (result.status < 500) {
     try {
-      await deps.fondPayoutStore.markFailed(id, result.error);
+      const failed = await deps.fondPayoutStore.markFailed(id, result.error);
+      if (failed === undefined) {
+        logEvent('fond.invoice.failed');
+        return { status: 503, error: PAYOUTS_UNAVAILABLE };
+      }
     } catch {
       logEvent('fond.invoice.failed');
       return { status: 503, error: PAYOUTS_UNAVAILABLE };
@@ -250,46 +270,63 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ id: row.id, bolt11: row.bolt11, paymentHash: row.paymentHash }, 200);
       }
       if (row.status === 'issuing') {
-        return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
-      }
-      if (row.status !== 'owed') {
-        return c.json({ error: 'Not payable' }, 409);
-      }
-      if (row.utcDay !== utcDay(deps.now())) {
-        return c.json({ error: 'Not payable' }, 409);
-      }
-
-      let claimed: FondPayoutRow | null;
-      try {
-        claimed = await deps.fondPayoutStore.claimForInvoice(row.id, utcDay(deps.now()));
-      } catch {
-        logEvent('fond.invoice.failed');
-        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
-      }
-      if (claimed === null) {
-        let current: FondPayoutRow | undefined;
+        const cutoff = new Date(deps.now() - FOND_CLAIM_LEASE_MS);
+        if (row.claimedAt === null || row.claimedAt >= cutoff) {
+          return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
+        }
+        let reclaimed: FondPayoutRow | undefined;
         try {
-          current = await deps.fondPayoutStore.get(row.id);
+          reclaimed = await deps.fondPayoutStore.claimStaleIssuing(row.id, cutoff);
         } catch {
           logEvent('fond.invoice.failed');
           return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
         }
-        if (
-          current?.status === 'invoiced' &&
-          current.bolt11 !== null &&
-          current.paymentHash !== null
-        ) {
-          return c.json(
-            { id: current.id, bolt11: current.bolt11, paymentHash: current.paymentHash },
-            200,
-          );
-        }
-        if (current?.status === 'issuing') {
+        if (reclaimed === undefined) {
           return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
         }
-        return c.json({ error: 'Not payable' }, 409);
+        row = reclaimed;
+      } else {
+        if (row.status !== 'owed') {
+          return c.json({ error: 'Not payable' }, 409);
+        }
+        if (row.utcDay !== utcDay(deps.now())) {
+          return c.json({ error: 'Not payable' }, 409);
+        }
       }
-      row = claimed;
+
+      if (row.status === 'owed') {
+        let claimed: FondPayoutRow | null;
+        try {
+          claimed = await deps.fondPayoutStore.claimForInvoice(row.id, utcDay(deps.now()));
+        } catch {
+          logEvent('fond.invoice.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
+        if (claimed === null) {
+          let current: FondPayoutRow | undefined;
+          try {
+            current = await deps.fondPayoutStore.get(row.id);
+          } catch {
+            logEvent('fond.invoice.failed');
+            return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+          }
+          if (
+            current?.status === 'invoiced' &&
+            current.bolt11 !== null &&
+            current.paymentHash !== null
+          ) {
+            return c.json(
+              { id: current.id, bolt11: current.bolt11, paymentHash: current.paymentHash },
+              200,
+            );
+          }
+          if (current?.status === 'issuing') {
+            return c.json({ error: FOND_INVOICE_IN_PROGRESS }, 409);
+          }
+          return c.json({ error: 'Not payable' }, 409);
+        }
+        row = claimed;
+      }
 
       let spot: string | null;
       try {
@@ -313,7 +350,6 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ error: FOND_AMOUNT_BELOW_ONE_SAT }, 409);
       }
 
-      const displayUsd = displayAmountUsd(row.amountUsd);
       let result: IssueGiftInvoiceResult;
       try {
         result = await issueGiftInvoice(deps.actions, {
@@ -322,7 +358,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           comment: row.comment,
           ...(row.messageId === null ? {} : { messageId: row.messageId }),
           ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
-          ...(displayUsd === null ? {} : { amountUsd: displayUsd }),
+          amountUsd: row.amountUsd,
         });
       } catch {
         await releaseClaim(deps, row.id);
@@ -406,7 +442,44 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ status: 'paid', id: row.id }, 200);
       }
       if (row.status === 'settling') {
-        return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
+        const cutoff = new Date(deps.now() - FOND_CLAIM_LEASE_MS);
+        if (row.claimedAt === null || row.claimedAt >= cutoff) {
+          return c.json({ error: FOND_PROOF_IN_PROGRESS }, 409);
+        }
+        let giftExists: boolean;
+        try {
+          giftExists = (await deps.actions.giftStore?.hasOutboundInvoice?.(row.bolt11)) ?? false;
+        } catch {
+          logEvent('fond.proof.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
+        if (giftExists) {
+          let recovered: FondPayoutRow | undefined;
+          try {
+            recovered = await deps.fondPayoutStore.markStaleSettlingPaid(row.id, cutoff);
+          } catch {
+            logEvent('fond.proof.failed');
+            return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+          }
+          if (recovered === undefined) {
+            logEvent('fond.proof.failed');
+            return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+          }
+          logEvent('fond.payout.paid', { id: row.id });
+          return c.json({ status: 'paid', id: row.id }, 200);
+        }
+        let restored: FondPayoutRow | undefined;
+        try {
+          restored = await deps.fondPayoutStore.restoreStaleSettling(row.id, cutoff);
+        } catch {
+          logEvent('fond.proof.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
+        if (restored === undefined) {
+          logEvent('fond.proof.failed');
+          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+        }
+        row = restored;
       }
       let claimed: FondPayoutRow | undefined;
       try {
@@ -434,15 +507,31 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       const paidAt = deps.now();
       const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
+      const invoiceId = row.invoiceId;
+      const bolt11 = row.bolt11;
+      const paymentHash = row.paymentHash;
+      const amountMsat = row.amountMsat;
+      if (invoiceId === null || bolt11 === null || paymentHash === null || amountMsat === null) {
+        try {
+          const released = await deps.fondPayoutStore.releaseSettlement(row.id);
+          if (released === undefined) {
+            logEvent('fond.proof.revert_failed', { id: row.id });
+          }
+        } catch {
+          logEvent('fond.proof.revert_failed', { id: row.id });
+        }
+        logEvent('fond.proof.failed');
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+      }
       try {
         await settleProvenGift(
           deps.actions,
           {
-            id: row.invoiceId,
+            id: invoiceId,
             address: row.address,
-            pr: row.bolt11,
-            paymentHash: row.paymentHash,
-            amountMsat: row.amountMsat,
+            pr: bolt11,
+            paymentHash,
+            amountMsat,
             createdAt: paidAt,
             expiresAt: paidAt,
             comment: row.comment,
@@ -457,7 +546,10 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         );
       } catch {
         try {
-          await deps.fondPayoutStore.releaseSettlement(row.id);
+          const released = await deps.fondPayoutStore.releaseSettlement(row.id);
+          if (released === undefined) {
+            logEvent('fond.proof.revert_failed', { id: row.id });
+          }
         } catch {
           logEvent('fond.proof.revert_failed', { id: row.id });
         }
@@ -472,7 +564,6 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       if (stored === undefined) {
         logEvent('fond.proof.failed');
-        logEvent('fond.proof.stuck_settling', { id: row.id });
         return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       logEvent('fond.payout.paid', { id: row.id });

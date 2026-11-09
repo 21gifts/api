@@ -22,6 +22,7 @@ Source: [src/lib/fond-payout-store.ts](../../../src/lib/fond-payout-store.ts)
 | `payment_hash`     | Free text          | `text`                     | Yes      | –       | –          |
 | `bolt11`           | Free text          | `text`                     | Yes      | –       | –          |
 | `amount_msat`      | Integer            | `bigint`                   | Yes      | –       | –          |
+| `claimed_at`       | Date/time          | `timestamp with time zone` | Yes      | –       | –          |
 | `created_at`       | Date/time          | `timestamp with time zone` | No       | `now()` | –          |
 | `updated_at`       | Date/time          | `timestamp with time zone` | No       | `now()` | –          |
 

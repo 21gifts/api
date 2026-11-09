@@ -372,7 +372,10 @@ export interface GiftActionDeps {
    * House gifts for the once-per-account welcome check. Omitted → only the
    * platform `Welcome` reply counts.
    */
-  giftStore?: Pick<GiftStore, 'listOutbound' | 'listLegacyWelcomeAccountIds'>;
+  giftStore?: Pick<
+    GiftStore,
+    'listOutbound' | 'listLegacyWelcomeAccountIds' | 'hasOutboundInvoice'
+  >;
   /** First UTC day the 21.gifts recovery share is required for a payout. */
   recoveryShareRequiredFrom?: string | null;
 }

@@ -1189,11 +1189,12 @@ LIMIT $2`,
   /**
    * Account ids at the moderator rank or above.
    *
-   * @returns Ids from `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`.
+   * @returns Ids from `SELECT id FROM account WHERE role IN
+   *   ('founder', 'moderator', 'initiator', 'fond')`.
    */
   async listStaffAccountIds(): Promise<string[]> {
     const rows = await this.#sql.query<{ id: string }>(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`,
     );
     return rows.map((row) => row.id);
   }

@@ -1788,23 +1788,109 @@ describe('FondQueueSink', () => {
     expect(await store.listOpen('2026-11-09')).toEqual([]);
   });
 
-  it('keeps a positive amount below half a cent and a decimal string exactly', async () => {
+  it('stores exact cents and refuses finer values', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        amountUsd: '1.23',
+        comment: 'thanks',
+        day: '2026-11-09',
+      }),
+    ).toEqual({ outcome: 'accepted' });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        amountUsd: 1,
+        comment: 'thanks',
+        day: '2026-11-10',
+      }),
+    ).toEqual({ outcome: 'accepted' });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        amountUsd: 0.004,
+        comment: 'thanks',
+        day: '2026-11-11',
+      }),
+    ).toEqual({ outcome: 'failed' });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        amountUsd: '1.235',
+        comment: 'thanks',
+        day: '2026-11-12',
+      }),
+    ).toEqual({ outcome: 'failed' });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '1.23' });
+    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1' });
+    expect(await store.listOpen('2026-11-11')).toEqual([]);
+    expect(await store.listOpen('2026-11-12')).toEqual([]);
+  });
+
+  it('refuses numeric and string values below one cent or above two fraction digits', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    for (const amountUsd of [0.004, '0.004', '0.01x', '1.235', '1.230']) {
+      expect(
+        await sink.deliver(ADDRESS, {
+          address: ADDRESS,
+          amountUsd,
+          comment: 'thanks',
+          day: '2026-11-09',
+        }),
+      ).toEqual({ outcome: 'failed' });
+    }
+    expect(await store.listOpen('2026-11-09')).toEqual([]);
+  });
+
+  it('still refuses a zero value and a negative number', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    for (const amountUsd of [0, -1, '0', '-1', '0.00']) {
+      expect(
+        await sink.deliver(ADDRESS, {
+          address: ADDRESS,
+          amountUsd,
+          comment: 'thanks',
+          day: '2026-11-09',
+        }),
+      ).toEqual({ outcome: 'failed' });
+    }
+  });
+
+  it('accepts the largest exact two-fraction-digit number without rounding it', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    expect(
+      await sink.deliver(ADDRESS, {
+        address: ADDRESS,
+        amountUsd: 999999.99,
+        comment: 'thanks',
+        day: '2026-11-09',
+      }),
+    ).toEqual({ outcome: 'accepted' });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '999999.99' });
+  });
+
+  it('stores a whole number string and a one-decimal string exactly', async () => {
     const store = new InMemoryFondPayoutStore();
     const sink = new FondQueueSink({ store });
     await sink.deliver(ADDRESS, {
       address: ADDRESS,
-      amountUsd: 0.004,
+      amountUsd: '1',
       comment: 'thanks',
       day: '2026-11-09',
     });
     await sink.deliver(ADDRESS, {
       address: ADDRESS,
-      amountUsd: '1.230',
+      amountUsd: '1.2',
       comment: 'thanks',
       day: '2026-11-10',
     });
-    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '0.004' });
-    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1.230' });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '1' });
+    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '1.2' });
   });
 
   it('returns failed when the store reports an unconfirmed conflict', async () => {
@@ -1815,6 +1901,9 @@ describe('FondQueueSink', () => {
         get: async () => undefined,
         claimForInvoice: async () => null,
         setInvoiced: async () => undefined,
+        claimStaleIssuing: async () => undefined,
+        markStaleSettlingPaid: async () => undefined,
+        restoreStaleSettling: async () => undefined,
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
         claimSettlement: async () => undefined,
@@ -1854,6 +1943,25 @@ describe('FondQueueSink', () => {
     ).toEqual({ outcome: 'skipped', reason: 'paid' });
   });
 
+  it('stores a numeric one-decimal amount and a string whole number exactly', async () => {
+    const store = new InMemoryFondPayoutStore();
+    const sink = new FondQueueSink({ store });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      amountUsd: 1.5,
+      comment: 'thanks',
+      day: '2026-11-09',
+    });
+    await sink.deliver(ADDRESS, {
+      address: ADDRESS,
+      amountUsd: '10',
+      comment: 'thanks',
+      day: '2026-11-10',
+    });
+    expect((await store.listOpen('2026-11-09'))[0]).toMatchObject({ amountUsd: '1.5' });
+    expect((await store.listOpen('2026-11-10'))[0]).toMatchObject({ amountUsd: '10' });
+  });
+
   it('returns failed when the store throws', async () => {
     const sink = new FondQueueSink({
       store: {
@@ -1864,6 +1972,9 @@ describe('FondQueueSink', () => {
         get: async () => undefined,
         claimForInvoice: async () => null,
         setInvoiced: async () => undefined,
+        claimStaleIssuing: async () => undefined,
+        markStaleSettlingPaid: async () => undefined,
+        restoreStaleSettling: async () => undefined,
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
         claimSettlement: async () => undefined,

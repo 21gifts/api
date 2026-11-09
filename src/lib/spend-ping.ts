@@ -188,21 +188,23 @@ function utcDay(nowMs: number): string {
   return new Date(nowMs).toISOString().slice(0, 10);
 }
 
+/** Canonical decimal text with at most two fraction digits. */
+const EXACT_CENTS_RE = /^(?:0|[1-9]\d*)(?:\.\d{1,2})?$/;
+
 /**
- * The decided USD value exactly as received: a finite positive number via
- * `String(number)`, or a non-empty decimal string.
+ * The decided USD value exactly as received when it is an exact number of
+ * cents: a finite positive number whose canonical `String(n)` has at most two
+ * fraction digits, or a decimal string of that shape with a positive value.
  *
  * @param raw - Body value from the decided instruction.
- * @returns The stored string, or `null` when unusable.
+ * @returns The stored string, or `null` when it is not an exact cent amount.
  */
 function decidedUsd(raw: string | number | undefined): string | null {
-  if (typeof raw === 'number') {
-    return Number.isFinite(raw) && raw > 0 ? String(raw) : null;
+  const text = typeof raw === 'number' ? (Number.isFinite(raw) ? String(raw) : null) : raw;
+  if (typeof text !== 'string' || !EXACT_CENTS_RE.test(text)) {
+    return null;
   }
-  if (typeof raw === 'string') {
-    return /^\d+(?:\.\d+)?$/.test(raw) && Number(raw) > 0 ? raw : null;
-  }
-  return null;
+  return BigInt(text.replace('.', '')) > 0n ? text : null;
 }
 
 /** A string body value, or `null`. */

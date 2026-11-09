@@ -8,6 +8,7 @@ import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFondPayoutStore, type FondPayoutEnqueue } from '@/lib/fond-payout-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRecord, GiftRecorder } from '@/lib/gift-recorder';
+import { InMemoryGiftStore, type GiftStore } from '@/lib/gift-store';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
 import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
@@ -166,6 +167,8 @@ interface AppOptions {
   fetchImpl?: FetchFn;
   seedPlatform?: boolean;
   seedRecipient?: boolean;
+  now?: () => number;
+  giftStore?: GiftStore;
 }
 
 async function makeApp(options: AppOptions = {}): Promise<{
@@ -177,6 +180,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
   conversations?: InMemoryConversationStore;
 }> {
   const auth = new InMemoryAuthStore();
+  const now = options.now ?? (() => NOW);
   if (options.seedFond !== false) {
     await fondAccount(auth);
   }
@@ -197,7 +201,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
       isPlatform: true,
     });
   }
-  const payouts = options.payoutStore ?? new InMemoryFondPayoutStore(() => NOW);
+  const payouts = options.payoutStore ?? new InMemoryFondPayoutStore(now);
   const invoices = options.actionsStore ?? new InMemoryInvoiceStore();
   const messages = options.messageStore ?? new InMemoryMessageStore();
   const fetchImpl = options.fetchImpl ?? (async () => new Response(null, { status: 500 }));
@@ -208,14 +212,14 @@ async function makeApp(options: AppOptions = {}): Promise<{
       fondPayoutStore: payouts,
       payoutSigner: options.signer ?? 'fond',
       fondUsername: FOND,
-      now: () => NOW,
+      now,
       fetchImpl,
       lnurlServer: LNURL,
       actions: {
         store: invoices,
         authStore: auth,
         messageStore: messages,
-        now: () => NOW,
+        now,
         fetchImpl,
         fundingStore: options.fundingStore ?? new InMemoryFundingStore(),
         lnurlServer: LNURL,
@@ -223,6 +227,7 @@ async function makeApp(options: AppOptions = {}): Promise<{
         ...(options.conversationStore === undefined
           ? {}
           : { conversationStore: options.conversationStore }),
+        ...(options.giftStore === undefined ? {} : { giftStore: options.giftStore }),
       },
     }),
   );
@@ -486,6 +491,56 @@ describe('GET /fond/payouts', () => {
     }
   });
 
+  it('lists today’s owed, issuing, invoiced, and settling rows oldest first', async () => {
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput());
+    clock = NOW + 1;
+    await payouts.enqueue(rowInput({ id: 'issuing', address: 'i@example.com' }));
+    await payouts.claimForInvoice('issuing', TODAY);
+    clock = NOW + 2;
+    await payouts.enqueue(rowInput({ id: 'invoiced', address: 'v@example.com' }));
+    await payouts.claimForInvoice('invoiced', TODAY);
+    await payouts.setInvoiced('invoiced', {
+      invoiceId: 'i',
+      paymentHash: 'h',
+      bolt11: 'b',
+      amountMsat: 1_000_000,
+    });
+    clock = NOW + 3;
+    await payouts.enqueue(rowInput({ id: 'settling', address: 's@example.com' }));
+    await payouts.claimForInvoice('settling', TODAY);
+    await payouts.setInvoiced('settling', {
+      invoiceId: 'i2',
+      paymentHash: 'h2',
+      bolt11: 'b2',
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement('settling');
+    clock = NOW + 4;
+    await payouts.enqueue(rowInput({ id: 'paid', address: 'p@example.com' }));
+    await payouts.claimForInvoice('paid', TODAY);
+    await payouts.setInvoiced('paid', {
+      invoiceId: 'i3',
+      paymentHash: 'h3',
+      bolt11: 'b3',
+      amountMsat: 1_000_000,
+    });
+    await payouts.claimSettlement('paid');
+    await payouts.markPaid('paid');
+
+    const res = await app.request('/fond/payouts', { headers: authHeader() });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({
+      payouts: expect.arrayContaining([
+        { id: ROW_ID, kind: 'daily', status: 'owed', utcDay: TODAY },
+        { id: 'issuing', kind: 'daily', status: 'issuing', utcDay: TODAY },
+        { id: 'invoiced', kind: 'daily', status: 'invoiced', utcDay: TODAY },
+        { id: 'settling', kind: 'daily', status: 'settling', utcDay: TODAY },
+      ]),
+    });
+  });
+
   it('returns 503 when the store throws', async () => {
     const { app, payouts } = await makeApp();
     vi.spyOn(payouts, 'listOpen').mockRejectedValue(new Error('down'));
@@ -641,6 +696,88 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Invoice in progress' });
     expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('returns 409 Invoice in progress for a fresh issuing row with a lease timestamp', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    const current = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'claimStaleIssuing');
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(current);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Invoice in progress' });
+    expect(payouts.claimStaleIssuing).not.toHaveBeenCalled();
+  });
+
+  it('re-claims a stale issuing row and issues its invoice once', async () => {
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    clock = NOW + 120_001;
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ id: ROW_ID, bolt11: BOLT11, paymentHash: HASH });
+    expect(mockedIssue).toHaveBeenCalledTimes(1);
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
+  });
+
+  it('does not issue when the stale issuing re-claim loses the race', async () => {
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    clock = NOW + 120_001;
+    vi.spyOn(payouts, 'claimStaleIssuing').mockResolvedValueOnce(undefined);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Invoice in progress' });
+    expect(mockedIssue).not.toHaveBeenCalled();
+  });
+
+  it('returns 503 when the stale issuing re-claim throws', async () => {
+    const events = captureEvents();
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    clock = NOW + 120_001;
+    vi.spyOn(payouts, 'claimStaleIssuing').mockRejectedValueOnce(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(events).toContain('fond.invoice.failed');
+  });
+
+  it('treats a missing claimedAt as fresh and does not re-claim', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    const current = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(
+      current === undefined ? undefined : { ...current, claimedAt: null },
+    );
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Invoice in progress' });
   });
 
   it('returns 409 Not payable for a settling row', async () => {
@@ -799,6 +936,59 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(res.status).toBe(503);
   });
 
+  it('rounds an exact half sat up where float arithmetic would round down', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ amountUsd: '1.005' }));
+    mockedSpot.mockResolvedValueOnce('67000000');
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(2000);
+  });
+
+  it('refuses a spot string that is not a positive decimal', async () => {
+    for (const spot of ['abc', '0', '-1', '1.2.3']) {
+      const { app, payouts } = await makeApp();
+      await payouts.enqueue(rowInput());
+      mockedSpot.mockResolvedValueOnce(spot);
+      const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+        method: 'POST',
+        headers: authHeader(),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Price unavailable' });
+    }
+  });
+
+  it('refuses a stored USD string that is not a positive decimal', async () => {
+    for (const amountUsd of ['abc', '0', '00.5', '-1']) {
+      const { app, payouts } = await makeApp();
+      await payouts.enqueue(rowInput({ amountUsd }));
+      mockedSpot.mockResolvedValueOnce('67000000');
+      const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+        method: 'POST',
+        headers: authHeader(),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Price unavailable' });
+    }
+  });
+
+  it('refuses a conversion above the safe integer range', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ amountUsd: '999999999999999999' }));
+    mockedSpot.mockResolvedValueOnce('0.000000000001');
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Price unavailable' });
+  });
+
   it('issues at the spot, passes the decided body, and stores the invoice', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
@@ -844,7 +1034,7 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('messageId');
   });
 
-  it('omits amountUsd when the exact USD rounds below one cent', async () => {
+  it('passes the stored exact USD string unchanged', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput({ amountUsd: '0.004' }));
     mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
@@ -854,14 +1044,11 @@ describe('POST /fond/payouts/:id/invoice', () => {
     });
     expect(res.status).toBe(200);
     expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(4000);
-    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('amountUsd');
+    expect(mockedIssue.mock.calls[0]?.[1]).toMatchObject({ amountUsd: '0.004' });
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', failure: null });
   });
 
-  it.each([
-    ['1.230', '1.23'],
-    ['1', '1.00'],
-  ])('passes the exact %s USD as the two-decimal display %s', async (decided, display) => {
+  it.each(['1.23', '1'])('passes the stored %s USD byte-identically', async (decided) => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput({ amountUsd: decided }));
     mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
@@ -872,15 +1059,13 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(res.status).toBe(200);
     expect(mockedIssue).toHaveBeenCalledWith(
       expect.anything(),
-      expect.objectContaining({ amountUsd: display }),
+      expect.objectContaining({ amountUsd: decided }),
     );
-    expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(
-      Math.round((Number(decided) / 100000) * 1e8) * 1000,
-    );
+    expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(decided === '1' ? 1_000_000 : 1_230_000);
     expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', failure: null });
   });
 
-  it('issues a 0.004 payout through the real validator and marks it invoiced', async () => {
+  it('passes a below-cent stored string unchanged and lets the validator refuse it', async () => {
     const paymentHash = 'cd'.repeat(32);
     const invoicePr = bolt11ForSats(4, paymentHash);
     const fetchImpl: FetchFn = async (input) => {
@@ -923,15 +1108,11 @@ describe('POST /fond/payouts/:id/invoice', () => {
       method: 'POST',
       headers: authHeader(),
     });
-    expect(res.status).toBe(200);
-    expect(await res.json()).toMatchObject({ id: ROW_ID, paymentHash, bolt11: invoicePr });
-    expect(await payouts.get(ROW_ID)).toMatchObject({
-      status: 'invoiced',
-      failure: null,
-      amountMsat: 4000,
-      paymentHash,
-      bolt11: invoicePr,
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({
+      error: 'Expected a JSON body with address and amountMsat',
     });
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'failed' });
   });
 
   it('stores the issue refusal text and answers 409', async () => {
@@ -1029,6 +1210,36 @@ describe('POST /fond/payouts/:id/invoice', () => {
     await payouts.enqueue(rowInput());
     mockedIssue.mockResolvedValue({ ok: false, status: 403, error: 'Passkey required' });
     vi.spyOn(payouts, 'markFailed').mockRejectedValue(new Error('down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(events).toContain('fond.invoice.failed');
+  });
+
+  it('returns 503 Payouts are unavailable when markFailed misses the transition', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    mockedIssue.mockResolvedValue({ ok: false, status: 403, error: 'Passkey required' });
+    vi.spyOn(payouts, 'markFailed').mockResolvedValueOnce(undefined);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(events).toContain('fond.invoice.failed');
+  });
+
+  it('returns 503 Payouts are unavailable when releaseClaim misses the transition', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput());
+    mockedSpot.mockResolvedValueOnce(null);
+    vi.spyOn(payouts, 'releaseClaim').mockResolvedValueOnce(undefined);
     const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
       method: 'POST',
       headers: authHeader(),
@@ -1435,6 +1646,138 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect(mockedSettle).not.toHaveBeenCalled();
   });
 
+  it('recovers a stale settling row with an existing gift as paid', async () => {
+    let clock = NOW;
+    const events = captureEvents();
+    const gifts = new InMemoryGiftStore([], [], [BOLT11]);
+    const { app, payouts } = await makeApp({
+      now: () => clock,
+      giftStore: gifts,
+    });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
+    expect(mockedSettle).not.toHaveBeenCalled();
+    expect(events).toContain('fond.payout.paid');
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'paid', claimedAt: null });
+  });
+
+  it('restores a stale settling row without a gift and settles it once', async () => {
+    let clock = NOW;
+    const { app, payouts } = await makeApp({
+      now: () => clock,
+      giftStore: { listOutbound: async () => [] },
+    });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ status: 'paid', id: ROW_ID });
+    expect(mockedSettle).toHaveBeenCalledTimes(1);
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'paid', claimedAt: null });
+  });
+
+  it('treats a missing settling lease timestamp as fresh', async () => {
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    const current = await payouts.get(ROW_ID);
+    vi.spyOn(payouts, 'get').mockResolvedValueOnce(
+      current === undefined ? undefined : { ...current, claimedAt: null },
+    );
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(409);
+    expect(await res.json()).toEqual({ error: 'Proof in progress' });
+  });
+
+  it('returns 503 when the stale-settling gift lookup throws', async () => {
+    const events = captureEvents();
+    let clock = NOW;
+    const gifts = new InMemoryGiftStore();
+    vi.spyOn(gifts, 'hasOutboundInvoice').mockRejectedValueOnce(new Error('down'));
+    const { app, payouts } = await makeApp({ now: () => clock, giftStore: gifts });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(events).toContain('fond.proof.failed');
+  });
+
+  it('returns 503 when the stale-settling recovery transition throws or misses', async () => {
+    for (const outcome of ['throw', 'undefined'] as const) {
+      const events = captureEvents();
+      let clock = NOW;
+      const { app, payouts } = await makeApp({
+        now: () => clock,
+        giftStore: new InMemoryGiftStore([], [], [BOLT11]),
+      });
+      await invoicedRow(payouts);
+      await payouts.claimSettlement(ROW_ID);
+      clock = NOW + 120_001;
+      vi.spyOn(payouts, 'markStaleSettlingPaid').mockImplementationOnce(async () => {
+        if (outcome === 'throw') {
+          throw new Error('down');
+        }
+        return undefined;
+      });
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+      expect(events).toContain('fond.proof.failed');
+    }
+  });
+
+  it('returns 503 when the stale-settling restore throws or misses', async () => {
+    for (const outcome of ['throw', 'undefined'] as const) {
+      const events = captureEvents();
+      let clock = NOW;
+      const { app, payouts } = await makeApp({ now: () => clock });
+      await invoicedRow(payouts);
+      await payouts.claimSettlement(ROW_ID);
+      clock = NOW + 120_001;
+      vi.spyOn(payouts, 'restoreStaleSettling').mockImplementationOnce(async () => {
+        if (outcome === 'throw') {
+          throw new Error('down');
+        }
+        return undefined;
+      });
+      const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(res.status).toBe(503);
+      expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+      expect(events).toContain('fond.proof.failed');
+    }
+  });
+
   it('returns 409 Not invoiced for a settling row with a missing durable field', async () => {
     const { app, payouts } = await makeApp();
     await invoicedRow(payouts);
@@ -1453,6 +1796,95 @@ describe('POST /fond/payouts/:id/proof', () => {
     });
     expect(res.status).toBe(409);
     expect(await res.json()).toEqual({ error: 'Not invoiced' });
+  });
+
+  it('returns 503 and releases the claim for a settling row missing invoice fields', async () => {
+    const events = captureEvents();
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    const restoreStaleSettling = payouts.restoreStaleSettling.bind(payouts);
+    vi.spyOn(payouts, 'restoreStaleSettling').mockImplementationOnce(async (id, before) => {
+      const restored = await restoreStaleSettling(id, before);
+      return restored === undefined ? undefined : { ...restored, amountMsat: null };
+    });
+    const release = vi.spyOn(payouts, 'releaseSettlement');
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(release).toHaveBeenCalledWith(ROW_ID);
+    expect(events).toContain('fond.proof.failed');
+    expect(events).not.toContain('fond.proof.revert_failed');
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', claimedAt: null });
+    expect(mockedSettle).not.toHaveBeenCalled();
+  });
+
+  async function restoreWithNullInvoiceFields(payouts: InMemoryFondPayoutStore): Promise<void> {
+    const restore = payouts.restoreStaleSettling.bind(payouts);
+    vi.spyOn(payouts, 'restoreStaleSettling').mockImplementationOnce(async (id, before) => {
+      const row = await restore(id, before);
+      return row === undefined
+        ? undefined
+        : {
+            ...row,
+            invoiceId: null,
+            bolt11: null,
+            paymentHash: null,
+            amountMsat: null,
+          };
+    });
+  }
+
+  it('logs revert_failed and returns 503 when a null invoice-field revert misses', async () => {
+    const events = captureEvents();
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    await restoreWithNullInvoiceFields(payouts);
+    const release = vi.spyOn(payouts, 'releaseSettlement').mockResolvedValueOnce(undefined);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(release).toHaveBeenCalledWith(ROW_ID);
+    expect(events).toContain('fond.proof.revert_failed');
+    expect(events).toContain('fond.proof.failed');
+    expect(mockedSettle).not.toHaveBeenCalled();
+  });
+
+  it('logs revert_failed and returns 503 when a null invoice-field revert throws', async () => {
+    const events = captureEvents();
+    let clock = NOW;
+    const { app, payouts } = await makeApp({ now: () => clock });
+    await invoicedRow(payouts);
+    await payouts.claimSettlement(ROW_ID);
+    clock = NOW + 120_001;
+    await restoreWithNullInvoiceFields(payouts);
+    const release = vi
+      .spyOn(payouts, 'releaseSettlement')
+      .mockRejectedValueOnce(new Error('revert down'));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(release).toHaveBeenCalledWith(ROW_ID);
+    expect(events).toContain('fond.proof.revert_failed');
+    expect(events).toContain('fond.proof.failed');
+    expect(mockedSettle).not.toHaveBeenCalled();
   });
 
   it('returns paid when a concurrent proof wins the settlement race', async () => {
@@ -1589,12 +2021,15 @@ describe('POST /fond/payouts/:id/proof', () => {
     }
   });
 
-  it('returns 503 and logs stuck settling when markPaid throws or loses its claim', async () => {
+  it('recovers after markPaid throws or misses its claim', async () => {
     for (const failure of ['throw', 'undefined'] as const) {
       mockedSettle.mockClear();
       const events = captureEvents();
       const records: GiftRecord[] = [];
+      let clock = NOW;
       const { app, payouts } = await makeApp({
+        now: () => clock,
+        giftStore: new InMemoryGiftStore([], [], [BOLT11]),
         giftRecorder: {
           recordOutbound: async (record) => {
             records.push(record);
@@ -1617,7 +2052,7 @@ describe('POST /fond/payouts/:id/proof', () => {
       expect(records).toHaveLength(1);
       expect((await payouts.get(ROW_ID))?.status).toBe('settling');
       expect(events).toContain('fond.proof.failed');
-      expect(events).toContain('fond.proof.stuck_settling');
+      expect(events).not.toContain('fond.proof.stuck_settling');
       expect(mockedSettle).toHaveBeenCalledTimes(1);
       const repeat = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
         method: 'POST',
@@ -1627,6 +2062,16 @@ describe('POST /fond/payouts/:id/proof', () => {
       expect(repeat.status).toBe(409);
       expect(await repeat.json()).toEqual({ error: 'Proof in progress' });
       expect(mockedSettle).toHaveBeenCalledTimes(1);
+      clock = NOW + 120_001;
+      const recovered = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+        method: 'POST',
+        headers: authHeader(),
+        body: JSON.stringify(preimage),
+      });
+      expect(recovered.status).toBe(200);
+      expect(await recovered.json()).toEqual({ status: 'paid', id: ROW_ID });
+      expect(mockedSettle).toHaveBeenCalledTimes(1);
+      expect((await payouts.get(ROW_ID))?.status).toBe('paid');
     }
   });
 
@@ -1689,6 +2134,23 @@ describe('POST /fond/payouts/:id/proof', () => {
     expect((await payouts.get(ROW_ID))?.status).toBe('settling');
   });
 
+  it('returns 503 when settlement fails and its revert misses the transition', async () => {
+    const events = captureEvents();
+    const { app, payouts } = await makeApp();
+    await invoicedRow(payouts);
+    mockedSettle.mockRejectedValueOnce(new Error('settle down'));
+    vi.spyOn(payouts, 'releaseSettlement').mockResolvedValueOnce(undefined);
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(503);
+    expect(await res.json()).toEqual({ error: 'Payouts are unavailable' });
+    expect(events).toContain('fond.proof.failed');
+    expect((await payouts.get(ROW_ID))?.status).toBe('settling');
+  });
+
   it('returns 409 Not invoiced for an invoiced row with a missing durable field', async () => {
     const missingFields = [
       { invoiceId: null, paymentHash: PREIMAGE_HASH, bolt11: BOLT11, amountMsat: 1_000_000 },
@@ -1713,7 +2175,7 @@ describe('POST /fond/payouts/:id/proof', () => {
     }
   });
 
-  it('persists the exact decided USD on the gift while accepting the display amount', async () => {
+  it('persists the exact decided USD on the gift', async () => {
     const records: GiftRecord[] = [];
     const { app, payouts } = await makeApp({
       giftRecorder: {

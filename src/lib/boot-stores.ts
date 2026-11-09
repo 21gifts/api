@@ -611,6 +611,15 @@ export async function openBootStores(
       );
       return rows.map((row) => row.id);
     },
+    async (lightningInvoice) => {
+      const rows = await giftSql.query<{ present: number }>(
+        `SELECT 1 AS present FROM gift
+         WHERE direction = 'outbound' AND lightning_invoice = $1
+         LIMIT 1`,
+        [lightningInvoice],
+      );
+      return rows.length > 0;
+    },
   );
   const giftRecorder = new SqlGiftRecorder(giftSql);
   const messageStore = new PostgresMessageStore(sqlClient, { fetchImpl, fiatRates, now });

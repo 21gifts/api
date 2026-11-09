@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { SqlClient } from '@/lib/auth/sql';
 import {
+  FOND_CLAIM_LEASE_MS,
   FOND_PAYOUT_SCHEMA_SQL,
   InMemoryFondPayoutStore,
   PostgresFondPayoutStore,
@@ -48,6 +49,8 @@ describe('FOND_PAYOUT_SCHEMA_SQL', () => {
       "status IN ('owed', 'issuing', 'invoiced', 'settling', 'paid', 'failed')",
     );
     expect(all).toContain('amount_msat bigint');
+    expect(all).toContain('claimed_at timestamptz NULL');
+    expect(all).toContain('ADD COLUMN IF NOT EXISTS claimed_at timestamptz NULL');
     expect(all).toContain(
       'ALTER TABLE fond_payout DROP CONSTRAINT IF EXISTS fond_payout_status_check',
     );
@@ -117,9 +120,12 @@ describe('InMemoryFondPayoutStore', () => {
         amountMsat: 1_000_000,
       }),
     ).toBeUndefined();
-    expect(await store.claimForInvoice(id, '2026-11-09')).toMatchObject({ status: 'issuing' });
+    expect(await store.claimForInvoice(id, '2026-11-09')).toMatchObject({
+      status: 'issuing',
+      claimedAt: new Date(NOW),
+    });
     expect(await store.claimForInvoice(id, '2026-11-09')).toBeNull();
-    expect(await store.releaseClaim(id)).toMatchObject({ status: 'owed' });
+    expect(await store.releaseClaim(id)).toMatchObject({ status: 'owed', claimedAt: null });
     expect(await store.releaseClaim(id)).toBeUndefined();
     await store.claimForInvoice(id, '2026-11-09');
     const invoiced = await store.setInvoiced(id, {
@@ -160,7 +166,7 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.markPaid(id)).toBeUndefined();
   });
 
-  it('lists open rows of one day oldest first and hides settling/paid/failed rows', async () => {
+  it('lists open rows of one day oldest first, including issuing and settling rows', async () => {
     let clock = NOW;
     const store = new InMemoryFondPayoutStore(() => clock);
     await store.enqueue(enqueue({ id: 'a' }));
@@ -190,7 +196,7 @@ describe('InMemoryFondPayoutStore', () => {
     await store.claimSettlement('settling');
     await store.claimForInvoice('b', '2026-11-09');
     await store.markFailed('b', 'x');
-    expect((await store.listOpen('2026-11-09')).map((row) => row.id)).toEqual(['c']);
+    expect((await store.listOpen('2026-11-09')).map((row) => row.id)).toEqual(['c', 'settling']);
     expect((await store.listOpen('2026-11-08')).map((row) => row.id)).toEqual(['other']);
   });
 
@@ -227,6 +233,78 @@ describe('InMemoryFondPayoutStore', () => {
     expect(await store.claimSettlement('missing')).toBeUndefined();
     expect(await store.markPaid('missing')).toBeUndefined();
     expect(await store.releaseSettlement('missing')).toBeUndefined();
+    expect(await store.claimStaleIssuing('missing', new Date(NOW))).toBeUndefined();
+    expect(await store.markStaleSettlingPaid('missing', new Date(NOW))).toBeUndefined();
+    expect(await store.restoreStaleSettling('missing', new Date(NOW))).toBeUndefined();
+  });
+
+  it('re-claims only a stale issuing row and reports the lease constant', async () => {
+    let clock = NOW;
+    const store = new InMemoryFondPayoutStore(() => clock);
+    expect(FOND_CLAIM_LEASE_MS).toBe(120_000);
+    await store.enqueue(enqueue());
+    await store.claimForInvoice(enqueue().id, '2026-11-09');
+    expect(await store.claimStaleIssuing(enqueue().id, new Date(NOW))).toBeUndefined();
+    clock = NOW + 1000;
+    const reclaimed = await store.claimStaleIssuing(enqueue().id, new Date(NOW + 1));
+    expect(reclaimed).toMatchObject({ status: 'issuing', claimedAt: new Date(clock) });
+
+    await store.enqueue(enqueue({ id: 'owed', address: 'owed@example.com' }));
+    expect(await store.claimStaleIssuing('owed', new Date(NOW + 999_999))).toBeUndefined();
+  });
+
+  it('recovers a stale settling row only when its claim expired', async () => {
+    let clock = NOW;
+    const store = new InMemoryFondPayoutStore(() => clock);
+    const { id } = enqueue();
+    await store.enqueue(enqueue());
+    await store.claimForInvoice(id, '2026-11-09');
+    await store.setInvoiced(id, {
+      invoiceId: 'inv',
+      paymentHash: 'aa'.repeat(32),
+      bolt11: 'lnbc1',
+      amountMsat: 1_000_000,
+    });
+    expect((await store.get(id))?.claimedAt).toBeNull();
+    await store.claimSettlement(id);
+    expect(await store.markStaleSettlingPaid(id, new Date(NOW))).toBeUndefined();
+
+    clock = NOW + FOND_CLAIM_LEASE_MS;
+    expect(await store.restoreStaleSettling(id, new Date(NOW + 1))).toMatchObject({
+      status: 'invoiced',
+      claimedAt: null,
+    });
+
+    await store.claimSettlement(id);
+    clock = NOW + FOND_CLAIM_LEASE_MS * 2;
+    expect(
+      await store.markStaleSettlingPaid(id, new Date(NOW + FOND_CLAIM_LEASE_MS + 1)),
+    ).toMatchObject({
+      status: 'paid',
+      failure: null,
+      claimedAt: null,
+    });
+  });
+
+  it('keeps a stale settling row unchanged when it is restored for a retry', async () => {
+    let clock = NOW;
+    const store = new InMemoryFondPayoutStore(() => clock);
+    const { id } = enqueue();
+    await store.enqueue(enqueue());
+    await store.claimForInvoice(id, '2026-11-09');
+    await store.setInvoiced(id, {
+      invoiceId: 'inv',
+      paymentHash: 'aa'.repeat(32),
+      bolt11: 'lnbc1',
+      amountMsat: 1_000_000,
+    });
+    await store.claimSettlement(id);
+    clock = NOW + 1000;
+    expect(await store.restoreStaleSettling(id, new Date(NOW + 1))).toMatchObject({
+      status: 'invoiced',
+      failure: null,
+      claimedAt: null,
+    });
   });
 });
 
@@ -293,13 +371,14 @@ describe('PostgresFondPayoutStore', () => {
           payment_hash: null,
           bolt11: null,
           amount_msat: null,
+          claimed_at: null,
           created_at: new Date(NOW),
           updated_at: NOW,
         },
       ],
     ];
     const rows = await new PostgresFondPayoutStore(sql).listOpen('2026-11-09');
-    expect(sql.queries[0]?.text).toContain("status IN ('owed', 'invoiced')");
+    expect(sql.queries[0]?.text).toContain("status IN ('owed', 'issuing', 'invoiced', 'settling')");
     expect(sql.queries[0]?.params).toEqual(['2026-11-09']);
     expect(rows[0]).toEqual({
       id: 'row',
@@ -316,6 +395,7 @@ describe('PostgresFondPayoutStore', () => {
       paymentHash: null,
       bolt11: null,
       amountMsat: null,
+      claimedAt: null,
       createdAt: new Date(NOW),
       updatedAt: new Date(NOW),
     });
@@ -340,6 +420,7 @@ describe('PostgresFondPayoutStore', () => {
           payment_hash: 'h',
           bolt11: 'b',
           amount_msat: '1000000',
+          claimed_at: new Date(NOW),
           created_at: NOW,
           updated_at: NOW,
         },
@@ -347,8 +428,111 @@ describe('PostgresFondPayoutStore', () => {
       [],
     ];
     const store = new PostgresFondPayoutStore(sql);
-    expect((await store.get('row'))?.utcDay).toBe('2026-11-09');
+    const row = await store.get('row');
+    expect(row?.utcDay).toBe('2026-11-09');
+    expect(row?.claimedAt).toEqual(new Date(NOW));
     expect(await store.get('missing')).toBeUndefined();
+  });
+
+  it('returns undefined when a stale issuing claim wins no row', async () => {
+    const sql = new MockSql();
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.claimStaleIssuing('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries[0]?.text).toContain("status = 'issuing' AND claimed_at < $2");
+  });
+
+  it('returns undefined when a stale settlement wins no row', async () => {
+    const sql = new MockSql();
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.markStaleSettlingPaid('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries[0]?.text).toContain("status = 'settling' AND claimed_at < $2");
+  });
+
+  it('maps a stale issuing claim that wins a row', async () => {
+    const sql = new MockSql();
+    const claimedAt = new Date(NOW);
+    sql.queryResults = [
+      [
+        {
+          id: 'row',
+          utc_day: '2026-11-09',
+          kind: 'daily',
+          address: 'ada@example.com',
+          amount_usd: '1.00',
+          comment: 'thanks',
+          message_id: 'm',
+          group_message_id: null,
+          status: 'issuing',
+          failure: null,
+          invoice_id: null,
+          payment_hash: null,
+          bolt11: null,
+          amount_msat: null,
+          claimed_at: claimedAt,
+          created_at: NOW,
+          updated_at: NOW,
+        },
+      ],
+    ];
+    const store = new PostgresFondPayoutStore(sql);
+    const row = await store.claimStaleIssuing('row', new Date(NOW));
+    expect(row).toMatchObject({ status: 'issuing', claimedAt });
+    expect(sql.queries[0]?.params).toEqual(['row', new Date(NOW)]);
+  });
+
+  it('maps stale settlement transitions that win a row', async () => {
+    const sql = new MockSql();
+    const claimedAt = new Date(NOW);
+    const driver = {
+      id: 'row',
+      utc_day: '2026-11-09',
+      kind: 'daily',
+      address: 'ada@example.com',
+      amount_usd: '1.00',
+      comment: 'thanks',
+      message_id: 'm',
+      group_message_id: null,
+      status: 'paid',
+      failure: null,
+      invoice_id: 'i',
+      payment_hash: 'h',
+      bolt11: 'b',
+      amount_msat: '1000000',
+      claimed_at: claimedAt,
+      created_at: NOW,
+      updated_at: NOW,
+    };
+    sql.queryResults = [[driver], [{ ...driver, status: 'invoiced' }]];
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.markStaleSettlingPaid('row', new Date(NOW))).toMatchObject({
+      status: 'paid',
+      claimedAt,
+    });
+    expect(await store.restoreStaleSettling('row', new Date(NOW))).toMatchObject({
+      status: 'invoiced',
+      claimedAt,
+    });
+    expect(sql.queries[0]?.params).toEqual(['row', new Date(NOW), 'paid']);
+    expect(sql.queries[1]?.params).toEqual(['row', new Date(NOW), 'invoiced']);
+  });
+
+  it('returns undefined from stale transitions when UPDATE RETURNING is empty', async () => {
+    const sql = new MockSql();
+    sql.queryResults = [[], [], []];
+    const store = new PostgresFondPayoutStore(sql);
+    expect(await store.claimStaleIssuing('row', new Date(NOW))).toBeUndefined();
+    expect(await store.markStaleSettlingPaid('row', new Date(NOW))).toBeUndefined();
+    expect(await store.restoreStaleSettling('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries).toHaveLength(3);
+    expect(sql.queries[0]?.text).toContain('RETURNING');
+    expect(sql.queries[0]?.text).toContain("status = 'issuing' AND claimed_at < $2");
+    expect(sql.queries[0]?.params).toEqual(['row', new Date(NOW)]);
+    expect(sql.queries[1]?.text).toContain(
+      'SET status = $3, claimed_at = NULL, updated_at = now()',
+    );
+    expect(sql.queries[1]?.text).toContain("status = 'settling' AND claimed_at < $2");
+    expect(sql.queries[1]?.params).toEqual(['row', new Date(NOW), 'paid']);
+    expect(sql.queries[2]?.params).toEqual(['row', new Date(NOW), 'invoiced']);
   });
 
   it('claims, updates invoice, releases, fails, and pays with guarded WHERE clauses', async () => {
@@ -369,6 +553,7 @@ describe('PostgresFondPayoutStore', () => {
       payment_hash: 'h',
       bolt11: 'b',
       amount_msat: 1_000_000,
+      claimed_at: null,
       created_at: NOW,
       updated_at: NOW,
     };
@@ -390,6 +575,7 @@ describe('PostgresFondPayoutStore', () => {
     ];
     expect(await store.claimForInvoice('row', '2026-11-09')).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[0]?.text).toContain("WHERE id = $1 AND utc_day = $2 AND status = 'owed'");
+    expect(sql.queries[0]?.text).toContain('claimed_at = now()');
     expect(sql.queries[0]?.params).toEqual(['row', '2026-11-09']);
     expect(
       await store.setInvoiced('row', {
@@ -400,26 +586,33 @@ describe('PostgresFondPayoutStore', () => {
       }),
     ).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[1]?.text).toContain("WHERE id = $1 AND status = 'issuing'");
+    expect(sql.queries[1]?.text).toContain('claimed_at = NULL');
     expect(sql.queries[1]?.params).toEqual(['row', 'i', 'h', 'b', 1_000_000]);
     expect(await store.markFailed('row', 'Passkey required')).toMatchObject({
       status: 'invoiced',
     });
     expect(sql.queries[2]?.params).toEqual(['row', 'Passkey required']);
+    expect(sql.queries[2]?.text).toContain('claimed_at = NULL');
     expect(await store.releaseClaim('row')).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[3]?.text).toContain("WHERE id = $1 AND status = 'issuing'");
     expect(sql.queries[3]?.params).toEqual(['row']);
+    expect(sql.queries[3]?.text).toContain('claimed_at = NULL');
     expect(await store.claimSettlement('row')).toMatchObject({ status: 'invoiced' });
-    expect(sql.queries[4]?.text).toContain("SET status = 'settling', updated_at = now()");
+    expect(sql.queries[4]?.text).toContain(
+      "SET status = 'settling', claimed_at = now(), updated_at = now()",
+    );
     expect(sql.queries[4]?.text).toContain("WHERE id = $1 AND status = 'invoiced'");
     expect(sql.queries[4]?.params).toEqual(['row']);
     expect(await store.markPaid('row')).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[5]?.text).toContain(
-      "SET status = 'paid', failure = NULL, updated_at = now()",
+      "SET status = 'paid', failure = NULL, claimed_at = NULL, updated_at = now()",
     );
     expect(sql.queries[5]?.text).toContain("WHERE id = $1 AND status = 'settling'");
     expect(sql.queries[5]?.params).toEqual(['row']);
     expect(await store.releaseSettlement('row')).toMatchObject({ status: 'invoiced' });
-    expect(sql.queries[6]?.text).toContain("SET status = 'invoiced', updated_at = now()");
+    expect(sql.queries[6]?.text).toContain(
+      "SET status = 'invoiced', claimed_at = NULL, updated_at = now()",
+    );
     expect(sql.queries[6]?.text).toContain("WHERE id = $1 AND status = 'settling'");
     expect(sql.queries[6]?.params).toEqual(['row']);
     expect(
@@ -436,5 +629,11 @@ describe('PostgresFondPayoutStore', () => {
     expect(await store.claimSettlement('row')).toBeUndefined();
     expect(await store.markPaid('row')).toBeUndefined();
     expect(await store.releaseSettlement('row')).toBeUndefined();
+    expect(await store.claimStaleIssuing('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries[14]?.text).toContain("status = 'issuing' AND claimed_at < $2");
+    expect(await store.markStaleSettlingPaid('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries[15]?.text).toContain("status = 'settling' AND claimed_at < $2");
+    expect(await store.restoreStaleSettling('row', new Date(NOW))).toBeUndefined();
+    expect(sql.queries[16]?.text).toContain("status = 'settling' AND claimed_at < $2");
   });
 });

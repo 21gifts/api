@@ -469,13 +469,16 @@ describe('openBootStores', () => {
     const diagnosticInserts: unknown[] = [];
     const legacyQueries: string[] = [];
     const client: SqlClient = {
-      query: async <T>(text: string): Promise<T[]> => {
+      query: async <T>(text: string, params?: readonly unknown[]): Promise<T[]> => {
         if (text.includes('min(paid_at)')) {
           throw new Error('range query failed');
         }
         if (text.includes('split_part(btrim(a.lightning_address)')) {
           legacyQueries.push(text.replace(/\s+/g, ' '));
           return [{ id: 'acc-legacy' }] as T[];
+        }
+        if (text.includes('lightning_invoice = $1')) {
+          return (params?.[0] === 'lnbc' ? [{ present: 1 }] : []) as T[];
         }
         if (text.includes('lightning_invoice')) {
           return [
@@ -581,6 +584,8 @@ describe('openBootStores', () => {
     expect(typeof listDbChange).toBe('function');
     expect(await listDbChange?.(10)).toEqual([]);
     expect(await giftStore?.listLegacyWelcomeAccountIds?.()).toEqual(['acc-legacy']);
+    expect(await giftStore?.hasOutboundInvoice?.('lnbc')).toBe(true);
+    expect(await giftStore?.hasOutboundInvoice?.('missing')).toBe(false);
     expect(legacyQueries).toHaveLength(1);
     for (const clause of [
       'SELECT DISTINCT a.id::text AS id FROM account a JOIN gift g',

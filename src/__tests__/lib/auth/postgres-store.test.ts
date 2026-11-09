@@ -93,15 +93,16 @@ describe('PostgresAuthStore nostr keys', () => {
     expect(await store.listAccountIdsWithoutNostrKey(5)).toEqual(['acc']);
   });
 
-  it('listStaffAccountIds selects founder and moderator ids', async () => {
+  it('listStaffAccountIds selects founder, moderator, initiator, and fond ids', async () => {
     const sql = new MockSql();
-    sql.nextRows = [{ id: 'f1' }, { id: 'm1' }];
+    sql.nextRows = [{ id: 'f1' }, { id: 'm1' }, { id: 'i1' }, { id: 'd1' }];
     const ids = await new PostgresAuthStore(sql).listStaffAccountIds();
     expect(sql.queries[0]?.text).toBe(
-      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator')`,
+      `SELECT id FROM account WHERE role IN ('founder', 'moderator', 'initiator', 'fond')`,
     );
     expect(sql.queries[0]?.text).toContain('initiator');
-    expect(ids).toEqual(['f1', 'm1']);
+    expect(sql.queries[0]?.text).toContain('fond');
+    expect(ids).toEqual(['f1', 'm1', 'i1', 'd1']);
   });
 
   it('listLegacyPayoutHandles maps account ids to the legacy address local part', async () => {
