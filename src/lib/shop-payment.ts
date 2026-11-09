@@ -2865,7 +2865,7 @@ export class ShopPayments {
       // starts a replacement in the background, and answers from the state it
       // read: Orchestra never delays Lightning. Only the run's re-read and
       // commit wait for the account's creation lock.
-      void this.#replacement(account, read.payment.id);
+      void this.#replacement(account, read);
     }
     if (read.quote.expiresAt.getTime() > this.#deps.now()) {
       return read;
@@ -2945,15 +2945,20 @@ export class ShopPayments {
    * `shop.creation.failed` once (`accountId`, `paymentId`, and the error).
    *
    * @param account - Shop account.
-   * @param paymentId - Payment id.
+   * @param target - The payment and quote snapshot judged replaceable by the
+   *   fetch.
    * @returns The in-flight replacement, which resolves with no value.
    */
-  #replacement(account: Account, paymentId: string): Promise<void> {
+  #replacement(
+    account: Account,
+    target: { payment: ShopPayment; quote: ShopQuote },
+  ): Promise<void> {
+    const paymentId = target.payment.id;
     const running = this.#replacements.get(paymentId);
     if (running !== undefined) {
       return running;
     }
-    const promise = this.#replace(account, paymentId)
+    const promise = this.#replace(account, target)
       .catch((error: unknown) => {
         logEvent('shop.creation.failed', {
           accountId: account.id,
@@ -2969,13 +2974,16 @@ export class ShopPayments {
   }
 
   /**
-   * Replace the current quote: route list, quotes, and offer checks run
-   * without the creation lock for the same sats and BOLT11 until
+   * Replace the fetch's replaceable quote snapshot. Before Orchestra, the
+   * payment is revalidated: its starting quote must still be newest, except
+   * that a newer uncounted Lightning-only fallback does not make the run
+   * lose. Route list, quotes, and offer checks run without the creation lock
+   * for the same sats and BOLT11 until
    * {@link SHOP_REPLACEMENT_COMMIT_MARGIN_MS} before the 4 s are up, then one
    * short creation-lock section runs a transaction under the account row lock.
-   * Only while the quote read at the start is still the payment's newest, it
-   * increments `replacements` conditionally and inserts the quote
-   * (Lightning-only when no offer passes); otherwise it inserts nothing.
+   * Only while that same newest-quote rule still holds, it increments
+   * `replacements` conditionally and inserts the quote (Lightning-only when
+   * no offer passes); otherwise it inserts nothing.
    * When no quote request was sent (no route list, no candidate pair, no
    * fresh spot, or no budget), the same conditional update leaves
    * `replacements` as it is, because a Lightning-only row made without an
@@ -2983,13 +2991,23 @@ export class ShopPayments {
    * lock is taken.
    *
    * @param account - Shop account.
-   * @param paymentId - Payment id.
+   * @param target - The payment and quote snapshot judged replaceable by the
+   *   fetch.
    * @returns Nothing; the transaction inserts the quote or nothing.
    */
-  async #replace(account: Account, paymentId: string): Promise<void> {
+  async #replace(
+    account: Account,
+    target: { payment: ShopPayment; quote: ShopQuote },
+  ): Promise<void> {
+    const paymentId = target.payment.id;
     const startMs = this.#deps.now();
-    const read = await this.#readCurrent(paymentId);
-    if (read === null || !this.#replaceable(read.payment, read.quote, startMs)) {
+    const current = await this.#readCurrent(paymentId);
+    if (
+      current === null ||
+      current.payment.replacements !== target.payment.replacements ||
+      !stillNewestQuote(target.quote.id, current.quote) ||
+      !this.#replaceable(current.payment, target.quote, startMs)
+    ) {
       return;
     }
     // The external calls end early enough that the transaction below
@@ -3013,9 +3031,9 @@ export class ShopPayments {
             pairs,
             {
               paymentId,
-              amountSats: read.payment.amountSats,
-              bolt11: read.payment.bolt11,
-              bolt11ExpiresAtMs: read.payment.bolt11ExpiresAt.getTime(),
+              amountSats: target.payment.amountSats,
+              bolt11: target.payment.bolt11,
+              bolt11ExpiresAtMs: target.payment.bolt11ExpiresAt.getTime(),
             },
             deadlineMs,
           );
@@ -3032,18 +3050,18 @@ export class ShopPayments {
         const newest = quotes[quotes.length - 1];
         const where = {
           statuses: ['open' as const],
-          replacements: read.payment.replacements,
+          replacements: target.payment.replacements,
           windowEndsAfter: new Date(nowMs + SHOP_REPLACE_BEFORE_MS - 1),
         };
         // Only a replacement that sent a quote request counts; a
         // Lightning-only row made without one is not a replacement.
         const counted =
           newest !== undefined &&
-          (newest.id === read.quote.id || (sent && newest.transferAmounts.length === 1))
+          (newest.id === target.quote.id || (sent && newest.transferAmounts.length === 1))
             ? await tx.updatePayment(
                 paymentId,
                 where,
-                sent ? { replacements: read.payment.replacements + 1 } : {},
+                sent ? { replacements: target.payment.replacements + 1 } : {},
               )
             : null;
         if (counted === null) {

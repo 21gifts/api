@@ -540,15 +540,20 @@ list, gas prices, quotes) run outside the account's in-process creation
 lock and end `SHOP_REPLACEMENT_COMMIT_MARGIN_MS` (500 ms) before those
 4 s. The fetch starts or joins the replacement in the background and
 answers from the state it read; it never waits for the replacement or
-Orchestra. Under the account row lock the replacement then reads the
-payment's newest quote:
+Orchestra. The replacement carries the payment and quote snapshot that
+the fetch judged replaceable. Before calling Orchestra it revalidates
+that the payment is still eligible and the starting quote is still newest,
+except that a newer Lightning-only fallback with unchanged `replacements`
+does not make it lose. Under the account row lock the replacement then
+reads the payment's newest quote with the same exception:
 when that is a newer quote with offers (another container's replacement
 came first), the losing run inserts nothing; only a later fetch sees the
 winning quote.
 Otherwise it increments `shop_payment.replacements` with one conditional
-update (`status` `open`, `replacements` unchanged, at least 45 s left in
-the window) and inserts the new quote only when that update changed the
-row; otherwise the run inserts nothing and produces no result. With two
+update (`status` `open`, `replacements` unchanged from the snapshot, at
+least 45 s left in the window) and inserts the new quote only when that
+update changed the row; otherwise the run inserts nothing and produces no
+result. With two
 containers in a deploy, the conditional update makes one run win as a
 whole, and only a later fetch sees its quote. A
 Lightning-only row made by a fetch after the replacement read its starting

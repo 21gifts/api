@@ -75,17 +75,22 @@ it. What 21.gifts does with such a refund is outside this document.
 **Orchestra never delays Lightning.** No HTTP answer that a payer or a
 wallet needs to pay by Lightning waits for an Orchestra call (route
 list, quote, or gas price) or for work queued behind one. A stablecoin
-offer is added in the background as soon as Orchestra answers; when it
-never answers, the payment stays Lightning-only. Orchestra is an add-on,
-never a condition of paying.
+offer is added in the background only when an Orchestra quote passes all
+offer checks and the payment is still eligible: it is `open`, at least
+45 s remain in its window, and the newest-quote rule still holds. When
+no quote passes or the payment is no longer eligible, it stays
+Lightning-only. Orchestra is an add-on, never a condition of paying.
 
 1. A till charge, or an amount the payer enters on the payment page,
    opens one **shop payment** for a fixed number of sats.
-2. The api mints one BOLT11 for those sats. For a payer it answers at
-   once with a Lightning-only first quote and asks Orchestra for one
-   exact-out quote per offered chain and asset in the background; a
-   till charge's creation already runs in the background and asks
-   before its insert. Each quote pays that BOLT11.
+2. The api mints one BOLT11 for those sats. For a payer,
+   `POST /pay/:username/payment` answers only `{ payment, expiresAt }`;
+   the payment page then fetches the pay link, which serves the
+   Lightning-only first quote and later the offers quote when one was
+   inserted. The api asks Orchestra for one exact-out quote per offered
+   chain and asset in the background. A till charge's creation already
+   runs in the background and asks before its insert. Each quote pays
+   that BOLT11.
 3. For up to five minutes the shop's sticker is pinned to that payment.
    A wallet that scans it receives an OpenCryptoPay pay request with
    Lightning and the stablecoin options.
@@ -828,22 +833,27 @@ A fetch starts or joins a replacement in the background and answers from
 the state it read; it never waits for the replacement or Orchestra. Its
 route list, gas prices, and quotes run outside the account's in-process
 creation lock; the lock covers only the short re-read and commit. A
-second fetch in the same container joins the in-flight run. The replacement runs
-steps 3, 5, and 6 of the creation procedure for the same sats and the
-same BOLT11, within 4 s, and inserts one `shop_quote` with the offers
-that pass in a transaction under the account row lock. That transaction
-first increments `shop_payment.replacements` with a conditional update
-(`status` is `open`, `replacements` still has the value read when the
-replacement started and is below 4, and at least 45 s remain before
-`window_ends_at`), and inserts the quote only when that update changed
-one row. Otherwise it inserts nothing. The fire-and-forget run produces
-no result, and no handler re-reads the payment for it. The in-process
-lock is per container; the conditional update makes a replacement in
-the other container of a deploy win or lose as a whole, so two containers
-never use two replacements for one expiring quote. The losing run inserts
-nothing, and only a later fetch sees the winning quote. Its Orchestra
-quotes are never shown and expire unused. The payment id stays. A payment
-never gets a second BOLT11, so the shop can only be paid once through it.
+second fetch in the same container joins the in-flight run. The
+replacement carries the payment and quote snapshot that the first fetch
+judged replaceable. Before calling Orchestra it revalidates that snapshot:
+the payment is still eligible and the starting quote is still newest,
+except that a newer Lightning-only fallback with unchanged `replacements`
+does not make it lose. The replacement runs steps 3, 5, and 6 of the
+creation procedure for the same sats and the same BOLT11, within 4 s, and
+inserts one `shop_quote` with the offers that pass in a transaction under
+the account row lock. That transaction applies the same newest-quote
+exception, first increments `shop_payment.replacements` with a conditional
+update (`status` is `open`, `replacements` still has the snapshot's value
+and is below 4, and at least 45 s remain before `window_ends_at`), and
+inserts the quote only when that update changed one row. Otherwise it
+inserts nothing. The fire-and-forget run produces no result, and no handler
+re-reads the payment for it. The in-process lock is per container; the
+conditional update makes a replacement in the other container of a deploy
+win or lose as a whole, so two containers never use two replacements for
+one expiring quote. The losing run inserts nothing, and only a later fetch
+sees the winning quote. Its Orchestra quotes are never shown and expire
+unused. The payment id stays. A payment never gets a second BOLT11, so the
+shop can only be paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
 a Lightning-only quote: its `transferAmounts` has only the Lightning

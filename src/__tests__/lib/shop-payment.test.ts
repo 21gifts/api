@@ -4781,6 +4781,47 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect(sleepCalls).toEqual([]);
   });
 
+  it('a fallback committed before the replacement starts does not defeat the replaceable snapshot', async () => {
+    const h = await setup();
+    const payment = await payerPayment(h);
+    const [initial, started] = await quotesOf(h, payment.id);
+    const fallback: ShopQuote = {
+      id: crypto.randomUUID(),
+      paymentId: payment.id,
+      expiresAt: payment.windowEndsAt,
+      transferAmounts: [lightningTransferAmount(SATS)],
+      createdAt: new Date(T0 + 95_000),
+    };
+    let staged = false;
+    h.store.hooks.quotesOf = async (tx, ...args) => {
+      const rows = await tx.quotesOf(...(args as unknown as [string]));
+      if (!staged) {
+        staged = true;
+        // Simulate the fetch's fallback transaction committing after this
+        // read captured the expired offers quote but before replacement
+        // revalidation starts.
+        await tx.insertQuote(fallback);
+      }
+      return rows;
+    };
+    const beforeQuoteCalls = h.orchestra.quoteCalls.length;
+    clock = T0 + 95_000;
+    const read = await h.svc.currentQuote(h.account, USER, payment);
+    delete h.store.hooks.quotesOf;
+    expect(read?.quote.id).toBe(fallback.id);
+    await settle();
+    const quotes = await quotesOf(h, payment.id);
+    expect(quotes.map((quote) => quote.id)).toEqual([
+      initial!.id,
+      started!.id,
+      fallback.id,
+      expect.any(String),
+    ]);
+    expect(h.orchestra.quoteCalls).toHaveLength(beforeQuoteCalls + 12);
+    expect(quotes.at(-1)!.transferAmounts.length).toBeGreaterThan(1);
+    expect((await readPayment(h, payment.id)).replacements).toBe(1);
+  });
+
   it('a replacement that commits after the fetch inserted the Lightning-only row still inserts its offers quote', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
