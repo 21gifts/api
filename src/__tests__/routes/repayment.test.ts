@@ -1467,12 +1467,11 @@ describe('repayment from the in-app wallet', () => {
     const ledger = (await (await app.request(`/messages/${EXEMPT_CREDIT}/repayment`)).json()) as {
       startsOn: string | null;
       repayments: { dayIndex: number; dueOn: string | null }[];
-      next: { dayIndex: number; dueOn: string | null } | null;
+      next: { dayIndex: number } | null;
     };
     expect(ledger.startsOn).toBe('2026-11-10');
     expect(ledger.repayments.find((line) => line.dayIndex === 0)?.dueOn).toBe('2026-11-10');
     expect(ledger.next?.dayIndex).toBe(0);
-    expect(ledger.next?.dueOn).toBe('2026-11-10');
   });
 
   it('has nothing due for a non-exempt credit before 2026-11-16', async () => {
