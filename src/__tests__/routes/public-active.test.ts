@@ -6,7 +6,7 @@ import { encodeMessageFeedCursor, unsignedNostrDefaults, type MessageRow } from 
 import { InMemoryMessageStore } from '@/lib/message-store';
 import { InMemoryNotificationStore } from '@/lib/notification-store';
 import { InMemoryPushStore } from '@/lib/push-store';
-import { InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import { InvoiceRateLimiter, PostRateLimiter, REPLY_POST_CAPS } from '@/lib/nostr/rate-limit';
 import { messagesRoutes } from '@/routes/messages';
 import { WALLET_PUBKEY } from '@/__tests__/helpers/wallet-lnurl';
 
@@ -40,6 +40,7 @@ function mount(
       authStore,
       now,
       postLimiter: new PostRateLimiter(),
+      replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
       invoiceLimiter: new InvoiceRateLimiter(),
       ...(notifications === undefined ? {} : { notificationStore: notifications }),
       ...(extra?.pushStore === undefined ? {} : { pushStore: extra.pushStore }),

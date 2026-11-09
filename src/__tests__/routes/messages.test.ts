@@ -16,7 +16,12 @@ import {
   truncatePubkeyDisplay,
   unsignedNostrDefaults,
 } from '@/lib/message';
-import { HeartRateLimiter, InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import {
+  HeartRateLimiter,
+  InvoiceRateLimiter,
+  PostRateLimiter,
+  REPLY_POST_CAPS,
+} from '@/lib/nostr/rate-limit';
 import { FUNDING_REQUIRED_FROM_UTC } from '@/lib/funding';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import { messagesRoutes, type MessagesRouteDeps } from '@/routes/messages';
@@ -108,6 +113,7 @@ function mount(
       authStore,
       now,
       postLimiter: new PostRateLimiter(),
+      replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
       invoiceLimiter: new InvoiceRateLimiter(),
       ...routeDeps,
     }),
@@ -1556,13 +1562,13 @@ describe('POST /messages', () => {
     expect(await topLevel.json()).toEqual({ error: 'A post needs a Bitcoin payment' });
   });
 
-  it('keeps the post limiter on an unpaid reply to the own note', async () => {
+  it('keeps the reply limiter on an unpaid reply to the own note', async () => {
     const store = await basisStore();
     const parentId = 'cccccccc-cccc-4ccc-8ccc-ccccccccccc7';
     const messages = new InMemoryMessageStore([ownRow(parentId, 'acc')]);
-    const postLimiter = new PostRateLimiter();
-    vi.spyOn(postLimiter, 'allow').mockReturnValue(false);
-    const res = await mount(store, messages, { postLimiter }).request('/messages', {
+    const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
+    vi.spyOn(replyLimiter, 'check').mockReturnValue('hour');
+    const res = await mount(store, messages, { replyLimiter }).request('/messages', {
       method: 'POST',
       headers: { ...AUTH, 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'too soon', inReplyTo: parentId }),
@@ -1576,7 +1582,7 @@ describe('POST /messages', () => {
     const store = await basisStore();
     const messages = new InMemoryMessageStore();
     const app = mount(store, messages, {
-      postLimiter: { allow: () => true } as unknown as PostRateLimiter,
+      postLimiter: { check: () => null } as unknown as PostRateLimiter,
     });
     const post = (text: string): Promise<Response> =>
       Promise.resolve(
@@ -2422,6 +2428,7 @@ describe('POST /messages', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -2459,6 +2466,7 @@ describe('POST /messages', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -3635,6 +3643,7 @@ describe('POST /messages', () => {
         authStore: await namedStore('Ada'),
         now,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -3703,6 +3712,7 @@ describe('POST /messages', () => {
         authStore: await namedStore('Ada'),
         now: () => clock,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -3789,6 +3799,7 @@ describe('POST /messages', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -4660,6 +4671,7 @@ describe('POST /messages', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -4938,6 +4950,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: limiter,
       }),
     );
@@ -4966,6 +4979,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: limiter,
       }),
     );
@@ -5041,6 +5055,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: limiter,
       }),
     );
@@ -5069,6 +5084,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5091,6 +5107,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5260,6 +5277,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -5376,6 +5394,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -5473,6 +5492,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5513,6 +5533,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: kek,
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5546,6 +5567,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5605,6 +5627,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5637,6 +5660,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5684,6 +5708,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5728,6 +5753,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: new Uint8Array(32).fill(1),
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -5809,6 +5835,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -5908,6 +5935,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
           sparkInvoices: new InMemorySparkInvoiceStore(),
         }),
@@ -5992,6 +6020,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -6041,6 +6070,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6097,6 +6127,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6144,6 +6175,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6198,6 +6230,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6274,6 +6307,7 @@ describe('POST /messages/:id/invoice', () => {
           lnurlServer: LNURL_SERVER,
           fetchImpl,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -6354,6 +6388,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6425,6 +6460,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl: noZapFetch,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6456,6 +6492,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl: unreachableFetch,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6489,6 +6526,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: kek,
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6524,6 +6562,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: kek,
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6562,6 +6601,7 @@ describe('POST /messages/:id/invoice', () => {
         nostrKek: kek,
         lnurlServer: LNURL_SERVER,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6744,6 +6784,7 @@ describe('POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -6795,6 +6836,7 @@ describe('POST /messages/:id/invoice', () => {
           nostrKek: kek,
           lnurlServer: LNURL_SERVER,
           postLimiter: new PostRateLimiter(),
+          replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
           invoiceLimiter: new InvoiceRateLimiter(),
         }),
       );
@@ -9432,6 +9474,7 @@ describe('forum video', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -9474,6 +9517,7 @@ describe('forum video', () => {
         now,
         pushStore,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
       }),
     );
@@ -14287,6 +14331,7 @@ describe('wallet-backed receiving on POST /messages/:id/invoice', () => {
         nostrKek: kek,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: new InvoiceRateLimiter(),
         ...(options.lnurlServer ? { lnurlServer: LNURL_SERVER } : {}),
         ...(options.spark ? { sparkInvoices: new InMemorySparkInvoiceStore() } : {}),
@@ -14475,8 +14520,16 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
     sparkInvoices?: InMemorySparkInvoiceStore;
     invoiceLimiter?: InvoiceRateLimiter;
     heartLimiter?: HeartRateLimiter;
+    payer?: Partial<Account>;
   }): Promise<{ app: Hono; messageStore: InMemoryMessageStore; lnurlCalls: () => number }> {
     const authStore = await namedStore('Ada');
+    if (options.payer !== undefined) {
+      const payer = await authStore.getAccount('acc');
+      if (payer === undefined) {
+        throw new Error('expected account');
+      }
+      await authStore.updateAccount({ ...payer, ...options.payer });
+    }
     await ensureAccountNostrKey(authStore, 'acc', kek);
     await createWalletAccount(authStore, 'wal', 'wally');
     await ensureAccountNostrKey(authStore, 'wal', kek);
@@ -14520,6 +14573,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
         lnurlServer: LNURL_SERVER,
         fetchImpl,
         postLimiter: new PostRateLimiter(),
+        replyLimiter: new PostRateLimiter(REPLY_POST_CAPS),
         invoiceLimiter: options.invoiceLimiter ?? new InvoiceRateLimiter(),
         heartLimiter: options.heartLimiter ?? new HeartRateLimiter(),
         ...(options.sparkInvoices === undefined ? {} : { sparkInvoices: options.sparkInvoices }),
@@ -14616,7 +14670,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
   it('keeps the heart and gift budgets independent of each other', async () => {
     await withMintedInvoices(async () => {
       const { app } = await heartSetup({ sparkInvoices: new InMemorySparkInvoiceStore() });
-      // A gift uses its 1 per 10 s burst; a heart right after is still allowed.
+      // A gift uses its 1 per second burst; a heart right after is still allowed.
       expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
       const heart = await send(app, NOTE_A, { sats: 1, heart: true });
       expect(heart.status).toBe(200);
@@ -14636,7 +14690,7 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
       expect((await send(app, NOTE_A, { sats: 1, heart: true })).status).toBe(200);
       const again = await send(app, NOTE_A, { sats: 1, heart: true });
       expect(again.status).toBe(429);
-      expect(again.headers.get('Retry-After')).toBe('10');
+      expect(again.headers.get('Retry-After')).toBe('1');
       expect(await again.json()).toEqual({ error: 'Too many payments' });
       const limited = (await messageStore.listInvoiceAttempts(10)).filter(
         (row) => row.result === 'rate_limited',
@@ -14647,6 +14701,71 @@ describe('heart invoices on POST /messages/:id/invoice', () => {
       expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
     });
   });
+
+  it('answers Retry-After 1 for a gift refused by the burst window and 10 for the hour cap', async () => {
+    await withMintedInvoices(async () => {
+      const invoiceLimiter = new InvoiceRateLimiter();
+      const { app } = await heartSetup({ invoiceLimiter });
+      expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
+      const burst = await send(app, NOTE_B, { sats: 21 });
+      expect(burst.status).toBe(429);
+      expect(burst.headers.get('Retry-After')).toBe('1');
+      vi.spyOn(invoiceLimiter, 'check').mockReturnValue('hour');
+      const hour = await send(app, NOTE_B, { sats: 21 });
+      expect(hour.status).toBe(429);
+      expect(hour.headers.get('Retry-After')).toBe('10');
+    });
+  });
+
+  it.each([
+    ['founder', { role: 'founder' as const }],
+    ['software_developer', { role: 'verified' as const, staffTag: 'software_developer' as const }],
+  ])(
+    'lets a %s mint gifts and hearts past every cap without recording them',
+    async (_label, payer) => {
+      await withMintedInvoices(async () => {
+        const invoiceLimiter = new InvoiceRateLimiter();
+        const heartLimiter = new HeartRateLimiter();
+        const giftCheck = vi.spyOn(invoiceLimiter, 'check');
+        const heartCheck = vi.spyOn(heartLimiter, 'check');
+        const { app, messageStore } = await heartSetup({
+          sparkInvoices: new InMemorySparkInvoiceStore(),
+          invoiceLimiter,
+          heartLimiter,
+          payer,
+        });
+        for (let i = 0; i < 25; i += 1) {
+          expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
+          expect((await send(app, NOTE_A, { sats: 1, heart: true })).status).toBe(200);
+        }
+        expect(giftCheck).not.toHaveBeenCalled();
+        expect(heartCheck).not.toHaveBeenCalled();
+        giftCheck.mockRestore();
+        heartCheck.mockRestore();
+        const attempts = await messageStore.listInvoiceAttempts(100);
+        expect(attempts.filter((row) => row.result === 'rate_limited')).toHaveLength(0);
+        // Nothing was recorded: the limiters still allow the account's first attempt.
+        expect(invoiceLimiter.check('acc', now())).toBeNull();
+        expect(heartLimiter.check('acc', NOTE_A, now())).toBeNull();
+      });
+    },
+  );
+
+  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
+    'still limits gifts and hearts of a %s payer without the staff tag',
+    async (role) => {
+      await withMintedInvoices(async () => {
+        const { app } = await heartSetup({
+          sparkInvoices: new InMemorySparkInvoiceStore(),
+          payer: { role, staffTag: null },
+        });
+        expect((await send(app, NOTE_A, { sats: 21 })).status).toBe(200);
+        expect((await send(app, NOTE_B, { sats: 21 })).status).toBe(429);
+        expect((await send(app, NOTE_A, { sats: 1, heart: true })).status).toBe(200);
+        expect((await send(app, NOTE_A, { sats: 1, heart: true })).status).toBe(429);
+      });
+    },
+  );
 });
 
 describe('GET /messages/hidden and GET /messages/:id/edits with an operator token', () => {
@@ -14910,4 +15029,144 @@ describe('shop identity hooks', () => {
       expect(((await res.json()) as { shopNpub: string }).shopNpub).toBe(shopNpub(identity!));
     });
   });
+});
+
+describe('separate top-level and reply limits on POST /messages', () => {
+  const PARENT = 'dddddddd-dddd-4ddd-8ddd-dddddddddd01';
+
+  /** Named member `acc` with the given role / staff tag, plus its own top-level note. */
+  async function memberSetup(
+    patch: Partial<Account>,
+  ): Promise<{ authStore: InMemoryAuthStore; messages: InMemoryMessageStore }> {
+    const authStore = await namedStore('Ada');
+    const existing = await authStore.getAccount('acc');
+    if (existing === undefined) {
+      throw new Error('expected account');
+    }
+    await authStore.updateAccount({ ...existing, ...patch });
+    const messages = new InMemoryMessageStore();
+    await messages.create({
+      id: PARENT,
+      accountId: 'acc',
+      name: 'Ada',
+      text: 'own note',
+      createdAt: new Date(now()),
+      hasPhoto: false,
+      ...unsignedNostrDefaults(),
+    });
+    return { authStore, messages };
+  }
+
+  function post(app: Hono, body: Record<string, unknown>): Promise<Response> {
+    return Promise.resolve(
+      app.request('/messages', {
+        method: 'POST',
+        headers: { ...AUTH, 'content-type': 'application/json' },
+        body: JSON.stringify(body),
+      }),
+    );
+  }
+
+  it('does not let a reply consume the top-level budget, nor the other way round', async () => {
+    const { authStore, messages } = await memberSetup({ role: 'moderator' });
+    const app = mount(authStore, messages);
+    expect((await post(app, { text: 'top one' })).status).toBe(200);
+    // Same instant: the reply has its own burst slot.
+    expect((await post(app, { text: 'reply one', inReplyTo: PARENT })).status).toBe(200);
+    const top = await post(app, { text: 'top two' });
+    expect(top.status).toBe(429);
+    expect(top.headers.get('Retry-After')).toBe('1');
+    expect(await top.json()).toEqual({ error: 'Too many messages' });
+    const reply = await post(app, { text: 'reply two', inReplyTo: PARENT });
+    expect(reply.status).toBe(429);
+    expect(reply.headers.get('Retry-After')).toBe('1');
+  });
+
+  it('keeps posting replies after the top-level hour cap is spent', async () => {
+    const { authStore, messages } = await memberSetup({ role: 'verified' });
+    let clock = now();
+    const postLimiter = new PostRateLimiter();
+    const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
+    const app = mount(authStore, messages, { now: () => clock, postLimiter, replyLimiter });
+    for (let i = 0; i < 6; i += 1) {
+      clock += 1_000;
+      expect((await post(app, { text: `top ${i}` })).status).toBe(200);
+    }
+    clock += 1_000;
+    const capped = await post(app, { text: 'top 7' });
+    expect(capped.status).toBe(429);
+    expect(capped.headers.get('Retry-After')).toBe('10');
+    for (let i = 0; i < 30; i += 1) {
+      clock += 1_000;
+      expect((await post(app, { text: `reply ${i}`, inReplyTo: PARENT })).status).toBe(200);
+    }
+    clock += 1_000;
+    const replyCapped = await post(app, { text: 'reply 31', inReplyTo: PARENT });
+    expect(replyCapped.status).toBe(429);
+    expect(replyCapped.headers.get('Retry-After')).toBe('10');
+  });
+
+  it('logs messages.rate_limited for a limited member', async () => {
+    const { authStore, messages } = await memberSetup({ role: 'initiator' });
+    const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
+    vi.spyOn(replyLimiter, 'check').mockReturnValue('day');
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+    const info = vi.spyOn(console, 'info').mockImplementation(() => undefined);
+    const log = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const res = await post(mount(authStore, messages, { replyLimiter }), {
+      text: 'reply',
+      inReplyTo: PARENT,
+    });
+    const lines = [...warn.mock.calls, ...info.mock.calls, ...log.mock.calls].map((c) =>
+      String(c[0]),
+    );
+    warn.mockRestore();
+    info.mockRestore();
+    log.mockRestore();
+    expect(res.status).toBe(429);
+    expect(res.headers.get('Retry-After')).toBe('10');
+    expect(lines.some((line) => line.includes('messages.rate_limited'))).toBe(true);
+  });
+
+  it.each([
+    ['founder', { role: 'founder' as const }],
+    ['software_developer', { role: 'verified' as const, staffTag: 'software_developer' as const }],
+    [
+      'software_developer moderator',
+      { role: 'moderator' as const, staffTag: 'software_developer' as const },
+    ],
+  ])('lets a %s post and reply past every cap without recording it', async (_label, patch) => {
+    const { authStore, messages } = await memberSetup(patch);
+    const postLimiter = new PostRateLimiter();
+    const replyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
+    const postCheck = vi.spyOn(postLimiter, 'check');
+    const replyCheck = vi.spyOn(replyLimiter, 'check');
+    const app = mount(authStore, messages, { postLimiter, replyLimiter });
+    for (let i = 0; i < 25; i += 1) {
+      expect((await post(app, { text: `top ${i}` })).status).toBe(200);
+    }
+    for (let i = 0; i < 105; i += 1) {
+      expect((await post(app, { text: `reply ${i}`, inReplyTo: PARENT })).status).toBe(200);
+    }
+    expect(postCheck).not.toHaveBeenCalled();
+    expect(replyCheck).not.toHaveBeenCalled();
+    postCheck.mockRestore();
+    replyCheck.mockRestore();
+    // Nothing was recorded: the account's first limited attempt is still allowed.
+    expect(postLimiter.check('acc', now())).toBeNull();
+    expect(replyLimiter.check('acc', now())).toBeNull();
+  });
+
+  it.each(['basis', 'verified', 'moderator', 'initiator'] as const)(
+    'still limits a %s member without the staff tag',
+    async (role) => {
+      const { authStore, messages } = await memberSetup({ role, staffTag: null });
+      const app = mount(authStore, messages);
+      // A reply on the own note is free for every role, so basis reaches the limiter too.
+      expect((await post(app, { text: 'reply one', inReplyTo: PARENT })).status).toBe(200);
+      const limited = await post(app, { text: 'reply two', inReplyTo: PARENT });
+      expect(limited.status).toBe(429);
+      expect(await limited.json()).toEqual({ error: 'Too many messages' });
+    },
+  );
 });

@@ -85,7 +85,14 @@ import {
 import { ensureAccountNostrKey } from '@/lib/nostr/keys';
 import type { NostrPublisher } from '@/lib/nostr/publish';
 import type { NostrQuerier } from '@/lib/nostr/query';
-import { HeartRateLimiter, InvoiceRateLimiter, PostRateLimiter } from '@/lib/nostr/rate-limit';
+import {
+  forumRateLimitExempt,
+  HeartRateLimiter,
+  InvoiceRateLimiter,
+  PostRateLimiter,
+  REPLY_POST_CAPS,
+  type RateRefusal,
+} from '@/lib/nostr/rate-limit';
 import { resolveZapRelays } from '@/lib/nostr/relays';
 import { retractHiddenForumNotes } from '@/lib/nostr/retract';
 import { signEventForAccount } from '@/lib/nostr/sign';
@@ -270,8 +277,10 @@ export interface MessagesRouteDeps {
   lnurlServer?: LnurlServerConfig;
   /** Issued Spark invoices; omitted when free in-app payments are off. */
   sparkInvoices?: SparkInvoiceStore;
-  /** Post limiter (tests inject). */
+  /** Top-level note limiter (tests inject). */
   postLimiter?: PostRateLimiter;
+  /** Reply limiter, a budget separate from top-level notes (tests inject). */
+  replyLimiter?: PostRateLimiter;
   /** Invoice limiter (tests inject). */
   invoiceLimiter?: InvoiceRateLimiter;
   /**
@@ -379,6 +388,7 @@ export interface MessagesRouteDeps {
 }
 
 const defaultPostLimiter = new PostRateLimiter();
+const defaultReplyLimiter = new PostRateLimiter(REPLY_POST_CAPS);
 const defaultInvoiceLimiter = new InvoiceRateLimiter();
 const defaultHeartLimiter = new HeartRateLimiter();
 
@@ -1208,8 +1218,28 @@ function multipartPlaceAddress(form: FormData): unknown {
   return { street, houseNumber, postalCode, city, country };
 }
 
+/** The two forum note budgets: top-level notes and replies. */
+interface ForumPostLimiters {
+  /** Top-level notes (`parentId` null). */
+  topLevel: PostRateLimiter;
+  /** Replies (`parentId` set). */
+  reply: PostRateLimiter;
+}
+
 /**
- * Media collapse → burst limiter → create → optional {@link notifyForumPost}
+ * `Retry-After` seconds for a forum 429: 1 when the 1-second burst window
+ * (or a heart's per-note cooldown) refused, otherwise 10.
+ *
+ * @param refusal - Window that refused the attempt.
+ * @returns Header value.
+ */
+function retryAfterFor(refusal: RateRefusal): string {
+  return refusal === 'burst' ? '1' : '10';
+}
+
+/**
+ * Media collapse → note limiter (top-level or reply budget; skipped for a
+ * {@link forumRateLimitExempt} account) → create → optional {@link notifyForumPost}
  * (every account except the actor and except mention account ids on the
  * created row; no-op when the actor is the official platform account) for a
  * top-level note, or {@link notifyForumReply} (same skip) when `parentId`
@@ -1217,7 +1247,7 @@ function multipartPlaceAddress(form: FormData): unknown {
  * Shared by JSON and multipart after body parse / normalize / decode.
  *
  * @param deps - Store, clock, optional push / spend ping / notification stores.
- * @param postLimiter - Per-account burst limiter.
+ * @param limiters - Top-level and reply note limiters; `parentId` picks one.
  * @param c - Request context (JSON / headers).
  * @param account - Authenticated account.
  * @param authorName - Display name snapshot.
@@ -1242,7 +1272,7 @@ function multipartPlaceAddress(form: FormData): unknown {
  */
 async function persistForumPost(
   deps: MessagesRouteDeps,
-  postLimiter: PostRateLimiter,
+  limiters: ForumPostLimiters,
   c: Context,
   account: Account,
   authorName: string,
@@ -1320,9 +1350,11 @@ async function persistForumPost(
       return c.json({ error: 'Messages are unavailable' }, 503);
     }
   }
-  if (!postLimiter.allow(account.id, deps.now())) {
+  const limiter = parentId === null ? limiters.topLevel : limiters.reply;
+  const refusal = forumRateLimitExempt(account) ? null : limiter.check(account.id, deps.now());
+  if (refusal !== null) {
     logEvent('messages.rate_limited', { accountId: account.id });
-    c.header('Retry-After', '10');
+    c.header('Retry-After', retryAfterFor(refusal));
     return c.json({ error: 'Too many messages' }, 429);
   }
   const id = crypto.randomUUID();
@@ -1538,11 +1570,11 @@ async function persistForumPost(
 
 /**
  * `POST /messages` as multipart (`video` file + optional `poster` + `text`).
- * Always top-level (`parentId` null). Applies media collapse and `postLimiter`
- * after form parse (same order as JSON).
+ * Always top-level (`parentId` null). Applies media collapse and the top-level
+ * note limiter after form parse (same order as JSON).
  *
  * @param deps - Store and clock.
- * @param postLimiter - Per-account burst limiter.
+ * @param limiters - Top-level and reply note limiters.
  * @param c - Request.
  * @param account - Authenticated account (already named).
  * @param authorName - Display name snapshot.
@@ -1550,7 +1582,7 @@ async function persistForumPost(
  */
 async function postMultipartMessage(
   deps: MessagesRouteDeps,
-  postLimiter: PostRateLimiter,
+  limiters: ForumPostLimiters,
   c: Context,
   account: Account,
   authorName: string,
@@ -1681,7 +1713,7 @@ async function postMultipartMessage(
   }
   return persistForumPost(
     deps,
-    postLimiter,
+    limiters,
     c,
     account,
     authorName,
@@ -1950,7 +1982,10 @@ async function servePublicActiveList(deps: MessagesRouteDeps, c: Context): Promi
  * @returns Hono app mounted at `/messages`.
  */
 export function messagesRoutes(deps: MessagesRouteDeps): Hono {
-  const postLimiter = deps.postLimiter ?? defaultPostLimiter;
+  const limiters: ForumPostLimiters = {
+    topLevel: deps.postLimiter ?? defaultPostLimiter,
+    reply: deps.replyLimiter ?? defaultReplyLimiter,
+  };
   const invoiceLimiter = deps.invoiceLimiter ?? defaultInvoiceLimiter;
   const heartLimiter = deps.heartLimiter ?? defaultHeartLimiter;
   const fetchImpl = deps.fetchImpl ?? globalThis.fetch;
@@ -2112,7 +2147,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       /* v8 ignore next -- missing content-type is JSON parse 400 */
       const requestType = c.req.header('content-type') ?? '';
       if (requestType.toLowerCase().includes('multipart/form-data')) {
-        return postMultipartMessage(deps, postLimiter, c, account, authorName);
+        return postMultipartMessage(deps, limiters, c, account, authorName);
       }
       const raw: unknown = await c.req.json().catch(() => null);
       if (
@@ -2241,7 +2276,7 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
       }
       return persistForumPost(
         deps,
-        postLimiter,
+        limiters,
         c,
         account,
         authorName,
@@ -3721,11 +3756,13 @@ export function messagesRoutes(deps: MessagesRouteDeps): Hono {
         );
         return c.json({ error: HEART_UNAVAILABLE }, 503);
       }
-      const allowed = heart
-        ? heartLimiter.allow(account.id, row.id, deps.now())
-        : invoiceLimiter.allow(account.id, deps.now());
-      if (!allowed) {
-        c.header('Retry-After', '10');
+      const refusal = forumRateLimitExempt(account)
+        ? null
+        : heart
+          ? heartLimiter.check(account.id, row.id, deps.now())
+          : invoiceLimiter.check(account.id, deps.now());
+      if (refusal !== null) {
+        c.header('Retry-After', retryAfterFor(refusal));
         await persistInvoiceAttempt(
           deps.store,
           invoiceAttemptBase({

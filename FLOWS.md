@@ -316,7 +316,7 @@ replies on someone else's note, and text-only top-level posts after the first, f
 the author pays 1 sat to 21.gifts (`GET /messages/compose-target` then
 `POST /messages/:id/invoice` on the platform profile note). `verified` stays
 unpaid-write exempt. A text reply on the member's own note is free for every
-role (`POST /messages` with `inReplyTo`, still behind the post limiter and the
+role (`POST /messages` with `inReplyTo`, still behind the reply limiter and the
 Sunday rule), because a wallet cannot pay itself; a paid reply there is refused
 with 400 (attempt `self_reply`). A member's first top-level post is free: while
 `GET /messages/compose-target` reports `firstPostFree: true`, the app posts

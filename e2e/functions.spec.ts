@@ -2398,6 +2398,11 @@ test('Function: utcDayKey — default boot has no DATABASE_URL', async ({ reques
 test('Function: PostRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
 });
+test('Function: forumRateLimitExempt — POST /messages without bearer is 401', async ({
+  request,
+}) => {
+  expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
+});
 test('Function: InvoiceRateLimiter — POST /messages without bearer is 401', async ({ request }) => {
   expect((await request.post('/messages', { data: { text: 'hi' } })).status()).toBe(401);
 });

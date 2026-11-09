@@ -152,8 +152,10 @@ export interface NostrWorkerDeps {
   notificationStore?: NotificationStore;
   /** Optional spend ping after a platform-note compose creates a top-level post. */
   spendPing?: SpendPing;
-  /** Optional post limiter shared with `POST /messages`. */
+  /** Optional top-level note limiter shared with `POST /messages`. */
   postLimiter?: PostRateLimiter;
+  /** Optional reply limiter shared with `POST /messages`. */
+  replyLimiter?: PostRateLimiter;
   /** Optional funding grants; compose spend pings use the same `eligibleToday` gate as `POST /messages`. */
   fundingStore?: FundingStore;
   /** Optional profile-photo and wide-image store. Omitted → the shared icon and the shared banner. The About me photo is neither. */
@@ -181,6 +183,7 @@ export type ZapIngestDeps = Pick<
   | 'notificationStore'
   | 'spendPing'
   | 'postLimiter'
+  | 'replyLimiter'
   | 'fundingStore'
   | 'fiatRates'
   | 'lnurlServer'
@@ -278,6 +281,7 @@ function indexOpenZapReceiptsArgs(
     ...(deps.conversations === undefined ? {} : { conversations: deps.conversations }),
     ...(deps.spendPing === undefined ? {} : { spendPing: deps.spendPing }),
     ...(deps.postLimiter === undefined ? {} : { postLimiter: deps.postLimiter }),
+    ...(deps.replyLimiter === undefined ? {} : { replyLimiter: deps.replyLimiter }),
     ...(deps.fundingStore === undefined ? {} : { fundingStore: deps.fundingStore }),
     recoveryShareRequiredFrom: resolveRecoveryShareRequiredFrom(deps.env),
     ...(deps.fiatRates === undefined ? {} : { fiatRates: deps.fiatRates }),
