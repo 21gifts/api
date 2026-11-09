@@ -50,12 +50,15 @@ async function readyCredit(options?: {
   walletGiver?: boolean;
   /** Test-only repayment limiter override. */
   repaymentLimiter?: InvoiceRateLimiter;
+  /** Credit message id; defaults to `CREDIT`. */
+  messageId?: string;
 }): Promise<{
   app: Hono;
   messages: InMemoryMessageStore;
   auth: InMemoryAuthStore;
   seen: SeenRequest[];
 }> {
+  const creditId = options?.messageId ?? CREDIT;
   const kek = parseNostrKek('11'.repeat(32));
   const authorId = options?.authorId ?? 'acc';
   const auth = new InMemoryAuthStore();
@@ -100,7 +103,7 @@ async function readyCredit(options?: {
   }
   const messages = new InMemoryMessageStore();
   await messages.create({
-    id: CREDIT,
+    id: creditId,
     accountId: authorId,
     name: 'Ada',
     text: 'need a ticket',
@@ -121,7 +124,7 @@ async function readyCredit(options?: {
           goalAmount: options.goalAmount === undefined ? '0.21' : options.goalAmount,
         }),
   });
-  await messages.recordZapReceipt('r1', CREDIT, 21, null);
+  await messages.recordZapReceipt('r1', creditId, 21, null);
   await messages.updateZapReceiptGift('r1', { payerAccountId: GIVER });
   const lnurlFetch = async (input: string | URL | Request): Promise<Response> => {
     const url = String(input);
@@ -233,6 +236,22 @@ describe('credit repayment', () => {
     };
     expect(body.startsOn).toBe('2026-11-16');
     expect(body.repayments[0]?.dueOn).toBe('2026-11-16');
+  });
+
+  it('starts an operator-approved credit the day after it filled', async () => {
+    const id = '399feee2-e84a-4f2f-94e2-21c04928298c';
+    const { app } = await readyCredit({
+      messageId: id,
+      fundedAt: new Date(Date.UTC(2026, 10, 9, 14, 12, 13, 130)),
+    });
+    const res = await app.request(`/messages/${id}/repayment`);
+    expect(res.status).toBe(200);
+    const body = (await res.json()) as {
+      startsOn: string | null;
+      repayments: { dueOn: string | null }[];
+    };
+    expect(body.startsOn).toBe('2026-11-10');
+    expect(body.repayments[0]?.dueOn).toBe('2026-11-10');
   });
 
   it('shows the due share and invoices the giver wallet address', async () => {
