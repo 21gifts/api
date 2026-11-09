@@ -543,11 +543,14 @@ answers from the state it read; it never waits for the replacement or
 Orchestra. Under the account row lock the replacement then reads the
 payment's newest quote:
 when that is a newer quote with offers (another container's replacement
-came first), it inserts nothing and answers with that newest quote.
+came first), the losing run inserts nothing; only a later fetch sees the
+winning quote.
 Otherwise it increments `shop_payment.replacements` with one conditional
 update (`status` `open`, `replacements` unchanged, at least 45 s left in
 the window) and inserts the new quote only when that update changed the
-row; otherwise it answers with the quote that is current then. A
+row; otherwise the run inserts nothing and produces no result. With two
+containers in a deploy, the conditional update makes one run win as a
+whole, and only a later fetch sees its quote. A
 Lightning-only row made by a fetch after the replacement read its starting
 quote is not newer for this check: the replacement still inserts its
 offers quote under the same conditions. A replacement that sent no quote

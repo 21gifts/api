@@ -2667,7 +2667,7 @@ describe('creation procedure steps 1–8 (Creation procedure, By the payer, By a
     ]);
   });
 
-  it("createForPayer answers at once while another payer payment's offers fill never answers", async () => {
+  it("createForPayer answers at once while another payer payment's offers fill remains blocked", async () => {
     const h = await setup();
     h.orchestra.routesImpl = () => new Promise(() => undefined);
     const first = await h.svc.createForPayer(h.account, USER, 1_000, clock);
@@ -4857,7 +4857,7 @@ describe('quote replacement and the Lightning-only fallback (Lifetimes, Quotes)'
     expect((await readPayment(h, payment.id)).replacements).toBe(0);
   });
 
-  it('a replacement that sent no quote request answers a fallback row as it stands', async () => {
+  it('a replacement that sent no quote request inserts nothing and leaves the fetch-created fallback row current', async () => {
     const h = await setup();
     const payment = await payerPayment(h);
     const [initial, first] = await quotesOf(h, payment.id);

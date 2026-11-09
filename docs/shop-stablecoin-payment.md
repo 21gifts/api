@@ -824,12 +824,11 @@ as for any order that cannot pay ([States](#states)).
 
 ## Quotes
 
-A replacement quote is created in the background. Its route list, gas
-prices, and quotes run outside the account's in-process creation lock;
-the lock covers only the short re-read and commit. A fetch starts or
-joins it and answers from the state it read; it never waits for the
-replacement or Orchestra. A second fetch in the same container joins the
-in-flight run. The replacement runs
+A fetch starts or joins a replacement in the background and answers from
+the state it read; it never waits for the replacement or Orchestra. Its
+route list, gas prices, and quotes run outside the account's in-process
+creation lock; the lock covers only the short re-read and commit. A
+second fetch in the same container joins the in-flight run. The replacement runs
 steps 3, 5, and 6 of the creation procedure for the same sats and the
 same BOLT11, within 4 s, and inserts one `shop_quote` with the offers
 that pass in a transaction under the account row lock. That transaction
@@ -837,14 +836,14 @@ first increments `shop_payment.replacements` with a conditional update
 (`status` is `open`, `replacements` still has the value read when the
 replacement started and is below 4, and at least 45 s remain before
 `window_ends_at`), and inserts the quote only when that update changed
-one row. Otherwise it inserts nothing, re-reads the payment, and
-answers the in-flight run with the quote that is current now, or as for
-an ended payment. The in-process lock is per container; this update
-makes a replacement in the other container of a deploy win or lose as a
-whole, so two containers never use two replacements for one expiring
-quote. The losing container's Orchestra quotes are never shown and
-expire unused. The payment id stays. A payment never gets a second
-BOLT11, so the shop can only be paid once through it.
+one row. Otherwise it inserts nothing. The fire-and-forget run produces
+no result, and no handler re-reads the payment for it. The in-process
+lock is per container; the conditional update makes a replacement in
+the other container of a deploy win or lose as a whole, so two containers
+never use two replacements for one expiring quote. The losing run inserts
+nothing, and only a later fetch sees the winning quote. Its Orchestra
+quotes are never shown and expire unused. The payment id stays. A payment
+never gets a second BOLT11, so the shop can only be paid once through it.
 
 When no new offer meets the BOLT11 margin or commits, the replacement is
 a Lightning-only quote: its `transferAmounts` has only the Lightning
@@ -1785,22 +1784,22 @@ While scanning it can show `home.OPEN_CRYPTO_PAY_NO_PENDING_PAYMENT`,
 
 ### How this document meets it
 
-| Wallet behaviour                                  | Rule here                                                                                                                     |
-| ------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------- |
-| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                                                |
-| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`, and requests those pairs first.                       |
-| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                                         |
-| Pays from an ERC-4337 bundle                      | A proof is one transfer log, a hash held only by other quotes is no repeat, and a user-operation hash works.                  |
-| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before verification, fills in a missing log, and resubmits an unresolved one.   |
-| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                                               |
-| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                                           |
-| 20 s request timeout                              | A fetch never waits for a creation or a replacement; a proof request stays within 18 s.                                       |
-| Refuses to send close to the deadline             | A fetch replaces a quote with less than 45 s left, except in the window's last 45 s, and the previous quote keeps its detail. |
-| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                                   |
-| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.                        |
-| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                                            |
-| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                                                     |
-| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                                                      |
+| Wallet behaviour                                  | Rule here                                                                                                                         |
+| ------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| Opens only `https://…?lightning=`                 | The sticker has that form. The page shows no `lightning:` stablecoin deeplink.                                                    |
+| Exact method and asset names                      | [Methods](#methods) uses `Ethereum`, `Polygon`, `Arbitrum`, and `USDT`, and requests those pairs first.                           |
+| Sends `tx` and `asset` on EVM                     | [Proof](#proof) accepts `tx` and an optional `asset`.                                                                             |
+| Pays from an ERC-4337 bundle                      | A proof is one transfer log, a hash held only by other quotes is no repeat, and a user-operation hash works.                      |
+| Retries a proof after a 5xx                       | [Repeat](#repeat) answers from the stored row before verification, fills in a missing log, and resubmits an unresolved one.       |
+| 400 and 404 on the callback mean different things | An expired quote is 404, and a pair that is not offered is 400.                                                                   |
+| A proof status below 500 is final                 | Pending, unresolved, and rate-limited proofs answer 503, never 429.                                                               |
+| 20 s request timeout                              | A fetch never waits for a creation or a replacement; a proof request stays within 18 s.                                           |
+| Refuses to send close to the deadline             | A fetch starts a replacement with less than 45 s left, except in the window's last 45 s, and the previous quote keeps its detail. |
+| Sends until `quote.expiration`                    | `quote.expiration` is 30 s before Orchestra's own deadline for the deposit.                                                       |
+| Hint URL first, then the `cb` segment rewrite     | The hint names the proof URL with no punctuation after it. Username `cb` and a final `.` are excluded.                            |
+| Settled only on 404 or a new `quote.payment`      | Acceptance frees the sticker in the same step, and the `timeout` poll answers 404.                                                |
+| Token must be the wallet's USDT contract          | [Offer checks](#offer-checks) require the table contract.                                                                         |
+| Unreadable dates are skipped                      | Every timestamp is `toISOString` output.                                                                                          |
 
 ## Deviations
 

@@ -47,7 +47,7 @@ import { normalizeUuid } from '@/lib/uuid';
 
 /** A transfer sent at `quote.expiration` has this long before Orchestra's `expiresAt`. */
 export const SHOP_FUNDING_MARGIN_MS = 30_000;
-/** A fetch replaces a quote with less than this left, and never in the window's last stretch. */
+/** A fetch starts a replacement with less than this left, never in the window's last stretch. */
 export const SHOP_REPLACE_BEFORE_MS = 45_000;
 /** Replacements per payment. */
 export const SHOP_MAX_REPLACEMENTS = 4;
@@ -72,9 +72,6 @@ export const SHOP_QUOTES_TIMEOUT_MS = 3_000;
  * request arrived.
  */
 export const SHOP_CREATION_INSERT_LIMIT_MS = 16_000;
-/** Whole creation procedure. */
-export const SHOP_CREATION_BUDGET_MS =
-  SHOP_ROUTES_TIMEOUT_MS + SHOP_MINT_TIMEOUT_MS + SHOP_QUOTES_TIMEOUT_MS;
 /**
  * Whole replacement (route list, quotes, and its transaction). No request
  * waits for it; the budget bounds its external calls in the background.
@@ -2930,7 +2927,7 @@ export class ShopPayments {
    * @param payment - Open payment.
    * @param quote - Its current quote.
    * @param nowMs - Clock.
-   * @returns Whether a fetch replaces the quote.
+   * @returns Whether a replacement may start for the quote.
    */
   #replaceable(payment: ShopPayment, quote: ShopQuote, nowMs: number): boolean {
     return (
