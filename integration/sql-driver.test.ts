@@ -2808,7 +2808,7 @@ describe('PostgresFxSpotStore', () => {
 });
 
 describe('PostgresWalletStore', () => {
-  test('findPaymentSenders matches only completed outgoing payments addressed to the receiver', async () => {
+  test('findPaymentCounterparties matches completed outgoing payments for both directions', async () => {
     const { client, sql } = createBunSqlClient(databaseUrl);
     try {
       await migrateAuthSchema(client);
@@ -2882,20 +2882,105 @@ describe('PostgresWalletStore', () => {
         },
         { ...row, accountId: receiver, paymentId: `${prefix}-self`, invoice: `${prefix}-self` },
         { ...row, paymentId: `${prefix}-payment-only`, invoice: `${prefix}-different` },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-a`,
+          invoice: `${prefix}-own`,
+          counterpartyAccountId: senderA,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-a2`,
+          invoice: `${prefix}-own`,
+          counterpartyAccountId: senderA,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-b`,
+          invoice: `${prefix}-own`,
+          counterpartyAccountId: senderB,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-hash`,
+          invoice: null,
+          paymentHash: hash.toUpperCase(),
+          counterpartyAccountId: senderA,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-null`,
+          invoice: `${prefix}-own-null`,
+          counterpartyAccountId: null,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-self`,
+          invoice: `${prefix}-own-self`,
+          counterpartyAccountId: receiver,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-pending`,
+          invoice: `${prefix}-own-pending`,
+          status: 'pending',
+          counterpartyAccountId: senderA,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-failed`,
+          invoice: `${prefix}-own-failed`,
+          status: 'failed',
+          counterpartyAccountId: senderA,
+        },
+        {
+          ...row,
+          accountId: receiver,
+          paymentId: `${prefix}-own-in`,
+          invoice: `${prefix}-own-in`,
+          direction: 'in',
+          counterpartyAccountId: senderA,
+        },
       ]);
-      const found = await store.findPaymentSenders(receiver, [
-        { id: 'invoice', invoice: `${prefix}-shared`, paymentHash: null },
-        { id: 'hash', invoice: null, paymentHash: hash.toUpperCase() },
-        ...['in', 'pending', 'failed', 'foreign', 'self', 'absent'].map((id) => ({
+      const found = await store.findPaymentCounterparties(receiver, [
+        { id: 'invoice', direction: 'in', invoice: `${prefix}-shared`, paymentHash: null },
+        { id: 'hash', direction: 'in', invoice: null, paymentHash: hash.toUpperCase() },
+        { id: 'own', direction: 'out', invoice: `${prefix}-own`, paymentHash: null },
+        { id: 'own-hash', direction: 'out', invoice: null, paymentHash: hash.toUpperCase() },
+        { id: 'in-not-own', direction: 'in', invoice: `${prefix}-own`, paymentHash: null },
+        { id: 'out-not-foreign', direction: 'out', invoice: `${prefix}-shared`, paymentHash: null },
+        ...['own-null', 'own-self', 'own-pending', 'own-failed', 'own-in'].map((id) => ({
           id,
+          direction: 'out' as const,
           invoice: `${prefix}-${id}`,
           paymentHash: null,
         })),
-        { id: `${prefix}-payment-only`, invoice: `${prefix}-unmatched`, paymentHash: null },
+        ...['in', 'pending', 'failed', 'foreign', 'self', 'absent'].map((id) => ({
+          id,
+          direction: 'in' as const,
+          invoice: `${prefix}-${id}`,
+          paymentHash: null,
+        })),
+        {
+          id: `${prefix}-payment-only`,
+          direction: 'in',
+          invoice: `${prefix}-unmatched`,
+          paymentHash: null,
+        },
       ]);
-      expect(found.size).toBe(2);
+      expect(found.size).toBe(4);
       expect(found.get('invoice')).toEqual([senderA, senderB].sort());
       expect(found.get('hash')).toEqual([senderA]);
+      expect(found.get('own')).toEqual([senderA, senderB].sort());
+      expect(found.get('own-hash')).toEqual([senderA]);
       for (const id of [
         'in',
         'pending',
@@ -2904,6 +2989,13 @@ describe('PostgresWalletStore', () => {
         'self',
         'absent',
         `${prefix}-payment-only`,
+        'in-not-own',
+        'out-not-foreign',
+        'own-null',
+        'own-self',
+        'own-pending',
+        'own-failed',
+        'own-in',
       ]) {
         expect(found.has(id)).toBe(false);
       }

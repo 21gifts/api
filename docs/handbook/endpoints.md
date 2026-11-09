@@ -1702,12 +1702,13 @@ Operator inspection of external Nostr identities that have earned visibility or 
 - **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 reports per account in 60 seconds; 413 `{ error: 'Request body is too large' }` above 1 MiB; 400 `{ error: 'Invalid wallet report' }` for bad JSON, balance, sync time, or a `payments` value that is not an array of at most 200; 503 `{ error: 'Wallet data is unavailable' }` when a lookup or write fails (logs `wallet_report.write.failed` with `accountId` only).
 - **Auth:** Bearer session. Not the debug token.
 
-## Endpoint: POST /me/wallet/senders
+## Endpoint: POST /me/wallet/counterparties
 
-- **Purpose:** Find the member who sent an incoming payment, from completed outgoing wallet reports addressed to the caller.
-- **Request:** Bearer session and `payments`, an array of 1–32 objects with a nonempty `id` of at most 128 characters and an invoice of at most 4096 characters without NUL or a 64-hex `paymentHash`. Optional lookup keys may be null. Duplicate ids keep the first.
-- **Response:** 200 `{ senders: [{ id, accountId, username }] }`. Multiple matching sender accounts, missing or blank usernames, missing accounts and platform accounts are omitted. Only these three fields are returned.
-- **Errors:** 401 without a session, 429 after 60 requests per account per minute, 413 above 8192 bytes, 400 for invalid input, and 503 when a lookup fails.
+- **Purpose:** Find the member who sent an incoming payment or received an outgoing payment. For `in`, completed outgoing reports of other accounts must name the caller as counterparty; for `out`, only the caller's completed outgoing reports are considered, and their non-null, non-self counterparty is returned.
+- **Request:** `payments`, an array of 1–32 objects with required `direction` (`in` or `out`), a nonempty `id` of at most 128 characters and an invoice of at most 4096 characters without NUL or a 64-hex `paymentHash`. Optional lookup keys may be null. Duplicate ids keep the first.
+- **Response:** 200 `{ counterparties: [{ id, accountId, username }] }`. Multiple matching accounts, missing or blank usernames, missing accounts and platform accounts are omitted. Only these three fields are returned.
+- **Errors:** 401 `{ error: 'Unauthorized' }`; 429 `{ error: 'Too many requests' }` after 60 requests per account per minute; 413 `{ error: 'Request body is too large' }` above 8192 bytes; 400 `{ error: 'Invalid counterparty lookup' }`; 503 `{ error: 'Counterparty lookup is unavailable' }` on lookup failure, logging `wallet_counterparties.lookup.failed` with only `accountId`.
+- **Auth:** Bearer session. Not the debug token.
 
 Invoice and hash match by OR, with hashes compared case-insensitively. The id is a correlation handle and never matches a payment id.
 

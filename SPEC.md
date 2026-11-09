@@ -5923,13 +5923,13 @@ after 60 reports from one account in 60 seconds; `413`
 `{ "error": "Wallet data is unavailable" }` when a lookup or write fails
 (logs `wallet_report.write.failed` with `{ accountId }` only).
 
-### `POST /me/wallet/senders`
+### `POST /me/wallet/counterparties`
 
-Bearer required. Request `{ "payments": [{ "id", "invoice", "paymentHash" }] }` has 1–32 entries. Each id is 1–128 characters; invoice is null, absent, or 1–4096 characters without NUL; paymentHash is null, absent, or 64 hex characters. At least one key is required. Duplicate ids keep the first entry. The body limit is 8192 bytes and the per-account rate limit is 60 per minute.
+Bearer required. Request `{ "payments": [{ "id", "direction", "invoice", "paymentHash" }] }` has 1–32 entries. Direction is required and is `in` or `out`. Each id is 1–128 characters; invoice is null, absent, or 1–4096 characters without NUL; paymentHash is null, absent, or 64 hex characters. At least one key is required. Duplicate ids keep the first entry. The body limit is 8192 bytes and the per-account rate limit is 60 per minute.
 
-For each entry, match invoice or case-insensitive payment hash against completed outgoing wallet payments whose counterparty is the caller and whose account differs from the caller. The request id is only a correlation handle and is never matched to a payment id. Multiple rows for one account count once; multiple accounts are ambiguous and omitted. Missing accounts, platform accounts and accounts without a username are omitted. Response: `200 { "senders": [{ "id", "accountId", "username" }] }`.
+For `in`, match invoice or case-insensitive payment hash against completed outgoing payments of other accounts whose counterparty is the caller, returning their account id. For `out`, match the caller's completed outgoing payments and return their non-null, non-self counterparty id. The request id is only a correlation handle and is never matched to a payment id. Multiple rows for one account count once; multiple accounts are ambiguous and omitted. Missing accounts, platform accounts and accounts without a username are omitted. Response: `200 { "counterparties": [{ "id", "accountId", "username" }] }`.
 
-Errors: 401 unauthorized, 429 rate limited, 413 body too large, 400 `{ "error": "Invalid sender lookup" }`, and 503 `{ "error": "Sender lookup is unavailable" }` on store failure.
+Errors: 401 unauthorized, 429 rate limited, 413 body too large, 400 `{ "error": "Invalid counterparty lookup" }`, and 503 `{ "error": "Counterparty lookup is unavailable" }` on store failure.
 
 ### `POST /me/events`
 

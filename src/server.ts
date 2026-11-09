@@ -58,7 +58,7 @@ import type { WelcomeSweepSwitch } from '@/lib/welcome-media';
 import { pushRoutes } from '@/routes/push';
 import { walletReportRoutes } from '@/routes/wallet-report';
 import { walletHeartRoutes } from '@/routes/wallet-hearts';
-import { walletSenderRoutes } from '@/routes/wallet-senders';
+import { walletCounterpartyRoutes } from '@/routes/wallet-counterparties';
 import { memberEventRoutes } from '@/routes/member-events';
 import { myLoansRoutes } from '@/routes/repayment';
 import { debugPushRoutes } from '@/routes/debug-push';
@@ -782,7 +782,7 @@ export function createApp(deps: AppDeps = {}): Hono {
     }),
   );
   app.route('/', walletHeartRoutes({ authStore: store, messages: messageStore, now }));
-  app.route('/', walletSenderRoutes({ authStore: store, walletStore, now }));
+  app.route('/', walletCounterpartyRoutes({ authStore: store, walletStore, now }));
   app.route('/', memberEventRoutes({ authStore: store, store: memberEventStore, now }));
   app.route(
     '/',

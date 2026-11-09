@@ -296,8 +296,8 @@ test('POST /me/wallet/hearts without bearer is 401', async ({ request }) => {
   expect(res.status()).toBe(401);
 });
 
-test('POST /me/wallet/senders without bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/wallet/senders');
+test('POST /me/wallet/counterparties without bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/counterparties');
   expect(res.status()).toBe(401);
 });
 

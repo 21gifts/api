@@ -4400,8 +4400,8 @@ test('Function: walletHeartRoutes — no bearer is 401', async ({ request }) => 
   expect(res.status()).toBe(401);
 });
 
-test('Function: walletSenderRoutes — no bearer is 401', async ({ request }) => {
-  const res = await request.post('/me/wallet/senders');
+test('Function: walletCounterpartyRoutes — no bearer is 401', async ({ request }) => {
+  const res = await request.post('/me/wallet/counterparties');
   expect(res.status()).toBe(401);
 });
 

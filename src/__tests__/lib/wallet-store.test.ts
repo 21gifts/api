@@ -120,10 +120,10 @@ describe('InMemoryWalletStore', () => {
       payment({ accountId: 'pending' }),
       payment({ accountId: 'failed', status: 'failed' }),
     ]);
-    const found = await store.findPaymentSenders('other', [
-      { id: 'invoice', invoice: 'lnbc', paymentHash: null },
-      { id: 'hash', invoice: null, paymentHash: 'a'.repeat(64) },
-      { id: 'one', invoice: 'missing', paymentHash: null },
+    const found = await store.findPaymentCounterparties('other', [
+      { id: 'invoice', direction: 'in', invoice: 'lnbc', paymentHash: null },
+      { id: 'hash', direction: 'in', invoice: null, paymentHash: 'a'.repeat(64) },
+      { id: 'one', direction: 'in', invoice: 'missing', paymentHash: null },
     ]);
     expect([...found]).toEqual([
       ['invoice', ['a', 'z']],
@@ -138,9 +138,9 @@ describe('InMemoryWalletStore', () => {
       { id: '0', account_id: 'b' },
       { id: '1', account_id: 'c' },
     ];
-    const result = await new PostgresWalletStore(sql).findPaymentSenders('receiver', [
-      { id: 'i', invoice: 'lnbc', paymentHash: null },
-      { id: 'h', invoice: null, paymentHash: 'a'.repeat(64) },
+    const result = await new PostgresWalletStore(sql).findPaymentCounterparties('receiver', [
+      { id: 'i', direction: 'in', invoice: 'lnbc', paymentHash: null },
+      { id: 'h', direction: 'out', invoice: null, paymentHash: 'a'.repeat(64) },
     ]);
     expect([...result]).toEqual([
       ['i', ['a', 'b']],
@@ -152,8 +152,62 @@ describe('InMemoryWalletStore', () => {
       '{"0","1"}',
       '{"lnbc",""}',
       `{"","${'a'.repeat(64)}"}`,
+      '{"in","out"}',
     ]);
     expect(sql.queries[0]?.text).toContain('lower(p.payment_hash)');
+  });
+
+  it('finds only completed own outgoing counterparties and deduplicates accounts', async () => {
+    const store = new InMemoryWalletStore();
+    await store.upsertPayments([
+      payment({ accountId: 'me', paymentId: 'a', status: 'completed', counterpartyAccountId: 'z' }),
+      payment({ accountId: 'me', paymentId: 'b', status: 'completed', counterpartyAccountId: 'z' }),
+      payment({ accountId: 'me', paymentId: 'c', status: 'completed', counterpartyAccountId: 'a' }),
+      payment({
+        accountId: 'me',
+        paymentId: 'null',
+        status: 'completed',
+        counterpartyAccountId: null,
+        invoice: 'null',
+      }),
+      payment({
+        accountId: 'me',
+        paymentId: 'self',
+        status: 'completed',
+        counterpartyAccountId: 'me',
+        invoice: 'self',
+      }),
+      payment({
+        accountId: 'foreign',
+        paymentId: 'foreign',
+        status: 'completed',
+        counterpartyAccountId: 'z',
+        invoice: 'foreign',
+      }),
+      payment({ accountId: 'me', paymentId: 'pending', status: 'pending', invoice: 'pending' }),
+      payment({ accountId: 'me', paymentId: 'failed', status: 'failed', invoice: 'failed' }),
+      payment({
+        accountId: 'me',
+        paymentId: 'incoming',
+        status: 'completed',
+        direction: 'in',
+        invoice: 'incoming',
+      }),
+    ]);
+    const found = await store.findPaymentCounterparties('me', [
+      { id: 'both', direction: 'out', invoice: 'lnbc', paymentHash: null },
+      { id: 'hash', direction: 'out', invoice: null, paymentHash: 'A'.repeat(64) },
+      ...['null', 'self', 'foreign', 'pending', 'failed', 'incoming'].map((id) => ({
+        id,
+        direction: 'out' as const,
+        invoice: id,
+        paymentHash: null,
+      })),
+    ]);
+    expect([...found]).toEqual([
+      ['both', ['a', 'z']],
+      ['hash', ['a', 'z']],
+    ]);
   });
   it('records snapshots, returns newest with id tie-break, filters accounts, and copies dates', async () => {
     const store = new InMemoryWalletStore();
