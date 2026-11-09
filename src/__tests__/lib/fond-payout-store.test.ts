@@ -134,6 +134,9 @@ describe('InMemoryFondPayoutStore', () => {
       amountMsat: 1_000_000,
     });
     expect(await store.markPaid(id)).toMatchObject({ status: 'paid', failure: null });
+    expect(await store.revertPaid(id)).toMatchObject({ status: 'invoiced' });
+    expect(await store.revertPaid(id)).toBeUndefined();
+    expect(await store.markPaid(id)).toMatchObject({ status: 'paid' });
     expect(await store.markFailed(id, 'Passkey required')).toBeUndefined();
     expect(await store.markPaid(id)).toBeUndefined();
   });
@@ -206,6 +209,7 @@ describe('InMemoryFondPayoutStore', () => {
     const store = new InMemoryFondPayoutStore(() => NOW);
     expect(await store.claimForInvoice('missing', '2026-11-09')).toBeNull();
     expect(await store.markPaid('missing')).toBeUndefined();
+    expect(await store.revertPaid('missing')).toBeUndefined();
   });
 });
 
@@ -351,7 +355,7 @@ describe('PostgresFondPayoutStore', () => {
       created_at: NOW,
       updated_at: NOW,
     };
-    sql.queryResults = [[driver], [driver], [driver], [driver], [driver], [], [], [], []];
+    sql.queryResults = [[driver], [driver], [driver], [driver], [driver], [driver], [], [], [], []];
     expect(await store.claimForInvoice('row', '2026-11-09')).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[0]?.text).toContain("WHERE id = $1 AND utc_day = $2 AND status = 'owed'");
     expect(sql.queries[0]?.params).toEqual(['row', '2026-11-09']);
@@ -375,6 +379,10 @@ describe('PostgresFondPayoutStore', () => {
     expect(await store.markPaid('row')).toMatchObject({ status: 'invoiced' });
     expect(sql.queries[4]?.text).toContain("status = 'invoiced'");
     expect(sql.queries[4]?.params).toEqual(['row']);
+    expect(await store.revertPaid('row')).toMatchObject({ status: 'invoiced' });
+    expect(sql.queries[5]?.text).toContain("SET status = 'invoiced', updated_at = now()");
+    expect(sql.queries[5]?.text).toContain("WHERE id = $1 AND status = 'paid'");
+    expect(sql.queries[5]?.params).toEqual(['row']);
     expect(
       await store.setInvoiced('row', {
         invoiceId: 'i',
@@ -387,5 +395,6 @@ describe('PostgresFondPayoutStore', () => {
     expect(await store.markFailed('row', 'x')).toBeUndefined();
     expect(await store.releaseClaim('row')).toBeUndefined();
     expect(await store.markPaid('row')).toBeUndefined();
+    expect(await store.revertPaid('row')).toBeUndefined();
   });
 });

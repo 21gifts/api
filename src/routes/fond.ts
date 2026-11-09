@@ -398,41 +398,60 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       if (!preimageMatchesHash(parsed.data.preimage, row.paymentHash)) {
         return c.json({ error: GIFT_PROOF_MISMATCH }, 400);
       }
+      if (row.status === 'paid') {
+        logEvent('fond.payout.paid', { id: row.id });
+        return c.json({ status: 'paid', id: row.id }, 200);
+      }
+      let won = false;
+      try {
+        const stored = await deps.fondPayoutStore.markPaid(row.id);
+        if (stored === undefined) {
+          const current = await deps.fondPayoutStore.get(row.id);
+          if (current?.status !== 'paid') {
+            return c.json({ error: 'Not invoiced' }, 409);
+          }
+        } else {
+          won = true;
+        }
+      } catch {
+        logEvent('fond.proof.failed');
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+      }
+      if (!won) {
+        logEvent('fond.payout.paid', { id: row.id });
+        return c.json({ status: 'paid', id: row.id }, 200);
+      }
       const paidAt = deps.now();
       const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
-      await settleProvenGift(
-        deps.actions,
-        {
-          id: row.invoiceId,
-          address: row.address,
-          pr: row.bolt11,
-          paymentHash: row.paymentHash,
-          amountMsat: row.amountMsat,
-          createdAt: paidAt,
-          expiresAt: paidAt,
-          comment: row.comment,
-          ...(row.messageId === null ? {} : { messageId: row.messageId }),
-          ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
-          amountUsd: row.amountUsd,
-        },
-        paidAt,
-        deps.fondUsername,
-        fiat,
-        row.kind,
-      );
-      if (row.status !== 'paid') {
+      try {
+        await settleProvenGift(
+          deps.actions,
+          {
+            id: row.invoiceId,
+            address: row.address,
+            pr: row.bolt11,
+            paymentHash: row.paymentHash,
+            amountMsat: row.amountMsat,
+            createdAt: paidAt,
+            expiresAt: paidAt,
+            comment: row.comment,
+            ...(row.messageId === null ? {} : { messageId: row.messageId }),
+            ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
+            amountUsd: row.amountUsd,
+          },
+          paidAt,
+          deps.fondUsername,
+          fiat,
+          row.kind,
+        );
+      } catch {
         try {
-          const stored = await deps.fondPayoutStore.markPaid(row.id);
-          if (stored === undefined) {
-            const current = await deps.fondPayoutStore.get(row.id);
-            if (current?.status !== 'paid' || current.paymentHash !== row.paymentHash) {
-              return c.json({ error: 'Not invoiced' }, 409);
-            }
-          }
+          await deps.fondPayoutStore.revertPaid(row.id);
         } catch {
-          logEvent('fond.proof.failed');
-          return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
+          logEvent('fond.proof.revert_failed', { id: row.id });
         }
+        logEvent('fond.proof.failed');
+        return c.json({ error: PAYOUTS_UNAVAILABLE }, 503);
       }
       logEvent('fond.payout.paid', { id: row.id });
       return c.json({ status: 'paid', id: row.id }, 200);

@@ -1781,6 +1781,7 @@ describe('FondQueueSink', () => {
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
         markPaid: async () => undefined,
+        revertPaid: () => Promise.resolve(undefined),
       },
     });
     expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toBe(
@@ -1828,6 +1829,7 @@ describe('FondQueueSink', () => {
         markFailed: async () => undefined,
         releaseClaim: async () => undefined,
         markPaid: async () => undefined,
+        revertPaid: () => Promise.resolve(undefined),
       },
     });
     expect(

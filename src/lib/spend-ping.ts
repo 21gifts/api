@@ -34,8 +34,8 @@ export interface PayoutSink {
   /**
    * Deliver `body` for `address`.
    *
-   * @param address - Recipient Lightning Address; the HTTP sink only logs it,
-   * the fond queue sink stores it in `fond_payout`.
+   * @param address - Recipient Lightning Address. `HttpPayoutSink` ignores it
+   * (the calling `HttpSpendPing` logs it); `FondQueueSink` stores it in `fond_payout`.
    * @param body - Decided instruction body.
    * @returns `'accepted'`, `'skipped'`, or `'failed'`. Never throws.
    */

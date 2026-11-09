@@ -160,6 +160,15 @@ export interface FondPayoutStore {
    * @returns The updated row, or `undefined` when the row is missing or not invoiced.
    */
   markPaid(id: string): Promise<FondPayoutRow | undefined>;
+
+  /**
+   * Move a `paid` row back to `invoiced` when settlement failed after
+   * `markPaid`, so a later proof can settle again.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when the row is missing or not paid.
+   */
+  revertPaid(id: string): Promise<FondPayoutRow | undefined>;
 }
 
 /** Idempotent DDL (matches `docs/schema/fond_payout.sql`). */
@@ -369,6 +378,19 @@ export class InMemoryFondPayoutStore implements FondPayoutStore {
       ...row,
       status: 'paid',
       failure: null,
+    }));
+  }
+
+  /**
+   * Move a `paid` row back to `invoiced` after a settlement failure.
+   *
+   * @param id - Row id.
+   * @returns The updated copy, or `undefined` when not paid.
+   */
+  async revertPaid(id: string): Promise<FondPayoutRow | undefined> {
+    return this.#transition(id, ['paid'], (row) => ({
+      ...row,
+      status: 'invoiced',
     }));
   }
 
@@ -635,6 +657,25 @@ RETURNING ${FOND_PAYOUT_SELECT}`,
       `UPDATE fond_payout
 SET status = 'paid', failure = NULL, updated_at = now()
 WHERE id = $1 AND status = 'invoiced'
+RETURNING ${FOND_PAYOUT_SELECT}`,
+      [id],
+    );
+    const row = rows[0];
+    return row === undefined ? undefined : mapRow(row);
+  }
+
+  /**
+   * Move a `paid` row back to `invoiced` after a settlement failure.
+   *
+   * @param id - Row id.
+   * @returns The updated row, or `undefined` when not paid.
+   * @throws Propagates SQL failures.
+   */
+  async revertPaid(id: string): Promise<FondPayoutRow | undefined> {
+    const rows = await this.#sql.query<FondPayoutSqlRow>(
+      `UPDATE fond_payout
+SET status = 'invoiced', updated_at = now()
+WHERE id = $1 AND status = 'paid'
 RETURNING ${FOND_PAYOUT_SELECT}`,
       [id],
     );
