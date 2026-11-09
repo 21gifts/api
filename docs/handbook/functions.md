@@ -1896,13 +1896,13 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: repaymentStartMs
 
-- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled, but never before 2026-11-16. A credit that filled on or before 2026-11-15 starts on 2026-11-16. A credit that filled later starts the next UTC day. The three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` are the exception: they start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. Every due date and due-day count uses this start.
+- **Purpose:** First repayment day as a UTC midnight: the day after the credit filled. For a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS`, it is never before 2026-11-16, so a non-exempt credit that filled on or before 2026-11-15 starts on 2026-11-16, and a non-exempt credit that filled later starts the next UTC day. The three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` start the day after they filled with no minimum, so one filled on 2026-11-09 starts on 2026-11-10. Every due date and due-day count uses this start.
 - **Inputs:** Epoch milliseconds when the credit filled, and the credit message id (matched case-insensitively).
 - **Returns / side effects:** That midnight in epoch milliseconds. No I/O.
 
 ## Function: dueDayCount
 
-- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so nothing is due before 2026-11-16, except for the three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS`.
+- **Purpose:** How many term days are due at a clock. Counting starts at `repaymentStartMs`, so for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` nothing is due before 2026-11-16. The three credits in that set may be due earlier.
 - **Inputs:** Funded time, now, term days, and the credit message id.
 - **Returns / side effects:** A count from 0 through the term. No I/O.
 
@@ -1927,7 +1927,7 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: repaymentDueDate
 
-- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, never before 2026-11-16, except for the three credits in `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS`, which start the day after they filled.
+- **Purpose:** UTC calendar day of one repayment. Day 0 is `repaymentStartMs`: the day after the credit filled, and for a credit outside `REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS` never before 2026-11-16. The three credits in that set start the day after they filled.
 - **Inputs:** Funded time in epoch milliseconds, the zero-based day, and the credit message id.
 - **Returns / side effects:** `YYYY-MM-DD`. No I/O.
 

@@ -42,7 +42,10 @@ export function parseRepaymentDescription(
   return { dayIndex: Number(day), recipientAccountId: accountId };
 }
 
-/** No repayment day is before 2026-11-16 UTC, however early the credit filled. */
+/**
+ * A credit outside {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS} has no repayment
+ * day before 2026-11-16 UTC, however early it filled.
+ */
 const REPAYMENT_EARLIEST_START_MS = Date.UTC(2026, 10, 16);
 
 /**
@@ -58,9 +61,9 @@ export const REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS: ReadonlySet<string> = new Set([
 
 /**
  * UTC midnight of the first repayment day: the day after the credit became
- * fully paid, but never before 2026-11-16. A credit in
- * {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS} starts the day after it filled,
- * with no minimum.
+ * fully paid. A credit outside {@link REPAYMENT_FLOOR_EXEMPT_MESSAGE_IDS}
+ * never starts before 2026-11-16. A credit in that set starts the day after it
+ * filled, with no minimum.
  *
  * @param fundedAtMs - When collected sats first reached the goal.
  * @param messageId - Credit message id; matched case-insensitively against the

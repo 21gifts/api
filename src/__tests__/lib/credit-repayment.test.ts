@@ -29,7 +29,7 @@ describe('credit repayment', () => {
     expect(dueDayCount(funded, funded, 1.5, ORDINARY_CREDIT)).toBe(0);
   });
 
-  it('never starts before 2026-11-16', () => {
+  it('never starts a non-exempt credit before 2026-11-16', () => {
     const early = Date.UTC(2026, 9, 9, 6, 23);
     expect(repaymentStartMs(early, ORDINARY_CREDIT)).toBe(Date.UTC(2026, 10, 16));
     expect(repaymentDueDate(early, 0, ORDINARY_CREDIT)).toBe('2026-11-16');
