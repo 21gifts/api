@@ -27,6 +27,10 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 export type SpendPingOutcome =
   { status: 'accepted' } | { status: 'skipped'; reason: string } | { status: 'failed' };
 
+/** Result of one {@link PayoutSink.deliver} call. */
+export type PayoutDelivery =
+  { outcome: 'accepted' } | { outcome: 'skipped'; reason: string } | { outcome: 'failed' };
+
 /**
  * Final delivery step for one decided payout instruction.
  */
@@ -37,12 +41,9 @@ export interface PayoutSink {
    * @param address - Recipient Lightning Address. `HttpPayoutSink` ignores it
    * (the calling `HttpSpendPing` logs it); `FondQueueSink` stores it in `fond_payout`.
    * @param body - Decided instruction body.
-   * @returns `'accepted'`, `'skipped'`, or `'failed'`. Never throws.
+   * @returns The delivery outcome, including any skip reason. Never throws.
    */
-  deliver(
-    address: string,
-    body: Record<string, string | number>,
-  ): Promise<'accepted' | 'skipped' | 'failed'>;
+  deliver(address: string, body: Record<string, string | number>): Promise<PayoutDelivery>;
 }
 
 /**
@@ -52,15 +53,14 @@ export interface PayoutSink {
  * A `ping` body (no `day`) maps any 2xx to `'accepted'` and everything else
  * to `'failed'`. A `pingOnDay` body (with `day`) uses the strict mapping: 202
  * accepted, 200 whose JSON `status` is `accepted` accepted, 200 whose JSON
- * `status` is `skipped` with a non-empty reason skipped, else failed. Never
- * throws and never logs the token.
+ * `status` is `skipped` with a non-empty reason skipped with that reason,
+ * else failed. Never throws and never logs the token.
  */
 export class HttpPayoutSink implements PayoutSink {
   readonly #spendUrl: string;
   readonly #token: string;
   readonly #fetchImpl: FetchFn;
   readonly #timeoutMs: number;
-  #skipReason = '';
 
   /**
    * @param opts - Already-trimmed base URL (no trailing slash), Bearer token,
@@ -78,13 +78,9 @@ export class HttpPayoutSink implements PayoutSink {
    *
    * @param _address - Unused; the caller logs with the address.
    * @param body - Decided instruction body.
-   * @returns Delivery outcome.
+   * @returns The delivery outcome for this call.
    */
-  async deliver(
-    _address: string,
-    body: Record<string, string | number>,
-  ): Promise<'accepted' | 'skipped' | 'failed'> {
-    this.#skipReason = '';
+  async deliver(_address: string, body: Record<string, string | number>): Promise<PayoutDelivery> {
     try {
       const response = await this.#fetchImpl(`${this.#spendUrl}/ping`, {
         method: 'POST',
@@ -96,60 +92,49 @@ export class HttpPayoutSink implements PayoutSink {
         signal: AbortSignal.timeout(this.#timeoutMs),
       });
       if (typeof body['day'] !== 'string') {
-        return response.ok ? 'accepted' : 'failed';
+        return response.ok ? { outcome: 'accepted' } : { outcome: 'failed' };
       }
       if (response.status === 202) {
-        return 'accepted';
+        return { outcome: 'accepted' };
       }
       if (response.status !== 200) {
-        return 'failed';
+        return { outcome: 'failed' };
       }
       let parsed: unknown;
       try {
         parsed = await response.json();
       } catch {
-        return 'failed';
+        return { outcome: 'failed' };
       }
       if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
-        return 'failed';
+        return { outcome: 'failed' };
       }
       const record = parsed as Record<string, unknown>;
       const status = record['status'];
       if (status === 'accepted') {
-        return 'accepted';
+        return { outcome: 'accepted' };
       }
       const reason = record['reason'];
       if (status === 'skipped' && typeof reason === 'string' && reason !== '') {
-        this.#skipReason = reason;
-        return 'skipped';
+        return { outcome: 'skipped', reason };
       }
-      return 'failed';
+      return { outcome: 'failed' };
     } catch {
-      return 'failed';
+      return { outcome: 'failed' };
     }
-  }
-
-  /**
-   * Reason of the most recent skipped delivery.
-   *
-   * @returns The reason, or `''` when the last delivery was not skipped.
-   */
-  lastSkipReason(): string {
-    return this.#skipReason;
   }
 }
 
 /**
  * Queue one decided instruction into `fond_payout` for the Fond member.
  *
- * A new row and an already-queued row return `'accepted'`; a conflicting row
- * that is already `paid` returns `'skipped'` with reason `paid`. Store
- * failures return `'failed'` and never throw.
+ * A new row and an already-queued row return accepted; a conflicting row
+ * that is already `paid` returns skipped with reason `paid`. Store
+ * failures return failed and never throw.
  */
 export class FondQueueSink implements PayoutSink {
   readonly #store: FondPayoutStore;
   readonly #now: () => number;
-  #skipReason = '';
 
   /**
    * @param opts - Queue store and optional clock (default `Date.now`).
@@ -164,20 +149,16 @@ export class FondQueueSink implements PayoutSink {
    *
    * @param address - Recipient Lightning Address.
    * @param body - Decided instruction body.
-   * @returns `'accepted'`, `'skipped'` (already paid), or `'failed'` (store error).
+   * @returns The delivery outcome, including reason `paid` when skipped.
    */
-  async deliver(
-    address: string,
-    body: Record<string, string | number>,
-  ): Promise<'accepted' | 'skipped' | 'failed'> {
-    this.#skipReason = '';
+  async deliver(address: string, body: Record<string, string | number>): Promise<PayoutDelivery> {
     const kind =
       body['kind'] === 'moderator' ? 'moderator' : body['kind'] === 'welcome' ? 'welcome' : 'daily';
     const day = typeof body['day'] === 'string' ? body['day'] : utcDay(this.#now());
     const amountUsd = decidedUsd(body['amountUsd']);
     const comment = body['comment'];
     if (amountUsd === null || typeof comment !== 'string') {
-      return 'failed';
+      return { outcome: 'failed' };
     }
     const messageId = kind === 'moderator' ? null : textOrNull(body['messageId']);
     const groupMessageId = kind === 'moderator' ? textOrNull(body['groupMessageId']) : null;
@@ -193,22 +174,12 @@ export class FondQueueSink implements PayoutSink {
         groupMessageId,
       });
       if (result === 'paid') {
-        this.#skipReason = 'paid';
-        return 'skipped';
+        return { outcome: 'skipped', reason: 'paid' };
       }
-      return result;
+      return result === 'accepted' ? { outcome: 'accepted' } : { outcome: 'failed' };
     } catch {
-      return 'failed';
+      return { outcome: 'failed' };
     }
-  }
-
-  /**
-   * Reason of the most recent skipped delivery.
-   *
-   * @returns `paid`, or `''` when the last delivery was not skipped.
-   */
-  lastSkipReason(): string {
-    return this.#skipReason;
   }
 }
 
@@ -237,16 +208,6 @@ function decidedUsd(raw: string | number | undefined): string | null {
 /** A string body value, or `null`. */
 function textOrNull(value: string | number | undefined): string | null {
   return typeof value === 'string' ? value : null;
-}
-
-/**
- * Reason of a skipped delivery. Only {@link HttpPayoutSink} and
- * {@link FondQueueSink} record one; any other sink falls back to `paid`.
- */
-function skipReasonOf(sink: PayoutSink): string {
-  const read = (sink as { lastSkipReason?: () => string }).lastSkipReason;
-  const reason = read === undefined ? '' : read.call(sink);
-  return reason === '' ? 'paid' : reason;
 }
 
 /**
@@ -460,12 +421,12 @@ export class HttpSpendPing implements SpendPing {
               comment: decision.comment,
             };
     const outcome = await this.#sink.deliver(address, body);
-    if (outcome === 'accepted') {
+    if (outcome.outcome === 'accepted') {
       logEvent('spend.ping.ok', { address });
       return;
     }
-    if (outcome === 'skipped') {
-      logEvent('spend.ping.skipped', { address, reason: skipReasonOf(this.#sink) });
+    if (outcome.outcome === 'skipped') {
+      logEvent('spend.ping.skipped', { address, reason: outcome.reason });
       return;
     }
     logEvent('spend.ping.failed', { address });
@@ -540,12 +501,12 @@ export class HttpSpendPing implements SpendPing {
             day,
           },
     );
-    if (outcome === 'accepted') {
+    if (outcome.outcome === 'accepted') {
       logEvent('spend.ping.ok', { address });
       return { status: 'accepted' };
     }
-    if (outcome === 'skipped') {
-      const reason = skipReasonOf(this.#sink);
+    if (outcome.outcome === 'skipped') {
+      const reason = outcome.reason;
       logEvent('spend.ping.skipped', { address, reason });
       return { status: 'skipped', reason };
     }

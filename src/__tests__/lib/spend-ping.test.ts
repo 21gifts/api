@@ -14,6 +14,7 @@ import {
   HttpPayoutSink,
   HttpSpendPing,
   NoopSpendPing,
+  type PayoutDelivery,
   resolveSpendPing,
 } from '@/lib/spend-ping';
 import { InMemoryFondPayoutStore } from '@/lib/fond-payout-store';
@@ -1599,19 +1600,19 @@ describe('HttpPayoutSink', () => {
       ...sinkOpts,
       fetchImpl: async () => new Response(null, { status: 200 }),
     });
-    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toBe('accepted');
+    expect(await accepted.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'accepted' });
     const failed = new HttpPayoutSink({
       ...sinkOpts,
       fetchImpl: async () => new Response(null, { status: 500 }),
     });
-    expect(await failed.deliver(ADDRESS, { address: ADDRESS })).toBe('failed');
+    expect(await failed.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
     const threw = new HttpPayoutSink({
       ...sinkOpts,
       fetchImpl: async () => {
         throw new Error('down');
       },
     });
-    expect(await threw.deliver(ADDRESS, { address: ADDRESS })).toBe('failed');
+    expect(await threw.deliver(ADDRESS, { address: ADDRESS })).toEqual({ outcome: 'failed' });
   });
 
   it('maps pingOnDay bodies: 202 and 200 accepted, 200 skipped, else failed', async () => {
@@ -1623,9 +1624,9 @@ describe('HttpPayoutSink', () => {
         return new Response(null, { status: 202 });
       },
     });
-    expect(await accepted.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' })).toBe(
-      'accepted',
-    );
+    expect(await accepted.deliver(ADDRESS, { address: ADDRESS, day: '2026-11-09' })).toEqual({
+      outcome: 'accepted',
+    });
     expect(seenInit?.method).toBe('POST');
     expect(new Headers(seenInit?.headers).get('Authorization')).toBe(`Bearer ${TOKEN}`);
     expect(JSON.parse(String(seenInit?.body))).toEqual({
@@ -1637,16 +1638,19 @@ describe('HttpPayoutSink', () => {
       ...sinkOpts,
       fetchImpl: async () => new Response(JSON.stringify({ status: 'accepted' }), { status: 200 }),
     });
-    expect(await jsonAccepted.deliver(ADDRESS, { day: '2026-11-09' })).toBe('accepted');
-    expect(jsonAccepted.lastSkipReason()).toBe('');
+    expect(await jsonAccepted.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({
+      outcome: 'accepted',
+    });
 
     const skipped = new HttpPayoutSink({
       ...sinkOpts,
       fetchImpl: async () =>
         new Response(JSON.stringify({ status: 'skipped', reason: 'paid' }), { status: 200 }),
     });
-    expect(await skipped.deliver(ADDRESS, { day: '2026-11-09' })).toBe('skipped');
-    expect(skipped.lastSkipReason()).toBe('paid');
+    expect(await skipped.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({
+      outcome: 'skipped',
+      reason: 'paid',
+    });
   });
 
   it.each([
@@ -1673,7 +1677,40 @@ describe('HttpPayoutSink', () => {
     ],
   ])('maps %s for a day body to failed', async (_name, fetchImpl) => {
     const sink = new HttpPayoutSink({ ...sinkOpts, fetchImpl });
-    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toBe('failed');
+    expect(await sink.deliver(ADDRESS, { day: '2026-11-09' })).toEqual({ outcome: 'failed' });
+  });
+
+  it('returns each concurrent delivery its own skip reason when responses finish in reverse', async () => {
+    const pending = new Map<string, (response: Response) => void>();
+    const fetchImpl: FetchFn = (_input, init) => {
+      if (init?.method === 'GET') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ paymentsEnabled: true }), { status: 200 }),
+        );
+      }
+      return new Promise<Response>((resolve) => {
+        const body = JSON.parse(String(init?.body)) as { day: string };
+        pending.set(body.day, resolve);
+      });
+    };
+    const sink = new HttpPayoutSink({ ...sinkOpts, fetchImpl });
+    const ping = new HttpSpendPing({
+      ...LOOKUP,
+      fetchImpl,
+      rosterStore: new InMemoryDailyRosterStore(),
+      sink,
+    });
+    const first = ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09', 'admitted');
+    const second = ping.pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-10', 'admitted');
+    await vi.waitFor(() => expect(pending.size).toBe(2));
+    pending.get('2026-11-10')?.(
+      new Response(JSON.stringify({ status: 'skipped', reason: 'second' }), { status: 200 }),
+    );
+    pending.get('2026-11-09')?.(
+      new Response(JSON.stringify({ status: 'skipped', reason: 'first' }), { status: 200 }),
+    );
+    await expect(second).resolves.toEqual({ status: 'skipped', reason: 'second' });
+    await expect(first).resolves.toEqual({ status: 'skipped', reason: 'first' });
   });
 });
 
@@ -1689,7 +1726,7 @@ describe('FondQueueSink', () => {
         comment: 'thanks',
         day: '2026-11-09',
       }),
-    ).toBe('accepted');
+    ).toEqual({ outcome: 'accepted' });
     const rows = await store.listOpen('2026-11-09');
     expect(rows).toHaveLength(1);
     expect(rows[0]).toMatchObject({
@@ -1746,7 +1783,7 @@ describe('FondQueueSink', () => {
       { address: ADDRESS, day: '2026-11-09', amountUsd: 1 },
       { address: ADDRESS, day: '2026-11-09', amountUsd: 1, comment: 7 },
     ]) {
-      expect(await sink.deliver(ADDRESS, body)).toBe('failed');
+      expect(await sink.deliver(ADDRESS, body)).toEqual({ outcome: 'failed' });
     }
     expect(await store.listOpen('2026-11-09')).toEqual([]);
   });
@@ -1785,9 +1822,9 @@ describe('FondQueueSink', () => {
         releaseSettlement: () => Promise.resolve(undefined),
       },
     });
-    expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toBe(
-      'failed',
-    );
+    expect(await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'x' })).toEqual({
+      outcome: 'failed',
+    });
   });
 
   it('returns skipped with reason paid when the existing row is paid', async () => {
@@ -1814,8 +1851,7 @@ describe('FondQueueSink', () => {
     const sink = new FondQueueSink({ store });
     expect(
       await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 2, comment: 'thanks' }),
-    ).toBe('skipped');
-    expect(sink.lastSkipReason()).toBe('paid');
+    ).toEqual({ outcome: 'skipped', reason: 'paid' });
   });
 
   it('returns failed when the store throws', async () => {
@@ -1837,8 +1873,7 @@ describe('FondQueueSink', () => {
     });
     expect(
       await sink.deliver(ADDRESS, { day: '2026-11-09', amountUsd: 1, comment: 'thanks' }),
-    ).toBe('failed');
-    expect(sink.lastSkipReason()).toBe('');
+    ).toEqual({ outcome: 'failed' });
   });
 });
 
@@ -1922,15 +1957,10 @@ describe('HttpSpendPing with an injected sink', () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setAddressRefKey(TOKEN);
     const deliver = vi
-      .fn<
-        (
-          address: string,
-          body: Record<string, string | number>,
-        ) => Promise<'accepted' | 'skipped' | 'failed'>
-      >()
-      .mockResolvedValueOnce('accepted')
-      .mockResolvedValueOnce('skipped')
-      .mockResolvedValueOnce('failed');
+      .fn<(address: string, body: Record<string, string | number>) => Promise<PayoutDelivery>>()
+      .mockResolvedValueOnce({ outcome: 'accepted' })
+      .mockResolvedValueOnce({ outcome: 'skipped', reason: 'paid' })
+      .mockResolvedValueOnce({ outcome: 'failed' });
     const sink = { deliver };
     const ping = new HttpSpendPing({
       fetchImpl: async () => new Response(null, { status: 200 }),
@@ -1959,10 +1989,12 @@ describe('HttpSpendPing with an injected sink', () => {
     setAddressRefKey(null);
   });
 
-  it('falls back to reason paid for an injected sink that records none', async () => {
+  it('passes through the skip reason from an injected sink', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setAddressRefKey(TOKEN);
-    const sink = { deliver: async (): Promise<'skipped'> => 'skipped' };
+    const sink = {
+      deliver: async (): Promise<PayoutDelivery> => ({ outcome: 'skipped', reason: 'closed' }),
+    };
     const outcome = await new HttpSpendPing({
       fetchImpl: async () => new Response(null, { status: 200 }),
       ...LOOKUP,
@@ -1971,10 +2003,10 @@ describe('HttpSpendPing with an injected sink', () => {
       }),
       sink,
     }).pingOnDay(ADDRESS, MESSAGE_ID, '2026-11-09');
-    expect(outcome).toEqual({ status: 'skipped', reason: 'paid' });
+    expect(outcome).toEqual({ status: 'skipped', reason: 'closed' });
     expect(
       parsedEvents(warn).some(
-        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'paid',
+        (event) => event['event'] === 'spend.ping.skipped' && event['reason'] === 'closed',
       ),
     ).toBe(true);
     warn.mockRestore();
@@ -1984,7 +2016,10 @@ describe('HttpSpendPing with an injected sink', () => {
   it('logs spend.ping.skipped when the injected sink skips during ping', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setAddressRefKey(TOKEN);
-    const deliver = vi.fn(async () => 'skipped' as const);
+    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({
+      outcome: 'skipped',
+      reason: 'paid',
+    }));
     await new HttpSpendPing({
       fetchImpl: async () => new Response(null, { status: 200 }),
       ...LOOKUP,
@@ -2007,7 +2042,7 @@ describe('HttpSpendPing with an injected sink', () => {
   it('reads only the written roster store when the sink is injected without spend env', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
     setAddressRefKey(TOKEN);
-    const deliver = vi.fn(async () => 'accepted' as const);
+    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({ outcome: 'accepted' }));
     const rosterStore = writtenStore({ recipients: [{ address: ADDRESS, amountUsd: 2 }] });
     const hasBeenWritten = vi.spyOn(rosterStore, 'hasBeenWritten');
     await new HttpSpendPing({
@@ -2025,7 +2060,7 @@ describe('HttpSpendPing with an injected sink', () => {
     setAddressRefKey(TOKEN);
     const rosterStore = writtenStore();
     vi.spyOn(rosterStore, 'get').mockRejectedValue(new Error('down'));
-    const deliver = vi.fn(async () => 'accepted' as const);
+    const deliver = vi.fn(async (): Promise<PayoutDelivery> => ({ outcome: 'accepted' }));
     await new HttpSpendPing({
       fetchImpl: async () => new Response(null, { status: 500 }),
       rosterStore,

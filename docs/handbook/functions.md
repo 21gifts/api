@@ -5326,14 +5326,14 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 
 - **Purpose:** The legacy `POST {spendUrl}/ping` delivery with Bearer `SPEND_API_TOKEN`. A body without `day` maps any 2xx to accepted and everything else to failed. A body with `day` keeps the strict mapping: 202 accepted; 200 whose JSON `status` is `accepted` accepted; 200 whose JSON `status` is `skipped` with a non-empty string `reason` skipped; any other status, unparsable JSON, or throw failed.
 - **Inputs:** Constructor `{ spendUrl, token, fetchImpl, timeoutMs? }` (default 5000 ms). `deliver(address, body)`.
-- **Returns / side effects:** `'accepted' | 'skipped' | 'failed'`. Never throws and never logs the token. `lastSkipReason()` returns the most recent skip reason.
+- **Returns / side effects:** `Promise<PayoutDelivery>`: `{ outcome: 'accepted' }`, `{ outcome: 'skipped', reason }`, or `{ outcome: 'failed' }`. Never throws and never logs the token.
 - **Used by:** `HttpSpendPing` and `resolveSpendPing`.
 
 ## Function: FondQueueSink
 
-- **Purpose:** Write one `fond_payout` row from a decided instruction. The body `kind` (default daily) selects the row kind; the body `day` is the UTC day, otherwise the clock UTC day. A finite positive numeric `amountUsd` is stored as `String(number)`; a non-empty decimal string is stored exactly as decided. A missing, non-finite, non-positive, or non-numeric amount, or a missing/non-string comment, writes nothing and returns `'failed'`. `messageId`/`groupMessageId` are stored only for their kind. The queue dedupe is spend's: daily/moderator per day, welcome once ever per address.
+- **Purpose:** Write one `fond_payout` row from a decided instruction. The body `kind` (default daily) selects the row kind; the body `day` is the UTC day, otherwise the clock UTC day. A finite positive numeric `amountUsd` is stored as `String(number)`; a non-empty decimal string is stored exactly as decided. A missing, non-finite, non-positive, or non-numeric amount, or a missing/non-string comment, writes nothing and returns `{ outcome: 'failed' }`. `messageId`/`groupMessageId` are stored only for their kind. The queue dedupe is spend's: daily/moderator per day, welcome once ever per address.
 - **Inputs:** Constructor `{ store, now? }`. `deliver(address, body)`.
-- **Returns / side effects:** `'accepted'` for a new or already-queued row; `'skipped'` with reason `paid` when the existing row is paid; `'failed'` for invalid input, an unconfirmed conflict, or a store throw. Never throws.
+- **Returns / side effects:** `Promise<PayoutDelivery>`: `{ outcome: 'accepted' }` for a new or already-queued row; `{ outcome: 'skipped', reason: 'paid' }` when the existing row is paid; `{ outcome: 'failed' }` for invalid input, an unconfirmed conflict, or a store throw. Never throws.
 - **Used by:** `resolveSpendPing` when `PAYOUT_SIGNER=fond`.
 
 ## Function: issueGiftInvoice
