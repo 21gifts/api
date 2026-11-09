@@ -7,6 +7,7 @@ import type {
   WalletPaymentClass,
   WalletPaymentCategory,
 } from '@/lib/wallet-category';
+import { postgresTextArrayLiteral } from '@/lib/postgres-text-array';
 import type {
   ReportedWalletPayment,
   WalletPaymentDirection,
@@ -57,6 +58,18 @@ export interface WalletPaymentCursor {
 
 /** Persistence contract for wallet report data. */
 export interface WalletStore {
+  /**
+   * Find distinct accounts with completed outgoing payments to the receiver matching either key.
+   *
+   * @param receiverAccountId - Account receiving the payments.
+   * @param keys - Client correlation ids and nullable invoice and hash lookup keys.
+   * @returns Matching sender account ids sorted by id, keyed by correlation id; absent ids have no matches.
+   * @throws Propagates storage failures.
+   */
+  findPaymentSenders(
+    receiverAccountId: string,
+    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+  ): Promise<Map<string, string[]>>;
   /**
    * Append one balance snapshot.
    *
@@ -148,6 +161,7 @@ export const WALLET_SCHEMA_SQL: readonly string[] = [
   `ALTER TABLE wallet_payment ADD COLUMN IF NOT EXISTS last_observed_at timestamptz`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_account_paid_idx ON wallet_payment (account_id, paid_at DESC, payment_id DESC)`,
   `CREATE INDEX IF NOT EXISTS wallet_payment_payment_id_idx ON wallet_payment (payment_id)`,
+  `CREATE INDEX IF NOT EXISTS wallet_payment_counterparty_idx ON wallet_payment (counterparty_account_id) WHERE direction = 'out'`,
 ];
 
 /**
@@ -280,6 +294,37 @@ export class InMemoryWalletStore implements WalletStore {
   constructor(accountKind?: (accountId: string) => Promise<WalletAccountKind>) {
     this.#accountKind =
       accountKind ?? ((): Promise<WalletAccountKind> => Promise.resolve('member'));
+  }
+
+  /**
+   * Find distinct senders of completed outgoing payments to the receiver.
+   * @param receiverAccountId - Receiver account id.
+   * @param keys - Correlation ids with invoice and hash keys.
+   * @returns Matching sorted account ids by correlation id.
+   */
+  findPaymentSenders(
+    receiverAccountId: string,
+    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+  ): Promise<Map<string, string[]>> {
+    const result = new Map<string, string[]>();
+    for (const key of keys) {
+      const senders = new Set<string>();
+      for (const { row } of this.#payments.values()) {
+        if (
+          row.direction === 'out' &&
+          row.status === 'completed' &&
+          row.counterpartyAccountId === receiverAccountId &&
+          row.accountId !== receiverAccountId &&
+          ((key.invoice !== null && row.invoice === key.invoice) ||
+            (key.paymentHash !== null &&
+              row.paymentHash?.toLowerCase() === key.paymentHash.toLowerCase()))
+        ) {
+          senders.add(row.accountId);
+        }
+      }
+      if (senders.size > 0) result.set(key.id, [...senders].sort());
+    }
+    return Promise.resolve(result);
   }
 
   /**
@@ -624,6 +669,42 @@ export class PostgresWalletStore implements WalletStore {
    * @param sql - Parameter-bound SQL client for an already migrated database.
    */
   constructor(private readonly sql: SqlClient) {}
+
+  /**
+   * Find distinct senders of completed outgoing payments to the receiver in one query.
+   * @param receiverAccountId - Receiver account id.
+   * @param keys - Correlation ids with invoice and hash keys.
+   * @returns Matching sorted account ids by correlation id.
+   * @throws Propagates SQL failures.
+   */
+  async findPaymentSenders(
+    receiverAccountId: string,
+    keys: readonly { id: string; invoice: string | null; paymentHash: string | null }[],
+  ): Promise<Map<string, string[]>> {
+    const rows = await this.sql.query<{ id: string; account_id: string }>(
+      `SELECT DISTINCT k.id, p.account_id
+FROM unnest($2::text[], $3::text[], $4::text[]) AS k(id, invoice, payment_hash)
+JOIN wallet_payment p ON p.direction = 'out' AND p.counterparty_account_id = $1
+  AND p.account_id <> $1 AND p.status = 'completed'
+  AND ((NULLIF(k.invoice, '') IS NOT NULL AND p.invoice = k.invoice)
+    OR (NULLIF(k.payment_hash, '') IS NOT NULL AND lower(p.payment_hash) = lower(k.payment_hash)))
+ORDER BY k.id, p.account_id`,
+      [
+        receiverAccountId,
+        postgresTextArrayLiteral(keys.map((_, index) => String(index))),
+        postgresTextArrayLiteral(keys.map((key) => key.invoice ?? '')),
+        postgresTextArrayLiteral(keys.map((key) => key.paymentHash ?? '')),
+      ],
+    );
+    const result = new Map<string, string[]>();
+    for (const row of rows) {
+      const key = keys[Number(row.id)];
+      /* v8 ignore next -- SQL returns only indexes generated from these keys in the same query. */
+      if (key === undefined) continue;
+      result.set(key.id, [...(result.get(key.id) ?? []), row.account_id]);
+    }
+    return result;
+  }
 
   /**
    * Insert one immutable balance snapshot.
