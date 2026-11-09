@@ -1,13 +1,17 @@
 import { createHash } from 'node:crypto';
+import { bech32 } from '@scure/base';
 import { Hono } from 'hono';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { InMemoryAuthStore, type Account } from '@/lib/auth/store';
 import { fetchBtcUsdSpot } from '@/lib/btc-usd-spot';
+import { InMemoryConversationStore } from '@/lib/conversation-store';
 import { InMemoryFondPayoutStore, type FondPayoutEnqueue } from '@/lib/fond-payout-store';
 import { InMemoryFundingStore } from '@/lib/funding-store';
 import type { GiftRecord, GiftRecorder } from '@/lib/gift-recorder';
 import { InMemoryInvoiceStore, type GiftInvoice } from '@/lib/invoice-store';
+import type { FetchFn } from '@/lib/lnurlp';
 import { InMemoryMessageStore } from '@/lib/message-store';
+import { unsignedNostrDefaults, type MessageRow } from '@/lib/message';
 import { fondRoutes } from '@/routes/fond';
 import { issueGiftInvoice } from '@/routes/invoices';
 
@@ -36,6 +40,11 @@ const BOLT11 = 'lnbc1fond';
 const ROW_ID = '11111111-1111-4111-8111-111111111111';
 const PREIMAGE = 'a'.repeat(64);
 const PREIMAGE_HASH = createHash('sha256').update(Buffer.from(PREIMAGE, 'hex')).digest('hex');
+const LNURL = {
+  baseUrl: 'https://lnurl.test',
+  publicBaseUrl: 'https://gifts.test',
+  host: 'gifts.test',
+};
 
 function rowInput(partial: Partial<FondPayoutEnqueue> = {}): FondPayoutEnqueue {
   return {
@@ -64,6 +73,19 @@ function invoice(partial: Partial<GiftInvoice> = {}): GiftInvoice {
   };
 }
 
+function post(partial: Partial<MessageRow> = {}): MessageRow {
+  return {
+    id: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+    accountId: 'ada',
+    name: 'Ada',
+    text: 'first',
+    createdAt: new Date(1),
+    hasPhoto: false,
+    ...unsignedNostrDefaults(),
+    ...partial,
+  };
+}
+
 async function fondAccount(
   store: InMemoryAuthStore,
   options: {
@@ -71,6 +93,10 @@ async function fondAccount(
     role?: Account['role'];
     username?: string | null;
     isPlatform?: boolean;
+    sessionToken?: string;
+    viewKey?: string;
+    walletRequired?: boolean;
+    name?: string;
   } = {},
 ): Promise<Account> {
   const id = options.id ?? 'fond-account';
@@ -78,18 +104,46 @@ async function fondAccount(
     id,
     linkingKey: null,
     role: options.role ?? 'fond',
-    name: 'Fond',
+    name: options.name ?? 'Fond',
     forumLawsDismissed: false,
     location: null,
-    viewKey: 'b'.repeat(64),
+    viewKey: options.viewKey ?? 'b'.repeat(64),
     createdAt: 1,
     rulesAgreedAt: null,
     username: options.username === undefined ? FOND : options.username,
     ...(options.isPlatform === undefined ? {} : { isPlatform: options.isPlatform }),
+    ...(options.walletRequired === undefined ? {} : { walletRequired: options.walletRequired }),
   });
-  await store.tryCreateSession({ token: TOKEN, accountId: id, createdAt: NOW });
+  await store.tryCreateSession({
+    token: options.sessionToken ?? TOKEN,
+    accountId: id,
+    createdAt: NOW,
+  });
   const account = await store.getAccount(id);
   return account as Account;
+}
+
+async function verifiedRecipient(store: InMemoryAuthStore): Promise<void> {
+  await fondAccount(store, {
+    id: 'ada',
+    role: 'verified',
+    username: 'ada',
+    sessionToken: 'ada-session',
+    viewKey: 'c'.repeat(64),
+    walletRequired: true,
+    name: 'Ada',
+  });
+  const recipientPubkey = '02' + 'ab'.repeat(32);
+  const recipient = await store.getAccount('ada');
+  await store.claimSparkPubkey('ada', recipientPubkey);
+  await store.markSparkPubkeyVerified('ada', recipientPubkey, recipient!.username!, 1);
+  await store.createPasskeyCredential({
+    credentialId: 'cred-ada',
+    publicKey: new Uint8Array([1]),
+    signCount: 0,
+    accountId: 'ada',
+    createdAt: 1,
+  });
 }
 
 interface AppOptions {
@@ -98,6 +152,12 @@ interface AppOptions {
   actionsStore?: InMemoryInvoiceStore;
   payoutStore?: InMemoryFondPayoutStore;
   giftRecorder?: GiftRecorder;
+  messageStore?: InMemoryMessageStore;
+  conversationStore?: InMemoryConversationStore;
+  fundingStore?: InMemoryFundingStore;
+  fetchImpl?: FetchFn;
+  seedPlatform?: boolean;
+  seedRecipient?: boolean;
 }
 
 async function makeApp(options: AppOptions = {}): Promise<{
@@ -105,13 +165,34 @@ async function makeApp(options: AppOptions = {}): Promise<{
   auth: InMemoryAuthStore;
   payouts: InMemoryFondPayoutStore;
   invoices: InMemoryInvoiceStore;
+  messages: InMemoryMessageStore;
+  conversations?: InMemoryConversationStore;
 }> {
   const auth = new InMemoryAuthStore();
   if (options.seedFond !== false) {
     await fondAccount(auth);
   }
+  if (options.seedRecipient === true) {
+    await verifiedRecipient(auth);
+  }
+  if (options.seedPlatform === true) {
+    await auth.createAccount({
+      id: 'platform',
+      linkingKey: null,
+      role: 'founder',
+      name: '21.gifts',
+      forumLawsDismissed: false,
+      location: null,
+      viewKey: 'f'.repeat(64),
+      createdAt: 1,
+      rulesAgreedAt: null,
+      isPlatform: true,
+    });
+  }
   const payouts = options.payoutStore ?? new InMemoryFondPayoutStore(() => NOW);
   const invoices = options.actionsStore ?? new InMemoryInvoiceStore();
+  const messages = options.messageStore ?? new InMemoryMessageStore();
+  const fetchImpl = options.fetchImpl ?? (async () => new Response(null, { status: 500 }));
   const app = new Hono().route(
     '/fond',
     fondRoutes({
@@ -120,23 +201,89 @@ async function makeApp(options: AppOptions = {}): Promise<{
       payoutSigner: options.signer ?? 'fond',
       fondUsername: FOND,
       now: () => NOW,
-      fetchImpl: async () => new Response(null, { status: 500 }),
+      fetchImpl,
+      lnurlServer: LNURL,
       actions: {
         store: invoices,
         authStore: auth,
-        messageStore: new InMemoryMessageStore(),
+        messageStore: messages,
         now: () => NOW,
-        fetchImpl: async () => new Response(null, { status: 500 }),
-        fundingStore: new InMemoryFundingStore(),
+        fetchImpl,
+        fundingStore: options.fundingStore ?? new InMemoryFundingStore(),
+        lnurlServer: LNURL,
         ...(options.giftRecorder === undefined ? {} : { giftRecorder: options.giftRecorder }),
+        ...(options.conversationStore === undefined
+          ? {}
+          : { conversationStore: options.conversationStore }),
       },
     }),
   );
-  return { app, auth, payouts, invoices };
+  return {
+    app,
+    auth,
+    payouts,
+    invoices,
+    messages,
+    ...(options.conversationStore === undefined
+      ? {}
+      : { conversations: options.conversationStore }),
+  };
 }
 
 function authHeader(token = TOKEN): { authorization: string } {
   return { authorization: `Bearer ${token}` };
+}
+
+function spendGiftReplyId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `5${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(18, 20)}`,
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function spendGroupGiftId(invoiceId: string): string {
+  const hex = createHash('sha256').update(`21gifts-spend-group-gift:${invoiceId}`).digest('hex');
+  const variant = ((parseInt(hex.slice(16, 18), 16) & 0x3f) | 0x80).toString(16).padStart(2, '0');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    `5${hex.slice(13, 16)}`,
+    `${variant}${hex.slice(18, 20)}`,
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+function words(value: number, length: number): number[] {
+  const out: number[] = [];
+  for (let i = length - 1; i >= 0; i -= 1) {
+    out.push(Math.floor(value / 32 ** i) % 32);
+  }
+  return out;
+}
+
+function tagged(type: number, data: number[]): number[] {
+  return [type, ...words(data.length, 2), ...data];
+}
+
+function bolt11ForSats(sats: number, paymentHash: string): string {
+  const data = [
+    ...words(1_700_000_000, 7),
+    ...tagged(1, bech32.toWords(Buffer.from(paymentHash, 'hex'))),
+    ...bech32.toWords(new Uint8Array(65)),
+  ];
+  return bech32.encode(`lnbc${sats * 10}n`, data, false);
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'content-type': 'application/json' },
+  });
 }
 
 beforeEach(() => {
@@ -615,6 +762,96 @@ describe('POST /fond/payouts/:id/invoice', () => {
     expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('messageId');
   });
 
+  it('omits amountUsd when the exact USD rounds below one cent', async () => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ amountUsd: '0.004' }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(4000);
+    expect(mockedIssue.mock.calls[0]?.[1]).not.toHaveProperty('amountUsd');
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', failure: null });
+  });
+
+  it.each([
+    ['1.230', '1.23'],
+    ['1', '1.00'],
+  ])('passes the exact %s USD as the two-decimal display %s', async (decided, display) => {
+    const { app, payouts } = await makeApp();
+    await payouts.enqueue(rowInput({ amountUsd: decided }));
+    mockedIssue.mockResolvedValue({ ok: true, invoice: invoice() });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(mockedIssue).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ amountUsd: display }),
+    );
+    expect(mockedIssue.mock.calls[0]?.[1].amountMsat).toBe(
+      Math.round((Number(decided) / 100000) * 1e8) * 1000,
+    );
+    expect(await payouts.get(ROW_ID)).toMatchObject({ status: 'invoiced', failure: null });
+  });
+
+  it('issues a 0.004 payout through the real validator and marks it invoiced', async () => {
+    const paymentHash = 'cd'.repeat(32);
+    const invoicePr = bolt11ForSats(4, paymentHash);
+    const fetchImpl: FetchFn = async (input) => {
+      if (String(input).includes('/.well-known/lnurlp/ada')) {
+        return jsonResponse({
+          callback: `${LNURL.baseUrl}/lnurlp/ada/invoice`,
+          minSendable: 1000,
+          maxSendable: 100_000_000,
+          commentAllowed: 255,
+        });
+      }
+      return jsonResponse({ pr: invoicePr });
+    };
+    const messages = new InMemoryMessageStore([
+      post({ accountId: 'ada', hasVideo: true, videoContentType: 'video/mp4' }),
+    ]);
+    const fundingStore = new InMemoryFundingStore([
+      {
+        accountId: 'ada',
+        status: 'admitted',
+        appliedAt: 1,
+        decidedAt: 1,
+        decidedBy: 'staff',
+        trialUtcDate: null,
+        admittedAt: 1,
+        note: null,
+      },
+    ]);
+    const { app, payouts } = await makeApp({
+      fetchImpl,
+      fundingStore,
+      messageStore: messages,
+      seedPlatform: true,
+      seedRecipient: true,
+    });
+    const actual = await vi.importActual<typeof import('@/routes/invoices')>('@/routes/invoices');
+    mockedIssue.mockImplementation(actual.issueGiftInvoice);
+    await payouts.enqueue(rowInput({ amountUsd: '0.004', address: 'ada@gifts.test' }));
+    const res = await app.request(`/fond/payouts/${ROW_ID}/invoice`, {
+      method: 'POST',
+      headers: authHeader(),
+    });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toMatchObject({ id: ROW_ID, paymentHash, bolt11: invoicePr });
+    expect(await payouts.get(ROW_ID)).toMatchObject({
+      status: 'invoiced',
+      failure: null,
+      amountMsat: 4000,
+      paymentHash,
+      bolt11: invoicePr,
+    });
+  });
+
   it('stores the issue refusal text and answers 409', async () => {
     const { app, payouts } = await makeApp();
     await payouts.enqueue(rowInput());
@@ -844,6 +1081,93 @@ describe('POST /fond/payouts/:id/proof', () => {
     });
   });
 
+  it('posts the platform gift reply and credits the daily trigger post', async () => {
+    const triggerId = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+    const messages = new InMemoryMessageStore([post({ id: triggerId })]);
+    const { app, payouts } = await makeApp({
+      messageStore: messages,
+      seedPlatform: true,
+      seedRecipient: true,
+    });
+    await payouts.enqueue(rowInput({ address: 'ada@gifts.test', messageId: triggerId }));
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: PREIMAGE_HASH,
+      bolt11: BOLT11,
+      amountMsat: 1_000_000,
+    });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    const reply = await messages.getById(spendGiftReplyId(INVOICE_ID));
+    expect(reply).toMatchObject({
+      accountId: 'platform',
+      parentId: triggerId,
+      text: 'thanks',
+      sats: 1000,
+    });
+    const credited = await messages.getById(triggerId);
+    expect(credited?.sats).toBe(1000);
+    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
+  });
+
+  it('appends the moderator stipend line for the durable group message', async () => {
+    const conversations = new InMemoryConversationStore();
+    const thread = await conversations.ensureModeratorGroup('platform', new Date(1));
+    await conversations.appendMessage({
+      id: 'group-id',
+      conversationId: thread.id,
+      text: 'mod note',
+      createdAt: new Date(1),
+      senderAccountId: 'ada',
+      senderPubkey: null,
+      name: 'Ada',
+      sats: 0,
+      eventId: null,
+      nostrPublishState: 'skipped',
+      nostrEvent: null,
+      claimedUntil: null,
+    });
+    const { app, payouts } = await makeApp({
+      conversationStore: conversations,
+      seedPlatform: true,
+      seedRecipient: true,
+    });
+    await payouts.enqueue(
+      rowInput({
+        address: 'ada@gifts.test',
+        kind: 'moderator',
+        messageId: null,
+        groupMessageId: 'group-id',
+      }),
+    );
+    await payouts.claimForInvoice(ROW_ID, TODAY);
+    await payouts.setInvoiced(ROW_ID, {
+      invoiceId: INVOICE_ID,
+      paymentHash: PREIMAGE_HASH,
+      bolt11: BOLT11,
+      amountMsat: 2_345_000,
+    });
+    const res = await app.request(`/fond/payouts/${ROW_ID}/proof`, {
+      method: 'POST',
+      headers: authHeader(),
+      body: JSON.stringify(preimage),
+    });
+    expect(res.status).toBe(200);
+    expect(await conversations.getMessageById(spendGroupGiftId(INVOICE_ID))).toMatchObject({
+      conversationId: thread.id,
+      text: 'thanks · Ada',
+      senderAccountId: 'platform',
+      sats: 2345,
+      giftForMessageId: 'group-id',
+    });
+    expect((await payouts.get(ROW_ID))?.status).toBe('paid');
+  });
+
   it('returns paid idempotently for a paid row and relies on recorder idempotency', async () => {
     const records: GiftRecord[] = [];
     const byInvoice = new Map<string, GiftRecord>();
@@ -920,7 +1244,7 @@ describe('POST /fond/payouts/:id/proof', () => {
     }
   });
 
-  it('persists the decided USD string exactly on the gift', async () => {
+  it('persists the exact decided USD on the gift while accepting the display amount', async () => {
     const records: GiftRecord[] = [];
     const { app, payouts } = await makeApp({
       giftRecorder: {

@@ -25,7 +25,7 @@ import { bearerToken } from '@/routes/me';
 import {
   GIFT_PROOF_MISMATCH,
   issueGiftInvoice,
-  persistProvenGift,
+  settleProvenGift,
   type GiftActionDeps,
   type IssueGiftInvoiceResult,
 } from '@/routes/invoices';
@@ -109,6 +109,23 @@ function usdToMsat(amountUsd: string, spot: string): number | null {
     return null;
   }
   return Math.round((usd / usdPerBtc) * 1e8) * 1000;
+}
+
+/**
+ * Two-decimal display amount for the issue body.
+ *
+ * The display amount is cosmetic. It is the exact decided USD rounded half-up
+ * to cents and formatted with exactly two decimals so `issueGiftInvoice`'s
+ * two-decimal validator accepts it. A value below one cent would display as
+ * `"0.00"`, so the caller omits it instead. The paid sats always come from the
+ * exact value in {@link usdToMsat}.
+ *
+ * @param amountUsd - Exact decided USD value.
+ * @returns Two-decimal USD display string, or `null` when below one cent.
+ */
+function displayAmountUsd(amountUsd: string): string | null {
+  const display = (Math.round(Number(amountUsd) * 100) / 100).toFixed(2);
+  return display === '0.00' ? null : display;
 }
 
 /**
@@ -256,6 +273,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
         return c.json({ error: FOND_AMOUNT_BELOW_ONE_SAT }, 409);
       }
 
+      const displayUsd = displayAmountUsd(row.amountUsd);
       let result: IssueGiftInvoiceResult;
       try {
         result = await issueGiftInvoice(deps.actions, {
@@ -264,7 +282,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           comment: row.comment,
           ...(row.messageId === null ? {} : { messageId: row.messageId }),
           ...(row.groupMessageId === null ? {} : { groupMessageId: row.groupMessageId }),
-          amountUsd: row.amountUsd,
+          ...(displayUsd === null ? {} : { amountUsd: displayUsd }),
         });
       } catch {
         await deps.fondPayoutStore.releaseClaim(row.id);
@@ -337,7 +355,7 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
       }
       const paidAt = deps.now();
       const fiat: FiatAmounts = { usd: row.amountUsd, chf: null, eur: null, php: null };
-      await persistProvenGift(
+      await settleProvenGift(
         deps.actions,
         {
           id: row.invoiceId,
@@ -353,8 +371,8 @@ export function fondRoutes(deps: FondRouteDeps): Hono {
           amountUsd: row.amountUsd,
         },
         paidAt,
-        fiat,
         deps.fondUsername,
+        fiat,
         row.kind,
       );
       if (row.status !== 'paid') {

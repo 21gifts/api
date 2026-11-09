@@ -4807,6 +4807,15 @@ test('Function: proveGiftInvoice — POST /invoices/proof unconfigured is 503', 
   expect(res.status()).toBe(503);
 });
 
+test('Function: settleProvenGift — POST /invoices/proof unconfigured is 503', async ({
+  request,
+}) => {
+  const res = await request.post('/invoices/proof', {
+    data: { id: 'x', preimage: 'a'.repeat(64) },
+  });
+  expect(res.status()).toBe(503);
+});
+
 test('Function: persistProvenGift — default boot serves HTTP', async ({ request }) => {
   const res = await request.get('/healthz');
   expect(res.status()).toBe(200);

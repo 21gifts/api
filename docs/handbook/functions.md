@@ -3737,16 +3737,16 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: roleRank
 
-- **Purpose:** Integer rank of a live `AccountRole` from the rank map (`basis` = 0, `verified` = 1, `moderator` = 2, `initiator` = 2, `founder` = 3). `ROLE_ORDER` is the identity list, not the rank.
-- **Inputs:** `role` (`AccountRole`).
+- **Purpose:** Integer rank of a `RankRole` from the rank map (`basis` = 0, `verified` = 1, `moderator` = 2, `initiator` = 2, `founder` = 3). `ROLE_ORDER` is the identity list, not the rank. `fond` is a payer role for one member and has no rank, so it is not a `RankRole`.
+- **Inputs:** `role` (`RankRole`: `basis` \| `verified` \| `moderator` \| `initiator` \| `founder`).
 - **Returns / side effects:** Integer 0–3. No I/O.
 - **Used by:** `roleAtLeast`, `sameRoleRank`.
 
 ## Function: roleAtLeast
 
-- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check. The named permissions that are not rank checks are `canEditDailyPayoutRoster` and `canSignFondPayouts`.
-- **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `AccountRole` that may proceed).
-- **Returns / side effects:** boolean. No I/O.
+- **Purpose:** Whether a caller's live role meets a minimum, including equal rank. Initiator has the same rank as moderator; founder stays strictly above. True when `roleRank(role)` is ≥ `roleRank(min)`. `fond` never meets a minimum and returns false. Every permission names a minimum role; an equality test on the caller's role is a defect. Subject rank equality uses `sameRoleRank`, not this caller check. The named permissions that are not rank checks are `canEditDailyPayoutRoster` and `canSignFondPayouts`.
+- **Inputs:** `role` (caller's live `AccountRole`), `min` (minimum `RankRole` that may proceed).
+- **Returns / side effects:** boolean. False for `fond`; otherwise `roleRank(role) >= roleRank(min)`. No I/O.
 - **Used by:** `isStaffRole`, `isStaffAccount`, `isChainAccount`, `conversationRoutes`, `messagesRoutes`, `trustRoutes` (`POST /trust/appoint-moderator`), `inboxUnreadCountFor`, `isModeratorGroupMember`.
 
 ## Function: canEditDailyPayoutRoster
@@ -3758,9 +3758,9 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: sameRoleRank
 
-- **Purpose:** Whether two live roles share a numeric rank. True when `roleRank(role)` equals `roleRank(other)`. The moderator rank matches initiator and does not match founder. Used for subject state on confirm and appoint so a stored role at that rank is left unchanged.
+- **Purpose:** Whether two live roles share a numeric rank. True when both are ranked and `roleRank(role)` equals `roleRank(other)`. The moderator rank matches initiator and does not match founder. `fond` has no rank, so either side being `fond` is never equal. Used for subject state on confirm and appoint so a stored role at that rank is left unchanged.
 - **Inputs:** `role` and `other`, both `AccountRole`.
-- **Returns / side effects:** boolean. No I/O.
+- **Returns / side effects:** boolean; false when either side is `fond`. No I/O.
 - **Used by:** `trustRoutes` confirm and appoint, when deciding whether the subject is already at the moderator rank.
 
 ## Function: isModeratorGroupMember
@@ -3772,8 +3772,8 @@ Reads the country of a map pin from its coordinates with the offline boundary da
 
 ## Function: isStaffRole
 
-- **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. `basis` and `verified` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and `POST /trust/reject-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
-- **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `initiator` \| `founder`).
+- **Purpose:** True when `account.role` may run staff trust routes. Delegates to `roleAtLeast(role, 'moderator')`. `basis`, `verified`, and `fond` return false. Used before `GET /trust/proposals`, `POST /trust/verify`, `POST /trust/propose-moderator`, `POST /trust/confirm-moderator`, and `POST /trust/reject-moderator` (appoint requires founder separately via `roleAtLeast(..., 'founder')`).
+- **Inputs:** `AccountRole` (`basis` \| `verified` \| `moderator` \| `initiator` \| `founder` \| `fond`).
 - **Returns / side effects:** boolean. No I/O.
 - **Used by:** `trustRoutes`.
 
@@ -5348,6 +5348,13 @@ The two containers of a deploy each run their own ticks. Their per-process Orche
 - **Inputs:** `GiftActionDeps`, proven `GiftInvoice`, paid-at epoch milliseconds, fiat snapshot, `sourceWallet`, and an optional `kind` override.
 - **Returns / side effects:** Resolves after the recorder call. No preimage or BOLT11 is logged.
 - **Used by:** `POST /invoices/proof` through `finishPaid`, and `POST /fond/payouts/:id/proof` with the durable row.
+
+## Function: settleProvenGift
+
+- **Purpose:** Persist every side effect of a proven invoice: the gift row, the forum credit/reply, and the moderator-group stipend. Attach failures are logged inside the helpers and never block the paid answer.
+- **Inputs:** `GiftActionDeps`, proven invoice fields, `paidAtMs`, `sourceWallet`, `fiat`, and an optional `kindOverride`.
+- **Returns / side effects:** Resolves after the three writes. Attach failures are logged and never block the paid answer.
+- **Used by:** `proveGiftInvoice` via `finishPaid`, and `fondRoutes` proof.
 
 ## Function: proveGiftInvoice
 

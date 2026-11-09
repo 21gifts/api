@@ -649,7 +649,31 @@ async function attachSpendGroupGift(
 
 /**
  * Persist every side effect of a proven invoice (gift row, forum credit,
- * moderator-group stipend).
+ * moderator-group stipend). Attach failures are logged inside the helpers and
+ * never block the paid answer.
+ *
+ * @param deps - Action collaborators.
+ * @param invoice - Proven invoice fields from the stored row.
+ * @param paidAtMs - Proof clock.
+ * @param sourceWallet - Paying wallet label.
+ * @param fiat - Payment-time snapshot shared by all three writes.
+ * @param kindOverride - Durable payout kind when the caller stores one.
+ */
+export async function settleProvenGift(
+  deps: GiftActionDeps,
+  invoice: GiftInvoice,
+  paidAtMs: number,
+  sourceWallet: string,
+  fiat: FiatAmounts | null,
+  kindOverride?: GiftKind,
+): Promise<void> {
+  await persistProvenGift(deps, invoice, paidAtMs, fiat, sourceWallet, kindOverride);
+  await attachSpendGiftReply(deps, invoice, paidAtMs, fiat);
+  await attachSpendGroupGift(deps, invoice, paidAtMs, fiat);
+}
+
+/**
+ * Persist every side effect of a proven spend invoice.
  *
  * @param deps - Action collaborators.
  * @param invoice - Proven invoice.
@@ -663,9 +687,7 @@ async function finishPaid(
   sourceWallet: string,
 ): Promise<void> {
   const fiat = await paymentFiat(invoice);
-  await persistProvenGift(deps, invoice, paidAtMs, fiat, sourceWallet);
-  await attachSpendGiftReply(deps, invoice, paidAtMs, fiat);
-  await attachSpendGroupGift(deps, invoice, paidAtMs, fiat);
+  await settleProvenGift(deps, invoice, paidAtMs, sourceWallet, fiat);
 }
 
 /**
